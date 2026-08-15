@@ -1,0 +1,19 @@
+# اطلاعات حساس - هیچ‌وقت نباید توی گیت آپلود بشه
+.env
+google-credentials.json
+
+# فایل‌های پایتون
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# فایل‌های خروجی/موقت ربات
+*.pdf
+lavayeh_*.pdf
+
+# فایل‌های ویندوز/ادیتور
+.vscode/
+.idea/
+Thumbs.db

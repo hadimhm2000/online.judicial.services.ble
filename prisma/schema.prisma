@@ -1,0 +1,131 @@
+// This is your Prisma schema file,
+// learn more about it at https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Case {
+  id              String   @id @default(cuid())
+  baleUserId      String
+  fullName        String
+  serviceType     String   // INQUIRY, LAVAYEH, EZHHARNAMEH, EALAM_VAKALAHT, STAMP_CALC
+  status          String   @default("PENDING_PAYMENT") // PENDING_PAYMENT, INCOMPLETE, PROCESSING, READY_TO_SEND, COMPLETED, FAILED, CANCELLED
+  
+  // Service details
+  trackingCode    String?
+  documentCategory String?
+  subCategory     String?
+  branchCode      String?
+  branchName      String?
+  province        String?
+  rowNumber       String?
+  archiveNumber   String?
+  
+  // Person data (JSON array)
+  persons         String?  // JSON string
+  
+  // Content
+  title           String?
+  textContent     String?
+  
+  // Financial
+  fee             Int      @default(0)
+  feeStatus       String   @default("UNPAID") // UNPAID, PAID, MANUAL_APPROVED
+  paymentReceiptUrl String?
+  paymentApprovedBy String?
+  paymentApprovedAt DateTime?
+  
+  // Results
+  resultSummary   String?
+  resultData      String?  // JSON - full result from judicial system
+  resultAttachmentUrls String? // JSON array of file URLs
+  
+  // Error tracking
+  errorDetails    String?
+  errorStep       String?
+  lastCompletedStep String?
+  
+  // Ready to send workflow
+  isInReadyToSend Boolean  @default(false)
+  readyToSendAt   DateTime?
+  sentToUserAt    DateTime?
+  sentViaBot      Boolean  @default(false)
+  
+  // Timestamps
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  // Relations
+  adminActions    AdminAction[]
+  activityLogs    ActivityLog[]
+  notes           CaseNote[]
+}
+
+model AdminAction {
+  id              String   @id @default(cuid())
+  caseId          String
+  case            Case     @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  actionType      String   // MANUAL_INTERVENTION, PAYMENT_APPROVAL, PAYMENT_REJECTION, SEND_TO_USER, STATUS_CHANGE
+  adminNote       String?
+  uploadedFileUrls String?  // JSON array
+  sentViaBot      Boolean  @default(false)
+  createdAt       DateTime @default(now())
+}
+
+model ActivityLog {
+  id              String   @id @default(cuid())
+  caseId          String?
+  case            Case?    @relation(fields: [caseId], references: [id], onDelete: SetNull)
+  action          String
+  details         String?
+  createdAt       DateTime @default(now())
+}
+
+model CaseNote {
+  id        String   @id @default(cuid())
+  caseId    String
+  case      Case     @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  text      String
+  isPinned   Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model BotMessage {
+  id          String   @id @default(cuid())
+  baleUserId  String
+  fullName    String?
+  messageText String
+  fileUrl     String?  // مسیر فایل پیوست شده (public/uploads/...)
+  fileName    String?  // نام نمایشی فایل
+  status      String   @default("PENDING") // PENDING, SENT, FAILED
+  sentAt      DateTime?
+  errorDetails String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model WorkingHour {
+  id         String @id @default(cuid())
+  dayOfWeek  Int    // 0=Saturday, 1=Sunday, ..., 6=Friday
+  startHour  Int    @default(8)
+  startMin   Int    @default(0)
+  endHour    Int    @default(22)
+  endMin     Int    @default(0)
+  enabled    Boolean @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model ExemptUser {
+  id         String   @id @default(cuid())
+  baleUserId String   @unique
+  fullName   String?
+  reason     String?
+  createdAt  DateTime @default(now())
+}

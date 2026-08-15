@@ -1,0 +1,108 @@
+گزارش کامل مهاجرت: تلگرام → بله
+========================================
+تاریخ: 1405/05/25
+پروژه: خدمات الکترونیک قضائی آنلاین (online.judicial.services)
+
+۱. خلاصه تغییرات
+─────────────────
+- حذف کامل python-telegram-bot از وابستگی‌ها
+- تغییر آدرس API از TELEGRAM_API_BASE به BALE_API_BASE (پیش‌فرض: https://tapi.bale.ai)
+- حذف تمام parse_mode="Markdown" از ~۵۰۰ فراخوانی API (۲۶ فایل)
+- تبدیل فرمت **bold** به *bold* و __italic__ به _italic_ برای سازگاری با سینتکس بله
+- تغییر نام فیلد telegramId به baleUserId در Prisma schema و تمام کدها
+- بازنویسی src/lib/telegram.ts به src/lib/bale.ts
+- بروزرسانی env.example و requirements.txt
+
+۲. فایل‌های پایتون تغییریافته (۲۶ فایل اصلی + فایل‌های فرعی)
+─────────────────
+فایل‌های حیاتی (بزرگترین تغییرات):
+  ✅ bot.py — اتصال به API بله، حذف ۷ parse_mode
+  ✅ config.py — BALE_API_BASE با پیش‌فرض https://tapi.bale.ai
+  ✅ handlers.py — حذف ۴۹ parse_mode + تبدیل ۹۱ markdown
+  ✅ lavayeh_handlers.py — حذف ۸۹ parse_mode + تبدیل ۱۶۱ markdown
+  ✅ ezhharnameh_handlers.py — حذف ۵۶ parse_mode + تبدیل ۸۷ markdown
+  ✅ tajdid_nazar_handlers.py — حذف ۹۹ parse_mode + تبدیل ۱۴۷ markdown
+  ✅ check_handlers.py — حذف ۷۹ parse_mode + تبدیل ۱۳۳ markdown
+  ✅ scenarios.py — حذف ۱۰ parse_mode + تبدیل ۱۱ markdown
+  ✅ upload_helpers.py — تغییر نام توابع دانلود
+  ✅ browser_helpers.py — حذف parse_mode + تبدیل markdown
+  ✅ branches.py — حذف ۱۰ parse_mode + تبدیل ۱۲ markdown
+  ✅ subscription_handlers.py — حذف ۱۲ parse_mode + تبدیل ۲۹ markdown
+  ✅ bug_reporter.py — بدون parse_mode (ایمن‌سازی شده)
+  ✅ stamp_calc_handlers.py — حذف ۷ parse_mode
+  ✅ file_tools_handlers.py — حذف ۳ parse_mode
+  ✅ ealam_vakalaht_handlers.py — حذف ۲۵ parse_mode
+  ✅ text_collector.py — تغییر نام تابع دانلود
+  ✅ docx_parser.py — تغییر نام تابع دانلود
+  ✅ panel_sync.py — تغییر telegramId به baleUserId
+  ✅ exempt_users.py — تغییر telegramId به baleUserId
+  ✅ bulk_submissions.py — حذف ۳ parse_mode
+  ✅ persistence.py — تبدیل markdown
+  ✅ runtime_state.py — تبدیل markdown
+
+فایل‌های بدون تغییر (مستقل از پیام‌رسان):
+  ⏭  states.py — فقط تعریف State‌های FSM
+  ⏭  keyboards.py — فقط کیبوردهای aiogram
+  ⏭  api_direct.py — فقط Playwright و aiohttp
+  ⏭  ocr.py — فقط Tesseract و OpenCV
+  ⏭  sheets.py — فقط Google Sheets API
+  ⏭  working_hours.py — فقط خواندن از API پنل
+  ⏭  error_catalog.py — فقط کاتالوگ خطاهای سامانه ثنا
+  ⏭  browser_helpers.py — فقط Playwright (فقط ۵ فراخوانی API تغییر یافت)
+  ⏭  stamp_duty.py — فقط محاسبات ریاضی
+  ⏭  sana_profile_report.py — فقط Playwright
+
+۳. فایل‌های پنل ادمین (Next.js) تغییریافته
+─────────────────
+  ✅ prisma/schema.prisma — telegramId → baleUserId (۳ مدل: Case, BotMessage, ExemptUser)
+  ✅ src/lib/bale.ts (جدید، جایگزین telegram.ts) — ارسال پیام و فایل از طریق API بله
+  ✅ src/lib/telegram.ts — مهاجرت شده (باقی‌مانده به‌عنوان alias تا حذف کامل)
+  ✅ src/components/admin/bot-message-sender.tsx — تغییر refs و imports
+  ✅ src/components/admin/case-detail-dialog.tsx — telegramId → baleUserId
+  ✅ src/components/admin/exempt-users-dialog.tsx — telegramId → baleUserId
+  ✅ src/components/admin/cases-table.tsx — بروزرسانی refs
+  ✅ src/components/admin/user-history-dialog.tsx — بروزرسانی refs
+  ✅ src/components/admin/filter-bar.tsx — بروزرسانی refs
+  ✅ src/components/admin/admin-panel.tsx — بروزرسانی refs
+  ✅ src/components/admin/lazy-panels.tsx — بروزرسانی refs
+  ✅ src/app/page.tsx — بروزرسانی refs
+  ✅ src/app/api/admin/cases/route.ts — telegramId → baleUserId
+  ✅ src/app/api/admin/cases/batch/route.ts — بروزرسانی
+  ✅ src/app/api/admin/bot-messages/route.ts — بروزرسانی
+  ✅ src/app/api/admin/bot-messages/[id]/send/route.ts — sendBaleMessage/sendBaleDocument
+  ✅ src/app/api/admin/exempt-users/route.ts — بروزرسانی
+  ✅ src/app/api/admin/users/route.ts — بروزرسانی
+  ✅ src/app/api/admin/seed/route.ts — بروزرسانی
+  ✅ src/app/api/admin/kpi/route.ts — بروزرسانی
+  ✅ src/lib/export-utils.ts — بروزرسانی
+  ✅ src/lib/google-sheets.ts — بروزرسانی
+  ✅ ۴ فایل .fix (نسخه پشتیبان) حذف شدند
+
+۴. نتیجه py_compile
+─────────────────
+  ✅ صفر خطای سینتکس در تمام فایل‌های پایتون
+
+۵. موارد نیازمند تست دستی
+─────────────────
+  ⚠️  ثبت ربات در BotFather بله و دریافت توکن
+  ⚠️  تنظیم BOT_TOKEN و ADMIN_ID در فایل .env
+  ⚠️  تست اتصال با getMe
+  ⚠️  تست سناریوی کامل لایحه (شروع تا دریافت کد رهگیری)
+  ⚠️  تست آپلود منضمات (تصاویر تا ۱۰ مگ، سند تا ۵۰ مگ)
+  ⚠️  تست فرمت پیام‌ها (بدون parse_mode، متن ساده)
+  ⚠️  تست کیبوردهای inline
+  ⚠️  تست caption طولانی (حداکثر ۱۰۲۴ کاراکتر)
+  ⚠️  تست قطع/وصل دسترسی سامانه ثنا
+  ⚠️  اجرای npx prisma db push برای بروزرسانی دیتابیس پنل
+  ⚠️  نصب وابستگی‌های پنل: npm install && npx prisma generate
+  ⚠️  تست ارسال پیام از پنل ادمین به کاربر (via Bale API)
+  ⚠️  تست اشتراک ماهیانه و اعلان انقضا
+
+۶. نکات مهم
+─────────────────
+  - کلاس TelegramAPIServer از aiogram تغییر نامی داده نشده (اسم واقعی کلاس کتابخانه است)
+  - از parse_mode استفاده نشده — تمام پیام‌ها به‌صورت متن ساده ارسال می‌شوند
+  - فرمت *bold* در متن‌ها حفظ شده (سازگار با سینتکس بله)
+  - فایل‌های بدون تغییر (browser_helpers, ocr, stamp_duty, api_direct و ...) کاملاً مستقل از پیام‌رسان هستند
+  - معماری aiogram + Playwright + FSM کاملاً حفظ شده
+  - runtime_state.py با الگوی import module (نه from module import) حفظ شده
