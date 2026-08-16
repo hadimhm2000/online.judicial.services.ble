@@ -26,7 +26,7 @@ from aiogram import Bot, F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, ReplyKeyboardRemove, CallbackQuery
-from aiogram.types import FSInputFile
+from bale_file_sender import send_document_direct
 
 import runtime_state
 from states import Form
@@ -183,16 +183,9 @@ async def check_bulk_download_sample(message: Message, state: FSMContext):
             "۱۱. ستون *نام بانک*: نام بانک\n"
             "۱۲. ستون *کد صلاحیت دادگاه*: کد ۵ رقمی واحد قضایی\n")
         try:
-            await message.answer_document(FSInputFile(sample_path))
+            await send_document_direct(message.chat.id, sample_path)
         except Exception as doc_err:
-            logger.error(f"[CHECK-SAMPLE] خطا در ارسال مستقیم فایل: {doc_err} — تلاش با خواندن دستی")
-            # فال‌بک: خواندن فایل و ارسال با bytes
-            import io
-            with open(sample_path, 'rb') as f:
-                file_bytes = f.read()
-            from aiogram.types import BufferedInputFile
-            buffered = BufferedInputFile(file_bytes, filename="نمونه_اکسل_داعاوی_چک.xlsx")
-            await message.answer_document(buffered)
+            logger.error(f"[CHECK-SAMPLE] خطا در ارسال فایل: {doc_err}")
         await message.answer(
             "📤 لطفاً فایل تکمیل‌شده را ارسال فرمایید:\n"
             "_(فرمت‌های پشتیبانی: xlsx)_",

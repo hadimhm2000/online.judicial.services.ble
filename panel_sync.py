@@ -101,7 +101,7 @@ async def register_case_to_panel(
                     )
                     return None
     except Exception as e:
-        logger.error(f"[PANEL_SYNC] خطا در ارتباط با پنل ادمین: {e}")
+        logger.warning(f"[PANEL_SYNC] خطا در ارتباط با پنل ادمین: {e}")
         return None
 
 

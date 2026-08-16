@@ -15,7 +15,10 @@ from keyboards import admin_login_kb
 
 # آدرسی که سامانه‌ی ثنا هنگام انقضای نشست کاربر را به آن ریدایرکت می‌کند.
 # (SSO — صفحه‌ی جدید لاگین که با فرم قدیمی #txtUsername متفاوت است)
-SESSION_LOGIN_REDIRECT_PREFIX = "https://iehraz2.adliran.ir/Login/Authenticate"
+SESSION_LOGIN_REDIRECT_PREFIXES = [
+    "https://iehraz2.adliran.ir/Login/Authenticate",
+    "https://iehraz.adliran.ir/Login/Authenticate",
+]
 
 
 # پیام خطای کدملی اشتباه / عدم ثبت‌نام ثنا
@@ -35,7 +38,7 @@ class NationalIdError(Exception):
 
 def is_login_redirect_url(url: str) -> bool:
     """آیا URL فعلی صفحه، ریدایرکت انقضای نشست به آدرس لاگین ثناست؟"""
-    return bool(url) and url.startswith(SESSION_LOGIN_REDIRECT_PREFIX)
+    return bool(url) and any(url.startswith(p) for p in SESSION_LOGIN_REDIRECT_PREFIXES)
 
 
 class NavigationResetError(Exception):
@@ -55,14 +58,6 @@ async def human_delay(min_sec=1.5, max_sec=3.0):
 
 async def force_click_by_text(page, text):
     await page.evaluate(f'''() => {{
-        // اول در منوی اصلی (#menu13Container و مشابه) جستجو کن
-        const menuContainers = document.querySelectorAll('[id*="menu"], .list-group, .sidebar-menu, .nav-menu, #menu13Container, #menu14Container');
-        for (const container of menuContainers) {{
-            const links = container.querySelectorAll('a, button, label, span, li, h5, div');
-            const target = Array.from(links).find(el => el.innerText && el.innerText.trim() === "{text}" && el.offsetParent !== null);
-            if (target) {{ target.click(); return; }}
-        }}
-        // جستجوی دقیق در کل صفحه
         const tags = ['button', 'a', 'label', 'span', 'li', 'h5', 'div'];
         for (let tag of tags) {{
             const elements = Array.from(document.querySelectorAll(tag));
@@ -72,7 +67,6 @@ async def force_click_by_text(page, text):
                 return;
             }}
         }}
-        // جستجوی includes در کل صفحه
         for (let tag of tags) {{
             const elements = Array.from(document.querySelectorAll(tag));
             const target = elements.find(el => el.innerText && el.innerText.trim().includes("{text}"));
