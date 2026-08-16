@@ -218,8 +218,17 @@ async def main():
     session = AiohttpSession(api=custom_api_server)
 
     bot = Bot(token=BOT_TOKEN, session=session)
-    await bot.set_my_commands([BotCommand(command="start", description="شروع مجدد ربات / ثبت استعلام جدید")])
-    await bot.delete_webhook(drop_pending_updates=True)
+        # تنظیم منوی دستورات (بله ممکن است پشتیبانی نکند)
+    try:
+        await bot.set_my_commands([BotCommand(command="start", description="شروع مجدد ربات / ثبت استعلام جدید")])
+    except Exception as e:
+        logging.warning(f"set_my_commands پشتیبانی نشد: {e}")
+
+    # حذف webhook قبلی
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+    except Exception as e:
+        logging.warning(f"delete_webhook خطا: {e}")
 
     # ── اگر کرش شده بود، به کاربران اطلاع بده (با تفکیک ثبت‌شده/ثبت‌نشده) ──
     if crashed and (active_submitted or active_unsubmitted):
