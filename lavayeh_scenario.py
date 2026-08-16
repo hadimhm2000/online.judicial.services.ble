@@ -600,10 +600,15 @@ async def process_lavayeh_task(data: dict, bot: Bot):
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def _click_menu_item(page, text: str, bot: Bot, user_id: int):
+    # اول تلاش کن در منوی اصلی (list-group-item) پیدا کنه
     clicked = await page.evaluate(f'''() => {{
-        const links = Array.from(document.querySelectorAll('a.list-group-item'));
-        const target = links.find(el => el.innerText && el.innerText.trim().includes("{text}"));
-        if (target) {{ target.click(); return true; }}
+        // جستجو در کنتینرهای منو (#menu13Container و مشابه)
+        const menuContainers = document.querySelectorAll('[id*="menu"], .list-group, .sidebar-menu, .nav-menu, #menu13Container, #menu14Container');
+        for (const container of menuContainers) {{
+            const links = container.querySelectorAll('a.list-group-item, a, button, label, span, li, div');
+            const target = Array.from(links).find(el => el.innerText && el.innerText.trim().includes("{text}") && el.offsetParent !== null);
+            if (target) {{ target.click(); return true; }}
+        }}
         return false;
     }}''')
     if not clicked:

@@ -15,7 +15,7 @@ from aiogram.types import (
 )
 
 import runtime_state
-from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME, get_fee, FEES
+from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME, BALE_WALLET_TOKEN, get_fee, FEES
 from exempt_users import is_exempt_user
 from working_hours import is_within_working_hours
 from states import Form
@@ -297,6 +297,36 @@ async def admin_reject_cart(callback: CallbackQuery, bot: Bot):
 
 
 # callback تایید دستی محاسبه تمبر
+
+# ================= کال‌بک‌های دکمه‌های پرداخت Bale Wallet =================
+@router.callback_query(F.data == "pay_done_send_receipt")
+async def pay_done_send_receipt_callback(callback: CallbackQuery, state: FSMContext):
+    """کاربر روی «پرداخت کردم» کلیک کرد — درخواست ارسال فیش"""
+    await callback.answer()
+    await callback.message.answer(
+        "📷 لطفاً *عکس فیش/رسید پرداخت* خود را ارسال فرمایید (از گزینه ارسال عکس استفاده کنید):",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+
+@router.callback_query(F.data == "pay_cancel")
+async def pay_cancel_callback(callback: CallbackQuery, state: FSMContext):
+    """کاربر انصراف از پرداخت"""
+    await callback.answer()
+    data = await state.get_data()
+    cart = data.get("cart", [])
+    await log_event(
+        "کنسل", "پرداخت", callback.from_user.full_name, callback.from_user.id,
+        tracking_code=None, doc_name=f"{len(cart)} مورد" if cart else None,
+        payment_status="کنسل شده توسط کاربر (دکمه انصراف)"
+    )
+    await state.clear()
+    await callback.message.answer(
+        "لغو گردید. لطفاً مجدداً شروع کنید:",
+        reply_markup=main_menu_kb
+    )
+    await state.set_state(Form.main_menu)
+
 
 @router.message(Form.waiting_for_payment_receipt)
 async def process_payment_receipt_text_only(message: types.Message, state: FSMContext):
@@ -747,14 +777,21 @@ async def process_main_menu(message: types.Message, state: FSMContext):
         total_sum = sum(item['fee'] for item in cart)
         await state.update_data(total_payment_sum=total_sum)
         
+        # ساخت لینک پرداخت Bale Wallet
+        total_rial = total_sum * 10  # تومان به ریال
+        wallet_url = f"https://pay.bale.ai/?token={BALE_WALLET_TOKEN}&amount={total_rial}"
+        
         payment_msg = (
             f"💳 *فاکتور پرداخت:*\n\n"
             f"💰 مجموع: *{total_sum:,} تومان*\n\n"
-            f"💳 شماره کارت: `{CARD_NUMBER}`\n"
-            f"👤 بنام: *{ACCOUNT_NAME}*\n\n"
-            f"👇 پس از واریز، *عکس فیش* را ارسال فرمایید."
+            f"👇 برای پرداخت آنلاین از طریق کیف پول بله روی دکمه زیر کلیک کنید:"
         )
-        await message.answer(payment_msg, reply_markup=payment_cancel_kb)
+        pay_kb_wallet = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"💳 پرداخت {total_sum:,} تومان", url=wallet_url)],
+            [InlineKeyboardButton(text="✅ پرداخت کردم (ارسال فیش)", callback_data="pay_done_send_receipt")],
+            [InlineKeyboardButton(text="❌ انصراف", callback_data="pay_cancel")],
+        ])
+        await message.answer(payment_msg, reply_markup=pay_kb_wallet)
         await state.set_state(Form.waiting_for_payment_receipt)
         return
         
@@ -1064,15 +1101,22 @@ async def confirm_opt_process(message: types.Message, state: FSMContext, bot: Bo
             await state.clear()
             return
 
+        # ساخت لینک پرداخت Bale Wallet (مبلغ به ریال)
+        fee_rial = fee * 10  # تومان به ریال
+        wallet_url = f"https://pay.bale.ai/?token={BALE_WALLET_TOKEN}&amount={fee_rial}"
+        
         payment_msg = (
             f"💳 *فاکتور پرداخت:*\n\n"
             f"🔹 نوع استعلام: *{data.get('query_type')}*\n"
             f"💰 مبلغ: *{fee:,} تومان*\n\n"
-            f"💳 شماره کارت: `{CARD_NUMBER}`\n"
-            f"👤 بنام: *{ACCOUNT_NAME}*\n\n"
-            f"👇 پس از واریز، *عکس فیش* را ارسال فرمایید."
+            f"👇 برای پرداخت آنلاین از طریق کیف پول بله روی دکمه زیر کلیک کنید:"
         )
-        await message.answer(payment_msg, reply_markup=payment_cancel_kb)
+        pay_kb_wallet = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"💳 پرداخت {fee:,} تومان", url=wallet_url)],
+            [InlineKeyboardButton(text="✅ پرداخت کردم (ارسال فیش)", callback_data="pay_done_send_receipt")],
+            [InlineKeyboardButton(text="❌ انصراف", callback_data="pay_cancel")],
+        ])
+        await message.answer(payment_msg, reply_markup=pay_kb_wallet)
         await state.set_state(Form.waiting_for_payment_receipt)
         
     elif "افزودن به سبد خرید" in message.text:

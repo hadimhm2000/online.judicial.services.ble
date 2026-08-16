@@ -14,12 +14,17 @@ function apiUrl(method: string) {
 
 /**
  * ارسال پیام متنی به کاربر از طریق ربات بله.
+ * از parse_mode=None استفاده می‌شود تا بله محتوای خام را ارسال کند.
  */
 export async function sendBaleMessage(chatId: string, text: string) {
+  if (!chatId?.trim()) {
+    throw new Error('شناسه بله کاربر خالی است');
+  }
+
   const res = await fetch(apiUrl('sendMessage'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text }),
+    body: JSON.stringify({ chat_id: String(chatId).trim(), text }),
   });
 
   const data = await res.json();
@@ -39,13 +44,17 @@ export async function sendBaleDocument(
   fileName: string,
   caption?: string
 ) {
+  if (!chatId?.trim()) {
+    throw new Error('شناسه بله کاربر خالی است');
+  }
+
   if (!fs.existsSync(filePath)) {
     throw new Error(`فایل روی سرور پیدا نشد: ${fileName}`);
   }
 
   const buffer = fs.readFileSync(filePath);
   const form = new FormData();
-  form.append('chat_id', chatId);
+  form.append('chat_id', String(chatId).trim());
   if (caption) form.append('caption', caption);
   form.append('document', new Blob([buffer]), fileName);
 
