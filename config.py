@@ -53,6 +53,9 @@ ADMIN_API_BASE = os.environ.get("ADMIN_API_BASE", "http://localhost:3000/api")
 CARD_NUMBER = "6219861936929354"
 ACCOUNT_NAME = "هادی منتظران"
 
+# توکن کیف پول بله برای پرداخت آنلاین
+BALE_WALLET_TOKEN = "WALLET-eg5yrAJGzAu1tDAn"
+
 DEBUG_LOG_REQUESTS = False
 
 FEES = {

@@ -103,8 +103,18 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
             category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
         ):
             radio_clicked = await page.evaluate('''() => {
-                const radio = document.querySelector('#rdbGetPetition');
-                if (radio) { radio.click(); return true; }
+                // اول تلاش با selector دقیق و بررسی value="2"
+                const radio = document.querySelector('#rdbGetPetition[value="2"]') || document.querySelector('#rdbGetPetition');
+                if (radio) {
+                    radio.checked = true;
+                    radio.click();
+                    // فعال‌سازی رویداد onchange (AngularJS)
+                    const event = new Event('change', { bubbles: true });
+                    radio.dispatchEvent(event);
+                    const clickEvent = new Event('click', { bubbles: true });
+                    radio.dispatchEvent(clickEvent);
+                    return true;
+                }
                 return false;
             }''')
             if not radio_clicked:
@@ -438,8 +448,14 @@ async def _process_test_attachments(data: dict, bot: Bot):
         # ── تنظیم رادیو و ورود کدرهگیری ──────────────────────────────
         if category == "لایحه":
             radio_clicked = await sana_page.evaluate('''() => {
-                const radio = document.querySelector('#rdbGetPetition');
-                if (radio) { radio.click(); return true; }
+                const radio = document.querySelector('#rdbGetPetition[value="2"]') || document.querySelector('#rdbGetPetition');
+                if (radio) {
+                    radio.checked = true;
+                    radio.click();
+                    const event = new Event('change', { bubbles: true });
+                    radio.dispatchEvent(event);
+                    return true;
+                }
                 return false;
             }''')
             if not radio_clicked:

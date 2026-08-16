@@ -143,14 +143,30 @@ async def check_bulk_back_to_choice(message: Message, state: FSMContext):
 @check_router.message(Form.check_bulk_input_method, F.text == "📊 دانلود نمونه اکسل و آپلود فایل")
 async def check_bulk_download_sample(message: Message, state: FSMContext):
     try:
+        # جستجوی فایل نمونه در چند مسیر ممکن
+        possible_paths = []
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        sample_path = os.path.join(base_dir, "sample_check.xlsx")
-        if not os.path.exists(sample_path):
-            sample_path = os.path.join(os.getcwd(), "sample_check.xlsx")
-        if not os.path.exists(sample_path):
-            await message.answer("⚠️ فایل نمونه‌ی اکسل یافت نشد. لطفاً با پشتیبانی تماس بگیرید.",
-                                reply_markup=bulk_input_method_kb)
+        possible_paths.append(os.path.join(base_dir, "sample_check.xlsx"))
+        possible_paths.append(os.path.join(base_dir, "نمونه اکسل چک.xlsx"))
+        possible_paths.append(os.path.join(os.getcwd(), "sample_check.xlsx"))
+        possible_paths.append(os.path.join(os.getcwd(), "نمونه اکسل چک.xlsx"))
+        # مسیرهای مطلق احتمالی
+        possible_paths.append("/home/z/my-project/online.judicial.services.ble/sample_check.xlsx")
+        possible_paths.append("/home/z/my-project/online.judicial.services.ble/نمونه اکسل چک.xlsx")
+        
+        sample_path = None
+        for p in possible_paths:
+            if os.path.exists(p):
+                sample_path = p
+                break
+        
+        if not sample_path:
+            logger.error(f"[CHECK-SAMPLE] فایل نمونه یافت نشد. مسیرهای بررسی‌شده: {possible_paths}")
+            await message.answer(
+                "⚠️ فایل نمونه‌ی اکسل یافت نشد. لطفاً با پشتیبانی تماس بگیرید.",
+                reply_markup=bulk_input_method_kb)
             return
+        
         await message.answer(
             "📥 *فایل نمونه اکسل دعاوی چک:*\n\n"
             "⚠️ *راهنمای تکمیل فایل:*\n\n"
@@ -166,7 +182,17 @@ async def check_bulk_download_sample(message: Message, state: FSMContext):
             "۱۰. ستون *تاریخ چک*: تاریخ سررسید\n"
             "۱۱. ستون *نام بانک*: نام بانک\n"
             "۱۲. ستون *کد صلاحیت دادگاه*: کد ۵ رقمی واحد قضایی\n")
-        await message.answer_document(FSInputFile(sample_path))
+        try:
+            await message.answer_document(FSInputFile(sample_path))
+        except Exception as doc_err:
+            logger.error(f"[CHECK-SAMPLE] خطا در ارسال مستقیم فایل: {doc_err} — تلاش با خواندن دستی")
+            # فال‌بک: خواندن فایل و ارسال با bytes
+            import io
+            with open(sample_path, 'rb') as f:
+                file_bytes = f.read()
+            from aiogram.types import BufferedInputFile
+            buffered = BufferedInputFile(file_bytes, filename="نمونه_اکسل_داعاوی_چک.xlsx")
+            await message.answer_document(buffered)
         await message.answer(
             "📤 لطفاً فایل تکمیل‌شده را ارسال فرمایید:\n"
             "_(فرمت‌های پشتیبانی: xlsx)_",
