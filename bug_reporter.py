@@ -223,11 +223,19 @@ async def report_bug(
             shot = await capture_screenshot_bytes(page)
             if shot:
                 try:
-                    from aiogram.types import BufferedInputFile
-                    await bot.send_photo(
-                        ADMIN_ID,
-                        BufferedInputFile(shot, filename=f"bug_{int(time.time())}.png"),
-                        caption=f"📸 اسکرین‌شات لحظه‌ی خطا | {where} | کاربر {user_id}")
+                    # ذخیره اسکرین‌شات در فایل موقت و ارسال با bale_file_sender
+                    import tempfile
+                    tmp_path = tempfile.mktemp(suffix='.png')
+                    try:
+                        with open(tmp_path, 'wb') as f:
+                            f.write(shot)
+                        from bale_file_sender import send_photo_direct
+                        await send_photo_direct(
+                            ADMIN_ID, tmp_path,
+                            caption=f"📸 اسکرین‌شات لحظه‌ی خطا | {where} | کاربر {user_id}")
+                    finally:
+                        if os.path.exists(tmp_path):
+                            os.remove(tmp_path)
                 except Exception as e:
                     logging.debug(f"[BUG_REPORTER] ارسال اسکرین‌شات ناموفق: {e}")
     except Exception as e:
@@ -304,11 +312,11 @@ async def upload_logs(bot, chat_id: Optional[int] = None, which: str = "bugs") -
         if not os.path.exists(path) or os.path.getsize(path) == 0:
             await bot.send_message(target, f"ℹ️ فایل لاگ «{which}» خالی/موجود نیست.")
             return False
-        from aiogram.types import FSInputFile
+        from bale_file_sender import send_document_direct
         caption = (
             "🐞 لاگ خطاها/هشدارها" if which == "bugs" else "📄 لاگ کامل ربات"
         ) + f" — {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        await bot.send_document(target, FSInputFile(path), caption=caption)
+        await send_document_direct(target, path, caption=caption)
         return True
     except Exception as e:
         logging.error(f"[BUG_REPORTER] آپلود لاگ ناموفق: {e}")

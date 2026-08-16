@@ -19,11 +19,12 @@ from aiogram import Bot, F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
-    Message, FSInputFile, InlineKeyboardMarkup,
+    Message, InlineKeyboardMarkup,
     InlineKeyboardButton, CallbackQuery
 )
 
 import runtime_state
+from bale_file_sender import send_photo_direct
 from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME
 from states import Form
 from keyboards import subscription_kb, flow_type_kb, restart_kb
@@ -158,10 +159,8 @@ async def subscription_payment_receipt(message: Message, state: FSMContext, bot:
             "created_at": datetime.datetime.now(),
         }
 
-        admin_doc = FSInputFile(photo_path)
-        msg = await bot.send_photo(
-            ADMIN_ID,
-            photo=admin_doc,
+        sent_result = await send_photo_direct(
+            ADMIN_ID, photo_path,
             caption=(
                 f"📥 *درخواست اشتراک ماهیانه جدید:*\n\n"
                 f"👤 کاربر: {message.from_user.full_name} (`{user_id}`)\n"
@@ -170,7 +169,8 @@ async def subscription_payment_receipt(message: Message, state: FSMContext, bot:
                 f"موتور OCR تایید نکرد. لطفاً دستی بررسی فرمایید."
             ),
             reply_markup=inline_kb)
-        runtime_state.pending_subscription_payments[user_id]["message_id"] = msg.message_id
+        msg_id = sent_result.get('message_id') if isinstance(sent_result, dict) else None
+        runtime_state.pending_subscription_payments[user_id]["message_id"] = msg_id
 
         await message.answer(
             "⏳ رسید پرداخت برای بررسی به مدیریت ارسال شد.\n"

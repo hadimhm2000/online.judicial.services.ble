@@ -39,13 +39,13 @@ runtime_state.dp = dp
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def notify_admin_critical(bot: Bot, title: str, details: str):
-    """ارسال پیام بحرانی به مدیر."""
+    """ارسال پیام بحرانی به مدیر — بدون فرمت Markdown"""
     try:
         await bot.send_message(
             ADMIN_ID,
-            f"🚨 *{title}*\n\n{details}")
+            f"🚨 {title}\n\n{details}")
     except Exception as e:
-        logging.error(f"[NOTIFY] خطا در ارسال به مدیر: {e}")
+        logging.error(f"[NOTIFY] خطا در ارسال به مدیر: {e}", exc_info=True)
 
 
 async def notify_user_critical(bot: Bot, user_id: int, message: str):
@@ -67,7 +67,7 @@ async def notify_crash_imminent(bot: Bot, reason: str):
     await notify_admin_critical(
         bot,
         "⚠️ ربات در حال توقف اضطراری",
-        f"*دلیل:* `{reason[:300]}`\n\n"
+        f"دلیل: {reason[:300]}\n\n"
         f"🔄 حالت ذخیره شده. پس از رفع مشکل ربات را ری‌استارت کنید."
     )
 
@@ -160,18 +160,19 @@ async def notify_crash_recovery(bot: Bot, submitted_users: list, unsubmitted_use
         except Exception as e:
             logging.warning(f"[CRASH_RECOVERY] خطا در ارسال پیام به {uid}: {e}")
 
-    # ── اطلاع به مدیر ──
+    # ── اطلاع به مدیر — بدون فرمت Markdown ──
     try:
         await bot.send_message(
             ADMIN_ID,
-            f"🔄 *ربات ری‌استارت شد (بازیابی از کرش)*\n\n"
-            f"✅ ثبت‌شده (در روند پردازش): *{len(submitted_users)}* کاربر\n"
-            f"⚠️ ثبت‌نشده (نیاز به اقدام مجدد): *{len(unsubmitted_users)}* کاربر\n\n"
+            f"🔄 ربات ری‌استارت شد (بازیابی از کرش)\n\n"
+            f"✅ ثبت‌شده (در روند پردازش): {len(submitted_users)} کاربر\n"
+            f"⚠️ ثبت‌نشده (نیاز به اقدام مجدد): {len(unsubmitted_users)} کاربر\n\n"
             f"📋 IDs ثبت‌شده: {', '.join(str(u) for u in submitted_users[:20])}\n\n"
             f"📋 IDs ثبت‌نشده: {', '.join(str(u) for u in unsubmitted_users[:20])}\n\n"
             f"✅ حالت ذخیره‌شده بارگذاری شد.")
-    except Exception:
-        pass
+        logging.info("[RECOVERY] اطلاع به مدیر ارسال شد.")
+    except Exception as e:
+        logging.error(f"[RECOVERY] خطا در ارسال به مدیر: {e}", exc_info=True)
 
 
 async def shutdown_handler(bot: Bot, signal_name: str):
@@ -188,14 +189,15 @@ async def shutdown_handler(bot: Bot, signal_name: str):
     except Exception as e:
         logging.error(f"[SHUTDOWN] خطا در ذخیره‌ی حالت: {e}")
 
-    # اطلاع نهایی به مدیر
+    # اطلاع نهایی به مدیر — بدون فرمت Markdown
     try:
         await bot.send_message(
             ADMIN_ID,
-            f"🔴 *ربات در حال خاموش شدن است ({signal_name})*\n\n"
+            f"🔴 ربات در حال خاموش شدن است ({signal_name})\n\n"
             f"✅ حالت ذخیره شد. ری‌استارت بعدی از حالت ذخیره‌شده ادامه می‌یابد.")
-    except Exception:
-        pass
+        logging.info(f"[SHUTDOWN] اطلاع خاموشی به مدیر ارسال شد.")
+    except Exception as e:
+        logging.error(f"[SHUTDOWN] خطا در ارسال به مدیر: {e}", exc_info=True)
 
 
 async def main():
@@ -214,11 +216,21 @@ async def main():
 
     # ── اتصال به بله ──
     logging.info(f"🔌 اتصال از طریق سرور API بله: {BALE_API_BASE}")
+    logging.info(f"👤 ADMIN_ID={ADMIN_ID} (نوع: {type(ADMIN_ID).__name__})")
     custom_api_server = TelegramAPIServer.from_base(BALE_API_BASE)
     session = AiohttpSession(api=custom_api_server)
 
     bot = Bot(token=BOT_TOKEN, session=session)
-        # تنظیم منوی دستورات (بله ممکن است پشتیبانی نکند)
+
+    # ارسال پیام تستی به ادمین برای اطمینان از صحت ADMIN_ID
+    try:
+        test_result = await bot.send_message(ADMIN_ID, "🟢 ربات راه‌اندازی شد.")
+        logging.info(f"[START] پیام تستی به ادمین ارسال شد. message_id={test_result.message_id}")
+    except Exception as e:
+        logging.error(f"[START] خطا در ارسال پیام تستی به ادمین (ADMIN_ID={ADMIN_ID}): {e}", exc_info=True)
+        logging.error(f"[START] ⚠️ اگر این خطا رخ داد، احتمالاً ADMIN_ID در فایل .env صحیح نیست یا ادمین ربات را استارت نکرده است.")
+
+    # تنظیم منوی دستورات (بله ممکن است پشتیبانی نکند)
     try:
         await bot.set_my_commands([BotCommand(command="start", description="شروع مجدد ربات / ثبت استعلام جدید")])
     except Exception as e:
@@ -237,10 +249,11 @@ async def main():
         try:
             await bot.send_message(
                 ADMIN_ID,
-                "🔄 *ربات ری‌استارت شد (احتمالاً پس از کرش)*\n\n"
-                f"هیچ کاربر فعالی در حافظه نبود.")
-        except Exception:
-            pass
+                "🔄 ربات ری‌استارت شد (احتمالاً پس از کرش)\n\n"
+                "هیچ کاربر فعالی در حافظه نبود.")
+            logging.info("[RECOVERY] اطلاع به مدیر (بدون کاربر فعال) ارسال شد.")
+        except Exception as e:
+            logging.error(f"[RECOVERY] خطا در ارسال به مدیر: {e}", exc_info=True)
 
     # ── شروع تسک‌های پس‌زمینه ──
     asyncio.create_task(browser_worker(bot))

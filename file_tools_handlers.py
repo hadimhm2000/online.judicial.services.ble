@@ -13,11 +13,12 @@ import io
 import logging
 import os
 from aiogram import Bot, F, Router
-from aiogram.types import Message, FSInputFile, ReplyKeyboardRemove
+from aiogram.types import Message, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from PIL import Image
 import numpy as np
 import runtime_state
+from bale_file_sender import send_document_direct, send_photo_direct
 from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME
 from states import Form
 from keyboards import flow_type_kb, file_tools_menu_kb, file_tools_back_kb, subscription_kb, restart_kb
@@ -217,8 +218,8 @@ async def file_tools_receive_image(message: Message, state: FSMContext, bot: Bot
             os.replace(src_path, dst_path)
             final_size = os.path.getsize(dst_path)
 
-        await message.answer_document(
-            FSInputFile(dst_path),
+        await send_document_direct(
+            message.chat.id, dst_path,
             caption=(
                 f"✅ *کاهش حجم انجام شد.*\n\n"
                 f"حجم اولیه: {original_size / 1024:.0f} کیلوبایت\n"
@@ -333,9 +334,8 @@ async def file_tools_receive_pdf(message: Message, state: FSMContext, bot: Bot):
             try:
                 # پیام متنی جداگانه پیش از هر عکس — برای جدایی بصری واضح‌تر بین صفحات
                 await message.answer(f"📄 صفحه {page_num} از {output_count}")
-                await bot.send_photo(
-                    chat_id=message.chat.id,
-                    photo=FSInputFile(page_path)
+                await send_photo_direct(
+                    message.chat.id, page_path
                 )
             except Exception as send_err:
                 logging.error(f"file_tools pdf2image send page {page_num} error: {send_err}")

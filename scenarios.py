@@ -6,10 +6,10 @@ import logging
 import os
 
 from aiogram import Bot
-from aiogram.types import FSInputFile
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 import runtime_state
+from bale_file_sender import send_document_direct
 from config import ADMIN_ID, DEBUG_LOG_REQUESTS, FEES, get_fee
 from sheets import log_event
 from panel_sync import register_inquiry_to_panel
@@ -103,18 +103,8 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
             category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
         ):
             radio_clicked = await page.evaluate('''() => {
-                // اول تلاش با selector دقیق و بررسی value="2"
-                const radio = document.querySelector('#rdbGetPetition[value="2"]') || document.querySelector('#rdbGetPetition');
-                if (radio) {
-                    radio.checked = true;
-                    radio.click();
-                    // فعال‌سازی رویداد onchange (AngularJS)
-                    const event = new Event('change', { bubbles: true });
-                    radio.dispatchEvent(event);
-                    const clickEvent = new Event('click', { bubbles: true });
-                    radio.dispatchEvent(clickEvent);
-                    return true;
-                }
+                const radio = document.querySelector('#rdbGetPetition');
+                if (radio) { radio.click(); return true; }
                 return false;
             }''')
             if not radio_clicked:
@@ -448,14 +438,8 @@ async def _process_test_attachments(data: dict, bot: Bot):
         # ── تنظیم رادیو و ورود کدرهگیری ──────────────────────────────
         if category == "لایحه":
             radio_clicked = await sana_page.evaluate('''() => {
-                const radio = document.querySelector('#rdbGetPetition[value="2"]') || document.querySelector('#rdbGetPetition');
-                if (radio) {
-                    radio.checked = true;
-                    radio.click();
-                    const event = new Event('change', { bubbles: true });
-                    radio.dispatchEvent(event);
-                    return true;
-                }
+                const radio = document.querySelector('#rdbGetPetition');
+                if (radio) { radio.click(); return true; }
                 return false;
             }''')
             if not radio_clicked:
@@ -903,9 +887,9 @@ async def process_task(data, bot: Bot):
                                 browser_context, profile_data, pdf_path, national_id=nat_id
                             )
                             if built and os.path.exists(pdf_path):
-                                doc = FSInputFile(pdf_path)
-                                await bot.send_document(
-                                    user_id, document=doc, caption=f"📄 مشخصات ثنا (پروفایل {idx+1})"
+                                await send_document_direct(
+                                    user_id, pdf_path,
+                                    caption=f"📄 مشخصات ثنا (پروفایل {idx+1})"
                                 )
                                 os.remove(pdf_path)
                             else:
@@ -995,8 +979,7 @@ async def process_task(data, bot: Bot):
                 )
 
                 if built and os.path.exists(pdf_path):
-                    doc = FSInputFile(pdf_path)
-                    await bot.send_document(user_id, document=doc, caption=f"📄 مشخصات ثنا برای کدملی: `{national_id}`")
+                    await send_document_direct(user_id, pdf_path, caption=f"📄 مشخصات ثنا برای کدملی: `{national_id}`")
                     os.remove(pdf_path)
                 else:
                     await bot.send_message(
@@ -1233,8 +1216,7 @@ async def process_task(data, bot: Bot):
                         if need_attachments:
                             saved_attachments.append((pdf_path, f"📄 استعلام کد پیگیری: `{tracking_code}`"))
                         else:
-                            doc = FSInputFile(pdf_path)
-                            await bot.send_document(user_id, document=doc, caption=f"📄 استعلام کد پیگیری: `{tracking_code}`")
+                            await send_document_direct(user_id, pdf_path, caption=f"📄 استعلام کد پیگیری: `{tracking_code}`")
                             os.remove(pdf_path)
 
                             # ── ثبت استعلام در پنل ادمین ──
@@ -1282,8 +1264,7 @@ async def process_task(data, bot: Bot):
                             # تب منضمات وجود ندارد — فایل اصلی را ارسال و اسکیپ کن
                             for path, caption in saved_attachments:
                                 if os.path.exists(path):
-                                    doc = FSInputFile(path)
-                                    await bot.send_document(user_id, document=doc, caption=caption)
+                                    await send_document_direct(user_id, path, caption=caption)
                                     os.remove(path)
                             await bot.send_message(user_id, "📄 این درخواست فاقد بخش منضمات است.")
 
@@ -1338,8 +1319,7 @@ async def process_task(data, bot: Bot):
                         if not real_rows:
                             for path, caption in saved_attachments:
                                 if os.path.exists(path):
-                                    doc = FSInputFile(path)
-                                    await bot.send_document(user_id, document=doc, caption=caption)
+                                    await send_document_direct(user_id, path, caption=caption)
                                     os.remove(path)
                             await bot.send_message(user_id, "📄 این درخواست فاقد پیوست واقعی است.")
 
@@ -1471,8 +1451,7 @@ async def process_task(data, bot: Bot):
                                     for path, caption in saved_attachments:
                                         try:
                                             if os.path.exists(path):
-                                                att_doc = FSInputFile(path)
-                                                await bot.send_document(user_id, document=att_doc, caption=caption)
+                                                await send_document_direct(user_id, path, caption=caption)
                                                 os.remove(path)
                                         except Exception as send_err:
                                             logging.error(f"خطا در ارسال {path}: {send_err}")
@@ -1514,7 +1493,7 @@ async def process_task(data, bot: Bot):
 
                 try:
                     from bug_reporter import report_bug
-                    await report_bug(bot, where="process_task_retry", error=e,
+                    await report_bug(bot, where="process_task_retry", error=task_err,
                                      user_id=user_id,
                                      page=getattr(runtime_state, "sana_page", None))
                 except Exception:

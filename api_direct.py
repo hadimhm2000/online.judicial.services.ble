@@ -269,14 +269,8 @@ async def _do_page_check(tracking_code, category, subcategory, user_id, bot) -> 
         ):
             # کلیک روی رادیوباتن استعلام لایحه (#rdbGetPetition)
             radio_clicked = await page.evaluate('''() => {
-                const radio = document.querySelector('#rdbGetPetition[value="2"]') || document.querySelector('#rdbGetPetition');
-                if (radio) {
-                    radio.checked = true;
-                    radio.click();
-                    const event = new Event('change', { bubbles: true });
-                    radio.dispatchEvent(event);
-                    return true;
-                }
+                const radio = document.querySelector('#rdbGetPetition');
+                if (radio) { radio.click(); return true; }
                 return false;
             }''')
             if not radio_clicked:
