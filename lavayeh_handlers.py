@@ -14,7 +14,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, CallbackQuery
 
 import runtime_state
-from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME, calculate_lavayeh_fee, format_lavayeh_fee_explanation
+from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME, BALE_WALLET_TOKEN, calculate_lavayeh_fee, format_lavayeh_fee_explanation
 from exempt_users import is_exempt_user
 from sheets import log_event
 from ocr import verify_payment_receipt
@@ -330,13 +330,13 @@ async def bulk_input_method_handler(message: Message, state: FSMContext):
     service_type = data.get("service_type", "lavayeh")
 
     if text == "📊 دانلود نمونه اکسل و آپلود فایل":
-        from aiogram.types import FSInputFile
+        from aiogram.types import FSInputFile, BufferedInputFile
         
         # انتخاب نام و مسیر فایل بر اساس نوع سرویس
         if service_type == "ezhharnameh":
             sample_path = "/tmp/sample_ezhharnameh_bulk.xlsx"
             generate_sample_excel("ezhharnameh", sample_path)
-            file_send = FSInputFile(sample_path, filename="نمونه_ثبت_دسته_جمعی_اظهارنامه.xlsx")
+            file_name = "نمونه_ثبت_دسته_جمعی_اظهارنامه.xlsx"
             caption_text = (
                 "📎 *فایل اکسل نمونه ثبت دسته‌جمعی اظهارنامه*\n\n"
                 "📌 لطفاً فایل اکسل فوق را دانلود کرده و ستون‌ها را تکمیل فرمایید.\n"
@@ -346,7 +346,7 @@ async def bulk_input_method_handler(message: Message, state: FSMContext):
         else:
             sample_path = "/tmp/sample_lavayeh_bulk.xlsx"
             generate_sample_excel("lavayeh", sample_path)
-            file_send = FSInputFile(sample_path, filename="نمونه_ثبت_دسته_جمعی_لوایح.xlsx")
+            file_name = "نمونه_ثبت_دسته_جمعی_لوایح.xlsx"
             caption_text = (
                 "📎 *فایل اکسل نمونه ثبت دسته‌جمعی لوایح*\n\n"
                 "📌 لطفاً فایل اکسل فوق را دانلود کرده و ستون‌ها را تکمیل فرمایید.\n"
@@ -354,10 +354,30 @@ async def bulk_input_method_handler(message: Message, state: FSMContext):
                 "✅ اکنون فایل اکسل تکمیل‌شده خود را ارسال (آپلود) فرمایید:"
             )
         
-        await message.answer_document(
-            document=file_send,
-            caption=caption_text,
-            reply_markup=back_only_kb)
+        # تلاش اول: FSInputFile
+        try:
+            file_send = FSInputFile(sample_path, filename=file_name)
+            await message.answer_document(
+                document=file_send,
+                caption=caption_text,
+                reply_markup=back_only_kb)
+        except Exception as doc_err:
+            logging.warning(f"[BULK-SAMPLE] FSInputFile خطا ({doc_err}) — تلاش با BufferedInputFile")
+            # فال‌بک: خواندن فایل و ارسال با bytes
+            try:
+                with open(sample_path, 'rb') as f:
+                    file_bytes = f.read()
+                buffered = BufferedInputFile(file_bytes, filename=file_name)
+                await message.answer_document(
+                    document=buffered,
+                    caption=caption_text,
+                    reply_markup=back_only_kb)
+            except Exception as buf_err:
+                logging.error(f"[BULK-SAMPLE] BufferedInputFile هم خطا داد: {buf_err}")
+                await message.answer(
+                    "⚠️ خطا در ارسال فایل نمونه. لطفاً دوباره تلاش کنید.",
+                    reply_markup=bulk_input_method_kb)
+                return
         await state.set_state(Form.bulk_file_upload)
         return
     elif text == "🔙 بازگشت":
@@ -2077,14 +2097,21 @@ async def send_lavayeh_result(
             f"\nثبت {service_label} بدون نیاز به پرداخت انجام شد.")
         return
 
+    # ساخت لینک پرداخت Bale Wallet
+    wallet_url = f"https://pay.bale.ai/?token={BALE_WALLET_TOKEN}&amount={final_fee}"
+    final_fee_toman = final_fee // 10
+
     payment_msg = (
         f"💳 *فاکتور پرداخت خدمات {service_label}:*\n\n"
-        f"💰 مبلغ: *{final_fee:,} ریال*\n\n"
-        f"💳 شماره کارت: `{CARD_NUMBER}`\n"
-        f"👤 بنام: *{ACCOUNT_NAME}*\n\n"
-        f"👇 پس از واریز، *عکس فیش* را ارسال فرمایید."
+        f"💰 مبلغ: *{final_fee_toman:,} تومان* ({final_fee:,} ریال)\n\n"
+        f"👇 برای پرداخت آنلاین از طریق کیف پول بله روی دکمه زیر کلیک کنید:"
     )
-    await bot.send_message(user_id, payment_msg)
+    pay_kb_wallet = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"💳 پرداخت {final_fee_toman:,} تومان", url=wallet_url)],
+        [InlineKeyboardButton(text="✅ پرداخت کردم (ارسال فیش)", callback_data="lavayeh_pay_done_send_receipt")],
+        [InlineKeyboardButton(text="❌ انصراف", callback_data="lavayeh_pay_cancel")],
+    ])
+    await bot.send_message(user_id, payment_msg, reply_markup=pay_kb_wallet)
 
     await log_event(
         "ثبت", doc_type, str(user_id), user_id,
@@ -2117,6 +2144,35 @@ async def send_lavayeh_result(
 # ══════════════════════════════════════════════════════════════════════════════
 # پرداخت هزینه لایحه
 # ══════════════════════════════════════════════════════════════════════════════
+
+# کال‌بک‌های دکمه‌های پرداخت Bale Wallet برای لایحه/اظهارنامه
+@lavayeh_router.callback_query(F.data == "lavayeh_pay_done_send_receipt")
+async def lavayeh_pay_done_callback(callback: CallbackQuery, state: FSMContext):
+    """کاربر روی «پرداخت کردم» کلیک کرد — درخواست ارسال فیش"""
+    await callback.answer()
+    await callback.message.answer(
+        "📷 لطفاً *عکس فیش/رسید پرداخت* خود را ارسال فرمایید:",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+
+@lavayeh_router.callback_query(F.data == "lavayeh_pay_cancel")
+async def lavayeh_pay_cancel_callback(callback: CallbackQuery, state: FSMContext):
+    """کاربر انصراف از پرداخت لایحه"""
+    await callback.answer()
+    user_id = callback.from_user.id
+    pending = runtime_state.pending_lavayeh_payments.get(user_id)
+    if pending:
+        pending["blocked"] = False  # رفع مسدودیت
+        runtime_state.pending_lavayeh_payments.pop(user_id, None)
+    await state.clear()
+    await callback.message.answer(
+        "لغو گردید. لطفاً مجدداً شروع کنید:",
+        reply_markup=main_menu_kb
+    )
+    await state.set_state(Form.main_menu)
+
+
 @lavayeh_router.message(Form.waiting_for_lavayeh_payment_receipt, F.photo)
 async def lavayeh_receive_payment_receipt(message: Message, bot: Bot, state: FSMContext):
     pending = runtime_state.pending_lavayeh_payments.get(message.from_user.id)

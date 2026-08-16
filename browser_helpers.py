@@ -55,6 +55,14 @@ async def human_delay(min_sec=1.5, max_sec=3.0):
 
 async def force_click_by_text(page, text):
     await page.evaluate(f'''() => {{
+        // اول در منوی اصلی (#menu13Container و مشابه) جستجو کن
+        const menuContainers = document.querySelectorAll('[id*="menu"], .list-group, .sidebar-menu, .nav-menu, #menu13Container, #menu14Container');
+        for (const container of menuContainers) {{
+            const links = container.querySelectorAll('a, button, label, span, li, h5, div');
+            const target = Array.from(links).find(el => el.innerText && el.innerText.trim() === "{text}" && el.offsetParent !== null);
+            if (target) {{ target.click(); return; }}
+        }}
+        // جستجوی دقیق در کل صفحه
         const tags = ['button', 'a', 'label', 'span', 'li', 'h5', 'div'];
         for (let tag of tags) {{
             const elements = Array.from(document.querySelectorAll(tag));
@@ -64,6 +72,7 @@ async def force_click_by_text(page, text):
                 return;
             }}
         }}
+        // جستجوی includes در کل صفحه
         for (let tag of tags) {{
             const elements = Array.from(document.querySelectorAll(tag));
             const target = elements.find(el => el.innerText && el.innerText.trim().includes("{text}"));
