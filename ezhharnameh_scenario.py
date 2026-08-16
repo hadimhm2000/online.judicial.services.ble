@@ -658,8 +658,8 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
                     f"لطفاً برای محاسبه هزینه به مدیریت به شماره *09306186888* در واتساپ پیام دهید.")
                 # ارسال PDF بدون مبلغ هزینه
                 if pdf_path and os.path.exists(pdf_path):
-                    from aiogram.types import FSInputFile
-                    await bot.send_document(user_id, FSInputFile(pdf_path))
+                    from bale_file_sender import send_document_direct
+                    await send_document_direct(user_id, pdf_path)
                 await bot.send_message(
                     ADMIN_ID,
                     f"⚠️ [EZHHAR] جدول هزینه نمایش داده نشد. کاربر {user_id} | کد: {bill_no}"
