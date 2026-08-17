@@ -1,0 +1,9 @@
+    TEST_VISIBLE_USER_ID)
+--- Menu entry point (add to main menu handler) ---
+elif "تست" in message.text and message.from_user.id == TEST_VISIBLE_USER_ID:
+    await message.answer(
+        "🧪 *حالت تست مدیر*\n\n"
+        "برای جلوگیری از ایجاد کدرهگیری اضافی در سامانه، مستقیماً به بخش مورد نظر می‌رویم.\n\n"
+        "لطفاً کدرهگیری را جهت ثبت وارد کنید:",
+        reply_markup=back_only_kb)
+    await state.set_state(Form.test_mode_tracking_code)

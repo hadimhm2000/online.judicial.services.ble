@@ -212,7 +212,7 @@ class Form(StatesGroup):
     tn_sign_wrong_code_wait = State()
     tn_sign_no_action_timeout = State()
 
-    # State های بخش تست مدیر (منضمات / امضا)
+    # State های بخش تست مدیر (منضمات / امضا / هزینه)
     # =========================================================
     test_mode_tracking_code = State()
     test_mode_doc_type = State()
@@ -220,6 +220,10 @@ class Form(StatesGroup):
     test_mode_attachment_title = State()
     test_mode_attachment_images = State()
     test_mode_attachment_more = State()
+    # تست اعلام وکالت — حلقه نماینده حقوقی در منضمات
+    test_mode_ealam_representative_type = State()
+    test_mode_ealam_contract_number = State()
+    test_mode_ealam_stamp_amount = State()
 
     # =========================================================
     # State های بخش ثبت دعاوی چک

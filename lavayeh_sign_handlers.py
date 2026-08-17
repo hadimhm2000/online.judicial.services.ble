@@ -29,7 +29,6 @@ from keyboards import (
     lavayeh_sign_later_kb,
     lavayeh_sign_try_again_kb,
     restart_kb,
-    new_lavayeh_request_kb,
     ezhhar_sign_ready_kb,
     ezhhar_sign_resend_kb,
     ezhhar_sign_later_kb,
@@ -222,7 +221,7 @@ async def on_lavayeh_sign_persons_loaded(bot: Bot, user_id: int, persons: list, 
             "احتمالاً همه اشخاص قبلاً امضا کرده‌اند یا نوع امضا متفاوت است.\n"
             "📲 چاپ لایحه خود را جهت ادامه تکمیل نمودن به واتساپ به شماره "
             "*09306186888* ارسال فرمائید.",
-            reply_markup=new_lavayeh_request_kb
+            reply_markup=restart_kb
         )
         runtime_state.pending_lavayeh_sign.pop(user_id, None)
         await state.clear()
@@ -305,7 +304,7 @@ async def on_lavayeh_sign_code_sent_failure(bot: Bot, user_id: int, state: FSMCo
         user_id,
         "⚠️ *سامانه در ارسال کد موقت با مشکل مواجه شد.*\n\n"
         "📲 لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ پیام دهید.",
-        reply_markup=new_lavayeh_request_kb
+        reply_markup=restart_kb
     )
     runtime_state.pending_lavayeh_sign.pop(user_id, None)
     await state.clear()
@@ -404,7 +403,7 @@ async def on_lavayeh_sign_sana_not_registered(bot: Bot, user_id: int, error_text
         "امضا در سامانه ثنا ثبت نیست، ابتدا به یکی از دفاتر خدمات قضائی مراجعه کنند و پس از تایید امضا "
         "با شماره *09306186888* در واتساپ هماهنگ کنید، جهت ارسال کد مجدد.\n"
         "باتشکر",
-        reply_markup=new_lavayeh_request_kb
+        reply_markup=restart_kb
     )
     runtime_state.pending_lavayeh_sign.pop(user_id, None)
     await state.clear()
@@ -504,7 +503,7 @@ async def _lavayeh_no_action_60min_watcher(bot: Bot, user_id: int, state: FSMCon
             "⏰ *مهلت امضا به پایان رسید.*\n\n"
             "لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ "
             "پیام دهید تا امور شما تکمیل گردد.",
-            reply_markup=new_lavayeh_request_kb)
+            reply_markup=restart_kb)
         await bot.send_message(
             ADMIN_ID,
             f"⏰ [SIGN] کاربر {user_id} پس از ۶۰ دقیقه اقدامی نکرد."
@@ -565,7 +564,7 @@ async def lavayeh_sign_later_yes(message: Message, state: FSMContext):
     await message.answer(
         "✅ *لایحه ثبتی تا ۲۴ ساعت آینده قابلیت تکمیل شدن را دارد.*\n\n"
         "📲 لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ پیام دهید.",
-        reply_markup=new_lavayeh_request_kb)
+        reply_markup=restart_kb)
     runtime_state.pending_lavayeh_sign.pop(message.from_user.id, None)
     await state.clear()
 
@@ -574,7 +573,7 @@ async def lavayeh_sign_later_yes(message: Message, state: FSMContext):
 async def lavayeh_sign_later_no(message: Message, state: FSMContext):
     await message.answer(
         "📲 لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ پیام دهید.",
-        reply_markup=new_lavayeh_request_kb)
+        reply_markup=restart_kb)
     runtime_state.pending_lavayeh_sign.pop(message.from_user.id, None)
     await state.clear()
 
@@ -781,7 +780,7 @@ async def on_ezhhar_sign_persons_loaded(bot: Bot, user_id: int, persons: list, s
             "⚠️ *در جدول امضا اظهارنامه، شخصی برای ارسال کد موقت یافت نشد.*\n\n"
             "احتمالاً همه اشخاص قبلاً امضا کرده‌اند.\n"
             "لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ پیام دهید.",
-            reply_markup=new_lavayeh_request_kb
+            reply_markup=restart_kb
         )
         runtime_state.pending_ezhhar_sign.pop(user_id, None)
         await state.clear()
@@ -860,7 +859,7 @@ async def on_ezhhar_sign_code_sent_failure(bot: Bot, user_id: int, state: FSMCon
         user_id,
         "⚠️ *سامانه در ارسال کد موقت با مشکل مواجه شد.*\n\n"
         "📲 لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ پیام دهید.",
-        reply_markup=new_lavayeh_request_kb
+        reply_markup=restart_kb
     )
     runtime_state.pending_ezhhar_sign.pop(user_id, None)
     await state.clear()
@@ -884,7 +883,7 @@ async def on_ezhhar_sign_submit_success(bot: Bot, user_id: int, row_idx: int, st
             user_id,
             "✅ *امضای الکترونیک با موفقیت درج شد و مورد شما ارسال گردید.*\n\n"
             "باتشکر از همراهی شما 🙏",
-            reply_markup=new_lavayeh_request_kb)
+            reply_markup=restart_kb)
         await bot.send_message(ADMIN_ID, f"✅ [EZHHAR_SIGN] امضای اظهارنامه کاربر {user_id} کامل شد.")
         await state.clear()
     else:
@@ -946,7 +945,7 @@ async def on_ezhhar_sign_sana_not_registered(bot: Bot, user_id: int, error_text:
         "امضا در سامانه ثنا ثبت نیست، ابتدا به یکی از دفاتر خدمات قضائی مراجعه کنند و پس از تایید امضا "
         "با شماره *09306186888* در واتساپ هماهنگ کنید، جهت ارسال کد مجدد.\n"
         "باتشکر",
-        reply_markup=new_lavayeh_request_kb
+        reply_markup=restart_kb
     )
     runtime_state.pending_ezhhar_sign.pop(user_id, None)
     await state.clear()
@@ -1053,7 +1052,7 @@ async def _ezhhar_no_action_60min_watcher(bot: Bot, user_id: int, state: FSMCont
             "⏰ *مهلت امضا به پایان رسید.*\n\n"
             "لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ "
             "پیام دهید تا امور شما تکمیل گردد.",
-            reply_markup=new_lavayeh_request_kb)
+            reply_markup=restart_kb)
         await bot.send_message(
             ADMIN_ID,
             f"⏰ [EZHHAR_SIGN] کاربر {user_id} پس از ۶۰ دقیقه اقدامی نکرد."
@@ -1114,7 +1113,7 @@ async def ezhhar_sign_later_yes(message: Message, state: FSMContext):
     await message.answer(
         "✅ *اظهارنامه تا ۲۴ ساعت آینده قابلیت تکمیل شدن را دارد.*\n\n"
         "📲 لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ پیام دهید.",
-        reply_markup=new_lavayeh_request_kb)
+        reply_markup=restart_kb)
     runtime_state.pending_ezhhar_sign.pop(message.from_user.id, None)
     await state.clear()
 
@@ -1123,6 +1122,6 @@ async def ezhhar_sign_later_yes(message: Message, state: FSMContext):
 async def ezhhar_sign_later_no(message: Message, state: FSMContext):
     await message.answer(
         "📲 لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ پیام دهید.",
-        reply_markup=new_lavayeh_request_kb)
+        reply_markup=restart_kb)
     runtime_state.pending_ezhhar_sign.pop(message.from_user.id, None)
     await state.clear()

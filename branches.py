@@ -355,7 +355,7 @@ async def process_branch_callback(callback: CallbackQuery, state: FSMContext):
     elif action == "sel":
         # انتخاب واحد نهایی (با کد)
         branch_code = node.get("Code", "")
-        
+
         # بررسی وجود کد
         if not branch_code:
             await callback.answer(
@@ -363,13 +363,36 @@ async def process_branch_callback(callback: CallbackQuery, state: FSMContext):
                 show_alert=True
             )
             return
-        
+
         # نمایش اطلاعات واحد
         await callback.message.edit_text(
             format_unit_info(node))
-        
-        # اگر در حالت انتخاب شعبه برای لایحه هستیم
+
         current_state = await state.get_state()
+
+        # اگر در حالت انتخاب شعبه برای چک هستیم
+        if current_state == Form.check_branch_code:
+            from states import Form as FormCheck
+            branch_name = node.get("UnitName", "")
+            branch_path = node.get("Path", "")
+
+            await state.update_data(
+                check_branch_name=branch_name,
+                check_branch_code=branch_code,
+                check_branch_path=branch_path
+            )
+
+            await callback.message.answer(
+                f"✅ *دادگاه انتخاب شد:*\n\n"
+                f"📋 نام: *{branch_name}*\n"
+                f"🔢 کد: `{branch_code}`")
+
+            # رفتن به پیش‌نمایش چک
+            from check_handlers import _go_to_check_preview
+            await _go_to_check_preview(callback.message, state)
+            return
+
+        # اگر در حالت انتخاب شعبه برای لایحه هستیم
         if current_state == Form.lavayeh_branch_name:
             # ذخیره نام شعبه و کد شعبه
             branch_name = node.get("UnitName", "")

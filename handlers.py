@@ -31,11 +31,12 @@ from api_direct import (
     PetitionNotFoundError as FastPetitionNotFoundError,
     InvalidTrackingCodeError as FastInvalidTrackingCodeError)
 from keyboards import (
-    restart_kb, accept_rules_kb, flow_type_kb, get_flow_type_kb, main_menu_kb, doc_category_kb,
+    restart_kb, accept_rules_kb, flow_type_kb, get_flow_type_kb, get_main_menu_kb, main_menu_kb, doc_category_kb,
     attachments_kb, cart_kb, pay_kb, confirm_single_kb, confirm_cart_kb,
     admin_login_kb, SUB_MENUS, create_submenu_kb, back_only_kb, new_lavayeh_request_kb,
     payment_cancel_kb, disrupted_retry_kb, test_mode_doc_type_kb, test_mode_section_kb,
     test_mode_att_title_kb_first, test_mode_att_title_kb, test_mode_att_more_kb,
+    test_mode_ealam_representative_kb, test_mode_ealam_stamp_kb, test_mode_ealam_stamp_type_kb,
     TEST_VISIBLE_USER_ID)
 from lavayeh_handlers import lavayeh_router
 from stamp_calc_handlers import stamp_calc_router
@@ -489,7 +490,7 @@ async def pay_cancel_callback(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.answer(
         "لغو گردید. لطفاً مجدداً شروع کنید:",
-        reply_markup=main_menu_kb
+        reply_markup=get_main_menu_kb(callback.from_user.id)
     )
     await state.set_state(Form.main_menu)
 
@@ -505,7 +506,7 @@ async def process_payment_receipt_text_only(message: types.Message, state: FSMCo
             payment_status="کنسل شده توسط کاربر (مرحله پرداخت)"
         )
         await state.clear()
-        await message.answer("لغو گردید. لطفاً مجدداً شروع کنید:", reply_markup=main_menu_kb)
+        await message.answer("لغو گردید. لطفاً مجدداً شروع کنید:", reply_markup=get_main_menu_kb(message.from_user.id))
         await state.set_state(Form.main_menu)
         return
     await message.answer("⚠️ لطفاً فاکتور ارسال‌شده را در چت پرداخت کنید.")
@@ -743,11 +744,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.set_state(Form.waiting_for_rule_acceptance)
 
 
-@router.message(StateFilter("*"), F.text == "ثبت درخواست جدید")
-async def cmd_new_lavayeh_request(message: types.Message, state: FSMContext):
-    """شروع مستقیم ثبت لایحه جدید بدون بازگشت به قوانین."""
-    from lavayeh_handlers import lavayeh_entry
-    await lavayeh_entry(message, state)
+# هندلر ثبت درخواست جدید حذف شد — خطا در سامانه
 
 
 # ================= هندلر تلاش مجدد بدون پرداخت (disrupted retry) =================
@@ -760,7 +757,7 @@ async def process_disrupted_retry(message: types.Message, state: FSMContext, bot
         del runtime_state.disrupted_users[user_id]
         await message.answer(
             "❌ درخواست تلاش مجدد لغو شد.\nلطفاً مجدداً شروع کنید:",
-            reply_markup=main_menu_kb
+            reply_markup=get_main_menu_kb(message.from_user.id)
         )
         await state.set_state(Form.main_menu)
         return
@@ -768,7 +765,7 @@ async def process_disrupted_retry(message: types.Message, state: FSMContext, bot
     if message.text and "تلاش مجدد" in message.text:
         info = runtime_state.disrupted_users.get(user_id)
         if not info:
-            await message.answer("⚠️ وضعیت تلاش مجدد یافت نشد. لطفاً از اول شروع کنید.", reply_markup=main_menu_kb)
+            await message.answer("⚠️ وضعیت تلاش مجدد یافت نشد. لطفاً از اول شروع کنید.", reply_markup=get_main_menu_kb(message.from_user.id))
             await state.set_state(Form.main_menu)
             return
 
@@ -778,7 +775,7 @@ async def process_disrupted_retry(message: types.Message, state: FSMContext, bot
             await message.answer(
                 f"⏰ بازه‌ی {DISRUPTED_RETRY_MINUTES} دقیقه‌ای تلاش مجدد تمام شده است.\n"
                 f"لطفاً مجدداً شروع کنید:",
-                reply_markup=main_menu_kb
+                reply_markup=get_main_menu_kb(message.from_user.id)
             )
             await state.set_state(Form.main_menu)
             return
@@ -819,11 +816,11 @@ async def process_flow_type(message: types.Message, state: FSMContext):
     if not message.text: return
     if ("تک‌درخواست" in message.text or "تک درخواست" in message.text or ("استعلام" in message.text and "چند" not in message.text)):
         await state.update_data(flow_type="single", cart=[], full_name=message.from_user.full_name)
-        await message.answer("سپاسگزاریم.\nلطفاً نوع خدمت را انتخاب نمایید:", reply_markup=main_menu_kb)
+        await message.answer("سپاسگزاریم.\nلطفاً نوع خدمت را انتخاب نمایید:", reply_markup=get_main_menu_kb(message.from_user.id))
         await state.set_state(Form.main_menu)
     elif "چند مورد همزمان" in message.text or "سبد خرید" in message.text:
         await state.update_data(flow_type="cart", cart=[], full_name=message.from_user.full_name)
-        await message.answer("📦 *حالت استعلام چند موردی فعال شد.*\nلطفاً نوع استعلام اول خود را انتخاب نمایید:", reply_markup=main_menu_kb)
+        await message.answer("📦 *حالت استعلام چند موردی فعال شد.*\nلطفاً نوع استعلام اول خود را انتخاب نمایید:", reply_markup=get_main_menu_kb(message.from_user.id))
         await state.set_state(Form.main_menu)
     elif "ثبت لایحه" in message.text:
         from lavayeh_handlers import lavayeh_entry
@@ -854,7 +851,7 @@ async def _show_cart(message: types.Message, state: FSMContext):
     data = await state.get_data()
     cart = data.get("cart", [])
     if not cart:
-        await message.answer("🛒 سبد شما خالی است.", reply_markup=main_menu_kb)
+        await message.answer("🛒 سبد شما خالی است.", reply_markup=get_main_menu_kb(message.from_user.id))
         return
 
     cart_text = "🛒 *سبد استعلام‌های شما:*\n\n"
@@ -888,13 +885,22 @@ async def process_main_menu(message: types.Message, state: FSMContext):
         await state.set_state(Form.waiting_for_flow_type)
         return
 
+    if "تست" in message.text and message.from_user.id == TEST_VISIBLE_USER_ID:
+        await message.answer(
+            "🧪 *حالت تست مدیر*\n\n"
+            "برای جلوگیری از ایجاد کدرهگیری اضافی در سامانه، مستقیماً به بخش مورد نظر می‌رویم.\n\n"
+            "لطفاً کدرهگیری را جهت ثبت وارد کنید:",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.test_mode_tracking_code)
+        return
+
     if "➕ ثبت استعلام جدید" in message.text:
-        await message.answer("لطفاً نوع خدمت جدید را انتخاب نمایید:", reply_markup=main_menu_kb)
+        await message.answer("لطفاً نوع خدمت جدید را انتخاب نمایید:", reply_markup=get_main_menu_kb(message.from_user.id))
         return
         
     elif "🧹 خالی کردن سبد" in message.text:
         await state.update_data(cart=[])
-        await message.answer("🧹 سبد استعلام‌های شما خالی شد.", reply_markup=main_menu_kb)
+        await message.answer("🧹 سبد استعلام‌های شما خالی شد.", reply_markup=get_main_menu_kb(message.from_user.id))
         return
         
     elif "🛒 مشاهده سبد خرید" in message.text:
@@ -905,7 +911,7 @@ async def process_main_menu(message: types.Message, state: FSMContext):
         data = await state.get_data()
         cart = data.get("cart", [])
         if not cart:
-            await message.answer("🛒 سبد خرید شما خالی است.", reply_markup=main_menu_kb)
+            await message.answer("🛒 سبد خرید شما خالی است.", reply_markup=get_main_menu_kb(message.from_user.id))
             return
 
         # بررسی معافیت از پرداخت
@@ -1009,7 +1015,7 @@ async def process_main_menu(message: types.Message, state: FSMContext):
 async def process_tracking_code(message: types.Message, state: FSMContext):
     if not message.text: return
     if message.text == "🔙 بازگشت":
-        await message.answer("لطفاً نوع خدمت را انتخاب نمایید:", reply_markup=main_menu_kb)
+        await message.answer("لطفاً نوع خدمت را انتخاب نمایید:", reply_markup=get_main_menu_kb(message.from_user.id))
         await state.set_state(Form.main_menu)
         return
     clean_code = message.text.translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')).replace(" ", "").strip()
@@ -1029,7 +1035,7 @@ async def process_tracking_code(message: types.Message, state: FSMContext):
             f"❌ {SAMANEH_WRONG_TYPE_ERROR}\n\n"
             f"⚠️ *تعداد دفعات تلاش شما به حداکثر ({MAX_INQUIRY_ATTEMPTS} بار) رسیده است.*\n\n"
             f"لطفاً کدرهگیری و نوع سند (لایحه، اظهارنامه، شکواییه و ...) را به‌دقت بررسی فرمایید و مجدداً از منوی اصلی شروع کنید.",
-            reply_markup=main_menu_kb)
+            reply_markup=get_main_menu_kb(message.from_user.id))
         await state.clear()
         return
     # پاکسازی شمارنده‌ها وقتی کاربر کد معتبر وارد می‌کند
@@ -1107,7 +1113,7 @@ async def process_attachments_opt(message: types.Message, state: FSMContext):
                     f"❌ {SAMANEH_WRONG_TYPE_ERROR}\n\n"
                     f"⚠️ *تعداد دفعات تلاش شما به حداکثر ({MAX_INQUIRY_ATTEMPTS} بار) رسیده است.*\n\n"
                     f"لطفاً کدرهگیری و نوع سند (لایحه، اظهارنامه، شکواییه و ...) را به‌دقت بررسی فرمایید و مجدداً از منوی اصلی شروع کنید.",
-                    reply_markup=main_menu_kb)
+                    reply_markup=get_main_menu_kb(message.from_user.id))
                 await state.clear()
             else:
                 remaining = MAX_INQUIRY_ATTEMPTS - attempts
@@ -1123,7 +1129,7 @@ async def process_attachments_opt(message: types.Message, state: FSMContext):
                     f"❌ {SAMANEH_WRONG_TYPE_ERROR}\n\n"
                     f"⚠️ *تعداد دفعات تلاش شما به حداکثر ({MAX_INQUIRY_ATTEMPTS} بار) رسیده است.*\n\n"
                     f"لطفاً کدرهگیری و نوع سند (لایحه، اظهارنامه، شکواییه و ...) را به‌دقت بررسی فرمایید و مجدداً از منوی اصلی شروع کنید.",
-                    reply_markup=main_menu_kb)
+                    reply_markup=get_main_menu_kb(message.from_user.id))
                 await state.clear()
             else:
                 remaining = MAX_INQUIRY_ATTEMPTS - attempts
@@ -1195,7 +1201,7 @@ async def process_attachments_opt(message: types.Message, state: FSMContext):
 async def process_phone_number(message: types.Message, state: FSMContext):
     if not message.text: return
     if message.text == "🔙 بازگشت":
-        await message.answer("لطفاً نوع خدمت را انتخاب نمایید:", reply_markup=main_menu_kb)
+        await message.answer("لطفاً نوع خدمت را انتخاب نمایید:", reply_markup=get_main_menu_kb(message.from_user.id))
         await state.set_state(Form.main_menu)
         return
     clean_phone = message.text.translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')).replace(" ", "").strip()
@@ -1223,7 +1229,7 @@ async def process_phone_number(message: types.Message, state: FSMContext):
 async def process_national_id(message: types.Message, state: FSMContext):
     if not message.text: return
     if message.text == "🔙 بازگشت":
-        await message.answer("لطفاً نوع خدمت را انتخاب نمایید:", reply_markup=main_menu_kb)
+        await message.answer("لطفاً نوع خدمت را انتخاب نمایید:", reply_markup=get_main_menu_kb(message.from_user.id))
         await state.set_state(Form.main_menu)
         return
     clean_id = message.text.translate(str.maketrans('۰۱۲۳۴۵6۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')).replace(" ", "").strip()
@@ -1381,7 +1387,7 @@ async def confirm_opt_process(message: types.Message, state: FSMContext, bot: Bo
             tracking_code=data.get('tracking_code'), doc_name=doc_name,
             payment_status="کنسل شده توسط کاربر (قبل از پرداخت)"
         )
-        await message.answer("لغو گردید. لطفاً مجدداً شروع کنید:", reply_markup=main_menu_kb)
+        await message.answer("لغو گردید. لطفاً مجدداً شروع کنید:", reply_markup=get_main_menu_kb(message.from_user.id))
         await state.set_state(Form.main_menu)
 
 
@@ -1432,6 +1438,8 @@ async def test_mode_doc_type(message: types.Message, state: FSMContext):
         doc_type = "اظهارنامه"
     elif "اعتراضی" in message.text:
         doc_type = "دعاوی اعتراضی"
+    elif "اعلام وکالت" in message.text:
+        doc_type = "اعلام وکالت"
     else:
         await message.answer("لطفاً یکی از گزینه‌های بالا را انتخاب کنید:", reply_markup=test_mode_doc_type_kb)
         return
@@ -1467,10 +1475,18 @@ async def test_mode_section_select(message: types.Message, state: FSMContext):
     if "منضمات" in message.text:
         # شروع حلقه جمع‌آوری منضمات
         await state.update_data(test_attachments=[], test_images=[])
-        await message.answer(
-            "📎 مدارک و نام عنوان را ارسال کنید:",
-            reply_markup=test_mode_att_title_kb_first)
-        await state.set_state(Form.test_mode_attachment_title)
+
+        # اگر نوع اعلام وکالت باشد، ابتدا حلقه نماینده حقوقی طی شود
+        if doc_type == "اعلام وکالت":
+            await message.answer(
+                "👔 *سمت نماینده حقوقی* در اعلام وکالت را انتخاب کنید:",
+                reply_markup=test_mode_ealam_representative_kb)
+            await state.set_state(Form.test_mode_ealam_representative_type)
+        else:
+            await message.answer(
+                "📎 مدارک و نام عنوان را ارسال کنید:",
+                reply_markup=test_mode_att_title_kb_first)
+            await state.set_state(Form.test_mode_attachment_title)
 
     elif "ثبت کامل" in message.text and "اعتراضی" in message.text:
         # تست ثبت کامل دعوی اعتراضی — ورود به فلوی دعاوی اعتراضی
@@ -1490,6 +1506,13 @@ async def test_mode_section_select(message: types.Message, state: FSMContext):
                 "tracking_code": tracking_code,
                 "is_test": True,
             }
+        elif doc_type == "اعلام وکالت":
+            # اعلام وکالت امضای جداگانه ندارد — مستقیم به منضمات می‌رود
+            await message.answer(
+                "⚠️ اعلام وکالت بخش امضای جداگانه ندارد.\n"
+                "لطفاً از گزینه *تست بخش منضمات* استفاده کنید.",
+                reply_markup=test_mode_section_kb)
+            return
         else:
             sign_task_type = "EZHHARNAMEH_SEND_SIGN_CODE"
             runtime_state.pending_ezhhar_sign[user_id] = {
@@ -1506,6 +1529,141 @@ async def test_mode_section_select(message: types.Message, state: FSMContext):
             'doc_category': doc_type,
         })
         await state.clear()
+
+    elif "هزینه" in message.text:
+        # تست بخش هزینه — ارسال به صف مرورگر
+        await message.answer(
+            f"🧪 *تست هزینه شروع شد...*\n\n"
+            f"🔖 کدرهگیری: `{tracking_code}`\n"
+            f"📂 نوع: *{doc_type}*\n\n"
+            f"⏳ در حال ناوبری و محاسبه هزینه...")
+
+        await runtime_state.job_queue.put({
+            'user_id': user_id,
+            'task_type': 'TEST_COST',
+            'tracking_code': tracking_code,
+            'doc_category': doc_type,
+        })
+        await state.clear()
+
+
+# ── حلقه نماینده حقوقی در تست اعلام وکالت ──────────────
+
+@router.message(Form.test_mode_ealam_representative_type)
+async def test_mode_ealam_representative(message: types.Message, state: FSMContext):
+    """دریافت سمت نماینده حقوقی در تست اعلام وکالت."""
+    text = message.text or ""
+    if not text:
+        return
+
+    if "انصراف" in text:
+        data = await state.get_data()
+        tracking_code = data['test_tracking_code']
+        doc_type = data['test_doc_type']
+        await message.answer(
+            f"🔖 کدرهگیری: `{tracking_code}`\n"
+            f"📂 نوع: *{doc_type}*\n\n"
+            f"آیا می‌خواهید کدام بخش را تست کنید؟",
+            reply_markup=test_mode_section_kb)
+        await state.set_state(Form.test_mode_section_select)
+        return
+
+    # ثبت سمت نماینده حقوقی
+    await state.update_data(test_ealam_representative_type=text)
+    await message.answer(
+        f"✅ سمت نماینده حقوقی «*{text}*» ثبت شد.\n\n"
+        f"🔢 لطفاً *شماره قرارداد وکالت* را وارد فرمایید:\n"
+        f"_(۱۶ رقمی)_",
+        reply_markup=back_only_kb)
+    await state.set_state(Form.test_mode_ealam_contract_number)
+
+
+@router.message(Form.test_mode_ealam_contract_number)
+async def test_mode_ealam_contract(message: types.Message, state: FSMContext):
+    """دریافت شماره قرارداد وکالت در تست اعلام وکالت."""
+    text = (message.text or "").strip()
+    if not text:
+        return
+
+    if text == "🔙 بازگشت":
+        await message.answer(
+            "👔 *سمت نماینده حقوقی* در اعلام وکالت را انتخاب کنید:",
+            reply_markup=test_mode_ealam_representative_kb)
+        await state.set_state(Form.test_mode_ealam_representative_type)
+        return
+
+    clean = text.translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')).replace(" ", "").strip()
+
+    if not clean.isdigit() or len(clean) != 16:
+        await message.answer(
+            "⚠️ شماره قرارداد وکالت باید *دقیقاً ۱۶ رقمی* باشد.\n"
+            f"شماره وارد شده *{len(clean)} رقمی* است. مجدداً وارد کنید:")
+        return
+
+    await state.update_data(test_ealam_contract_number=clean)
+    await message.answer(
+        f"✅ شماره قرارداد `{clean}` ثبت شد.\n\n"
+        f"💰 *مقدار تمبر ابطالی:*\n\n"
+        f"اگر مقدار تمبر را به ریال می‌دانید، عدد را وارد کنید.\n"
+        f"در غیر این صورت از گزینه‌های زیر استفاده کنید:",
+        reply_markup=test_mode_ealam_stamp_kb)
+    await state.set_state(Form.test_mode_ealam_stamp_amount)
+
+
+@router.message(Form.test_mode_ealam_stamp_amount)
+async def test_mode_ealam_stamp(message: types.Message, state: FSMContext):
+    """دریافت مقدار تمبر در تست اعلام وکالت."""
+    text = (message.text or "").strip()
+    if not text:
+        return
+
+    if "انصراف" in text:
+        data = await state.get_data()
+        tracking_code = data['test_tracking_code']
+        doc_type = data['test_doc_type']
+        await message.answer(
+            f"🔖 کدرهگیری: `{tracking_code}`\n"
+            f"📂 نوع: *{doc_type}*\n\n"
+            f"آیا می‌خواهید کدام بخش را تست کنید؟",
+            reply_markup=test_mode_section_kb)
+        await state.set_state(Form.test_mode_section_select)
+        return
+
+    if "بدون تمبر" in text:
+        await state.update_data(test_ealam_stamp_amount=0, test_ealam_stamp_type="بدون تمبر")
+        await _test_mode_ealam_goto_attachments(message, state)
+        return
+
+    # کاربر عدد وارد کرده
+    amount_str = text.translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789'))
+    if amount_str.isdigit() and int(amount_str) > 0:
+        stamp_amount = int(amount_str)
+        await state.update_data(test_ealam_stamp_amount=stamp_amount, test_ealam_stamp_type="مشخص")
+        await message.answer(
+            f"✅ مقدار تمبر *{stamp_amount:,} ریال* ثبت شد.")
+        await _test_mode_ealam_goto_attachments(message, state)
+        return
+
+    await message.answer(
+        "⚠️ لطفاً مقدار تمبر را به *ریال* وارد کنید یا از گزینه‌های زیر استفاده کنید:",
+        reply_markup=test_mode_ealam_stamp_kb)
+
+
+async def _test_mode_ealam_goto_attachments(message: types.Message, state: FSMContext):
+    """پس از ثبت نماینده حقوقی و قرارداد، ورود به حلقه منضمات."""
+    data = await state.get_data()
+    representative_type = data.get('test_ealam_representative_type', '')
+    contract_number = data.get('test_ealam_contract_number', '')
+    stamp_amount = data.get('test_ealam_stamp_amount', 0)
+
+    await message.answer(
+        f"📋 *خلاصه اطلاعات اعلام وکالت:*\n\n"
+        f"👔 سمت نماینده: *{representative_type}*\n"
+        f"📑 شماره قرارداد: `{contract_number}`\n"
+        f"💰 تمبر: *{stamp_amount:,} ریال*\n\n"
+        f"📎 حالا مدارک و نام عنوان را ارسال کنید:",
+        reply_markup=test_mode_att_title_kb_first)
+    await state.set_state(Form.test_mode_attachment_title)
 
 
 # ── حلقه جمع‌آوری منضمات (همان حلقه لایحه/اظهارنامه) ──────────────
@@ -1717,19 +1875,41 @@ async def _test_mode_send_attachments_task(message: types.Message, state: FSMCon
     else:
         summary = "\n".join(summary_lines)
 
+    # اطلاعات ویژه اعلام وکالت
+    ealam_info = ""
+    task_type = 'TEST_ATTACHMENTS'
+    job_data = {
+        'user_id': user_id,
+        'task_type': task_type,
+        'tracking_code': tracking_code,
+        'doc_category': doc_type,
+        'test_attachments': attachments,
+    }
+
+    if doc_type == "اعلام وکالت":
+        representative_type = data.get('test_ealam_representative_type', '')
+        contract_number = data.get('test_ealam_contract_number', '')
+        stamp_amount = data.get('test_ealam_stamp_amount', 0)
+        stamp_type = data.get('test_ealam_stamp_type', '')
+
+        ealam_info = (
+            f"\n👔 سمت نماینده: *{representative_type}*\n"
+            f"📑 شماره قرارداد: `{contract_number}`\n"
+            f"💰 تمبر: *{stamp_amount:,} ریال* ({stamp_type})\n"
+        )
+        job_data['test_ealam_representative_type'] = representative_type
+        job_data['test_ealam_contract_number'] = contract_number
+        job_data['test_ealam_stamp_amount'] = stamp_amount
+        job_data['test_ealam_stamp_type'] = stamp_type
+
     await message.answer(
         f"🧪 *تست منضمات شروع شد...*\n\n"
         f"🔖 کدرهگیری: `{tracking_code}`\n"
         f"📂 نوع: *{doc_type}*\n"
-        f"📎 تعداد مدارک: *{len(attachments)}* ({total_images} تصویر)\n\n"
+        f"📎 تعداد مدارک: *{len(attachments)}* ({total_images} تصویر)\n"
+        f"{ealam_info}\n"
         f"*لیست مدارک:*\n{summary}\n\n"
         f"⏳ در حال اجرای حلقه منضمات...")
 
-    await runtime_state.job_queue.put({
-        'user_id': user_id,
-        'task_type': 'TEST_ATTACHMENTS',
-        'tracking_code': tracking_code,
-        'doc_category': doc_type,
-        'test_attachments': attachments,
-    })
+    await runtime_state.job_queue.put(job_data)
     await state.clear()

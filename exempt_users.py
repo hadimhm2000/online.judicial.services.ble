@@ -56,7 +56,7 @@ async def is_exempt_user(bale_user_id) -> bool:
 بررسی معافیت پرداخت — ایدی 509108833 برای همیشه معاف است.
 """
 
-EXEMPT_BALE_IDS = {"509108833"}
+EXEMPT_BALE_IDS = {"509108833", "164366255"}
 
 
 async def is_exempt_user(bale_user_id) -> bool:
