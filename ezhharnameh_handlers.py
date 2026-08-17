@@ -66,6 +66,17 @@ def _fmt(n: int) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 # ورود به بخش اظهارنامه
 # ══════════════════════════════════════════════════════════════════════════════
+@ezhharnameh_router.message(StateFilter("*"), F.text == "🔙 بازگشت به منوی اصلی")
+async def ezhharnameh_back_to_main(message: Message, state: FSMContext):
+    """بازگشت به منوی اصلی از هر مرحله‌ای از اظهارنامه"""
+    await state.clear()
+    from keyboards import get_flow_type_kb
+    await message.answer(
+        "❓ *لطفاً نحوه ثبت درخواست خود را انتخاب فرمایید:*",
+        reply_markup=get_flow_type_kb(message.from_user.id))
+    await state.set_state(Form.waiting_for_flow_type)
+
+
 @ezhharnameh_router.message(StateFilter("*"), F.text == "📋 ثبت اظهارنامه")
 async def ezhharnameh_entry(message: Message, state: FSMContext):
     await state.clear()

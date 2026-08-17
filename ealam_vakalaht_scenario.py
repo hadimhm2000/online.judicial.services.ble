@@ -43,7 +43,24 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 import runtime_state
 from config import ADMIN_ID
 from sheets import log_event
-from admin_db import register_case
+try:
+    from admin_db import register_case
+except ImportError:
+    register_case = None
+    logging.warning("[EALAM_VAKALAHT] ماژول admin_db یافت نشد — register_case در دسترس نخواهد بود")
+
+
+async def _safe_register_case(**kwargs):
+    """فراخوانی امن register_case — اگر ماژول موجود نبود، خطا نمی‌دهد."""
+    if register_case is None:
+        logging.warning(f"[EALAM_VAKALAHT] register_case در دسترس نیست — رد شد: {kwargs.get('event_type', '')}")
+        return
+    try:
+        await register_case(**kwargs)
+    except Exception as e:
+        logging.error(f"[EALAM_VAKALAHT] خطا در register_case: {e}", exc_info=True)
+
+
 from browser_helpers import (
     resilient_sleep, check_and_handle_expiry, soft_click_if_exists,
     goto_url_with_retry, human_delay, force_click_by_text,
@@ -338,7 +355,7 @@ async def process_ealam_vakalaht_task(data: dict, bot: Bot):
                 tracking_code=lavayeh_bill_no or tracking_code, doc_name="اعلام وکالت",
                 note=f"اعلام وکالت ثبت موفق | هزینه: {court_total:,} تومان"
             )
-            await register_case(
+            await _safe_register_case(
                 event_type="ثبت موقت", full_name=str(user_id), user_id=user_id,
                 trackingCode=lavayeh_bill_no or tracking_code or "", documentCategory="اعلام وکالت",
                 note=f"اعلام وکالت ثبت موفق | هزینه: {court_total:,} تومان")
@@ -352,7 +369,7 @@ async def process_ealam_vakalaht_task(data: dict, bot: Bot):
                 tracking_code=tracking_code, doc_name="اعلام وکالت",
                 note=f"خطای قطعی: {str(e)[:200]}"
             )
-            await register_case(
+            await _safe_register_case(
                 event_type="خطای سامانه", full_name=str(user_id), user_id=user_id,
                 trackingCode=tracking_code or "", documentCategory="اعلام وکالت",
                 errorDetails=f"خطای قطعی: {str(e)[:200]}", errorStep="FATAL_ERROR")
@@ -378,7 +395,7 @@ async def process_ealam_vakalaht_task(data: dict, bot: Bot):
                     tracking_code=tracking_code, doc_name="اعلام وکالت",
                     note=f"پس از {max_attempts} تلاش ناموفق: {str(e)[:200]}"
                 )
-                await register_case(
+                await _safe_register_case(
                     event_type="خطای سامانه", full_name=str(user_id), user_id=user_id,
                     trackingCode=tracking_code or "", documentCategory="اعلام وکالت",
                     errorDetails=f"پس از {max_attempts} تلاش ناموفق: {str(e)[:200]}", errorStep="MAX_RETRIES_EXCEEDED")
@@ -741,9 +758,8 @@ async def _click_sana_query(page, ng_click: str, bot: Bot, user_id: int, max_ret
         }''')
         if extracted:
             logging.info(f"[EALAM] داده‌های وکیل از ثنا دریافت شد")
-            # اگر وکیل از ثنا استخراج شد، دکمه "ثبت موقت" یا "افزودن" را بزن
-            await asyncio.sleep(2)
-            await _click_add_lawyer_save(page, bot, user_id)
+            # وکیل از ثنا استخراج شد — فقط بازگشت، دکمه ثبت موقت را نمی‌زنیم
+            # ثبت موقت بعد از وارد کردن متن (در مرحله بعد) انجام خواهد شد
             return
         await asyncio.sleep(3)
     
@@ -954,7 +970,24 @@ async def _upload_electronic_vakalaht(
                 }}''')
                 await asyncio.sleep(1)
 
-            # کلیک «ثبت و ویرایش پیوست»
+            # کلیک «ثبت و ویرایش پیوست» (#btnSaveDoc)
+            # صبر می‌کنیم تا دکمه فعال (non-disabled) شود
+            btn_clicked = False
+            for _wait in range(10):
+                btn_state = await page.evaluate('''() => {
+                    const btn = document.querySelector('#btnSaveDoc');
+                    if (!btn) return 'not_found';
+                    return btn.disabled ? 'disabled' : 'ready';
+                }''')
+                if btn_state == 'ready':
+                    break
+                elif btn_state == 'not_found':
+                    logging.warning(f"[EALAM][منضمات] #btnSaveDoc پیدا نشد (تلاش {_wait+1})")
+                    await asyncio.sleep(3)
+                else:
+                    logging.info(f"[EALAM][منضمات] #btnSaveDoc هنوز disabled است (تلاش {_wait+1})")
+                    await asyncio.sleep(3)
+
             await page.evaluate('''() => {
                 const btn = document.querySelector('#btnSaveDoc');
                 if (!btn || btn.disabled) return;
@@ -970,6 +1003,7 @@ async def _upload_electronic_vakalaht(
                 btn.click();
                 btn.dispatchEvent(new Event('click', { bubbles: true }));
             }''')
+            logging.info("[EALAM][منضمات] کلیک #btnSaveDoc انجام شد")
             had_expiry = await resilient_sleep(page, 8, bot, user_id)
             if had_expiry:
                 logging.info("[EALAM][منضمات] نشست حین انتظار برای ذخیره‌ی وکالت‌نامه تمدید شد؛ تلاش دوباره...")
