@@ -677,7 +677,18 @@ async def check_plaintiff_national_id_handler(message: Message, state: FSMContex
         await message.answer("⚠️ کد ملی باید *۱۰ رقمی* باشد:")
         return
 
+    # بررسی تکراری نبودن کدملی
     data = await state.get_data()
+    all_persons = data.get("check_plainiffs", []) + data.get("check_defendants", []) + data.get("check_witnesses", [])
+    all_ids = [p.get("national_id") for p in all_persons if p.get("national_id")]
+    if nat_id in all_ids:
+        await message.answer(
+            f"⚠️ کد ملی `{nat_id}` قبلاً ثبت شده است.\n"
+            f"هر شخص باید کد ملی متفاوت داشته باشد.\n\n"
+            f"لطفاً کد ملی دیگری وارد فرمایید:",
+            reply_markup=back_only_kb)
+        return
+
     current = data.get("_check_current_plaintiff", {})
     current["national_id"] = nat_id
 
@@ -847,7 +858,18 @@ async def check_defendant_national_id_handler(message: Message, state: FSMContex
         await message.answer("⚠️ کد ملی باید *۱۰ رقمی* باشد:")
         return
 
+    # بررسی تکراری نبودن کدملی
     data = await state.get_data()
+    all_persons = data.get("check_plainiffs", []) + data.get("check_defendants", []) + data.get("check_witnesses", [])
+    all_ids = [p.get("national_id") for p in all_persons if p.get("national_id")]
+    if nat_id in all_ids:
+        await message.answer(
+            f"⚠️ کد ملی `{nat_id}` قبلاً ثبت شده است.\n"
+            f"هر شخص باید کد ملی متفاوت داشته باشد.\n\n"
+            f"لطفاً کد ملی دیگری وارد فرمایید:",
+            reply_markup=back_only_kb)
+        return
+
     current = data.get("_check_current_defendant", {})
     current["national_id"] = nat_id
 
@@ -923,7 +945,18 @@ async def check_witness_national_id_handler(message: Message, state: FSMContext)
             reply_markup=check_addressee_add_more_kb)
         return
 
+    # بررسی تکراری نبودن کدملی
     data = await state.get_data()
+    all_persons = data.get("check_plainiffs", []) + data.get("check_defendants", []) + data.get("check_witnesses", [])
+    all_ids = [p.get("national_id") for p in all_persons if p.get("national_id")]
+    if nat_id in all_ids:
+        await message.answer(
+            f"⚠️ کد ملی `{nat_id}` قبلاً ثبت شده است.\n"
+            f"هر شخص باید کد ملی متفاوت داشته باشد.\n\n"
+            f"لطفاً کد ملی دیگری وارد فرمایید:",
+            reply_markup=check_addressee_add_more_kb)
+        return
+
     witnesses = data.get("check_witnesses", [])
     witnesses.append({"national_id": nat_id})
     await state.update_data(check_witnesses=witnesses)
@@ -1197,7 +1230,7 @@ async def check_more_images_handler(message: Message, state: FSMContext):
                 "_(مثلاً: روزنامه رسمی، آگهی تأسیس، وکالت‌نامه رسمی)_")
             await state.update_data(
                 _mandatory_proxy_sent=False,
-                _current_attachment_title="مدرک نمایندی",
+                _current_attachment_title="مدرک نمایندگی",
                 _current_attachment_images=[])
             from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
             manage_kb = ReplyKeyboardMarkup(

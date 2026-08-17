@@ -645,7 +645,7 @@ disrupted_retry_kb = ReplyKeyboardMarkup(
 test_mode_doc_type_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📝 لایحه"), KeyboardButton(text="📋 اظهارنامه")],
-        [KeyboardButton(text="⚖️ دعاوی اعتراضی")],
+        [KeyboardButton(text="⚖️ دعاوی اعتراضی"), KeyboardButton(text="⚖️ اعلام وکالت")],
         [KeyboardButton(text="❌ انصراف")],
     ],
     resize_keyboard=True
@@ -655,6 +655,7 @@ test_mode_section_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📎 تست بخش منضمات")],
         [KeyboardButton(text="✍️ تست بخش امضا")],
+        [KeyboardButton(text="💰 تست بخش هزینه")],
         [KeyboardButton(text="⚖️ تست ثبت کامل دعوی اعتراضی")],
         [KeyboardButton(text="❌ انصراف")],
     ],
@@ -864,6 +865,37 @@ test_mode_att_more_kb = ReplyKeyboardMarkup(
         [KeyboardButton(text="➕ بله، عنوان و مدرک دیگر دارم")],
         [KeyboardButton(text="✅ خیر، ادامه بده")],
         [KeyboardButton(text="❌ انصراف")],
+    ],
+    resize_keyboard=True
+)
+
+# کیبورد انتخاب سمت نماینده حقوقی در تست اعلام وکالت
+test_mode_ealam_representative_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="مدیرعامل"), KeyboardButton(text="قائم مقام")],
+        [KeyboardButton(text="نایب رئیس"), KeyboardButton(text="عضو هیات مدیره")],
+        [KeyboardButton(text="وکیل"), KeyboardButton(text="پدر / مادر")],
+        [KeyboardButton(text="قیم")],
+        [KeyboardButton(text="❌ انصراف")],
+    ],
+    resize_keyboard=True
+)
+
+# کیبورد انتخاب نوع تمبر در تست اعلام وکالت
+test_mode_ealam_stamp_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🚫 بدون تمبر")],
+        [KeyboardButton(text="❓ نیاز به محاسبه دارم")],
+        [KeyboardButton(text="❌ انصراف")],
+    ],
+    resize_keyboard=True
+)
+
+# کیبورد انتخاب نوع تمبر پس از محاسبه
+test_mode_ealam_stamp_type_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="تمبر بدوی"), KeyboardButton(text="تمبر تجدیدنظر")],
+        [KeyboardButton(text="تمبر کلی")],
     ],
     resize_keyboard=True
 )
