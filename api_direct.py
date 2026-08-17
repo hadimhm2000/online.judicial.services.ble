@@ -268,14 +268,26 @@ async def _do_page_check(tracking_code, category, subcategory, user_id, bot) -> 
             category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
         ):
             # کلیک روی رادیوباتن استعلام لایحه (#rdbGetPetition)
-            radio_clicked = await page.evaluate('''() => {
+            # ابتدا منتظر ظاهر شدن رادیوباتن می‌مانیم
+            try:
+                await page.wait_for_selector('#rdbGetPetition', state='visible', timeout=10000)
+            except PlaywrightTimeoutError:
+                raise FastCheckError("رادیوباتن استعلام لایحه (#rdbGetPetition) یافت نشد")
+            # کلیک با Playwright + فعال‌سازی AngularJS digest
+            await page.evaluate('''() => {
                 const radio = document.querySelector('#rdbGetPetition');
-                if (radio) { radio.click(); return true; }
-                return false;
+                if (radio) {
+                    radio.checked = true;
+                    radio.click();
+                    // فعال‌سازی digest AngularJS برای به‌روزرسانی ng-model
+                    if (window.angular) {
+                        try {
+                            const scope = angular.element(radio).scope();
+                            if (scope) scope.$apply();
+                        } catch(e) {}
+                    }
+                }
             }''')
-            if not radio_clicked:
-                # فال‌بک: تلاش با انتخاب متن
-                await force_click_by_text(page, "جستجوی لایحه")
             await asyncio.sleep(4)
 
         # ── وارد کردن کد رهگیری ────────────────────────────────

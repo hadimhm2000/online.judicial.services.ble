@@ -2,6 +2,7 @@
 لایه‌ی پیام‌رسان: تمام هندلرهای مکالمه (FSM) و کال‌بک‌های ادمین.
 """
 import aiohttp
+import asyncio
 import datetime
 import json as _json
 import logging
@@ -17,7 +18,7 @@ from aiogram.types import (
     PreCheckoutQuery, LabeledPrice
 )
 
-from bale_file_sender import send_photo_direct, send_document_direct
+from bale_file_sender import send_document_direct
 
 import runtime_state
 from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, get_fee, FEES
@@ -25,7 +26,6 @@ from exempt_users import is_exempt_user
 from working_hours import is_within_working_hours
 from states import Form
 from sheets import append_to_sheet, log_event
-from ocr import verify_payment_receipt
 from api_direct import (
     fast_pre_check, FastCheckError, SessionExpiredError as FastSessionExpiredError,
     PetitionNotFoundError as FastPetitionNotFoundError,
@@ -150,154 +150,6 @@ class WorkingHoursMiddleware(BaseMiddleware):
 
 router.message.middleware(WorkingHoursMiddleware())
 
-# ================= بخش پردازش فیش‌های واریزی =================
-
-@router.message(Form.waiting_for_payment_receipt, F.photo)
-async def process_payment_receipt(message: types.Message, state: FSMContext, bot: Bot):
-    data = await state.get_data()
-    expected_fee = data['total_payment_sum']
-    cart = data.get("cart", [])
-    
-    await message.answer("⏳ در حال دریافت و بررسی هوشمند فیش واریزی شما...")
-    
-    photo = message.photo[-1]
-    photo_file = await bot.get_file(photo.file_id)
-    photo_path = f"receipt_{message.from_user.id}_{int(datetime.datetime.now().timestamp())}.jpg"
-    await bot.download_file(photo_file.file_path, photo_path)
-    
-    is_valid, ocr_msg = verify_payment_receipt(photo_path, expected_fee, CARD_NUMBER)
-    
-    if is_valid:
-        queue_position = runtime_state.job_queue.qsize()
-        queue_note = f"\n📊 موقعیت شما در صف: *{queue_position + 1}*" if queue_position > 0 else "\n▶️ پردازش بلافاصله آغاز می‌شود."
-        await message.answer(f"✅ *تایید پرداخت:*\n{ocr_msg}\nتعداد {len(cart)} استعلام در صف پردازش قرار گرفت.{queue_note}", reply_markup=restart_kb)
-        
-        for item in cart:
-            q_type = item['query_type']
-            tracking_code = item['tracking_code']
-            doc_category = item.get('doc_category')
-            doc_subcategory = item.get('doc_subcategory')
-            need_attachments = item.get('need_attachments', False)
-            
-            doc_name = f"{doc_category} - {doc_subcategory}" if doc_subcategory else doc_category
-            await log_event(
-                "پرداخت", q_type, message.from_user.full_name, message.from_user.id,
-                tracking_code=tracking_code, doc_name=doc_name, payment_status="پرداخت شده"
-            )
-            
-            await runtime_state.job_queue.put({
-                'user_id': message.from_user.id, 
-                'query_type': q_type, 
-                'tracking_code': tracking_code, 
-                'doc_category': doc_category, 
-                'doc_subcategory': doc_subcategory, 
-                'doc_type': doc_name,
-                'need_attachments': need_attachments,
-                'full_name': message.from_user.full_name,
-                'payment_fee': item.get('fee', 0),
-            })
-            
-        if os.path.exists(photo_path):
-            os.remove(photo_path)
-        await state.clear()
-        
-    else:
-        await message.answer("⏳ سیستم هوشمند قادر به خواندن جزئیات فیش نبود. برای بررسی دستی به مدیریت ارسال شد...")
-        
-        inline_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ تایید سبد خرید", callback_data=f"okcart:{message.from_user.id}"),
-                InlineKeyboardButton(text="❌ رد سبد خرید (فیک)", callback_data=f"nocart:{message.from_user.id}")
-            ]
-        ])
-        
-        admin_caption = (
-            f"📥 *سبد خرید نیاز به تایید دستی:*\n\n"
-            f"👤 کاربر: {message.from_user.full_name} (`{message.from_user.id}`)\n"
-            f"تعداد استعلام: *{len(cart)} مورد*\n"
-            f"مجموع فاکتور: {expected_fee:,} تومان\n\n"
-            f"موتور هوشمند این فیش را تایید نکرد."
-        )
-        
-        await send_photo_direct(ADMIN_ID, photo_path, caption=admin_caption, reply_markup=inline_kb)
-        await state.update_data(photo_path=photo_path)
-
-@router.callback_query(F.data.startswith("okcart:"))
-async def admin_approve_cart(callback: CallbackQuery, bot: Bot):
-    parts = callback.data.split(":")
-    target_user_id = int(parts[1])
-    
-    user_state = runtime_state.dp.fsm.resolve_context(bot, target_user_id, target_user_id)
-    user_data = await user_state.get_data()
-    
-    cart = user_data.get("cart", [])
-    photo_path = user_data.get('photo_path')
-    
-    for item in cart:
-        q_type = item['query_type']
-        tracking_code = item['tracking_code']
-        doc_category = item.get('doc_category')
-        doc_subcategory = item.get('doc_subcategory')
-        need_attachments = item.get('need_attachments', False)
-        
-        doc_name = f"{doc_category} - {doc_subcategory}" if doc_subcategory else doc_category
-        await log_event(
-            "پرداخت", q_type, "تایید دستی سبد", target_user_id,
-            tracking_code=tracking_code, doc_name=doc_name, payment_status="پرداخت شده (تایید دستی)"
-        )
-        
-        await runtime_state.job_queue.put({
-            'user_id': target_user_id, 
-            'query_type': q_type, 
-            'tracking_code': tracking_code, 
-            'doc_category': doc_category, 
-            'doc_subcategory': doc_subcategory, 
-            'doc_type': doc_name,
-            'need_attachments': need_attachments,
-            'full_name': user_data.get('full_name', ''),
-            'payment_fee': item.get('fee', 0),
-        })
-        
-    await bot.send_message(
-        target_user_id, 
-        f"✅ *سبد خرید شما توسط مدیریت تایید شد.*\nتعداد {len(cart)} استعلام در صف قرار گرفت.",
-        reply_markup=restart_kb
-    )
-    
-    if photo_path and os.path.exists(photo_path):
-        try:
-            os.remove(photo_path)
-        except:
-            pass
-            
-    await user_state.clear()
-    await callback.message.edit_caption(caption=f"{callback.message.caption}\n\n✅ *تایید شد.*")
-    await callback.answer("سبد خرید تایید شد.")
-    
-@router.callback_query(F.data.startswith("nocart:"))
-async def admin_reject_cart(callback: CallbackQuery, bot: Bot):
-    parts = callback.data.split(":")
-    target_user_id = int(parts[1])
-    
-    user_state = runtime_state.dp.fsm.resolve_context(bot, target_user_id, target_user_id)
-    user_data = await user_state.get_data()
-    photo_path = user_data.get('photo_path')
-    
-    await bot.send_message(
-        target_user_id, 
-        "❌ *عدم تایید پرداخت سبد خرید:*\nفیش واریزی رد شد. لطفا رسید معتبر ارسال فرمایید.",
-        reply_markup=restart_kb
-    )
-    
-    if photo_path and os.path.exists(photo_path):
-        try:
-            os.remove(photo_path)
-        except:
-            pass
-            
-    await user_state.clear()
-    await callback.message.edit_caption(caption=f"{callback.message.caption}\n\n❌ *رد شد.*")
-    await callback.answer("فیش رد شد.")
 
 
 # callback تایید دستی محاسبه تمبر
@@ -443,8 +295,38 @@ async def successful_payment_handler(message: types.Message, state: FSMContext, 
 @router.message(F.successful_payment)
 async def global_successful_payment_handler(message: types.Message, state: FSMContext, bot: Bot):
     """هندلر سراسری — اگر بله successful_payment بفرسته ولی حالت FSM نامطبق باشن"""
-    logging.warning(f"[GLOBAL-PAYMENT] successful_payment دریافت شد اما هندلر اصلی فعال نبود. user={message.from_user.id}, state={await state.get_state()}")
-    # فراخوانی هندلر اصلی
+    current_state = await state.get_state()
+    logging.warning(f"[GLOBAL-PAYMENT] successful_payment دریافت شد. user={message.from_user.id}, state={current_state}")
+
+    # ── پرداخت اشتراک ماهیانه ──
+    if current_state and "subscription" in str(current_state).lower():
+        user_id = message.from_user.id
+        payment = message.successful_payment
+        logging.info(f"[SUB-PAY-SUCCESS] پرداخت اشتراک موفق: user={user_id}, charge_id={payment.telegram_payment_charge_id}")
+
+        # فعال‌سازی اشتراک
+        runtime_state.activate_subscription(user_id)
+        # همگام‌سازی با پنل ادمین
+        try:
+            async def _sync_sub():
+                async with aiohttp.ClientSession() as s:
+                    from config import ADMIN_API_BASE
+                    await s.post(f"{ADMIN_API_BASE}/subscriptions/activate", json={"user_id": user_id})
+            asyncio.create_task(_sync_sub())
+        except Exception:
+            pass
+        sub = runtime_state.user_subscriptions[user_id]
+        end_str = sub["end_date"].strftime("%Y/%m/%d %H:%M")
+
+        await message.answer(
+            f"✅ *پرداخت تایید شد و اشتراک فعال گردید!*\n\n"
+            f"🎉 اشتراک ماهیانه شما با موفقیت فعال شد.\n"
+            f"📅 تاریخ پایان اشتراک: *{end_str}*\n\n"
+            f"اکنون می‌توانید از بخش *محاسبه تمبر* و *ابزار فایل* بدون محدودیت استفاده نمایید.",
+            reply_markup=flow_type_kb)
+        await state.clear()
+        return
+
     await successful_payment_handler(message, state, bot)
 
 
@@ -626,7 +508,7 @@ async def process_payment_receipt_text_only(message: types.Message, state: FSMCo
         await message.answer("لغو گردید. لطفاً مجدداً شروع کنید:", reply_markup=main_menu_kb)
         await state.set_state(Form.main_menu)
         return
-    await message.answer("⚠️ لطفاً از دکمه *«✅ پرداخت کردم»* در پیام فاکتور استفاده فرمایید.")
+    await message.answer("⚠️ لطفاً فاکتور ارسال‌شده را در چت پرداخت کنید.")
 
 
 # ================= هندلرهای تایید/رد ثبت دسته‌جمعی توسط مدیر =================
@@ -1103,9 +985,7 @@ async def process_main_menu(message: types.Message, state: FSMContext):
         await message.answer(
             f"⏳ فاکتور ارسال شد."
             f"{warning}"
-            f"پس از پرداخت موفق و مشاهده پیام _«پرداخت با موفقیت انجام شد»_، "
-            f"دکمه «پرداخت انجام شد» را بزنید.\n\n"
-            f"❗ _اگر خطایی در پرداخت دیدید، دکمه «پرداخت انجام شد» را نزنید و از «انصراف» استفاده کنید._",
+            f"پس از پرداخت موفق در کیف پول بله، استعلام‌ها به‌صورت خودکار پردازش می‌شوند.",
             reply_markup=pay_kb
         )
         await state.set_state(Form.waiting_for_payment_receipt)
@@ -1458,9 +1338,7 @@ async def confirm_opt_process(message: types.Message, state: FSMContext, bot: Bo
         await message.answer(
             f"⏳ فاکتور ارسال شد."
             f"{warning}"
-            f"پس از پرداخت موفق و مشاهده پیام _«پرداخت با موفقیت انجام شد»_، "
-            f"دکمه «پرداخت انجام شد» را بزنید.\n\n"
-            f"❗ _اگر خطایی در پرداخت دیدید، دکمه «پرداخت انجام شد» را نزنید و از «انصراف» استفاده کنید._",
+            f"پس از پرداخت موفق در کیف پول بله، استعلام به‌صورت خودکار پردازش می‌شود.",
             reply_markup=pay_kb
         )
         await state.set_state(Form.waiting_for_payment_receipt)

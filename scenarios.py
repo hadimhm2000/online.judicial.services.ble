@@ -102,13 +102,27 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
         if category == "لایحه" or (
             category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
         ):
-            radio_clicked = await page.evaluate('''() => {
+            # ابتدا منتظر ظاهر شدن رادیوباتن می‌مانیم
+            try:
+                await page.wait_for_selector('#rdbGetPetition', state='visible', timeout=10000)
+            except Exception:
+                logging.error("[PRE_CHECK] رادیوباتن #rdbGetPetition یافت نشد")
+                await bot.send_message(user_id, "⚠️ صفحه سامانه بارگذاری نشد.")
+                return
+            # کلیک با فعال‌سازی AngularJS digest
+            await page.evaluate('''() => {
                 const radio = document.querySelector('#rdbGetPetition');
-                if (radio) { radio.click(); return true; }
-                return false;
+                if (radio) {
+                    radio.checked = true;
+                    radio.click();
+                    if (window.angular) {
+                        try {
+                            const scope = angular.element(radio).scope();
+                            if (scope) scope.$apply();
+                        } catch(e) {}
+                    }
+                }
             }''')
-            if not radio_clicked:
-                await force_click_by_text(page, "جستجوی لایحه")
             await asyncio.sleep(4)
 
         # ── ۳. وارد کردن کد رهگیری ────────────────────────────────
@@ -614,6 +628,9 @@ async def process_task(data, bot: Bot):
         except Exception as e:
             logging.error(f"[LAVAYEH_SUBMIT] خطا: {e}", exc_info=True)
             await bot.send_message(user_id, f"❌ خطایی در فرآیند ثبت لایحه رخ داد. فرآیند متوقف شد.\nلطفاً مجدداً از ابتدا اقدام فرمایید.")
+        finally:
+            # پاکسازی وضعیت فعال حتی در صورت خطا
+            runtime_state.active_lavayeh_users.discard(user_id)
         return
 
     # ── سناریوی اعلام وکالت ────────────────────────────────────────────────
@@ -626,6 +643,9 @@ async def process_task(data, bot: Bot):
         except Exception as e:
             logging.error(f"[EALAM_VAKALAHT_SUBMIT] خطا: {e}", exc_info=True)
             await bot.send_message(user_id, f"❌ خطایی در فرآیند اعلام وکالت رخ داد. فرآیند متوقف شد.\nلطفاً مجدداً از ابتدا اقدام فرمایید.")
+        finally:
+            # پاکسازی وضعیت فعال حتی در صورت خطا
+            runtime_state.active_lavayeh_users.discard(user_id)
         return
 
     # ── سناریوی ثبت اظهارنامه ─────────────────────────────────────────────
@@ -1051,14 +1071,26 @@ async def process_task(data, bot: Bot):
                 if category == "لایحه" or (
                     category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
                 ):
-                    # انتخاب رادیوباتن استعلام لایحه (#rdbGetPetition) به‌جای "جستجوی لایحه"
-                    radio_clicked = await sana_page.evaluate('''() => {
+                    # ابتدا منتظر ظاهر شدن رادیوباتن می‌مانیم
+                    try:
+                        await sana_page.wait_for_selector('#rdbGetPetition', state='visible', timeout=10000)
+                    except Exception:
+                        logging.error("[INQUIRY] رادیوباتن #rdbGetPetition یافت نشد")
+                        raise Exception("رادیوباتن استعلام لایحه یافت نشد.")
+                    # کلیک با فعال‌سازی AngularJS digest
+                    await sana_page.evaluate('''() => {
                         const radio = document.querySelector('#rdbGetPetition');
-                        if (radio) { radio.click(); return true; }
-                        return false;
+                        if (radio) {
+                            radio.checked = true;
+                            radio.click();
+                            if (window.angular) {
+                                try {
+                                    const scope = angular.element(radio).scope();
+                                    if (scope) scope.$apply();
+                                } catch(e) {}
+                            }
+                        }
                     }''')
-                    if not radio_clicked:
-                        await safe_click_by_text(sana_page, "جستجوی لایحه", bot, user_id)
                     await resilient_sleep(sana_page, 4, bot, user_id)
 
                 try:

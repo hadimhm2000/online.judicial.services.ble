@@ -620,7 +620,7 @@ admin_bulk_confirm_kb = ReplyKeyboardMarkup(
 
 subscription_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="💳 فعال‌سازی اشتراک ماهیانه")],
+        [KeyboardButton(text="💳 پرداخت آنلاین (کیف پول بله)")],
         [KeyboardButton(text="🔙 بازگشت به منوی اصلی")],
     ],
     resize_keyboard=True
