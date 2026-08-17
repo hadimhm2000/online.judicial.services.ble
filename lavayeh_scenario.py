@@ -14,7 +14,24 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 import runtime_state
 from config import ADMIN_ID
 from sheets import log_event
-from admin_db import register_case
+try:
+    from admin_db import register_case
+except ImportError:
+    register_case = None
+    logging.warning("[LAVAYEH] ماژول admin_db یافت نشد — register_case در دسترس نخواهد بود")
+
+
+async def _safe_register_case(**kwargs):
+    """فراخوانی امن register_case — اگر ماژول موجود نبود، خطا نمی‌دهد."""
+    if register_case is None:
+        logging.warning(f"[LAVAYEH] register_case در دسترس نیست — رد شد: {kwargs.get('event_type', '')}")
+        return
+    try:
+        await register_case(**kwargs)
+    except Exception as e:
+        logging.error(f"[LAVAYEH] خطا در register_case: {e}", exc_info=True)
+
+
 from browser_helpers import (
     resilient_sleep, check_and_handle_expiry, soft_click_if_exists,
     goto_url_with_retry, human_delay, force_click_by_text,
@@ -172,7 +189,7 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                         tracking_code=archive_number, doc_name=title,
                         note="صحت‌سنجی شماره بایگانی ناموفق"
                     )
-                    await register_case(
+                    await _safe_register_case(
                         event_type="خطای سامانه", full_name=str(user_id), user_id=user_id,
                         trackingCode=archive_number or "", documentCategory=title,
                         errorDetails="صحت‌سنجی شماره بایگانی ناموفق", errorStep="VALIDATE_ARCHIVE")
@@ -206,7 +223,7 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                         tracking_code=tracking_code, doc_name=title,
                         note="صحت‌سنجی پرونده ناموفق"
                     )
-                    await register_case(
+                    await _safe_register_case(
                         event_type="خطای سامانه", full_name=str(user_id), user_id=user_id,
                         trackingCode=tracking_code or "", documentCategory=title,
                         errorDetails="صحت‌سنجی پرونده ناموفق", errorStep="VALIDATE_CASE")
@@ -376,7 +393,7 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                 await log_event("ثبت موقت", "لایحه", str(user_id), user_id,
                                 tracking_code=lavayeh_bill_no, doc_name=title,
                                 note=f"لایحه ثبت موقت شد | عنوان: {title}")
-                await register_case(
+                await _safe_register_case(
                     event_type="ثبت موقت", full_name=str(user_id), user_id=user_id,
                     trackingCode=lavayeh_bill_no or "", documentCategory=title,
                     note=f"لایحه ثبت موقت شد | عنوان: {title}")
@@ -435,7 +452,7 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                         tracking_code=tracking_code, doc_name=title,
                         note=f"آپلود پیوست‌ها ناموفق (کد لایحه: {lavayeh_bill_no})"
                     )
-                    await register_case(
+                    await _safe_register_case(
                         event_type="خطای سامانه", full_name=str(user_id), user_id=user_id,
                         trackingCode=tracking_code or "", documentCategory=title,
                         errorDetails=f"آپلود پیوست‌ها ناموفق (کد لایحه: {lavayeh_bill_no})", errorStep="UPLOAD_ATTACHMENTS")
@@ -471,7 +488,7 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                     tracking_code=tracking_code, doc_name=title,
                     note=f"آماده‌سازی ناموفق (کد لایحه: {lavayeh_bill_no})"
                 )
-                await register_case(
+                await _safe_register_case(
                     event_type="خطای سامانه", full_name=str(user_id), user_id=user_id,
                     trackingCode=tracking_code or "", documentCategory=title,
                     errorDetails=f"آماده‌سازی ناموفق (کد لایحه: {lavayeh_bill_no})", errorStep="PREPARATION")
@@ -527,7 +544,7 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                 tracking_code=lavayeh_bill_no or tracking_code, doc_name=title,
                 note=f"لایحه ثبت موفق | عنوان: {title} | هزینه: {court_total:,} ریال"
             )
-            await register_case(
+            await _safe_register_case(
                 event_type="ثبت", full_name=str(user_id), user_id=user_id,
                 trackingCode=lavayeh_bill_no or tracking_code or "", documentCategory=title,
                 note=f"لایحه ثبت موفق | عنوان: {title}")
@@ -549,7 +566,7 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                 tracking_code=tracking_code, doc_name=title,
                 note=f"خطای قطعی: {str(e)[:200]}"
             )
-            await register_case(
+            await _safe_register_case(
                 event_type="خطای سامانه", full_name=str(user_id), user_id=user_id,
                 trackingCode=tracking_code or "", documentCategory=title,
                 errorDetails=f"خطای قطعی: {str(e)[:200]}", errorStep="FATAL_ERROR")
@@ -589,7 +606,7 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                     tracking_code=tracking_code, doc_name=title,
                     note=f"پس از {max_attempts} تلاش ناموفق: {str(e)[:200]}"
                 )
-                await register_case(
+                await _safe_register_case(
                     event_type="خطای سامانه", full_name=str(user_id), user_id=user_id,
                     trackingCode=tracking_code or "", documentCategory=title,
                     errorDetails=f"پس از {max_attempts} تلاش ناموفق: {str(e)[:200]}", errorStep="MAX_RETRIES_EXCEEDED")

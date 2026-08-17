@@ -21,7 +21,7 @@ from bale_file_sender import send_document_direct
 from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, calculate_lavayeh_fee, format_lavayeh_fee_explanation
 from exempt_users import is_exempt_user
 from sheets import log_event
-from ocr import verify_payment_receipt
+
 from states import Form
 from keyboards import (
     flow_type_kb, main_menu_kb, restart_kb, back_only_kb,

@@ -1891,6 +1891,41 @@ async def _calculate_cost(page, bot: Bot, user_id: int, max_retries: int = 3) ->
             }''')
             await asyncio.sleep(40)
 
+            # ── بستن پاپ‌آپ خطا (اگر ظاهر شد) و کلیک مجدد ──────────
+            error_popup_closed = await page.evaluate('''() => {
+                // بستن sweet-alert خطا
+                const popup = document.querySelector('.sweet-alert.showSweetAlert');
+                if (popup) {
+                    const h2 = popup.querySelector('h2');
+                    if (h2 && !h2.innerText.includes("آماده")) {
+                        const closeBtn = popup.querySelector('button.confirm, button.btn-info');
+                        if (closeBtn) { closeBtn.click(); return true; }
+                    }
+                }
+                // بستن alert-danger خطا
+                const alertEl = document.querySelector('.alert-danger');
+                if (alertEl && alertEl.offsetParent !== null) {
+                    const closeBtns = Array.from(document.querySelectorAll('button'));
+                    const c = closeBtns.find(b => b.innerText && b.innerText.trim() === "بستن");
+                    if (c) { c.click(); return true; }
+                }
+                return false;
+            }''')
+            if error_popup_closed:
+                logging.info(f"[EZHHAR] پاپ‌آپ خطا بسته شد — کلیک مجدد دکمه محاسبه هزینه")
+                await asyncio.sleep(3)
+                # کلیک مجدد دکمه محاسبه هزینه بعد از بستن خطا
+                await page.evaluate('''() => {
+                    const btn = document.querySelector('#btnCalculateCash');
+                    if (btn && !btn.disabled) { btn.click(); return; }
+                    const btns = Array.from(document.querySelectorAll('button[ng-click*="paymentCost"]'));
+                    if (btns.length > 0) { btns[0].click(); return; }
+                    const all = Array.from(document.querySelectorAll('button'));
+                    const tb = all.find(b => b.innerText && b.innerText.includes("محاسبه هزینه دادرسی") && !b.disabled);
+                    if (tb) { tb.click(); }
+                }''')
+                await asyncio.sleep(40)
+
         # اگر هنوز جدول نیست و تلاش‌های بیشتری باقی‌مانده، با فاصله ۴۰ ثانیه دوباره تلاش کن
         if attempt < 2:
             table_visible = await page.evaluate('''() => {
