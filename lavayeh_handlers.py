@@ -18,7 +18,7 @@ from aiogram.types import Message, ReplyKeyboardRemove, InlineKeyboardMarkup, In
 
 import runtime_state
 from bale_file_sender import send_document_direct
-from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, calculate_lavayeh_fee, format_lavayeh_fee_explanation
+from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, calculate_lavayeh_fee, format_lavayeh_fee_explanation, LAVAYEH_SERVICE_FEE, EZHHARNAMEH_SERVICE_FEE
 from exempt_users import is_exempt_user
 from sheets import log_event
 
@@ -1867,7 +1867,7 @@ async def _go_to_preview(message: Message, state: FSMContext):
 # مرحله ۷ — تایید یا ویرایش
 # ══════════════════════════════════════════════════════════════════════════════
 @lavayeh_router.message(Form.lavayeh_confirm)
-async def lavayeh_confirm_handler(message: Message, state: FSMContext):
+async def lavayeh_confirm_handler(message: Message, state: FSMContext, bot: Bot):
     text = message.text or ""
 
     if text == "✅ تایید و شروع ثبت":
@@ -1875,59 +1875,61 @@ async def lavayeh_confirm_handler(message: Message, state: FSMContext):
         user_id = message.from_user.id
         title = data.get("lavayeh_title", "")
 
-        if not hasattr(runtime_state, "active_lavayeh_users"):
-            runtime_state.active_lavayeh_users = set()
-        runtime_state.active_lavayeh_users.add(user_id)
+        # بررسی معافیت از پرداخت خدمات
+        if await is_exempt_user(user_id):
+            if not hasattr(runtime_state, "active_lavayeh_users"):
+                runtime_state.active_lavayeh_users = set()
+            runtime_state.active_lavayeh_users.add(user_id)
 
+            await message.answer(
+                "✅ *معافیت از پرداخت خدمات*\n\n"
+                "شما در لیست کاربران معاف هستید."
+                "\nدرخواست لایحه در حال ارسال به صف پردازش...",
+                reply_markup=ReplyKeyboardRemove())
+            # ارسال مستقیم به صف بدون پرداخت
+            await _send_lavayeh_task_to_queue(data, user_id, title)
+            await state.clear()
+            return
+
+        # ═══ ارسال فاکتور بله با استفاده از sendInvoice API ═══
+        fee = LAVAYEH_SERVICE_FEE
+        fee_rial = fee * 10  # تومان به ریال
+        try:
+            invoice_payload = _json.dumps({"type": "lavayeh_prepay", "uid": user_id})
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+                invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
+                invoice_data = {
+                    "chat_id": user_id,
+                    "title": f"فاکتور خدمات ثبت لایحه",
+                    "description": f"هزینه خدمات ثبت لایحه\nمبلغ: {fee:,} تومان ({fee_rial:,} ریال)",
+                    "payload": invoice_payload,
+                    "provider_token": BALE_WALLET_TOKEN,
+                    "currency": "IRR",
+                    "prices": [{"label": "خدمات ثبت لایحه", "amount": fee_rial}],
+                }
+                logging.info(f"[LAVAYEH-PREPAY] ارسال sendInvoice به chat_id={user_id}, مبلغ={fee_rial:,} ریال")
+                async with session.post(invoice_url, json=invoice_data) as resp:
+                    result = await resp.json()
+                    logging.info(f"[LAVAYEH-PREPAY] پاسخ sendInvoice: {result}")
+                    if not result.get("ok"):
+                        logging.error(f"[LAVAYEH-PREPAY] خطای sendInvoice: {result}")
+                        raise Exception(result.get("description", "خطا در ارسال فاکتور"))
+        except Exception as e:
+            logging.error(f"[LAVAYEH-PREPAY] خطا در ارسال فاکتور: {e}", exc_info=True)
+            await message.answer("⚠️ خطا در ساخت فاکتور. لطفاً کمی بعد دوباره تلاش کنید.", reply_markup=lavayeh_confirm_kb)
+            return
+
+        pay_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ پرداخت انجام شد", callback_data="lavayeh_prepay_done")],
+            [InlineKeyboardButton(text="❌ انصراف", callback_data="lavayeh_prepay_cancel")],
+        ])
         await message.answer(
-            "⏳ *درخواست لایحه تایید شد.*\n\nدر حال ارسال به صف پردازش...",
-            reply_markup=ReplyKeyboardRemove())
-
-        if title == "اعلام وکالت":
-            # ارسال تسک اعلام وکالت
-            await runtime_state.job_queue.put({
-                "user_id": user_id,
-                "query_type": "اعلام_وکالت",
-                "task_type": "EALAM_VAKALAHT_SUBMIT",
-                "ealam_lawyers": data.get("ealam_lawyers", []),
-                "ealam_contracts": data.get("ealam_contracts", []),
-                "ealam_stamp_amount": data.get("ealam_stamp_amount", 0),
-                "ealam_stamp_type": data.get("ealam_stamp_type", ""),
-                "ealam_lavayeh_text": data.get("lavayeh_text", ""),
-                "ealam_lavayeh_text_html": data.get("lavayeh_text_html", ""),
-                "ealam_attachments": data.get("lavayeh_attachments", []),
-                "lavayeh_tracking_code": data.get("lavayeh_tracking_code", ""),
-                "lavayeh_province": data.get("lavayeh_province", ""),
-                "lavayeh_row_number": data.get("lavayeh_row_number", 1),
-                # اطلاعات شماره بایگانی (در صورت انتخاب این روش)
-                "tracking_method": data.get("tracking_method", "case_number"),
-                "lavayeh_archive_number": data.get("lavayeh_archive_number", ""),
-                "lavayeh_branch_name": data.get("lavayeh_branch_name", ""),
-                "lavayeh_branch_code": data.get("lavayeh_branch_code", ""),
-            })
-        else:
-            # ارسال تسک لایحه عادی
-            await runtime_state.job_queue.put({
-                "user_id": user_id,
-                "query_type": "لایحه_ثبت",
-                "task_type": "LAVAYEH_SUBMIT",
-                "lavayeh_title": data.get("lavayeh_title"),
-                "lavayeh_system_title": data.get("lavayeh_system_title"),
-                "lavayeh_tracking_code": data.get("lavayeh_tracking_code"),
-                "lavayeh_province": data.get("lavayeh_province"),
-                "lavayeh_row_number": data.get("lavayeh_row_number"),
-                "lavayeh_persons": data.get("lavayeh_persons", []),
-                "lavayeh_text": data.get("lavayeh_text"),
-                "lavayeh_text_html": data.get("lavayeh_text_html", ""),
-                "lavayeh_attachments": data.get("lavayeh_attachments", []),
-                # اطلاعات شماره بایگانی (در صورت انتخاب این روش)
-                "tracking_method": data.get("tracking_method", "case_number"),
-                "lavayeh_archive_number": data.get("lavayeh_archive_number", ""),
-                "lavayeh_branch_name": data.get("lavayeh_branch_name", ""),
-                "lavayeh_branch_code": data.get("lavayeh_branch_code", ""),
-            })
-
-        await state.clear()
+            f"⏳ فاکتور پرداخت ارسال شد.\n\n"
+            f"💰 هزینه خدمات ثبت لایحه: *{fee:,} تومان*\n\n"
+            f"پس از پرداخت موفق در کیف پول بله، ثبت لایحه به‌صورت خودکار انجام می‌شود.",
+            reply_markup=pay_kb
+        )
+        await state.set_state(Form.waiting_for_lavayeh_prepay)
         return
 
     if text == "✏️ ویرایش اطلاعات":
@@ -1938,6 +1940,203 @@ async def lavayeh_confirm_handler(message: Message, state: FSMContext):
         return
 
     await message.answer("⚠️ لطفاً یکی از گزینه‌های زیر را انتخاب کنید:", reply_markup=lavayeh_confirm_kb)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# تابع کمکی: ارسال تسک لایحه به صف پردازش
+# ══════════════════════════════════════════════════════════════════════════════
+async def _send_lavayeh_task_to_queue(data: dict, user_id: int, title: str):
+    """ارسال تسک لایحه به صف پردازش بر اساس داده‌های ذخیره‌شده."""
+    if title == "اعلام وکالت":
+        await runtime_state.job_queue.put({
+            "user_id": user_id,
+            "query_type": "اعلام_وکالت",
+            "task_type": "EALAM_VAKALAHT_SUBMIT",
+            "prepaid": True,
+            "ealam_lawyers": data.get("ealam_lawyers", []),
+            "ealam_contracts": data.get("ealam_contracts", []),
+            "ealam_stamp_amount": data.get("ealam_stamp_amount", 0),
+            "ealam_stamp_type": data.get("ealam_stamp_type", ""),
+            "ealam_lavayeh_text": data.get("lavayeh_text", ""),
+            "ealam_lavayeh_text_html": data.get("lavayeh_text_html", ""),
+            "ealam_attachments": data.get("lavayeh_attachments", []),
+            "lavayeh_tracking_code": data.get("lavayeh_tracking_code", ""),
+            "lavayeh_province": data.get("lavayeh_province", ""),
+            "lavayeh_row_number": data.get("lavayeh_row_number", 1),
+            "tracking_method": data.get("tracking_method", "case_number"),
+            "lavayeh_archive_number": data.get("lavayeh_archive_number", ""),
+            "lavayeh_branch_name": data.get("lavayeh_branch_name", ""),
+            "lavayeh_branch_code": data.get("lavayeh_branch_code", ""),
+        })
+    else:
+        await runtime_state.job_queue.put({
+            "user_id": user_id,
+            "query_type": "لایحه_ثبت",
+            "task_type": "LAVAYEH_SUBMIT",
+            "prepaid": True,
+            "lavayeh_title": data.get("lavayeh_title"),
+            "lavayeh_system_title": data.get("lavayeh_system_title"),
+            "lavayeh_tracking_code": data.get("lavayeh_tracking_code"),
+            "lavayeh_province": data.get("lavayeh_province"),
+            "lavayeh_row_number": data.get("lavayeh_row_number"),
+            "lavayeh_persons": data.get("lavayeh_persons", []),
+            "lavayeh_text": data.get("lavayeh_text"),
+            "lavayeh_text_html": data.get("lavayeh_text_html", ""),
+            "lavayeh_attachments": data.get("lavayeh_attachments", []),
+            "tracking_method": data.get("tracking_method", "case_number"),
+            "lavayeh_archive_number": data.get("lavayeh_archive_number", ""),
+            "lavayeh_branch_name": data.get("lavayeh_branch_name", ""),
+            "lavayeh_branch_code": data.get("lavayeh_branch_code", ""),
+        })
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# مرحله ۷-ج — پرداخت خدمات قبل از ثبت لایحه (BLE wallet)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# هندلر pre_checkout_query برای پرداخت پیش‌ثبت لایحه — تایید خودکار
+@lavayeh_router.pre_checkout_query()
+async def lavayeh_prepay_pre_checkout(pre_checkout_query: PreCheckoutQuery, bot: Bot):
+    """تایید خودکار درخواست پیش‌پرداخت خدمات لایحه"""
+    try:
+        await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+        logging.info(f"[LAVAYEH-PREPAY] pre_checkout تایید شد برای کاربر {pre_checkout_query.from_user.id}")
+    except Exception as e:
+        logging.error(f"[LAVAYEH-PREPAY] خطا در answer_pre_checkout_query: {e}")
+
+
+# هندلر successful_payment برای پرداخت پیش‌ثبت لایحه — تشخیص خودکار
+@lavayeh_router.message(Form.waiting_for_lavayeh_prepay, F.successful_payment)
+async def lavayeh_prepay_successful_payment(message: Message, state: FSMContext, bot: Bot):
+    """پرداخت موفق خدمات لایحه — تشخیص خودکار توسط بله"""
+    user_id = message.from_user.id
+    data = await state.get_data()
+    title = data.get("lavayeh_title", "لایحه")
+    payment = message.successful_payment
+    fee = LAVAYEH_SERVICE_FEE
+
+    logging.info(f"[LAVAYEH-PREPAY] پرداخت خودکار تشخیص داده شد برای کاربر {user_id}")
+
+    await message.answer(
+        f"✅ *پرداخت تایید شد!*",
+        parse_mode="Markdown"
+    )
+    await message.answer(
+        f"💰 مبلغ: *{fee:,} تومان*\n\n"
+        f"📝 نوع: *ثبت {title}*\n\n"
+        f"⏳ درخواست شما در حال ارسال به سامانه قضایی است...",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+    await log_event(
+        "پرداخت", title, message.from_user.full_name, user_id,
+        doc_name=f"خدمات ثبت {title}", payment_status="پرداخت شده (کیف پول بله - پیش‌ثبت)",
+        note=f"مبلغ: {fee:,} تومان | Bale payment_id: {payment.telegram_payment_charge_id}"
+    )
+
+    # اطلاع‌رسانی به ادمین
+    try:
+        admin_msg = (
+            f"💰 پرداخت خدمات ثبت لایحه (تشخیص خودکار):\n\n"
+            f"👤 کاربر: {message.from_user.full_name} ({user_id})\n"
+            f"📄 عنوان: {title}\n"
+            f"💰 مبلغ: {fee:,} تومان\n"
+            f"⏱ زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}\n"
+            f"🎫 payment_id: {payment.telegram_payment_charge_id}"
+        )
+        await bot.send_message(ADMIN_ID, admin_msg)
+    except Exception as e:
+        logging.error(f"[LAVAYEH-PREPAY] خطا در ارسال اطلاع به ادمین: {e}", exc_info=True)
+
+    # ارسال به صف پردازش
+    if not hasattr(runtime_state, "active_lavayeh_users"):
+        runtime_state.active_lavayeh_users = set()
+    runtime_state.active_lavayeh_users.add(user_id)
+    await _send_lavayeh_task_to_queue(data, user_id, title)
+    await state.clear()
+
+
+# هندلر دکمه «پرداخت انجام شد» — فال‌بک
+@lavayeh_router.callback_query(F.data == "lavayeh_prepay_done", Form.waiting_for_lavayeh_prepay)
+async def lavayeh_prepay_done_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """کاربر دکمه تایید پرداخت را زده — تایید مجدد"""
+    await callback.answer()
+    user_id = callback.from_user.id
+
+    confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ بله، پرداخت موفق بود", callback_data="lavayeh_prepay_done_confirm")],
+        [InlineKeyboardButton(text="❌ خیر، انصراف", callback_data="lavayeh_prepay_cancel")],
+    ])
+    await callback.message.answer(
+        "❓ آیا مطمئن هستید که پرداخت با موفقیت انجام شد؟\n\n"
+        "اگر پیام «پرداخت با موفقیت انجام شد» را در کیف پول بله دیده‌اید، «بله» را بزنید.",
+        reply_markup=confirm_kb
+    )
+
+
+@lavayeh_router.callback_query(F.data == "lavayeh_prepay_done_confirm", Form.waiting_for_lavayeh_prepay)
+async def lavayeh_prepay_done_confirm_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """تایید نهایی — ارسال به صف پردازش"""
+    await callback.answer()
+    user_id = callback.from_user.id
+    data = await state.get_data()
+    title = data.get("lavayeh_title", "لایحه")
+    fee = LAVAYEH_SERVICE_FEE
+
+    logging.info(f"[LAVAYEH-PREPAY] تایید نهایی پرداخت برای کاربر {user_id}")
+
+    await callback.message.answer(
+        f"✅ *پرداخت تایید شد!*\n\n"
+        f"💰 مبلغ: {fee:,} تومان\n\n"
+        f"⏳ درخواست شما در حال ارسال به سامانه قضایی است...",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+    await log_event(
+        "پرداخت", title, callback.from_user.full_name, user_id,
+        doc_name=f"خدمات ثبت {title}", payment_status="پرداخت شده (تایید دستی کاربر - پیش‌ثبت)",
+        note=f"مبلغ: {fee:,} تومان"
+    )
+
+    try:
+        admin_msg = (
+            f"💰 پرداخت خدمات ثبت لایحه (تایید دستی):\n\n"
+            f"👤 کاربر: {callback.from_user.full_name} ({user_id})\n"
+            f"📄 عنوان: {title}\n"
+            f"💰 مبلغ: {fee:,} تومان\n"
+            f"⏱ زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}"
+        )
+        await bot.send_message(ADMIN_ID, admin_msg)
+    except Exception as e:
+        logging.error(f"[LAVAYEH-PREPAY] خطا در ارسال اطلاع به ادمین: {e}")
+
+    if not hasattr(runtime_state, "active_lavayeh_users"):
+        runtime_state.active_lavayeh_users = set()
+    runtime_state.active_lavayeh_users.add(user_id)
+    await _send_lavayeh_task_to_queue(data, user_id, title)
+    await state.clear()
+
+
+@lavayeh_router.callback_query(F.data == "lavayeh_prepay_cancel", Form.waiting_for_lavayeh_prepay)
+async def lavayeh_prepay_cancel_callback(callback: CallbackQuery, state: FSMContext):
+    """انصراف از پرداخت خدمات"""
+    await callback.answer()
+    await callback.message.answer(
+        "لغو گردید. لطفاً مجدداً شروع کنید:",
+        reply_markup=flow_type_kb
+    )
+    await state.clear()
+    await state.set_state(Form.waiting_for_flow_type)
+
+
+@lavayeh_router.message(Form.waiting_for_lavayeh_prepay)
+async def lavayeh_prepay_waiting_message(message: Message):
+    """در حال انتظار پرداخت — پرداخت از طریق فاکتور بله انجام می‌شود"""
+    if message.text and "انصراف" in message.text:
+        pass
+    else:
+        await message.answer("⏳ لطفاً فاکتور ارسال شده را در چت پرداخت کنید. نیازی به ارسال عکس رسید نیست.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2010,6 +2209,82 @@ async def lavayeh_edit_choice_handler(message: Message, state: FSMContext):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# تابع کمکی: انتقال مستقیم به فلوی امضای الکترونیک (پس از پرداخت از قبل)
+# ══════════════════════════════════════════════════════════════════════════════
+async def _go_to_sign_flow_after_prepaid(
+    bot: Bot,
+    user_id: int,
+    is_ezhharnameh: bool,
+    lavayeh_title: str,
+    lavayeh_province: str,
+    lavayeh_row_number: int,
+    lavayeh_persons: list,
+    tracking_code: str,
+    national_ids: str,
+    court_total: int,
+):
+    """انتقال مستقیم به فلوی امضای الکترونیک بدون نیاز به پرداخت.
+
+    پس از اینکه کاربر قبلاً هزینه خدمات را پرداخت کرده و سند با موفقیت
+    در سامانه ثبت شده، این تابع فلوی امضا را آغاز می‌کند.
+    """
+    user_state = runtime_state.dp.fsm.resolve_context(bot, user_id, user_id)
+
+    if is_ezhharnameh:
+        sign_persons = []
+        for i, p in enumerate(lavayeh_persons):
+            sign_persons.append({
+                "idx": i,
+                "name": p.get("name", p.get("national_id", f"شخص {i+1}")),
+                "person_type": p.get("person_type", ""),
+                "national_id": p.get("national_id", ""),
+            })
+        runtime_state.pending_ezhhar_sign[user_id] = {
+            "tracking_code": tracking_code,
+            "is_ezhharnameh": True,
+            "sign_persons": sign_persons,
+            "persons_awaiting_sign": list(range(len(sign_persons))),
+            "current_person_idx": 0,
+            "sign_codes_received": {},
+            "sign_sent_time": None,
+            "wrong_code_time": None,
+            "code_sent_announce_time": None,
+            "resend_notified": False,
+            "total_no_action_start": datetime.datetime.now(),
+        }
+        from keyboards import ezhhar_sign_ready_kb
+        await bot.send_message(
+            user_id,
+            "🖊 *مرحله اخذ امضای الکترونیک اظهارنامه:*\n\n"
+            "آیا برای ارسال کد امضا آماده هستید؟",
+            reply_markup=ezhhar_sign_ready_kb)
+        await user_state.set_state(Form.ezhhar_sign_ready)
+    else:
+        runtime_state.pending_lavayeh_sign[user_id] = {
+            "tracking_code": tracking_code,
+            "lavayeh_title": lavayeh_title,
+            "province": lavayeh_province,
+            "row_number": lavayeh_row_number,
+            "persons": lavayeh_persons,
+            "sign_persons": [],
+            "persons_awaiting_sign": [],
+            "current_person_idx": None,
+            "sign_sent_time": None,
+            "sign_codes_received": {},
+            "wrong_code_time": None,
+            "code_sent_announce_time": None,
+            "resend_notified": False,
+            "total_no_action_start": None,
+        }
+        await bot.send_message(
+            user_id,
+            "🖊 *مرحله اخذ امضای الکترونیک:*\n\n"
+            "آیا برای ارسال کد امضا آماده هستید؟",
+            reply_markup=lavayeh_sign_ready_kb)
+        await user_state.set_state(Form.lavayeh_sign_ready)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # ارسال نتیجه ثبت لایحه به کاربر + شروع فلوی امضا
 # ══════════════════════════════════════════════════════════════════════════════
 async def send_lavayeh_result(
@@ -2024,7 +2299,8 @@ async def send_lavayeh_result(
     lavayeh_row_number: int = 1,
     lavayeh_persons: list = None,
     skip_fee_calc: bool = False,
-    is_ezhharnameh: bool = False):
+    is_ezhharnameh: bool = False,
+    prepaid: bool = False):
     if lavayeh_persons is None:
         lavayeh_persons = []
 
@@ -2064,7 +2340,7 @@ async def send_lavayeh_result(
         # ادامه فرآیند بدون نیاز به فیش پرداخت
         runtime_state.pending_lavayeh_payments[user_id] = {
             "invoice_time": datetime.datetime.now(),
-            "final_fee": 0,  # پرداخت لازم نیست
+            "final_fee": 0,
             "court_total": court_total,
             "tracking_code": tracking_code,
             "national_ids": national_ids,
@@ -2081,6 +2357,30 @@ async def send_lavayeh_result(
             f"✅ *معافیت از پرداخت*\n\n"
             f"شما در لیست کاربران معاف هستید."
             f"\nثبت {service_label} بدون نیاز به پرداخت انجام شد.")
+        # رفتن مستقیم به فلوی امضا
+        await _go_to_sign_flow_after_prepaid(
+            bot, user_id, is_ezhharnameh, lavayeh_title,
+            lavayeh_province, lavayeh_row_number, lavayeh_persons,
+            tracking_code, national_ids, court_total
+        )
+        return
+
+    # ═══ اگر قبلاً پرداخت خدمات انجام شده — مستقیم به امضا ═══
+    if prepaid:
+        logging.info(f"[LAVAYEH] prepaid=True — رد شدن فاکتور و رفتن مستقیم به امضا (user={user_id})")
+        await bot.send_message(
+            user_id,
+            f"✅ *{service_label} با موفقیت در سامانه قضایی ثبت شد.*\n\n"
+            f"💳 هزینه سامانه: *{court_total:,} ریال*\n\n"
+            f"✅ پرداخت خدمات شما قبلاً تایید شده است.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        # رفتن مستقیم به فلوی امضا
+        await _go_to_sign_flow_after_prepaid(
+            bot, user_id, is_ezhharnameh, lavayeh_title,
+            lavayeh_province, lavayeh_row_number, lavayeh_persons,
+            tracking_code, national_ids, court_total
+        )
         return
 
     # ═══ ارسال فاکتور بله با استفاده از sendInvoice API ═══

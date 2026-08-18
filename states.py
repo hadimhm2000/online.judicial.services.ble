@@ -36,6 +36,7 @@ class Form(StatesGroup):
     lavayeh_attachment_more = State()
     lavayeh_confirm = State()
     lavayeh_edit_choice = State()
+    waiting_for_lavayeh_prepay = State()          # منتظر پرداخت خدمات قبل از ثبت در سامانه
     waiting_for_lavayeh_payment_receipt = State()
     lavayeh_payment_reminder_response = State()
 
@@ -120,6 +121,7 @@ class Form(StatesGroup):
     # مرحله ۶: پیش‌نمایش و تایید
     ezhhar_confirm = State()
     ezhhar_edit_choice = State()
+    waiting_for_ezhhar_prepay = State()          # منتظر پرداخت خدمات قبل از ثبت در سامانه
 
     # خطای استعلام ثنا در اظهارنامه — ویرایش شناسه ملی یا حذف درخواست
     ezhhar_sana_error_action = State()

@@ -65,6 +65,12 @@ FEES = {
     "کد رهگیری با منضمات": 50000
 }
 
+# هزینه خدمات ثبت لایحه (تومان) — قبل از ارسال به سامانه
+LAVAYEH_SERVICE_FEE = 50000
+
+# هزینه خدمات ثبت اظهارنامه (تومان) — قبل از ارسال به سامانه
+EZHHARNAMEH_SERVICE_FEE = 50000
+
 def get_fee(query_type, need_attachments):
     if query_type == "شماره تماس":
         return FEES["شماره تماس"]

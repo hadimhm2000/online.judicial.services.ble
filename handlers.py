@@ -301,6 +301,8 @@ async def global_successful_payment_handler(message: types.Message, state: FSMCo
 
     # ── حالت‌های پرداخت اختصاصی سرویس‌ها — نباید اینجا مداخله کنیم ──
     if current_state in (Form.waiting_for_lavayeh_payment_receipt,
+                         Form.waiting_for_lavayeh_prepay,
+                         Form.waiting_for_ezhhar_prepay,
                          Form.waiting_for_ealam_payment_receipt,
                          Form.stamp_calc_waiting_payment):
         return
