@@ -61,6 +61,8 @@ async def stamp_calc_entry(message: Message, state: FSMContext):
     # بررسی محدودیت استفاده
     if not runtime_state.can_use_service(user_id, "stamp"):
         msg, kb = _subscription_required_message(user_id)
+        await state.update_data(subscription_fee=SUBSCRIPTION_FEE)
+        await state.set_state(Form.subscription_waiting_payment)
         await message.answer(msg, reply_markup=kb)
         return
 

@@ -299,6 +299,12 @@ async def global_successful_payment_handler(message: types.Message, state: FSMCo
     current_state = await state.get_state()
     logging.warning(f"[GLOBAL-PAYMENT] successful_payment دریافت شد. user={message.from_user.id}, state={current_state}")
 
+    # ── حالت‌های پرداخت اختصاصی سرویس‌ها — نباید اینجا مداخله کنیم ──
+    if current_state in (Form.waiting_for_lavayeh_payment_receipt,
+                         Form.waiting_for_ealam_payment_receipt,
+                         Form.stamp_calc_waiting_payment):
+        return
+
     # ── پرداخت اشتراک ماهیانه ──
     if current_state and "subscription" in str(current_state).lower():
         user_id = message.from_user.id
@@ -324,7 +330,7 @@ async def global_successful_payment_handler(message: types.Message, state: FSMCo
             f"🎉 اشتراک ماهیانه شما با موفقیت فعال شد.\n"
             f"📅 تاریخ پایان اشتراک: *{end_str}*\n\n"
             f"اکنون می‌توانید از بخش *محاسبه تمبر* و *ابزار فایل* بدون محدودیت استفاده نمایید.",
-            reply_markup=flow_type_kb)
+            reply_markup=get_flow_type_kb(message.from_user.id))
         await state.clear()
         return
 
@@ -492,12 +498,14 @@ async def pay_cancel_callback(callback: CallbackQuery, state: FSMContext):
         "لغو گردید. لطفاً مجدداً شروع کنید:",
         reply_markup=get_main_menu_kb(callback.from_user.id)
     )
-    await state.set_state(Form.main_menu)
+    await state.set_state(Form.waiting_for_flow_type)
 
 
 @router.message(Form.waiting_for_payment_receipt)
 async def process_payment_receipt_text_only(message: types.Message, state: FSMContext):
-    if message.text and "انصراف" in message.text:
+    if not message.text:
+        return
+    if "انصراف" in message.text:
         data = await state.get_data()
         cart = data.get("cart", [])
         await log_event(
@@ -507,7 +515,14 @@ async def process_payment_receipt_text_only(message: types.Message, state: FSMCo
         )
         await state.clear()
         await message.answer("لغو گردید. لطفاً مجدداً شروع کنید:", reply_markup=get_main_menu_kb(message.from_user.id))
+        await state.set_state(Form.waiting_for_flow_type)
+        return
+    if "بازگشت" in message.text:
         await state.set_state(Form.main_menu)
+        await message.answer(
+            "🛒 لطفاً یکی از گزینه‌های زیر را انتخاب فرمایید:",
+            reply_markup=cart_kb
+        )
         return
     await message.answer("⚠️ لطفاً فاکتور ارسال‌شده را در چت پرداخت کنید.")
 
@@ -816,11 +831,11 @@ async def process_flow_type(message: types.Message, state: FSMContext):
     if not message.text: return
     if ("تک‌درخواست" in message.text or "تک درخواست" in message.text or ("استعلام" in message.text and "چند" not in message.text)):
         await state.update_data(flow_type="single", cart=[], full_name=message.from_user.full_name)
-        await message.answer("سپاسگزاریم.\nلطفاً نوع خدمت را انتخاب نمایید:", reply_markup=get_main_menu_kb(message.from_user.id))
+        await message.answer("سپاسگزاریم.\nلطفاً نوع خدمت را انتخاب نمایید:", reply_markup=main_menu_kb)
         await state.set_state(Form.main_menu)
     elif "چند مورد همزمان" in message.text or "سبد خرید" in message.text:
         await state.update_data(flow_type="cart", cart=[], full_name=message.from_user.full_name)
-        await message.answer("📦 *حالت استعلام چند موردی فعال شد.*\nلطفاً نوع استعلام اول خود را انتخاب نمایید:", reply_markup=get_main_menu_kb(message.from_user.id))
+        await message.answer("📦 *حالت استعلام چند موردی فعال شد.*\nلطفاً نوع استعلام اول خود را انتخاب نمایید:", reply_markup=main_menu_kb)
         await state.set_state(Form.main_menu)
     elif "ثبت لایحه" in message.text:
         from lavayeh_handlers import lavayeh_entry
@@ -832,9 +847,25 @@ async def process_flow_type(message: types.Message, state: FSMContext):
         from stamp_calc_handlers import stamp_calc_entry
         await stamp_calc_entry(message, state)
     elif "دعاوی اعتراضی" in message.text:
+        if message.from_user.id != ADMIN_ID:
+            await message.answer(
+                "⏳ *بخش دعاوی اعتراضی در حال توسعه است.*\n\n"
+                "این سرویس به‌زودی برای استفاده عمومی فعال خواهد شد.\n"
+                "برای پیگیری اخبار به کانال ما مراجعه کنید:\n"
+                "https://ble.ir/onlinejudicialservice",
+                reply_markup=get_main_menu_kb(message.from_user.id))
+            return
         from tajdid_nazar_handlers import tajdid_nazar_entry
         await tajdid_nazar_entry(message, state)
     elif "دادخواست چک" in message.text:
+        if message.from_user.id != ADMIN_ID:
+            await message.answer(
+                "⏳ *بخش ثبت دادخواست چک در حال توسعه است.*\n\n"
+                "این سرویس به‌زودی برای استفاده عمومی فعال خواهد شد.\n"
+                "برای پیگیری اخبار به کانال ما مراجعه کنید:\n"
+                "https://ble.ir/onlinejudicialservice",
+                reply_markup=get_main_menu_kb(message.from_user.id))
+            return
         from check_handlers import check_entry
         await check_entry(message, state)
     elif "ابزار فایل" in message.text:
@@ -895,16 +926,23 @@ async def process_main_menu(message: types.Message, state: FSMContext):
         return
 
     if "➕ ثبت استعلام جدید" in message.text:
-        await message.answer("لطفاً نوع خدمت جدید را انتخاب نمایید:", reply_markup=get_main_menu_kb(message.from_user.id))
+        await message.answer("لطفاً نوع خدمت جدید را انتخاب نمایید:", reply_markup=main_menu_kb)
         return
         
     elif "🧹 خالی کردن سبد" in message.text:
         await state.update_data(cart=[])
-        await message.answer("🧹 سبد استعلام‌های شما خالی شد.", reply_markup=get_main_menu_kb(message.from_user.id))
+        await message.answer("🧹 سبد استعلام‌های شما خالی شد.", reply_markup=main_menu_kb)
         return
         
     elif "🛒 مشاهده سبد خرید" in message.text:
         await _show_cart(message, state)
+        return
+        
+    elif "❌ انصراف" in message.text:
+        await state.update_data(cart=[])
+        await state.clear()
+        await message.answer("❌ انصراف از سبد خرید. لطفاً مجدداً شروع کنید:", reply_markup=get_main_menu_kb(message.from_user.id))
+        await state.set_state(Form.waiting_for_flow_type)
         return
         
     elif "💳 پرداخت و تسویه حساب" in message.text:
@@ -997,8 +1035,11 @@ async def process_main_menu(message: types.Message, state: FSMContext):
         await state.set_state(Form.waiting_for_payment_receipt)
         return
         
-    elif "🔙 بازگشت به سبد خرید" in message.text:
-        await _show_cart(message, state)
+    elif "🔙 بازگشت" in message.text:
+        await message.answer(
+            "🛒 لطفاً یکی از گزینه‌های زیر را انتخاب فرمایید:",
+            reply_markup=cart_kb
+        )
         return
         
     if "1️⃣" in message.text:

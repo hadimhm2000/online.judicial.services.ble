@@ -21,7 +21,7 @@ import runtime_state
 from bale_file_sender import send_document_direct, send_photo_direct
 from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME
 from states import Form
-from keyboards import flow_type_kb, file_tools_menu_kb, file_tools_back_kb, subscription_kb, restart_kb
+from keyboards import flow_type_kb, file_tools_menu_kb, file_tools_back_kb, subscription_kb, restart_kb, get_flow_type_kb
 
 file_tools_router = Router()
 
@@ -108,6 +108,8 @@ async def file_tools_entry(message: Message, state: FSMContext):
     # بررسی محدودیت استفاده
     if not runtime_state.can_use_service(user_id, "tools"):
         msg, kb = _subscription_required_message_tools(user_id)
+        await state.update_data(subscription_fee=SUBSCRIPTION_FEE)
+        await state.set_state(Form.subscription_waiting_payment)
         await message.answer(msg, reply_markup=kb)
         return
 
@@ -150,7 +152,7 @@ async def file_tools_menu_handler(message: Message, state: FSMContext):
         return
     if text == "🔙 بازگشت به منوی اصلی":
         await state.clear()
-        await message.answer("بازگشت به منوی اصلی.", reply_markup=flow_type_kb)
+        await message.answer("بازگشت به منوی اصلی.", reply_markup=get_flow_type_kb(message.from_user.id))
         await state.set_state(Form.waiting_for_flow_type)
         return
     await message.answer("⚠️ لطفاً یکی از گزینه‌های منو را انتخاب فرمایید:", reply_markup=file_tools_menu_kb)
