@@ -91,6 +91,7 @@ async def process_lavayeh_task(data: dict, bot: Bot):
     sana_page       = runtime_state.sana_page
     browser_context = runtime_state.browser_context
     user_id         = data["user_id"]
+    is_prepaid     = data.get("prepaid", False)
 
     title        = data.get("lavayeh_title", "لایحه دفاعیه")
     system_title = data.get("lavayeh_system_title", "لایحه دفاعیه")
@@ -528,7 +529,8 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                 lavayeh_title=title,
                 lavayeh_province=province,
                 lavayeh_row_number=row_number,
-                lavayeh_persons=persons)
+                lavayeh_persons=persons,
+                prepaid=is_prepaid)
             if lavayeh_bill_no:
                 await bot.send_message(
                     ADMIN_ID,

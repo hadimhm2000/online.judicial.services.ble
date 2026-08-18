@@ -87,6 +87,7 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
     sana_page = runtime_state.sana_page
     browser_context = runtime_state.browser_context
     user_id = data["user_id"]
+    is_prepaid = data.get("prepaid", False)
 
     declarants = data.get("ezhhar_declarants", [])
     addressees = data.get("ezhhar_addressees", [])
@@ -675,6 +676,7 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
                     lavayeh_persons=declarants,
                     skip_fee_calc=True,  # هزینه اظهارنامه قبلاً با فرمول جدید محاسبه شده
                     is_ezhharnameh=True,  # برای تمایز لایحه/اظهارنامه در جریان امضا
+                    prepaid=is_prepaid,
                 )
 
                 await bot.send_message(

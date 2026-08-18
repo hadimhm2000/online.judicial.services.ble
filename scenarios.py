@@ -21,6 +21,7 @@ from browser_helpers import (
     safe_click_by_text, safe_type, NavigationResetError, NationalIdError,
     wait_for_horizontal_loading_bar, is_login_redirect_url,
     detect_national_id_error, check_national_id_error_or_continue,
+    detect_concurrent_login_popup,
     NATIONAL_ID_ERROR_MSG)
 from sana_profile_report import extract_sana_profile, build_sana_profile_pdf
 
@@ -166,6 +167,21 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
         # ── ۵. بستن پاپ‌آپ خطا (اگر بود) ─────────────────────────────
         await _precheck_dismiss_error(page)
 
+        # ── ۵-ب. بررسی پاپ‌آپ ورود همزمان (concurrent login) ─────────
+        is_concurrent = await detect_concurrent_login_popup(page)
+        if is_concurrent:
+            if _retry:
+                await bot.send_message(user_id, "⚠️ نشست سامانه همچنان منقضی است (ورود همزمان از دستگاه دیگر). لطفاً کمی بعد دوباره تلاش کنید.")
+                return
+            logging.warning(f"[PRE_CHECK] پاپ‌آپ ورود همزمان تشخیص داده شد — اطلاع به مدیر برای لاگین مجدد (کد: {tracking_code})")
+            await handle_session_expired(bot, user_id, page=page)
+            try:
+                await page.close()
+            except Exception:
+                pass
+            page = None
+            return await _process_pre_check_on_new_page(data, bot, _retry=True)
+
         # ── بررسی خطای «کد رهگیری معتبر نیست» ────────────────────────
         invalid_code_popup = await page.evaluate('''() => {
             const popup = document.querySelector('.sweet-alert.showSweetAlert');
@@ -209,7 +225,22 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
             page = None
             return await _process_pre_check_on_new_page(data, bot, _retry=True)
 
-        # ── ۷. کلیک «منضمات» و شمارش ────────────────────────────
+        # ── ۷. بررسی مجدد پاپ‌آپ ورود همزمان قبل از منضمات ─
+        is_concurrent_2 = await detect_concurrent_login_popup(page)
+        if is_concurrent_2:
+            if _retry:
+                await bot.send_message(user_id, "⚠️ نشست سامانه پیش از شمارش پیوست منقضی شد. لطفاً کمی بعد دوباره تلاش کنید.")
+                return
+            logging.warning(f"[PRE_CHECK] پاپ‌آپ ورود همزمان قبل از منضمات — اطلاع به مدیر (کد: {tracking_code})")
+            await handle_session_expired(bot, user_id, page=page)
+            try:
+                await page.close()
+            except Exception:
+                pass
+            page = None
+            return await _process_pre_check_on_new_page(data, bot, _retry=True)
+
+        # ── ۸. کلیک «منضمات» و شمارش ────────────────────────────
         # بررسی وجود تب «منضمات» قبل از کلیک
         mozamatat_exists = await page.evaluate('''() => {
             const tags = ['button', 'a', 'label', 'span', 'li', 'h5', 'div', 'td'];
