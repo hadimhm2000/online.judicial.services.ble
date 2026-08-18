@@ -6,27 +6,39 @@ new_lavayeh_request_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="ث�
 back_only_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🔙 بازگشت")]], resize_keyboard=True)
 accept_rules_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="✅ قوانین و مقررات را تایید می‌نمایم")]], resize_keyboard=True)
 
-# آیدی مدیر مجاز به مشاهده بخش تست
-TEST_VISIBLE_USER_ID = 509108833
+# آیدی مدیر مجاز به مشاهده بخش تست — از config.py خوانده می‌شود
+from config import ADMIN_ID
+TEST_VISIBLE_USER_ID = ADMIN_ID
+
+# کانال رسمی
+CHANNEL_LINK = "https://ble.ir/onlinejudicialservice"
+
 
 def get_flow_type_kb(user_id: int) -> ReplyKeyboardMarkup:
-    """کیبورد منوی اصلی — دکمه تست فقط برای کاربر مجاز."""
+    """کیبورد منوی اصلی — دکمه تست فقط برای مدیر."""
+    _is_admin = (user_id == ADMIN_ID)
+    _tn = "⚖️ دعاوی اعتراضی" if _is_admin else "⚖️ دعاوی اعتراضی (به زودی)"
+    _chk = "🏦 ثبت دادخواست چک" if _is_admin else "🏦 ثبت دادخواست چک (به زودی)"
     rows = [
         [KeyboardButton(text="🔍 استعلام"), KeyboardButton(text="📦 استعلام (چند مورد همزمان)")],
         [KeyboardButton(text="✍️ ثبت لایحه"), KeyboardButton(text="📄 ثبت اظهارنامه")],
-        [KeyboardButton(text="⚖️ دعاوی اعتراضی"), KeyboardButton(text="🏦 ثبت دادخواست چک")],
+        [KeyboardButton(text=_tn), KeyboardButton(text=_chk)],
         [KeyboardButton(text="💰 محاسبه تمبر"), KeyboardButton(text="🔧 ابزار فایل")],
     ]
-    if user_id == TEST_VISIBLE_USER_ID:
+    if _is_admin:
         rows.append([KeyboardButton(text="🧪 تست")])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
-# کیبورد بدون تست (fallback)
+
+# نام مستعار — handlers.py از این نام استفاده می‌کند
+get_main_menu_kb = get_flow_type_kb
+
+# کیبورد بدون تست و بدون user_id (fallback)
 flow_type_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🔍 استعلام"), KeyboardButton(text="📦 استعلام (چند مورد همزمان)")],
         [KeyboardButton(text="✍️ ثبت لایحه"), KeyboardButton(text="📄 ثبت اظهارنامه")],
-        [KeyboardButton(text="⚖️ دعاوی اعتراضی"), KeyboardButton(text="🏦 ثبت دادخواست چک")],
+        [KeyboardButton(text="⚖️ دعاوی اعتراضی (به زودی)"), KeyboardButton(text="🏦 ثبت دادخواست چک (به زودی)")],
         [KeyboardButton(text="💰 محاسبه تمبر"), KeyboardButton(text="🔧 ابزار فایل")],
     ], resize_keyboard=True)
 
@@ -76,7 +88,7 @@ cart_kb = ReplyKeyboardMarkup(
 pay_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="💳 پرداخت و تسویه حساب")],
-        [KeyboardButton(text="🔙 بازگشت به سبد خرید")]
+        [KeyboardButton(text="🔙 بازگشت"), KeyboardButton(text="❌ انصراف")],
     ], resize_keyboard=True)
 
 SUB_MENUS = {
