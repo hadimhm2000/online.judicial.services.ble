@@ -15,15 +15,22 @@
 """
 
 import asyncio
+import datetime
 import logging
 import re
+
+import aiohttp
+import json as _json
 
 from aiogram import Bot, F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, ReplyKeyboardRemove, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, ReplyKeyboardRemove, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, PreCheckoutQuery
 
 import runtime_state
+from config import ADMIN_ID, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, EZHHARNAMEH_SERVICE_FEE
+from exempt_users import is_exempt_user
+from sheets import log_event
 from states import Form
 from keyboards import (
     main_menu_kb, restart_kb, back_only_kb,
@@ -830,23 +837,56 @@ async def ezhhar_confirm_handler(message: Message, state: FSMContext, bot: Bot):
         data = await state.get_data()
         user_id = message.from_user.id
 
+        # بررسی معافیت از پرداخت خدمات
+        if await is_exempt_user(user_id):
+            await message.answer(
+                "✅ *معافیت از پرداخت خدمات*\n\n"
+                "شما در لیست کاربران معاف هستید."
+                "\nدرخواست اظهارنامه در حال ارسال به صف پردازش...",
+                reply_markup=ReplyKeyboardRemove())
+            await _send_ezhhar_task_to_queue(data, user_id)
+            await state.clear()
+            return
+
+        # ═══ ارسال فاکتور بله با استفاده از sendInvoice API ═══
+        fee = EZHHARNAMEH_SERVICE_FEE
+        fee_rial = fee * 10  # تومان به ریال
+        try:
+            invoice_payload = _json.dumps({"type": "ezhhar_prepay", "uid": user_id})
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+                invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
+                invoice_data = {
+                    "chat_id": user_id,
+                    "title": f"فاکتور خدمات ثبت اظهارنامه",
+                    "description": f"هزینه خدمات ثبت اظهارنامه\nمبلغ: {fee:,} تومان ({fee_rial:,} ریال)",
+                    "payload": invoice_payload,
+                    "provider_token": BALE_WALLET_TOKEN,
+                    "currency": "IRR",
+                    "prices": [{"label": "خدمات ثبت اظهارنامه", "amount": fee_rial}],
+                }
+                logging.info(f"[EZHHAR-PREPAY] ارسال sendInvoice به chat_id={user_id}, مبلغ={fee_rial:,} ریال")
+                async with session.post(invoice_url, json=invoice_data) as resp:
+                    result = await resp.json()
+                    logging.info(f"[EZHHAR-PREPAY] پاسخ sendInvoice: {result}")
+                    if not result.get("ok"):
+                        logging.error(f"[EZHHAR-PREPAY] خطای sendInvoice: {result}")
+                        raise Exception(result.get("description", "خطا در ارسال فاکتور"))
+        except Exception as e:
+            logging.error(f"[EZHHAR-PREPAY] خطا در ارسال فاکتور: {e}", exc_info=True)
+            await message.answer("⚠️ خطا در ساخت فاکتور. لطفاً کمی بعد دوباره تلاش کنید.", reply_markup=ezhhar_confirm_kb)
+            return
+
+        pay_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ پرداخت انجام شد", callback_data="ezhhar_prepay_done")],
+            [InlineKeyboardButton(text="❌ انصراف", callback_data="ezhhar_prepay_cancel")],
+        ])
         await message.answer(
-            "⏳ *درخواست اظهارنامه تایید شد.*\n\nدر حال ارسال به صف پردازش...",
-            reply_markup=ReplyKeyboardRemove())
-
-        await runtime_state.job_queue.put({
-            "user_id": user_id,
-            "query_type": "اظهارنامه_ثبت",
-            "task_type": "EZHHARNAMEH_SUBMIT",
-            "ezhhar_declarants": data.get("ezhhar_declarants", []),
-            "ezhhar_addressees": data.get("ezhhar_addressees", []),
-            "ezhhar_subject": data.get("ezhhar_subject", "سایر"),
-            "ezhhar_text": data.get("ezhhar_text", ""),
-            "ezhhar_text_html": data.get("ezhhar_text_html", ""),
-            "ezhhar_attachments": data.get("ezhhar_attachments", []),
-        })
-
-        await state.clear()
+            f"⏳ فاکتور پرداخت ارسال شد.\n\n"
+            f"💰 هزینه خدمات ثبت اظهارنامه: *{fee:,} تومان*\n\n"
+            f"پس از پرداخت موفق در کیف پول بله، ثبت اظهارنامه به‌صورت خودکار انجام می‌شود.",
+            reply_markup=pay_kb
+        )
+        await state.set_state(Form.waiting_for_ezhhar_prepay)
         return
 
     if text == "✏️ ویرایش اطلاعات":
@@ -857,6 +897,161 @@ async def ezhhar_confirm_handler(message: Message, state: FSMContext, bot: Bot):
         return
 
     await message.answer("⚠️ لطفاً یکی از گزینه‌های زیر را انتخاب کنید:", reply_markup=ezhhar_confirm_kb)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# تابع کمکی: ارسال تسک اظهارنامه به صف پردازش
+# ══════════════════════════════════════════════════════════════════════════════
+async def _send_ezhhar_task_to_queue(data: dict, user_id: int):
+    """ارسال تسک اظهارنامه به صف پردازش بر اساس داده‌های ذخیره‌شده."""
+    await runtime_state.job_queue.put({
+        "user_id": user_id,
+        "query_type": "اظهارنامه_ثبت",
+        "task_type": "EZHHARNAMEH_SUBMIT",
+        "prepaid": True,
+        "ezhhar_declarants": data.get("ezhhar_declarants", []),
+        "ezhhar_addressees": data.get("ezhhar_addressees", []),
+        "ezhhar_subject": data.get("ezhhar_subject", "سایر"),
+        "ezhhar_text": data.get("ezhhar_text", ""),
+        "ezhhar_text_html": data.get("ezhhar_text_html", ""),
+        "ezhhar_attachments": data.get("ezhhar_attachments", []),
+    })
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# مرحله ۶-ج — پرداخت خدمات قبل از ثبت اظهارنامه (BLE wallet)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# هندلر pre_checkout_query برای پرداخت پیش‌ثبت اظهارنامه
+@ezhharnameh_router.pre_checkout_query()
+async def ezhhar_prepay_pre_checkout(pre_checkout_query: PreCheckoutQuery, bot: Bot):
+    """تایید خودکار درخواست پیش‌پرداخت خدمات اظهارنامه"""
+    try:
+        await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+        logging.info(f"[EZHHAR-PREPAY] pre_checkout تایید شد برای کاربر {pre_checkout_query.from_user.id}")
+    except Exception as e:
+        logging.error(f"[EZHHAR-PREPAY] خطا در answer_pre_checkout_query: {e}")
+
+
+# هندلر successful_payment برای پرداخت پیش‌ثبت اظهارنامه — تشخیص خودکار
+@ezhharnameh_router.message(Form.waiting_for_ezhhar_prepay, F.successful_payment)
+async def ezhhar_prepay_successful_payment(message: Message, state: FSMContext, bot: Bot):
+    """پرداخت موفق خدمات اظهارنامه — تشخیص خودکار توسط بله"""
+    user_id = message.from_user.id
+    data = await state.get_data()
+    payment = message.successful_payment
+    fee = EZHHARNAMEH_SERVICE_FEE
+
+    logging.info(f"[EZHHAR-PREPAY] پرداخت خودکار تشخیص داده شد برای کاربر {user_id}")
+
+    await message.answer(
+        f"✅ *پرداخت تایید شد!*",
+        parse_mode="Markdown"
+    )
+    await message.answer(
+        f"💰 مبلغ: *{fee:,} تومان*\n\n"
+        f"📝 نوع: *ثبت اظهارنامه*\n\n"
+        f"⏳ درخواست شما در حال ارسال به سامانه قضایی است...",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+    await log_event(
+        "پرداخت", "اظهارنامه", message.from_user.full_name, user_id,
+        doc_name="خدمات ثبت اظهارنامه", payment_status="پرداخت شده (کیف پول بله - پیش‌ثبت)",
+        note=f"مبلغ: {fee:,} تومان | Bale payment_id: {payment.telegram_payment_charge_id}"
+    )
+
+    try:
+        admin_msg = (
+            f"💰 پرداخت خدمات ثبت اظهارنامه (تشخیص خودکار):\n\n"
+            f"👤 کاربر: {message.from_user.full_name} ({user_id})\n"
+            f"💰 مبلغ: {fee:,} تومان\n"
+            f"⏱ زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}\n"
+            f"🎫 payment_id: {payment.telegram_payment_charge_id}"
+        )
+        await bot.send_message(ADMIN_ID, admin_msg)
+    except Exception as e:
+        logging.error(f"[EZHHAR-PREPAY] خطا در ارسال اطلاع به ادمین: {e}", exc_info=True)
+
+    await _send_ezhhar_task_to_queue(data, user_id)
+    await state.clear()
+
+
+# هندلر دکمه «پرداخت انجام شد» — فال‌بک
+@ezhharnameh_router.callback_query(F.data == "ezhhar_prepay_done", Form.waiting_for_ezhhar_prepay)
+async def ezhhar_prepay_done_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """کاربر دکمه تایید پرداخت را زده — تایید مجدد"""
+    await callback.answer()
+    user_id = callback.from_user.id
+
+    confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ بله، پرداخت موفق بود", callback_data="ezhhar_prepay_done_confirm")],
+        [InlineKeyboardButton(text="❌ خیر، انصراف", callback_data="ezhhar_prepay_cancel")],
+    ])
+    await callback.message.answer(
+        "❓ آیا مطمئن هستید که پرداخت با موفقیت انجام شد؟\n\n"
+        "اگر پیام «پرداخت با موفقیت انجام شد» را در کیف پول بله دیده‌اید، «بله» را بزنید.",
+        reply_markup=confirm_kb
+    )
+
+
+@ezhharnameh_router.callback_query(F.data == "ezhhar_prepay_done_confirm", Form.waiting_for_ezhhar_prepay)
+async def ezhhar_prepay_done_confirm_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """تایید نهایی — ارسال به صف پردازش"""
+    await callback.answer()
+    user_id = callback.from_user.id
+    data = await state.get_data()
+    fee = EZHHARNAMEH_SERVICE_FEE
+
+    logging.info(f"[EZHHAR-PREPAY] تایید نهایی پرداخت برای کاربر {user_id}")
+
+    await callback.message.answer(
+        f"✅ *پرداخت تایید شد!*\n\n"
+        f"💰 مبلغ: {fee:,} تومان\n\n"
+        f"⏳ درخواست شما در حال ارسال به سامانه قضایی است...",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+    await log_event(
+        "پرداخت", "اظهارنامه", callback.from_user.full_name, user_id,
+        doc_name="خدمات ثبت اظهارنامه", payment_status="پرداخت شده (تایید دستی کاربر - پیش‌ثبت)",
+        note=f"مبلغ: {fee:,} تومان"
+    )
+
+    try:
+        admin_msg = (
+            f"💰 پرداخت خدمات ثبت اظهارنامه (تایید دستی):\n\n"
+            f"👤 کاربر: {callback.from_user.full_name} ({user_id})\n"
+            f"💰 مبلغ: {fee:,} تومان\n"
+            f"⏱ زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}"
+        )
+        await bot.send_message(ADMIN_ID, admin_msg)
+    except Exception as e:
+        logging.error(f"[EZHHAR-PREPAY] خطا در ارسال اطلاع به ادمین: {e}")
+
+    await _send_ezhhar_task_to_queue(data, user_id)
+    await state.clear()
+
+
+@ezhharnameh_router.callback_query(F.data == "ezhhar_prepay_cancel", Form.waiting_for_ezhhar_prepay)
+async def ezhhar_prepay_cancel_callback(callback: CallbackQuery, state: FSMContext):
+    """انصراف از پرداخت خدمات"""
+    await callback.answer()
+    await callback.message.answer(
+        "لغو گردید. لطفاً مجدداً شروع کنید:",
+        reply_markup=main_menu_kb
+    )
+    await state.clear()
+
+
+@ezhharnameh_router.message(Form.waiting_for_ezhhar_prepay)
+async def ezhhar_prepay_waiting_message(message: Message):
+    """در حال انتظار پرداخت — پرداخت از طریق فاکتور بله انجام می‌شود"""
+    if message.text and "انصراف" in message.text:
+        pass
+    else:
+        await message.answer("⏳ لطفاً فاکتور ارسال شده را در چت پرداخت کنید. نیازی به ارسال عکس رسید نیست.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
