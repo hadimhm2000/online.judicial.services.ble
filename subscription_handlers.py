@@ -27,7 +27,7 @@ import aiohttp
 import runtime_state
 from config import ADMIN_ID, BALE_API_BASE, BALE_WALLET_TOKEN, BOT_TOKEN
 from states import Form
-from keyboards import subscription_kb, flow_type_kb, restart_kb
+from keyboards import subscription_kb, flow_type_kb, restart_kb, get_flow_type_kb
 
 subscription_router = Router()
 
@@ -54,7 +54,7 @@ async def subscription_entry(message: Message, state: FSMContext):
             f"📅 تاریخ پایان: {end_str}\n"
             f"⏱ روزهای باقی‌مانده: *{remaining_days} روز*\n\n"
             f"پس از انقضای اشتراک، می‌توانید تمدید نمایید.",
-            reply_markup=flow_type_kb)
+            reply_markup=get_flow_type_kb(message.from_user.id))
         return
 
     # اگر در انتظار تایید ادمین است
@@ -62,7 +62,7 @@ async def subscription_entry(message: Message, state: FSMContext):
         await message.answer(
             "⏳ *درخواست اشتراک شما قبلاً ثبت شده و در انتظار تایید مدیریت است.*\n\n"
             "لطفاً منتظر تایید مدیریت باشید.",
-            reply_markup=flow_type_kb)
+            reply_markup=get_flow_type_kb(message.from_user.id))
         return
 
     # ذخیره مبلغ اشتراک در state برای ارسال فاکتور
@@ -85,7 +85,7 @@ async def subscription_entry(message: Message, state: FSMContext):
 @subscription_router.message(Form.subscription_main, F.text == "🔙 بازگشت به منوی اصلی")
 async def subscription_back_to_main(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("بازگشت به منوی اصلی.", reply_markup=flow_type_kb)
+    await message.answer("بازگشت به منوی اصلی.", reply_markup=get_flow_type_kb(message.from_user.id))
     await state.set_state(Form.waiting_for_flow_type)
 
 
@@ -137,7 +137,7 @@ async def subscription_online_payment(message: Message, state: FSMContext, bot: 
 async def subscription_cancel_and_back(message: Message, state: FSMContext):
     """انصراف از پرداخت اشتراک و بازگشت به منوی اصلی"""
     await state.clear()
-    await message.answer("✅ انصراف از فعال‌سازی اشتراک.\nبازگشت به منوی اصلی.", reply_markup=flow_type_kb)
+    await message.answer("✅ انصراف از فعال‌سازی اشتراک.\nبازگشت به منوی اصلی.", reply_markup=get_flow_type_kb(message.from_user.id))
     await state.set_state(Form.waiting_for_flow_type)
 
 

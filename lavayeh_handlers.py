@@ -284,11 +284,10 @@ async def lavayeh_entry(message: Message, state: FSMContext):
     user_id = message.from_user.id
     active = runtime_state.active_lavayeh_users if hasattr(runtime_state, "active_lavayeh_users") else set()
     if user_id in active:
-        await message.answer(
-            "⚠️ شما یک درخواست لایحه فعال دارید.\nلطفاً ابتدا درخواست جاری را تکمیل یا لغو کنید.",
-            reply_markup=restart_kb
-        )
-        return
+        # پاکسازی حالت گیرکرده (مثلاً بعد از قطعی/کرش ربات)
+        active.discard(user_id)
+        await state.clear()
+        logging.warning(f"[LAVAYEH] پاکسازی active_lavayeh_users گیرکرده برای user={user_id}")
 
     await state.clear()
     await state.update_data(lavayeh_persons=[], lavayeh_attachments=[], service_type="lavayeh")
