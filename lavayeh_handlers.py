@@ -1891,45 +1891,17 @@ async def lavayeh_confirm_handler(message: Message, state: FSMContext, bot: Bot)
             await state.clear()
             return
 
-        # ═══ ارسال فاکتور بله با استفاده از sendInvoice API ═══
-        fee = LAVAYEH_SERVICE_FEE
-        fee_rial = fee * 10  # تومان به ریال
-        try:
-            invoice_payload = _json.dumps({"type": "lavayeh_prepay", "uid": user_id})
-            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
-                invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
-                invoice_data = {
-                    "chat_id": user_id,
-                    "title": f"فاکتور خدمات ثبت لایحه",
-                    "description": f"هزینه خدمات ثبت لایحه\nمبلغ: {fee:,} تومان ({fee_rial:,} ریال)",
-                    "payload": invoice_payload,
-                    "provider_token": BALE_WALLET_TOKEN,
-                    "currency": "IRR",
-                    "prices": [{"label": "خدمات ثبت لایحه", "amount": fee_rial}],
-                }
-                logging.info(f"[LAVAYEH-PREPAY] ارسال sendInvoice به chat_id={user_id}, مبلغ={fee_rial:,} ریال")
-                async with session.post(invoice_url, json=invoice_data) as resp:
-                    result = await resp.json()
-                    logging.info(f"[LAVAYEH-PREPAY] پاسخ sendInvoice: {result}")
-                    if not result.get("ok"):
-                        logging.error(f"[LAVAYEH-PREPAY] خطای sendInvoice: {result}")
-                        raise Exception(result.get("description", "خطا در ارسال فاکتور"))
-        except Exception as e:
-            logging.error(f"[LAVAYEH-PREPAY] خطا در ارسال فاکتور: {e}", exc_info=True)
-            await message.answer("⚠️ خطا در ساخت فاکتور. لطفاً کمی بعد دوباره تلاش کنید.", reply_markup=lavayeh_confirm_kb)
-            return
+        # ═══ ارسال مستقیم به صف پردازش (بدون پیش‌پرداخت) ═══
+        # هزینه واقعی بعد از ثبت در سامانه و دریافت مبلغ از چاپ محاسبه و نمایش داده می‌شود
+        if not hasattr(runtime_state, "active_lavayeh_users"):
+            runtime_state.active_lavayeh_users = set()
+        runtime_state.active_lavayeh_users.add(user_id)
 
-        pay_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ پرداخت انجام شد", callback_data="lavayeh_prepay_done")],
-            [InlineKeyboardButton(text="❌ انصراف", callback_data="lavayeh_prepay_cancel")],
-        ])
         await message.answer(
-            f"⏳ فاکتور پرداخت ارسال شد.\n\n"
-            f"💰 هزینه خدمات ثبت لایحه: *{fee:,} تومان*\n\n"
-            f"پس از پرداخت موفق در کیف پول بله، ثبت لایحه به‌صورت خودکار انجام می‌شود.",
-            reply_markup=pay_kb
-        )
-        await state.set_state(Form.waiting_for_lavayeh_prepay)
+            "⏳ *درخواست شما تایید شد.*\n\nدر حال ارسال به سامانه قضایی...",
+            reply_markup=ReplyKeyboardRemove())
+        await _send_lavayeh_task_to_queue(data, user_id, title)
+        await state.clear()
         return
 
     if text == "✏️ ویرایش اطلاعات":
@@ -1952,7 +1924,6 @@ async def _send_lavayeh_task_to_queue(data: dict, user_id: int, title: str):
             "user_id": user_id,
             "query_type": "اعلام_وکالت",
             "task_type": "EALAM_VAKALAHT_SUBMIT",
-            "prepaid": True,
             "ealam_lawyers": data.get("ealam_lawyers", []),
             "ealam_contracts": data.get("ealam_contracts", []),
             "ealam_stamp_amount": data.get("ealam_stamp_amount", 0),
@@ -1973,7 +1944,6 @@ async def _send_lavayeh_task_to_queue(data: dict, user_id: int, title: str):
             "user_id": user_id,
             "query_type": "لایحه_ثبت",
             "task_type": "LAVAYEH_SUBMIT",
-            "prepaid": True,
             "lavayeh_title": data.get("lavayeh_title"),
             "lavayeh_system_title": data.get("lavayeh_system_title"),
             "lavayeh_tracking_code": data.get("lavayeh_tracking_code"),
