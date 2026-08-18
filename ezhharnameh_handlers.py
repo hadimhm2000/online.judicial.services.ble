@@ -848,45 +848,13 @@ async def ezhhar_confirm_handler(message: Message, state: FSMContext, bot: Bot):
             await state.clear()
             return
 
-        # ═══ ارسال فاکتور بله با استفاده از sendInvoice API ═══
-        fee = EZHHARNAMEH_SERVICE_FEE
-        fee_rial = fee * 10  # تومان به ریال
-        try:
-            invoice_payload = _json.dumps({"type": "ezhhar_prepay", "uid": user_id})
-            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
-                invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
-                invoice_data = {
-                    "chat_id": user_id,
-                    "title": f"فاکتور خدمات ثبت اظهارنامه",
-                    "description": f"هزینه خدمات ثبت اظهارنامه\nمبلغ: {fee:,} تومان ({fee_rial:,} ریال)",
-                    "payload": invoice_payload,
-                    "provider_token": BALE_WALLET_TOKEN,
-                    "currency": "IRR",
-                    "prices": [{"label": "خدمات ثبت اظهارنامه", "amount": fee_rial}],
-                }
-                logging.info(f"[EZHHAR-PREPAY] ارسال sendInvoice به chat_id={user_id}, مبلغ={fee_rial:,} ریال")
-                async with session.post(invoice_url, json=invoice_data) as resp:
-                    result = await resp.json()
-                    logging.info(f"[EZHHAR-PREPAY] پاسخ sendInvoice: {result}")
-                    if not result.get("ok"):
-                        logging.error(f"[EZHHAR-PREPAY] خطای sendInvoice: {result}")
-                        raise Exception(result.get("description", "خطا در ارسال فاکتور"))
-        except Exception as e:
-            logging.error(f"[EZHHAR-PREPAY] خطا در ارسال فاکتور: {e}", exc_info=True)
-            await message.answer("⚠️ خطا در ساخت فاکتور. لطفاً کمی بعد دوباره تلاش کنید.", reply_markup=ezhhar_confirm_kb)
-            return
-
-        pay_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ پرداخت انجام شد", callback_data="ezhhar_prepay_done")],
-            [InlineKeyboardButton(text="❌ انصراف", callback_data="ezhhar_prepay_cancel")],
-        ])
+        # ═══ ارسال مستقیم به صف پردازش (بدون پیش‌پرداخت) ═══
+        # هزینه واقعی بعد از ثبت در سامانه و دریافت مبلغ از چاپ محاسبه و نمایش داده می‌شود
         await message.answer(
-            f"⏳ فاکتور پرداخت ارسال شد.\n\n"
-            f"💰 هزینه خدمات ثبت اظهارنامه: *{fee:,} تومان*\n\n"
-            f"پس از پرداخت موفق در کیف پول بله، ثبت اظهارنامه به‌صورت خودکار انجام می‌شود.",
-            reply_markup=pay_kb
-        )
-        await state.set_state(Form.waiting_for_ezhhar_prepay)
+            "⏳ *درخواست شما تایید شد.*\n\nدر حال ارسال به سامانه قضایی...",
+            reply_markup=ReplyKeyboardRemove())
+        await _send_ezhhar_task_to_queue(data, user_id)
+        await state.clear()
         return
 
     if text == "✏️ ویرایش اطلاعات":
@@ -908,7 +876,6 @@ async def _send_ezhhar_task_to_queue(data: dict, user_id: int):
         "user_id": user_id,
         "query_type": "اظهارنامه_ثبت",
         "task_type": "EZHHARNAMEH_SUBMIT",
-        "prepaid": True,
         "ezhhar_declarants": data.get("ezhhar_declarants", []),
         "ezhhar_addressees": data.get("ezhhar_addressees", []),
         "ezhhar_subject": data.get("ezhhar_subject", "سایر"),
