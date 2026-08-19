@@ -292,16 +292,21 @@ async def successful_payment_handler(message: types.Message, state: FSMContext, 
     await state.clear()
 
 
-# ================= هندلر 全球 successful_payment — بدون فیلتر حالت (برای دیباگ بله) =================
+# ================= هندلر global successful_payment — بدون فیلتر حالت (برای دیباگ بله) =================
 @router.message(F.successful_payment)
 async def global_successful_payment_handler(message: types.Message, state: FSMContext, bot: Bot):
     """هندلر سراسری — اگر بله successful_payment بفرسته ولی حالت FSM نامطبق باشن"""
     current_state = await state.get_state()
     logging.warning(f"[GLOBAL-PAYMENT] successful_payment دریافت شد. user={message.from_user.id}, state={current_state}")
 
-    # ── حالت‌های پرداخت اختصاصی سرویس‌ها — نباید اینجا مداخله کنیم ──
-    if current_state in (Form.waiting_for_lavayeh_payment_receipt,
-                         Form.waiting_for_lavayeh_prepay,
+    # ── حالت‌های پرداخت لایحه/اظهارنامه — پردازش مستقیم (چون ممکن است روتر فرعی دریافت نکند) ──
+    if current_state == Form.waiting_for_lavayeh_payment_receipt:
+        from lavayeh_handlers import lavayeh_successful_payment as _lavayeh_pay
+        await _lavayeh_pay(message, state, bot)
+        return
+
+    # ── سایر حالت‌های اختصاصی — بدون مداخله ──
+    if current_state in (Form.waiting_for_lavayeh_prepay,
                          Form.waiting_for_ezhhar_prepay,
                          Form.waiting_for_ealam_payment_receipt,
                          Form.stamp_calc_waiting_payment):
