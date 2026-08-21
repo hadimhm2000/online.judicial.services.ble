@@ -307,6 +307,13 @@ async def global_successful_payment_handler(message: types.Message, state: FSMCo
         await _lavayeh_pay(message, state, bot)
         return
 
+    # ── پرداخت ارزش منطقه‌ای — پردازش مستقیم و خودکار ──
+    if current_state == Form.rv_waiting_payment:
+        from regional_value_handlers import regional_value_successful_payment as _rv_pay
+        logging.info(f"[RV-PAY] successful_payment دریافت شد و به regional_value_successful_payment ارجاع داده شد. user={message.from_user.id}")
+        await _rv_pay(message, state, bot)
+        return
+
     # ── سایر حالت‌های اختصاصی — بدون مداخله ──
     if current_state in (Form.waiting_for_lavayeh_prepay,
                          Form.waiting_for_ezhhar_prepay,
