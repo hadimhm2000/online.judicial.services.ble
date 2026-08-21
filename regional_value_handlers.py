@@ -301,6 +301,22 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
         # ── استخراج هر ۳ ارزش معاملاتی ──
         all_lu_values = extract_all_land_use_values(tax_result)
 
+        # ── بررسی: آیا اصلاً هیچ ارزشی ثبت نشده؟ ──
+        any_value_found = any(v is not None for v in all_lu_values.values())
+
+        if not any_value_found:
+            await message.answer(
+                "\U0001f6d1 منطقه مورد نظر شما در سایت اداره امور مالیاتی، ارزش منطقه‌ای ثبت نشده است.\n\n"
+                "لطفاً برای اخذ گواهی ارزش منطقه‌ای به یکی از دفاتر خدمات قضائی منطقه خود "
+                "یا اداره مالیات مراجعه فرمائید.\n\n"
+                "\U0001f4b0 ضمناً نصف مبلغ هزینه به شما عودت داده می‌شود "
+                "که به شماره زیر پیام دهید:\n"
+                "\n\U0001f4de 09306186888",
+                reply_markup=get_main_menu_kb(user_id),
+            )
+            await state.clear()
+            return
+
         # ── استخراج ارزش بر اساس کاربری انتخاب‌شده ──
         unit_value = find_land_use_value(tax_result, land_use)
 
