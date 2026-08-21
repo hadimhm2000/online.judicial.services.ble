@@ -555,17 +555,20 @@ async def _select_province(page, province: str, bot: Bot, user_id: int):
             .replace(/\\u200c/g, ' ')
             .trim();
         const normProv = normalize(prov);
-        const items = Array.from(document.querySelectorAll('.ui-select-choices-row-inner, .ui-select-choices div'));
+        // فقط ردیف‌های قابل کلیک (دارای ng-click) را انتخاب می‌کنیم
+        const items = Array.from(document.querySelectorAll('.ui-select-choices-row'));
 
         if (isTehranExcl) {
-            const target = items.find(el => el.innerText &&
-                normalize(el.innerText).includes("تهران") &&
-                (normalize(el.innerText).includes("به جز") || normalize(el.innerText).includes("بجز")));
+            const target = items.find(el => {
+                const t = normalize(el.innerText);
+                return t && t.includes("تهران") && t.includes("به جز");
+            });
             if (target) { target.click(); return; }
         } else if (isTehranCityOnly) {
-            const target = items.find(el => el.innerText &&
-                normalize(el.innerText).includes("تهران") &&
-                !normalize(el.innerText).includes("به جز") && !normalize(el.innerText).includes("بجز"));
+            const target = items.find(el => {
+                const t = normalize(el.innerText);
+                return t && t.includes("شهر تهران") && !t.includes("استان تهران");
+            });
             if (target) { target.click(); return; }
         }
 

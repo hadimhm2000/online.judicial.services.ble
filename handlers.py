@@ -45,6 +45,7 @@ from tajdid_nazar_handlers import tajdid_nazar_router
 from file_tools_handlers import file_tools_router, file_tools_entry
 from subscription_handlers import subscription_router, subscription_expiry_checker
 from check_handlers import check_router
+from regional_value_handlers import regional_value_router
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,7 @@ router.include_router(tajdid_nazar_router)
 router.include_router(file_tools_router)
 router.include_router(subscription_router)
 router.include_router(check_router)
+router.include_router(regional_value_router)
 
 
 # ── نگهبان: مسدودسازی کاربرانی که فاکتور لایحه کنسل‌شده را پرداخت نکرده‌اند ──
@@ -676,6 +678,23 @@ async def admin_upload_logs(message: types.Message, bot: Bot):
         await message.answer("ℹ️ لاگی برای ارسال نبود یا آپلود ناموفق شد.")
 
 
+@router.message(F.from_user.id == ADMIN_ID, Command("rv_check"))
+async def admin_rv_check(message: types.Message):
+    """بررسی سلامت سرویس استعلام ارزش منطقه‌ای — فقط مدیر"""
+    import subprocess, sys
+    try:
+        result = subprocess.run(
+            [sys.executable, "admin_rv_check.py"],
+            capture_output=True, text=True, timeout=60, cwd=os.path.dirname(os.path.abspath(__file__)))
+        output = result.stdout + result.stderr
+        # حداکثر ۴۰۰۰ کاراکتر برای بله
+        if len(output) > 4000:
+            output = output[:4000] + "\n... (متن کامل در لاگ)"
+        msg_header = "🔍 *بررسی سلامت ارزش منطقه‌ای*\n\n"
+        await message.answer(msg_header + "`" + output + "`")
+    except Exception as e:
+        await message.answer(f"❌ خطا در اجرای بررسی: {e}")
+
 @router.message(F.from_user.id == ADMIN_ID, Command("resume"))
 async def admin_resume_task(message: types.Message, bot: Bot):
     """مدیر می‌تواند ادامه تسک ناقص را از مرحله مشخص‌شده شروع کند"""
@@ -875,6 +894,9 @@ async def process_flow_type(message: types.Message, state: FSMContext):
             return
         from check_handlers import check_entry
         await check_entry(message, state)
+    elif "ارزش منطقه‌ای" in message.text:
+        from regional_value_handlers import regional_value_entry
+        await regional_value_entry(message, state)
     elif "ابزار فایل" in message.text:
         await file_tools_entry(message, state)
     elif "تست" in message.text and message.from_user.id == TEST_VISIBLE_USER_ID:
