@@ -24,6 +24,7 @@ def get_flow_type_kb(user_id: int) -> ReplyKeyboardMarkup:
         [KeyboardButton(text="✍️ ثبت لایحه"), KeyboardButton(text="📄 ثبت اظهارنامه")],
         [KeyboardButton(text=_tn), KeyboardButton(text=_chk)],
         [KeyboardButton(text="💰 محاسبه تمبر"), KeyboardButton(text="🔧 ابزار فایل")],
+        [KeyboardButton(text="🗺️ ارزش منطقه‌ای")],
     ]
     if _is_admin:
         rows.append([KeyboardButton(text="🧪 تست")])
