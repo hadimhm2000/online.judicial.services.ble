@@ -255,7 +255,7 @@ def find_land_use_value(tax_result: dict, land_use: str) -> int | None:
     structured = tax_result.get("فیلدهای_ساختاریافته", {})
     val = structured.get(target_key)
     if val:
-        cleaned = str(val).replace(",").replace(" ریال", "").replace("،", "").strip()
+        cleaned = str(val).replace(",", "").replace(" ریال", "").replace("،", "").strip()
         try:
             return int(cleaned)
         except (ValueError, TypeError):
@@ -265,7 +265,7 @@ def find_land_use_value(tax_result: dict, land_use: str) -> int | None:
     raw = tax_result.get("همه_فیلدهای_خام_صفحه", {})
     for key, v in raw.items():
         if target_key in normalize_persian(key):
-            cleaned = str(v).replace(",").replace(" ریال", "").replace("،", "").strip()
+            cleaned = str(v).replace(",", "").replace(" ریال", "").replace("،", "").strip()
             try:
                 return int(cleaned)
             except (ValueError, TypeError):

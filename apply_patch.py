@@ -186,8 +186,12 @@ REGIONAL_VALUE_FEE = 200000
         needed = []
         if "beautifulsoup4" not in content:
             needed.append("beautifulsoup4")
-        if "weasyprint" not in content:
-            needed.append("weasyprint")
+        if "reportlab" not in content:
+            needed.append("reportlab")
+        if "arabic_reshaper" not in content:
+            needed.append("arabic_reshaper")
+        if "python-bidi" not in content:
+            needed.append("python-bidi")
         if needed:
             content += "\n" + "\n".join(needed) + "\n"
             with open(req_path, "w", encoding="utf-8") as f:
@@ -201,8 +205,8 @@ REGIONAL_VALUE_FEE = 200000
     print("="*50)
     print("\n⚠️  اقدامات باقی‌مانده دستی:")
     print("   ۱. کلید NESHAN_API_KEY را در فایل .env خود تنظیم کنید")
-    print("   ۲. مطمئن شوید weasyprint و beautifulsoup4 نصب هستند:")
-    print("      pip install weasyprint beautifulsoup4")
+    print("   ۲. مطمئن شوید وابستگی‌های PDF نصب هستند:")
+    print("      pip install reportlab arabic_reshaper python-bidi beautifulsoup4")
     print("   ۳. ربات را ری‌استارت کنید")
 
 
