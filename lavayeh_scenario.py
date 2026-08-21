@@ -943,17 +943,26 @@ async def _select_province(page, province: str, bot: Bot, user_id: int):
             .trim();
 
         const normProvince = normalize(province);
-        const items = Array.from(document.querySelectorAll('.ui-select-choices-row-inner, .ui-select-choices div'));
+        // فقط ردیف‌های قابل کلیک (دارای ng-click) را انتخاب می‌کنیم
+        // تا از کلیک اشتباه روی div‌های والد یا سایر المان‌ها جلوگیری شود
+        const items = Array.from(document.querySelectorAll('.ui-select-choices-row'));
 
         if (isTehranExcl) {
-            const target = items.find(el => el.innerText &&
-                normalize(el.innerText).includes("تهران") &&
-                (normalize(el.innerText).includes("به جز") || normalize(el.innerText).includes("بجز")));
+            // گزینه: «واحدهای قضایی مستقر در استان تهران به جز شهر تهران»
+            // تطبیق دقیق: حتماً باید «به جز» داشته باشد
+            const target = items.find(el => {
+                const t = normalize(el.innerText);
+                return t && t.includes("تهران") && t.includes("به جز");
+            });
             if (target) { target.click(); return true; }
         } else if (isTehranCityOnly) {
-            const target = items.find(el => el.innerText &&
-                normalize(el.innerText).includes("تهران") &&
-                !normalize(el.innerText).includes("به جز") && !normalize(el.innerText).includes("بجز"));
+            // گزینه: «واحدهای قضایی مستقر در شهر تهران»
+            // تطبیق دقیق: باید «شهر تهران» داشته باشد ولی «استان تهران» نداشته باشد
+            // این تمایز ضروری است چون هر دو گزینه «شهر تهران» و «تهران» دارند
+            const target = items.find(el => {
+                const t = normalize(el.innerText);
+                return t && t.includes("شهر تهران") && !t.includes("استان تهران");
+            });
             if (target) { target.click(); return true; }
         }
 

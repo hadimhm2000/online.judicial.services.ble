@@ -261,3 +261,12 @@ class Form(StatesGroup):
     check_branch_code = State()           # انتخاب صلاحیت دادگاه (شعبه)
     check_confirm = State()               # پیش‌نمایش و تایید
     check_edit_choice = State()           # انتخاب بخش ویرایش
+
+    # =========================================================
+    # State های بخش استعلام ارزش منطقه‌ای
+    # =========================================================
+    rv_waiting_province = State()
+    rv_waiting_address = State()
+    rv_waiting_area = State()
+    rv_waiting_land_use = State()
+    rv_waiting_payment = State()
