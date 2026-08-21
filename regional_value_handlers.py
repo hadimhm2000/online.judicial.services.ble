@@ -207,6 +207,17 @@ async def process_land_use(message: Message, state: FSMContext, bot: Bot):
 
     await state.update_data(rv_land_use=land_use)
 
+    # ═══ معافیت ادمین از پرداخت ═══
+    if message.from_user.id == ADMIN_ID:
+        await message.answer(
+            "✅ *معافیت از پرداخت (ادمین)*\n\n"
+            "در حال استعلام ارزش منطقه‌ای...",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        await state.set_state(Form.rv_waiting_payment)
+        await regional_value_successful_payment(message, state, bot)
+        return
+
     # ═══ ارسال فاکتور پرداخت ═══
     fee_rial = REGIONAL_VALUE_FEE * 10  # تومان به ریال
 
@@ -237,12 +248,12 @@ async def process_land_use(message: Message, state: FSMContext, bot: Bot):
         return
 
     pay_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ پرداخت انجام شد", callback_data="pay_done")],
         [InlineKeyboardButton(text="❌ انصراف", callback_data="pay_cancel")],
     ])
     await message.answer(
         "⏳ فاکتور ارسال شد.\n"
-        "پس از پرداخت موفق در کیف پول بله، استعلام ارزش منطقه‌ای به‌صورت خودکار پردازش و ارسال می‌شود.",
+        "پس از پرداخت موفق در کیف پول بله، استعلام ارزش منطقه‌ای به‌صورت *کاملاً خودکار* پردازش و ارسال می‌شود "
+        "و نیازی به تایید دستی نیست.",
         reply_markup=pay_kb,
     )
     await state.set_state(Form.rv_waiting_payment)
@@ -373,16 +384,19 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
         # ── اطلاع به ادمین ──
         try:
             import datetime
+            is_admin_exempt = (user_id == ADMIN_ID)
+            fee_line = "معاف از پرداخت (ادمین)" if is_admin_exempt else f"{REGIONAL_VALUE_FEE:,} تومان"
+            title = "🆓 استعلام ارزش منطقه‌ای (معاف - ادمین)" if is_admin_exempt else "💰 پرداخت ارزش منطقه‌ای"
             await bot.send_message(
                 ADMIN_ID,
-                f"💰 پرداخت ارزش منطقه‌ای:\n"
+                f"{title}:\n"
                 f"👤 کاربر: {message.from_user.full_name} ({user_id})\n"
                 f"📍 استان: {province}\n"
                 f"🗺 آدرس: {address}\n"
                 f"🏗 کاربری: {land_use}\n"
                 f"📐 متراژ: {area:,.0f} متر مربع\n"
                 f"💰 ارزش کل: {total_value:,} ریال\n"
-                f"💵 هزینه: {REGIONAL_VALUE_FEE:,} تومان\n"
+                f"💵 هزینه: {fee_line}\n"
                 f"⏱ زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}",
             )
         except Exception as e:
