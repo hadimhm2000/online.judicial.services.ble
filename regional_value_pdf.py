@@ -1,19 +1,26 @@
 # -*- coding: utf-8 -*-
 """
-تولید PDF گزارش استعلام ارزش منطقه‌ای با WeasyPrint.
+تولید PDF گزارش استعلام ارزش منطقه‌ای با ReportLab (خالص پایتون، بدون وابستگی GTK).
 
 هدر: عکس واقعی اسکرین‌شات سامانه مالیاتی
 بدنه: تمام اطلاعات ساختاریافته از tax.gov.ir
 پایان: استان، آدرس، متراژ + محاسبه ارزش کل برای هر ۳ کاربری
 """
 
-import base64
 import datetime
-import html as html_lib
 import logging
 import os
 
-from weasyprint import HTML
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import (
+    SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image,
+    KeepTogether,
+)
+from reportlab.lib.styles import ParagraphStyle
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +35,6 @@ _PERSIAN_MONTHS = [
     "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند"
 ]
 _PERSIAN_DIGITS = "۰۱۲۳۴۵۶۷۸۹"
-
 
 # ═══ فیلدهای بخش اطلاعات مکان (۹ فیلد اول) ═══
 SYSTEM_FIELDS = [
@@ -49,6 +55,58 @@ VALUE_FIELDS = [
     "ارزش معاملاتی اداری",
     "ارزش معاملاتی تجاری",
 ]
+
+# ═══ رنگ‌ها ═══
+CLR_DARK_BLUE = colors.HexColor("#1a3a5c")
+CLR_BLUE = colors.HexColor("#2c5282")
+CLR_LIGHT_BLUE_BG = colors.HexColor("#f5f9fc")
+CLR_BLUE_BORDER = colors.HexColor("#8faabe")
+CLR_SEC_HEADER_BG = colors.HexColor("#d6e4f0")
+CLR_SEC_BLUE_BG = colors.HexColor("#c5d9ed")
+CLR_GREEN_BORDER = colors.HexColor("#8aaa8a")
+CLR_GREEN_HEADER_BG = colors.HexColor("#d4edda")
+CLR_GREEN_LABEL_BG = colors.HexColor("#f0f7f0")
+CLR_GREEN_TEXT = colors.HexColor("#155724")
+CLR_SELECTED_BG = colors.HexColor("#fff3cd")
+CLR_FOOTER_TEXT = colors.HexColor("#aaaaaa")
+CLR_TOTAL_BG = colors.HexColor("#1a3a5c")
+CLR_DATE_BG = colors.HexColor("#f0f0f0")
+CLR_DARK_BG = colors.HexColor("#1a1a2e")
+CLR_LIGHT_BLUE_TEXT = colors.HexColor("#a8c8f0")
+
+# ═══ ثبات فونت ═══
+_font_registered = False
+_FONT_NAME = "Tahoma"
+
+
+def _ensure_font():
+    """ثبت فونت فارسی (یک‌بار)."""
+    global _font_registered, _FONT_NAME
+    if _font_registered:
+        return
+
+    # لیست فونت‌های فارسی به ترتیب اولویت (ویندوز)
+    _font_candidates = [
+        ("C:\\Windows\\Fonts\\tahoma.ttf", "Tahoma"),
+        ("C:\\Windows\\Fonts\\tahomabd.ttf", "TahomaBold"),
+        ("C:\\Windows\\Fonts\\BNAZANIN.TTF", "BNazanin"),
+        ("C:\\Windows\\Fonts\\B MITRA.TTF", "BMitra"),
+        ("/usr/share/fonts/truetype/chinese/NotoSansSC-Regular.ttf", "NotoSansSC"),
+    ]
+
+    for path, name in _font_candidates:
+        if os.path.exists(path):
+            try:
+                pdfmetrics.registerFont(TTFont(name, path))
+                if name == "NotoSansSC":
+                    _FONT_NAME = name
+                logger.info(f"[RV-PDF] فونت {name} از {path} ثبت شد")
+            except Exception as e:
+                logger.warning(f"[RV-PDF] خطا در ثبت فونت {path}: {e}")
+            continue
+
+    # اگر هیچکدام پیدا نشد، هندل خطا در سطح بالاتر
+    _font_registered = True
 
 
 def _to_pd(n) -> str:
@@ -112,18 +170,39 @@ def _fmt(n: int) -> str:
     return f"{n:,}".translate(str.maketrans("0123456789", _PERSIAN_DIGITS))
 
 
-def _esc(s: str) -> str:
-    return html_lib.escape(s or "", quote=True)
+def _bidi(text: str) -> str:
+    """اعمال الگوریتم BiDi و تغییر شکل حروف عربی/فارسی."""
+    if not text:
+        return text
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        reshaped = arabic_reshaper.reshape(text)
+        return get_display(reshaped)
+    except ImportError:
+        logger.warning("[RV-PDF] arabic_reshaper یا python-bidi نصب نیست; متن بدون BiDi استفاده می‌شود")
+        return text
 
 
-def _header_base64(image_path: str) -> str:
-    """خواندن عکس هدر و تبدیل به base64 data-uri."""
-    if not os.path.exists(image_path):
-        logger.warning(f"[RV-PDF] عکس هدر یافت نشد: {image_path}")
-        return ""
-    with open(image_path, "rb") as f:
-        data = base64.b64encode(f.read()).decode("ascii")
-    return f"data:image/jpeg;base64,{data}"
+def _get_style(font_size=10, bold=False, color=None, align="right") -> ParagraphStyle:
+    """ساخت یا بازیابی ParagraphStyle برای متن فارسی RTL."""
+    clr = color or colors.black
+    return ParagraphStyle(
+        name=f"rv_{font_size}_{bold}_{align}_{clr.hexval() if hasattr(clr, 'hexval') else clr}",
+        fontName=_FONT_NAME,
+        fontSize=font_size,
+        leading=font_size * 1.5,
+        alignment={'right': 2, 'center': 1, 'left': 0}.get(align, 2),
+        textColor=clr,
+        wordWrap='RTL',
+    )
+
+
+def _p(text: str, font_size=10, bold=False, color=None, align="right") -> Paragraph:
+    """ساخت پاراگراف فارسی RTL."""
+    bidi_text = _bidi(str(text))
+    style = _get_style(font_size=font_size, bold=bold, color=color, align=align)
+    return Paragraph(bidi_text, style=style)
 
 
 def _get_field_value(tax_result: dict, field_name: str) -> str:
@@ -151,6 +230,55 @@ def _get_field_value(tax_result: dict, field_name: str) -> str:
     return "-"
 
 
+def _make_section_header(title: str, bg_color, border_color, text_color):
+    """ساخت هدر یک بخش (نوار رنگی با عنوان)."""
+    t = Table(
+        [[_p(title, font_size=10, bold=True, color=text_color)]],
+        colWidths=[A4[0] - 20 * mm],
+        rowHeights=[8 * mm],
+    )
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), bg_color),
+        ("BOX", (0, 0), (-1, -1), 0.5, border_color),
+        ("TOPPADDING", (0, 0), (-1, -1), 2 * mm),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2 * mm),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4 * mm),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4 * mm),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    return t
+
+
+def _make_data_table(rows_data: list, label_bg, label_color, border_color):
+    """
+    rows_data: لیستی از تاپل‌ها [(label, value), ...]
+    خروجی: Table با ستون برچسب و مقدار
+    """
+    col_w = (A4[0] - 20 * mm) / 2
+    table_data = []
+    for label, value in rows_data:
+        table_data.append([
+            _p(label, font_size=9.5, bold=True, color=label_color),
+            _p(str(value) if value else "-", font_size=9.5, color=colors.black),
+        ])
+
+    t = Table(table_data, colWidths=[col_w, col_w])
+    style_cmds = [
+        ("GRID", (0, 0), (-1, -1), 0.5, border_color),
+        ("TOPPADDING", (0, 0), (-1, -1), 2 * mm),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2 * mm),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3 * mm),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3 * mm),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]
+    # پس‌زمینه ستون برچسب
+    for i in range(len(table_data)):
+        style_cmds.append(("BACKGROUND", (0, i), (0, i), label_bg))
+
+    t.setStyle(TableStyle(style_cmds))
+    return t
+
+
 def build_regional_value_pdf(
     tax_result: dict,
     province: str,
@@ -163,7 +291,7 @@ def build_regional_value_pdf(
     all_land_use_values: dict = None,
 ) -> bool:
     """
-    ساخت PDF گزارش ارزش منطقه‌ای.
+    ساخت PDF گزارش ارزش منطقه‌ای با ReportLab.
 
     Args:
         tax_result: دیکشنری ساختاریافته خروجی build_full_result()
@@ -180,302 +308,201 @@ def build_regional_value_pdf(
     Returns:
         True در صورت موفقیت
     """
+    _ensure_font()
+
     date_str = _get_persian_date()
     time_str = _get_persian_time()
     tax_year = tax_result.get("سال", "1405")
-
-    # عکس هدر
-    img_path = header_image_path or DEFAULT_HEADER_IMAGE
-    header_b64 = _header_base64(img_path)
-
-    # ═══ ساخت ردیف‌های اطلاعات مکان انتخابی ═══
-    system_rows = ""
-    for field in SYSTEM_FIELDS:
-        val = _get_field_value(tax_result, field)
-        system_rows += f"""
-                <tr>
-                    <td class="field-label">{_esc(field)}</td>
-                    <td class="field-value">{_esc(val)}</td>
-                </tr>"""
-
-    # ═══ ساخت ردیف‌های ارزش معاملاتی ═══
-    value_rows = ""
-    for field in VALUE_FIELDS:
-        val = _get_field_value(tax_result, field)
-        value_rows += f"""
-                <tr>
-                    <td class="field-label">{_esc(field)}</td>
-                    <td class="field-value">{_esc(val)}</td>
-                </tr>"""
-
-    # مقدار واحد کاربری انتخاب‌شده
     unit_value = int(total_value // area) if area > 0 else 0
-
-    # هر ۳ ارزش کل
-    all_totals_html = ""
     all_values = all_land_use_values or {}
+
+    elements = []
+    pw = A4[0]  # عرض صفحه
+    usable_w = pw - 20 * mm  # عرض قابل استفاده
+
+    # ═══ ۱. هدر (عکس یا متنی) ═══
+    img_path = header_image_path or DEFAULT_HEADER_IMAGE
+    if os.path.exists(img_path):
+        try:
+            img = Image(img_path, width=usable_w, height=30 * mm)
+            img.hAlign = "CENTER"
+            elements.append(img)
+        except Exception as e:
+            logger.warning(f"[RV-PDF] خطا در بارگذاری عکس هدر: {e}")
+            elements.append(_make_text_header(usable_w))
+    else:
+        elements.append(_make_text_header(usable_w))
+
+    # ═══ ۲. نوار عنوان ═══
+    title_text = f"جستجوی بلوک و ردیف و اداره مالیاتی مرتبط — سال {tax_year}"
+    title_tbl = Table(
+        [[_p(title_text, font_size=11, bold=True, color=colors.white, align="center")]],
+        colWidths=[usable_w],
+        rowHeights=[9 * mm],
+    )
+    title_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), CLR_BLUE),
+        ("TOPPADDING", (0, 0), (-1, -1), 2 * mm),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2 * mm),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    elements.append(title_tbl)
+
+    # ═══ ۳. نوار تاریخ ═══
+    time_text = f"ساعت: {time_str}"
+    date_tbl = Table(
+        [[_p(date_str, font_size=8, color=colors.HexColor("#333333")),
+          _p(time_text, font_size=8, color=colors.HexColor("#333333"), align="left")]],
+        colWidths=[usable_w / 2, usable_w / 2],
+        rowHeights=[6 * mm],
+    )
+    date_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), CLR_DATE_BG),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.HexColor("#dddddd")),
+        ("TOPPADDING", (0, 0), (-1, -1), 1.5 * mm),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5 * mm),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3 * mm),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3 * mm),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    elements.append(date_tbl)
+
+    elements.append(Spacer(1, 3 * mm))
+
+    # ═══ ۴. بخش اول: اطلاعات مکان انتخابی ═══
+    elements.append(_make_section_header(
+        "اطلاعات مکان انتخابی", CLR_SEC_HEADER_BG, CLR_BLUE_BORDER, CLR_DARK_BLUE
+    ))
+    system_rows = [(f, _get_field_value(tax_result, f)) for f in SYSTEM_FIELDS]
+    elements.append(_make_data_table(system_rows, CLR_LIGHT_BLUE_BG, CLR_DARK_BLUE, CLR_BLUE_BORDER))
+
+    elements.append(Spacer(1, 3 * mm))
+
+    # ═══ ۵. بخش دوم: ارزش معاملاتی ═══
+    elements.append(_make_section_header(
+        "ارزش معاملاتی", CLR_SEC_BLUE_BG, CLR_BLUE_BORDER, CLR_DARK_BLUE
+    ))
+    value_rows = [(f, _get_field_value(tax_result, f)) for f in VALUE_FIELDS]
+    elements.append(_make_data_table(value_rows, CLR_LIGHT_BLUE_BG, CLR_DARK_BLUE, CLR_BLUE_BORDER))
+
+    elements.append(Spacer(1, 3 * mm))
+
+    # ═══ ۶. بخش سوم: مشخصات درخواست ═══
+    elements.append(_make_section_header(
+        "مشخصات درخواست", CLR_GREEN_HEADER_BG, CLR_GREEN_BORDER, CLR_GREEN_TEXT
+    ))
+
+    request_data = [
+        ("استان", province),
+        ("آدرس اعلام‌شده", address),
+        ("متراژ عرصه", f"{_to_pd(int(area))} متر مربع"),
+        ("کاربری انتخاب‌شده", f"{land_use} ★"),
+    ]
+
+    # ردیف‌های ارزش کل هر کاربری
     for lu_name, lu_val in all_values.items():
         if lu_val is not None:
             lu_total = int(lu_val * area)
-            is_selected = (lu_name == land_use)
-            row_class = "selected-row" if is_selected else ""
-            star = " ★" if is_selected else ""
-            all_totals_html += f"""
-                    <tr class="{row_class}">
-                        <td class="field-label">ارزش کل {lu_name}{star}</td>
-                        <td class="field-value">{_fmt(lu_total)} ریال</td>
-                    </tr>"""
+            star = " ★" if lu_name == land_use else ""
+            request_data.append((f"ارزش کل {lu_name}{star}", f"{_fmt(lu_total)} ریال"))
 
-    # هدر
-    if header_b64:
-        header_html = f"""    <div class="header-img-wrap">
-        <img src="{header_b64}" class="header-img" alt="هدر سامانه مالیاتی">
-    </div>"""
-    else:
-        header_html = f"""    <div class="header-fallback">
-        <div class="header-fallback-right">
-            <div class="org-main">وزارت امور اقتصادی و دارایی</div>
-            <div class="org-sub">سازمان امور مالیاتی کشور</div>
-        </div>
-    </div>"""
+    request_table = _make_data_table(
+        request_data, CLR_GREEN_LABEL_BG, CLR_GREEN_TEXT, CLR_GREEN_BORDER
+    )
 
-    html_content = f"""<!DOCTYPE html>
-<html dir="rtl" lang="fa">
-<head>
-<meta charset="utf-8">
-<style>
-    @page {{
-        size: A4;
-        margin: 0;
-    }}
-    * {{
-        box-sizing: border-box;
-    }}
-    body {{
-        margin: 0;
-        padding: 0;
-        font-family: 'Noto Sans SC', 'Vazirmatn', Tahoma, 'B Nazanin', Arial, sans-serif;
-        direction: rtl;
-        color: #000;
-        background: #fff;
-    }}
+    # هایلایت ردیف کاربری انتخاب‌شده (ردیف شماره ۴ — ایندکس ۳)
+    sel_idx = None
+    for i, (lbl, _) in enumerate(request_data):
+        if "★" in lbl:
+            sel_idx = i
+            break
+    if sel_idx is not None:
+        extra = TableStyle([
+            ("BACKGROUND", (0, sel_idx), (-1, sel_idx), CLR_SELECTED_BG),
+        ])
+        request_table.setStyle(extra)
 
-    /* ═══ هدر عکس واقعی ═══ */
-    .header-img-wrap {{
-        width: 100%;
-        overflow: hidden;
-        line-height: 0;
-    }}
-    .header-img {{
-        width: 100%;
-        height: auto;
-        display: block;
-    }}
+    elements.append(request_table)
 
-    /* ═══ هدر متنی (فال‌بک) ═══ */
-    .header-fallback {{
-        background: #1a1a2e;
-        color: #fff;
-        padding: 18px 30px 14px;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        min-height: 90px;
-        border-bottom: 3px solid #4a90d9;
-    }}
-    .org-main {{ font-size: 15px; font-weight: 700; margin-bottom: 4px; }}
-    .org-sub {{ font-size: 18px; font-weight: 700; color: #a8c8f0; }}
+    elements.append(Spacer(1, 6 * mm))
 
-    /* ═══ نوار عنوان و تاریخ ═══ */
-    .title-bar {{
-        background: #2c5282;
-        color: #fff;
-        padding: 10px 24px;
-        font-size: 15px;
-        font-weight: 700;
-        text-align: center;
-    }}
-    .date-bar {{
-        background: #f0f0f0;
-        color: #333;
-        padding: 6px 24px;
-        font-size: 12px;
-        display: flex;
-        justify-content: space-between;
-        border-bottom: 1px solid #ddd;
-    }}
+    # ═══ ۷. ارزش کل ═══
+    total_calc = f"{_to_pd(int(area))} متر مربع × {_fmt(unit_value)} ریال = {_fmt(total_value)} ریال"
+    total_tbl = Table(
+        [
+            [_p(f"مبلغ ارزش منطقه‌ای کل ({land_use})", font_size=10, bold=True, color=colors.white, align="center")],
+            [_p(f"{_fmt(total_value)} ریال", font_size=16, bold=True, color=colors.white, align="center")],
+            [_p(total_calc, font_size=8, color=colors.HexColor("#b0c4de"), align="center")],
+        ],
+        colWidths=[usable_w],
+        rowHeights=[7 * mm, 12 * mm, 6 * mm],
+    )
+    total_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), CLR_TOTAL_BG),
+        ("TOPPADDING", (0, 0), (-1, -1), 2 * mm),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2 * mm),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4 * mm),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4 * mm),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ROUNDEDCORNERS", [3, 3, 3, 3]),
+    ]))
+    elements.append(total_tbl)
 
-    /* ═══ محتوا ═══ */
-    .content {{
-        padding: 14px 24px 20px;
-    }}
+    elements.append(Spacer(1, 8 * mm))
 
-    /* ═══ جدول اطلاعات ═══ */
-    .section-header {{
-        background: #d6e4f0;
-        font-weight: 700;
-        font-size: 13px;
-        padding: 8px 12px;
-        border: 1px solid #8faabe;
-        border-bottom: none;
-        color: #1a3a5c;
-    }}
-    .section-header-blue {{
-        background: #c5d9ed;
-        font-weight: 700;
-        font-size: 13px;
-        padding: 8px 12px;
-        border: 1px solid #8faabe;
-        border-bottom: none;
-        color: #1a3a5c;
-    }}
-    .section-header-green {{
-        background: #d4edda;
-        font-weight: 700;
-        font-size: 13px;
-        padding: 8px 12px;
-        border: 1px solid #8aaa8a;
-        border-bottom: none;
-        color: #155724;
-    }}
-    table.info-list {{
-        width: 100%;
-        border-collapse: collapse;
-    }}
-    table.info-list td {{
-        border: 1px solid #8faabe;
-        padding: 6px 12px;
-        font-size: 12.5px;
-        vertical-align: middle;
-    }}
-    table.info-list td.field-label {{
-        width: 50%;
-        font-weight: 700;
-        background: #f5f9fc;
-        color: #1a3a5c;
-    }}
-    table.info-list td.field-value {{
-        width: 50%;
-        color: #000;
-    }}
+    # ═══ ۸. فوتر ═══
+    footer_tbl = Table(
+        [[_p(
+            "این گزارش صرفاً بر اساس استعلام از سامانه سازمان امور مالیاتی کشور تولید شده و جنبه اطلاع‌رسانی دارد.",
+            font_size=7, color=CLR_FOOTER_TEXT, align="center"
+        )]],
+        colWidths=[usable_w],
+    )
+    footer_tbl.setStyle(TableStyle([
+        ("LINEABOVE", (0, 0), (-1, 0), 0.5, colors.HexColor("#e0e0e0")),
+        ("TOPPADDING", (0, 0), (-1, -1), 2 * mm),
+    ]))
+    elements.append(footer_tbl)
 
-    /* جدول سبز (مشخصات درخواست) */
-    table.request-table td {{
-        border-color: #8aaa8a;
-    }}
-    table.request-table td.field-label {{
-        background: #f0f7f0;
-        color: #155724;
-    }}
-
-    /* ردیف انتخاب‌شده (کاربری انتخاب‌شده) */
-    tr.selected-row td {{
-        background: #fff3cd !important;
-        font-weight: 700;
-    }}
-
-    /* ═══ ارزش کل ═══ */
-    .total-box {{
-        margin-top: 16px;
-        background: #1a3a5c;
-        color: #fff;
-        border-radius: 6px;
-        padding: 14px 20px;
-        text-align: center;
-    }}
-    .total-label {{ font-size: 13px; margin-bottom: 4px; opacity: 0.9; }}
-    .total-amount {{ font-size: 20px; font-weight: 700; }}
-    .total-calc {{ font-size: 11px; margin-top: 4px; opacity: 0.7; }}
-
-    /* فوتر */
-    .footer {{
-        margin-top: 20px;
-        text-align: center;
-        font-size: 9.5px;
-        color: #aaa;
-        padding: 8px;
-        border-top: 1px solid #e0e0e0;
-    }}
-</style>
-</head>
-<body>
-
-{header_html}
-
-<!-- نوار عنوان -->
-<div class="title-bar">جستجوی بلوک و ردیف و اداره مالیاتی مرتبط — سال {_esc(tax_year)}</div>
-
-<!-- نوار تاریخ -->
-<div class="date-bar">
-    <span>{date_str}</span>
-    <span>ساعت: {time_str}</span>
-</div>
-
-<!-- محتوا -->
-<div class="content">
-
-    <!-- ═══ بخش اول: اطلاعات مکان انتخابی ═══ -->
-    <div class="section-header">اطلاعات مکان انتخابی</div>
-    <table class="info-list">
-        <tbody>
-            {system_rows}
-        </tbody>
-    </table>
-
-    <!-- ═══ بخش دوم: ارزش معاملاتی ═══ -->
-    <div class="section-header-blue" style="margin-top: 4px;">ارزش معاملاتی</div>
-    <table class="info-list">
-        <tbody>
-            {value_rows}
-        </tbody>
-    </table>
-
-    <!-- ═══ بخش سوم: مشخصات درخواست ═══ -->
-    <div class="section-header-green" style="margin-top: 4px;">مشخصات درخواست</div>
-    <table class="info-list request-table">
-        <tbody>
-            <tr>
-                <td class="field-label">استان</td>
-                <td class="field-value">{_esc(province)}</td>
-            </tr>
-            <tr>
-                <td class="field-label">آدرس اعلام‌شده</td>
-                <td class="field-value">{_esc(address)}</td>
-            </tr>
-            <tr>
-                <td class="field-label">متراژ عرصه</td>
-                <td class="field-value">{_to_pd(int(area))} متر مربع</td>
-            </tr>
-            <tr>
-                <td class="field-label">کاربری انتخاب‌شده</td>
-                <td class="field-value">{_esc(land_use)} ★</td>
-            </tr>
-            {all_totals_html}
-        </tbody>
-    </table>
-
-    <!-- ═══ ارزش کل ═══ -->
-    <div class="total-box">
-        <div class="total-label">مبلغ ارزش منطقه‌ای کل ({_esc(land_use)})</div>
-        <div class="total-amount">{_fmt(total_value)} ریال</div>
-        <div class="total-calc">
-            {_to_pd(int(area))} متر مربع × {_fmt(unit_value)} ریال = {_fmt(total_value)} ریال
-        </div>
-    </div>
-
-    <div class="footer">
-        این گزارش صرفاً بر اساس استعلام از سامانه سازمان امور مالیاتی کشور تولید شده و جنبه اطلاع‌رسانی دارد.
-    </div>
-</div>
-
-</body>
-</html>"""
-
+    # ═══ ساخت PDF ═══
     try:
-        html_doc = HTML(string=html_content)
-        html_doc.write_pdf(output_path)
+        doc = SimpleDocTemplate(
+            output_path,
+            pagesize=A4,
+            leftMargin=10 * mm,
+            rightMargin=10 * mm,
+            topMargin=5 * mm,
+            bottomMargin=5 * mm,
+        )
+        doc.build(elements)
         logger.info(f"[RV-PDF] PDF ساخته شد: {output_path}")
         return True
     except Exception as e:
         logger.error(f"[RV-PDF] خطا در ساخت PDF: {e}", exc_info=True)
         return False
+
+
+def _make_text_header(usable_w) -> Table:
+    """هدر متنی فال‌بک (وقتی عکس وجود نداشته باشد)."""
+    header_tbl = Table(
+        [[
+            _p("وزارت امور اقتصادی و دارایی", font_size=11, bold=True, color=colors.white),
+            _p("", font_size=1),  # spacer
+        ],
+        [
+            _p("سازمان امور مالیاتی کشور", font_size=14, bold=True, color=CLR_LIGHT_BLUE_TEXT),
+            _p("", font_size=1),
+        ]],
+        colWidths=[usable_w * 0.7, usable_w * 0.3],
+        rowHeights=[6 * mm, 8 * mm],
+    )
+    header_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), CLR_DARK_BG),
+        ("LINEBELOW", (0, 0), (-1, -1), 2, colors.HexColor("#4a90d9")),
+        ("TOPPADDING", (0, 0), (-1, -1), 2 * mm),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2 * mm),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5 * mm),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5 * mm),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    return header_tbl

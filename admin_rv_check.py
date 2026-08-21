@@ -42,7 +42,7 @@ def run_all_checks() -> list[dict]:
     # ═══ تست ۱: وابستگی‌ها ═══
     t0 = time.time()
     missing_deps = []
-    for mod_name in ["requests", "bs4", "weasyprint"]:
+    for mod_name in ["requests", "bs4", "reportlab", "arabic_reshaper", "bidi"]:  # bidi = python-bidi
         try:
             __import__(mod_name)
         except ImportError:

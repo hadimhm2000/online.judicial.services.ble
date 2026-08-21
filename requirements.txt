@@ -8,5 +8,8 @@ pytesseract==0.3.13
 opencv-python==4.10.0.84
 openpyxl==3.1.5
 PyMuPDF==1.24.9
-weasyprint==62.3
+# weasyprint==62.3  ← حذف شد: نیاز به GTK3 بومی روی ویندوز دارد
+reportlab>=4.0.0
+arabic_reshaper>=3.0.0
+python-bidi>=0.6.0
 requests
