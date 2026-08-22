@@ -134,13 +134,43 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
             return
 
         # لایحه: فیلد ورودی کدرهگیری #billNo
+        # FIX: استفاده از page.evaluate به جای page.fill برای سازگاری کامل با AngularJS
+        # و جلوگیری از خطای Frame.fill() missing 'value' در صورت وجود فریم/iframe
         if category == "لایحه" or (
             category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
         ):
-            await page.fill('#billNo', tracking_code)
+            fill_selector = '#billNo'
         else:
-            selector = '#txtPetitionNo, #billNo'
-            await page.fill(selector, tracking_code)
+            fill_selector = '#txtPetitionNo, #billNo'
+
+        fill_ok = await page.evaluate('''(args) => {
+            const sel = args.sel;
+            const val = args.val;
+            const el = document.querySelector(sel);
+            if (!el) return false;
+            el.focus();
+            el.value = val;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            try {
+                const scope = angular.element(el).scope();
+                if (scope) {
+                    scope.$apply(() => {
+                        const key = el.getAttribute('ng-model');
+                        if (key) {
+                            const parts = key.split('.');
+                            let obj = scope;
+                            for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
+                            obj[parts[parts.length - 1]] = val;
+                        }
+                    });
+                }
+            } catch(e) {}
+            el.dispatchEvent(new Event('blur', { bubbles: true }));
+            return true;
+        }''', {"sel": fill_selector, "val": tracking_code})
+        if not fill_ok:
+            logging.warning(f"[PRE_CHECK] fill failed for selector '{fill_selector}'")
         await asyncio.sleep(1.5)
 
         # ── ۴. کلیک جستجو ────────────────────────────────────────
@@ -325,14 +355,60 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
     except Exception as e:
         logging.error(f"[PRE_CHECK] خطا در تب جدید: {e}")
 
+        # FIX: منطق تلاش مجدد — ریلود صفحه و تلاش مجدد یک‌بار
+        if not _retry:
+            logging.warning(f"[PRE_CHECK] تلاش مجدد با ریلود صفحه (کد: {tracking_code})")
+            try:
+                if page:
+                    await page.reload(timeout=30000, wait_until="domcontentloaded")
+                    await asyncio.sleep(5)
+            except Exception:
+                pass
+            # بستن تب فعلی و ایجاد تب جدید
+            try:
+                if page:
+                    await page.close()
+            except Exception:
+                pass
+            try:
+                from bug_reporter import report_bug
+                await report_bug(bot, where="_process_pre_check_on_new_page (retry)", error=e,
+                                 user_id=user_id,
+                                 page=getattr(runtime_state, "sana_page", None))
+            except Exception:
+                pass
+            await bot.send_message(ADMIN_ID, f"⚠️ [PRE_CHECK] خطا، تلاش مجدد با ریلود: {e}")
+            # تلاش مجدد خودکار
+            return await _process_pre_check_on_new_page(data, bot, _retry=True)
+
+        # تلاش دوم هم ناموفق بود — اطلاع به مدیر برای لاگین مجدد
+        logging.error(f"[PRE_CHECK] تلاش مجدد پس از ریلود هم ناموفق (کد: {tracking_code})")
         try:
             from bug_reporter import report_bug
-            await report_bug(bot, where="_process_pre_check_on_new_page", error=e,
+            await report_bug(bot, where="_process_pre_check_on_new_page (final)", error=e,
                              user_id=user_id,
                              page=getattr(runtime_state, "sana_page", None))
         except Exception:
             pass
-        await bot.send_message(ADMIN_ID, f"❌ [PRE_CHECK] خطا: {e}")
+        await bot.send_message(ADMIN_ID, f"❌ [PRE_CHECK] خطا پس از ریلود: {e} — نیاز به لاگین مجدد")
+
+        # بررسی آیا مشکل انقضای نشست است
+        is_login_page = False
+        if page:
+            try:
+                is_login_page = await page.query_selector('#txtUsername') is not None or is_login_redirect_url(page.url)
+            except Exception:
+                pass
+
+        if is_login_page:
+            await handle_session_expired(bot, user_id, page=page)
+            try:
+                await page.close()
+            except Exception:
+                pass
+            # تلاش سوم پس از لاگین مجدد مدیر
+            return await _process_pre_check_on_new_page(data, bot, _retry=True)
+
         await bot.send_message(
             user_id,
             "⚠️ خطا در استعلام پیوست‌ها. لطفاً دوباره تلاش کنید."
