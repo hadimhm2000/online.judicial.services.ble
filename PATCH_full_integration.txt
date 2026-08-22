@@ -1,0 +1,164 @@
+پچ کامل اتصال — مرحلهٔ ۳ (اعتبارسنجی) + مرحلهٔ ۴ (پردازش واقعی) به ربات
+──────────────────────────────────────────────────────────────────────────
+سه فایل نیاز به تغییر دارند: lavayeh_handlers.py و handlers.py
+(ezhharnameh_handlers.py نیازی به تغییر ندارد چون فلوی دسته‌جمعی مشترک و
+در lavayeh_handlers.py است).
+
+
+### فایل ۱: lavayeh_handlers.py
+
+──────────────────────────
+۱-الف) ایمپورت‌ها (خط ~47-54)
+──────────────────────────
+
+--- قبل ---
+from bulk_submissions import (
+    generate_sample_excel,
+    parse_excel_file,
+    parse_text_or_image_input,
+    generate_tracking_code,
+    BULK_TASKS,
+    run_bulk_processing_task)
+
+--- بعد ---
+from bulk_submissions import (
+    parse_text_or_image_input,
+    generate_tracking_code,
+    BULK_TASKS)
+# اعتبارسنجی واقعی (مرحلهٔ ۳) و پردازش واقعی (مرحلهٔ ۴) از ماژول‌های
+# جدید می‌آیند، نه از generate_sample_excel/parse_excel_file قدیمی که
+# دیگر در هیچ‌کجای این فایل صدا زده نمی‌شوند.
+from bulk_validation import pre_validate_bulk_file, format_report_fa
+# run_bulk_processing_task دیگر در bulk_submissions.py نیست (آنجا فقط استاب
+# بود)؛ نسخهٔ واقعی در bulk_processor.py است.
+from bulk_processor import run_bulk_processing_task
+
+
+──────────────────────────────────────────────
+۱-ب) bulk_file_upload_handler (خط ~397-414)
+──────────────────────────────────────────────
+
+--- قبل ---
+    if message.document:
+        doc = message.document
+        if not (doc.file_name and doc.file_name.endswith(('.xlsx', '.xls'))):
+            await message.answer("⚠️ لطفاً فقط فایل با پسوند اکسل (.xlsx) ارسال فرمایید.")
+            return
+        bot = message.bot
+        file_id = doc.file_id
+        file_info = await bot.get_file(file_id)
+        local_path = f"/tmp/{doc.file_name}"
+        await bot.download_file(file_info.file_path, local_path)
+        items = parse_excel_file(local_path, service_type)
+        if not items:
+            await message.answer("⚠️ فایلی که ارسال کردید خالی بود یا قابل خواندن نبود. لطفاً مجدداً تلاش کنید.")
+            return
+
+    else:
+        await message.answer("⚠️ لطفاً فقط فایل اکسل (.xlsx) معتبر ارسال فرمایید.")
+        return
+
+    tracking_code = generate_tracking_code("LYH" if service_type == "lavayeh" else "EZH")
+
+--- بعد ---
+    if message.document:
+        doc = message.document
+        if not (doc.file_name and doc.file_name.endswith(('.xlsx', '.xls'))):
+            await message.answer("⚠️ لطفاً فقط فایل با پسوند اکسل (.xlsx) ارسال فرمایید.")
+            return
+        bot = message.bot
+        file_id = doc.file_id
+        file_info = await bot.get_file(file_id)
+        local_path = f"/tmp/{doc.file_name}"
+        await bot.download_file(file_info.file_path, local_path)
+
+        try:
+            result = pre_validate_bulk_file(local_path, service_type)
+        except Exception as e:
+            logging.error(f"[BULK] خطا در خواندن فایل اکسل: {e}", exc_info=True)
+            await message.answer(
+                "⚠️ فایل قابل خواندن نبود. لطفاً از قالب هوشمند رسمی استفاده کنید "
+                "و شیت «راهنما» را تغییر ندهید."
+            )
+            return
+
+        if result["total_rows"] == 0:
+            await message.answer("⚠️ فایلی که ارسال کردید خالی بود. لطفاً از ردیف ۲ به بعد اطلاعات را وارد کنید.")
+            return
+
+        if not result["is_all_valid"]:
+            for chunk in format_report_fa(result, service_type):
+                await message.answer(chunk)
+            await message.answer(
+                "📌 لطفاً موارد بالا را در همان فایل اکسل اصلاح کنید و دوباره همین‌جا ارسال (آپلود) فرمایید."
+            )
+            return  # وارد صف پردازش نمی‌شویم تا همهٔ ردیف‌ها معتبر باشند
+
+        items = result["valid_items"]
+
+    else:
+        await message.answer("⚠️ لطفاً فقط فایل اکسل (.xlsx) معتبر ارسال فرمایید.")
+        return
+
+    tracking_code = generate_tracking_code("LYH" if service_type == "lavayeh" else "EZH")
+
+
+────────────────────────────────────────────────────────────
+۱-ج) bulk_confirm_handler — پیش‌نمایش ادمین (خط ~742-748)
+────────────────────────────────────────────────────────────
+نام فیلدهای آیتم‌ها با ساختار جدید pre_validate_bulk_file عوض شده؛ خطوط
+پیش‌نمایش برای ادمین باید هماهنگ شوند وگرنه فقط "-" نشان می‌دهند
+(غیرحیاتی ولی گمراه‌کننده است).
+
+--- قبل ---
+        for i, item in enumerate(items[:5], 1):
+            if service_type == "lavayeh":
+                admin_message += f"• ردیف {i}: پرونده {item.get('tracking_code', '-')} - {item.get('title', '-')}\n"
+            else:
+                admin_message += f"• ردیف {i}: اظهارکننده {item.get('declarant_id', '-')} - {item.get('subject', '-')}\n"
+
+--- بعد ---
+        for i, item in enumerate(items[:5], 1):
+            if service_type == "lavayeh":
+                case_ref = item.get("case_number") or item.get("archive_number") or "-"
+                admin_message += f"• ردیف {i}: پرونده {case_ref} - {item.get('title', '-')}\n"
+            else:
+                first_declarant = item.get("declarants", [{}])[0]
+                declarant_ref = first_declarant.get("id", "-")
+                admin_message += f"• ردیف {i}: اظهارکننده {declarant_ref} - {item.get('title') or 'سایر'}\n"
+
+
+### فایل ۲: handlers.py
+
+──────────────────────────────────────────
+۲-الف) admin_approve_bulk (خط ~550)
+──────────────────────────────────────────
+
+--- قبل ---
+    from bulk_submissions import BULK_TASKS, run_bulk_processing_task
+    import asyncio
+
+--- بعد ---
+    from bulk_submissions import BULK_TASKS
+    from bulk_processor import run_bulk_processing_task
+    import asyncio
+
+
+### فایل ۳: bulk_submissions.py — بدون تغییر لازم
+generate_sample_excel و run_bulk_processing_task (نسخهٔ استاب) در این فایل
+از این پس از هیچ‌جا صدا زده نمی‌شوند. می‌توانید نگه‌شان دارید (بی‌ضرر) یا
+در یک پاک‌سازی جداگانه حذف کنید — تصمیم با شماست، برای جلوگیری از تغییر
+بیش‌ازحد در یک پچ، دست‌نخورده رهاشان کردم.
+
+
+### خلاصهٔ مسیر کامل بعد از این پچ
+    کاربر دکمهٔ «دانلود نمونه» می‌زند
+        -> فایل هوشمند ثابت جدید ارسال می‌شود (پچ قبلی)
+    کاربر فایل تکمیل‌شده را آپلود می‌کند
+        -> pre_validate_bulk_file همان قوانین دقیق ربات را چک می‌کند
+        -> اگر خطا دارد: گزارش ردیف‌به‌ردیف + توقف، کاربر اصلاح و دوباره می‌فرستد
+        -> اگر سالم است: وارد فلوی پیوست‌گذاری/تاییدیه می‌شود (بدون تغییر)
+    مدیر /approve_bulk می‌زند
+        -> run_bulk_processing_task واقعی (bulk_processor.py) روی sana_page
+           مشترک، ردیف‌به‌ردیف با process_lavayeh_task/process_ezhharnameh_task
+           واقعی پردازش می‌کند و گزارش پیشرفت/نهایی می‌فرستد
