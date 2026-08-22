@@ -583,8 +583,34 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
             await _click_step_label(sana_page, "شروع", bot, user_id)
             await resilient_sleep(sana_page, 3, bot, user_id)
 
-            if only_real:
-                logging.info("[TN] only real — skipping start step selection")
+            # FIX: برای اعتراض ثالث، حتماً رادیوی «شخص حقیقی» (value=1) را
+            # صریحاً کلیک و دیجست آنگولار را اجبار کنیم. مشکل این بود که
+            # در ناوبری بازگشت، گزینه «شخص حقیقی» پنهان می‌شد.
+            if only_real or case_type == "اعتراض ثالث":
+                radio_clicked = await sana_page.evaluate('''() => {
+                    // ابتدا رادیوی شخص حقیقی (value=1)
+                    const rdb = document.querySelector('input[value="1"]');
+                    if (rdb) {
+                        rdb.click();
+                        try {
+                            const scope = angular.element(rdb).scope();
+                            if (scope) scope.$apply();
+                        } catch(e) {}
+                    }
+                    // اطمینان از اینکه رادیوی وکیل انتخاب نشده
+                    const rdbLawyer = document.querySelector('#rdbLawyerOffer');
+                    if (rdbLawyer && rdbLawyer.checked) {
+                        rdbLawyer.checked = false;
+                    }
+                    // اطمینان از اینکه رادیوی نماینده انتخاب نشده
+                    const rdbAgent = document.querySelector('#rdbAgentOffer');
+                    if (rdbAgent && rdbAgent.checked) {
+                        rdbAgent.checked = false;
+                    }
+                    return rdb ? true : false;
+                }''')
+                logging.info(f"[TN] radio clicked for start step (only_real={only_real}, case={case_type}): {radio_clicked}")
+                await asyncio.sleep(2)
             elif has_lawyer:
                 await sana_page.evaluate('''() => {
                     const rdb = document.querySelector('#rdbLawyerOffer');
@@ -702,6 +728,34 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
 
                 await _click_add_btn(sana_page, bot, user_id)
                 await resilient_sleep(sana_page, 3, bot, user_id)
+
+                # Fix 4: اطمینان از ریست فرم — انتخاب رادیوی صحیح
+                # FIX: برای اعتراض ثالث، حتماً دیجست آنگولار اجبار شود
+                if ptype == "شخص حقیقی":
+                    await sana_page.evaluate('''() => {
+                        const rdb = document.querySelector('input[value="1"]');
+                        if (rdb) {
+                            rdb.click();
+                            try {
+                                const scope = angular.element(rdb).scope();
+                                if (scope) scope.$apply();
+                            } catch(e) {}
+                        }
+                    }''')
+                    await asyncio.sleep(1)
+
+                if ptype == "شخص حقوقی":
+                    await sana_page.evaluate('''() => {
+                        const rdb = document.querySelector('input[value="0"]');
+                        if (rdb) {
+                            rdb.click();
+                            try {
+                                const scope = angular.element(rdb).scope();
+                                if (scope) scope.$apply();
+                            } catch(e) {}
+                        }
+                    }''')
+                    await asyncio.sleep(1)
 
                 if ptype == "شخص حقوقی":
                     await _fill_legal_person(sana_page, person, bot, user_id,

@@ -1652,11 +1652,11 @@ async def _go_to_tn_preview(message: Message, state: FSMContext):
     has_reasons = _needs_reasons(case_type)
     has_appellee = not _is_prosecutor_objection(case_type)
     labels_with_case = {**labels, "case_type": case_type}
-    edit_kb = create_tn_edit_kb(labels=labels_with_case, has_reasons=has_reasons, has_appellee=has_appellee)
+    # Fix 6: نمایش کیبورد تایید/ویرایش (نه کیبورد ویرایش مستقیم)
     try:
-        await message.answer(preview, reply_markup=edit_kb)
+        await message.answer(preview, reply_markup=tn_confirm_kb)
     except Exception:
-        await message.answer(preview, reply_markup=edit_kb)
+        await message.answer(preview, reply_markup=tn_confirm_kb)
     await state.set_state(Form.tn_confirm)
 
 
@@ -1684,12 +1684,11 @@ async def tn_confirm_handler(message: Message, state: FSMContext, bot: Bot):
         }
         task_type = TASK_TYPE_MAP.get(case_type, "TN_APPEAL")
 
-        await message.answer(
-            f"⏳ *درخواست {case_type} تایید شد.*\n\nدر حال ارسال به صف پردازش...",
-            reply_markup=ReplyKeyboardRemove())
-
-        # ذخیره و رفتن به بخش امضا
-        await state.update_data(_tn_pending_dispatch={
+        # FIX: ارسال مستقیم به صف پردازش (job_queue) به جای ذخیره در state
+        # قبلاً تسک فقط در FSM state ذخیره می‌شد و هرگز پردازش نمی‌شد
+        # همچنین پیام امضای الکترونیک بلافاصله نمایش داده می‌شد که اشتباه بود
+        # امضا فقط پس از چاپ، پرداخت و تایید پرداخت باید نمایش داده شود
+        job_data = {
             "user_id": user_id,
             "query_type": f"دعاوی_اعتراضی_{case_type}",
             "task_type": task_type,
@@ -1709,20 +1708,33 @@ async def tn_confirm_handler(message: Message, state: FSMContext, bot: Bot):
             "tn_extra_text": data.get("tn_extra_text", ""),
             "tn_attachments": data.get("tn_attachments", []),
             "tn_reasons": data.get("tn_reasons", []),
-        })
+            "tn_labels": data.get("tn_labels", {}),
+        }
+
+        await runtime_state.job_queue.put(job_data)
 
         await message.answer(
-            "✅ *تایید شد.*\n\n"
-            "🔐 در صورت تمایل به *امضای الکترونیک*، دکمه زیر را بزنید:\n"
-            "_(در غیر اینصورت چند لحظه صبر کنید تا ثبت خودکار انجام شود)_",
-            reply_markup=tn_sign_ready_kb)
-        await state.set_state(Form.tn_sign_ready)
+            f"✅ *درخواست {case_type} تایید شد و به صف پردازش ارسال شد.*\n\n"
+            f"⏳ ثبت در سامانه قضایی در حال انجام است."
+            f" پس از آماده‌سازی و محاسبه هزینه، مبلغ پرداخت و رسید آن ارسال خواهد شد.",
+            reply_markup=ReplyKeyboardRemove())
+        await state.clear()
         return
 
     if text == "✏️ ویرایش اطلاعات":
+        data = await state.get_data()
+        labels = data.get("tn_labels", {})
+        case_type = data.get("case_type", "")
+        has_reasons = _needs_reasons(case_type)
+        has_appellee = not _is_prosecutor_objection(case_type)
+        # FIX: استفاده از کیبورد داینامیک با برچسب‌های صحیح (مثلاً «معترض ثالث»
+        # به جای «تجدیدنظرخواه» برای اعتراض ثالث)
+        dynamic_edit_kb = create_tn_edit_kb(
+            labels=labels, has_reasons=has_reasons, has_appellee=has_appellee
+        )
         await message.answer(
             "✏️ *ویرایش اطلاعات:*\n\nکدام بخش را می‌خواهید ویرایش کنید؟",
-            reply_markup=tn_edit_kb)
+            reply_markup=dynamic_edit_kb)
         await state.set_state(Form.tn_edit_choice)
         return
 
@@ -1756,7 +1768,7 @@ async def tn_edit_choice_handler(message: Message, state: FSMContext):
         await state.set_state(Form.tn_judge_no)
         return
 
-    if text == f"👤 ویرایش {appellant_label}(ها)":
+    if text == f"👤 ویرایش {appellant_label}":
         await state.update_data(tn_appellants=[], _tn_current_appellant={})
         await message.answer(
             f"👤 لیست {appellant_label} پاک شد.\n"
@@ -1765,7 +1777,7 @@ async def tn_edit_choice_handler(message: Message, state: FSMContext):
         await state.set_state(Form.tn_appellant_person_type)
         return
 
-    if text == f"👥 ویرایش {appellee_label}(ها)":
+    if text == f"👥 ویرایش {appellee_label}":
         await state.update_data(tn_appellees=[], _tn_current_appellee={})
         await message.answer(
             f"👥 لیست {appellee_label} پاک شد.\n"
@@ -1821,9 +1833,14 @@ async def tn_edit_choice_handler(message: Message, state: FSMContext):
         await _ask_tn_reasons(message, state)
         return
 
+    # FIX: کیبورد داینامیک با برچسب‌های صحیح
+    dynamic_edit_kb = create_tn_edit_kb(
+        labels=labels, has_reasons=_needs_reasons(case_type),
+        has_appellee=not _is_prosecutor_objection(case_type)
+    )
     await message.answer(
         "⚠️ لطفاً یکی از گزینه‌های موجود را انتخاب فرمایید:",
-        reply_markup=tn_edit_kb)
+        reply_markup=dynamic_edit_kb)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
