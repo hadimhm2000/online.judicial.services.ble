@@ -49,7 +49,6 @@ from keyboards import (
     bulk_input_method_kb,
     bulk_confirm_kb)
 from bulk_submissions import (
-    generate_sample_excel,
     parse_excel_file,
     parse_text_or_image_input,
     generate_tracking_code,
