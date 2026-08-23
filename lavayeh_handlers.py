@@ -46,7 +46,6 @@ from keyboards import (
     bulk_confirm_kb)
 from stamp_duty import calculate_stamp_duty, format_result_fa
 from bulk_submissions import (
-    generate_sample_excel,
     parse_excel_file,
     parse_text_or_image_input,
     generate_tracking_code,
@@ -335,10 +334,12 @@ async def bulk_input_method_handler(message: Message, state: FSMContext):
     if text == "📊 دانلود نمونه اکسل و آپلود فایل":
         # import حذف شد — از send_document_direct استفاده می‌شود
         
-        # انتخاب نام و مسیر فایل بر اساس نوع سرویس
+        # مسیر پوشه templates در کنار فایل پروژه
+        TEMPLATES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+
+        # انتخاب مسیر فایل نمونه از پوشه templates بر اساس نوع سرویس
         if service_type == "ezhharnameh":
-            sample_path = "/tmp/sample_ezhharnameh_bulk.xlsx"
-            generate_sample_excel("ezhharnameh", sample_path)
+            sample_path = os.path.join(TEMPLATES_DIR, "sample_ezhharnameh_bulk.xlsx")
             file_name = "نمونه_ثبت_دسته_جمعی_اظهارنامه.xlsx"
             caption_text = (
                 "📎 *فایل اکسل نمونه ثبت دسته‌جمعی اظهارنامه*\n\n"
@@ -347,8 +348,7 @@ async def bulk_input_method_handler(message: Message, state: FSMContext):
                 "✅ اکنون فایل اکسل تکمیل‌شده خود را ارسال (آپلود) فرمایید:"
             )
         else:
-            sample_path = "/tmp/sample_lavayeh_bulk.xlsx"
-            generate_sample_excel("lavayeh", sample_path)
+            sample_path = os.path.join(TEMPLATES_DIR, "sample_lavayeh_bulk.xlsx")
             file_name = "نمونه_ثبت_دسته_جمعی_لوایح.xlsx"
             caption_text = (
                 "📎 *فایل اکسل نمونه ثبت دسته‌جمعی لوایح*\n\n"
@@ -356,7 +356,15 @@ async def bulk_input_method_handler(message: Message, state: FSMContext):
                 "💡 *نگران نباشید!* حتی اگر بعضی موارد (مثل فرمت کد ملی یا شناسه شعبه) را هم درست یا کامل انتخاب نکنید، سیستم با پردازش هوشمند و جایگزینی مقادیر پیش‌فرض، مانع از اختلال یا توقف در روند ثبت خواهد شد.\n\n"
                 "✅ اکنون فایل اکسل تکمیل‌شده خود را ارسال (آپلود) فرمایید:"
             )
-        
+
+        # بررسی وجود فایل template
+        if not os.path.isfile(sample_path):
+            logging.error(f"[BULK-SAMPLE] فایل template یافت نشد: {sample_path}")
+            await message.answer(
+                "⚠️ خطا: فایل نمونه اکسل یافت نشد. لطفاً با مدیریت تماس بگیرید.",
+                reply_markup=bulk_input_method_kb)
+            return
+
         try:
             await send_document_direct(
                 message.chat.id, sample_path,
@@ -405,10 +413,28 @@ async def bulk_file_upload_handler(message: Message, state: FSMContext):
         file_info = await bot.get_file(file_id)
         local_path = f"/tmp/{doc.file_name}"
         await bot.download_file(file_info.file_path, local_path)
-        items = parse_excel_file(local_path, service_type)
+        parse_result = parse_excel_file(local_path, service_type)
+        items = parse_result.get("valid_items", [])
+        invalid_rows = parse_result.get("invalid_rows", [])
+        total_rows = parse_result.get("total_rows", 0)
+
         if not items:
-            await message.answer("⚠️ فایلی که ارسال کردید خالی بود یا قابل خواندن نبود. لطفاً مجدداً تلاش کنید.")
+            error_msg = "⚠️ فایلی که ارسال کردید خالی بود یا قابل خواندن نبود."
+            if invalid_rows:
+                error_msg += "\n\n📋 *ردیف‌های ناقص:*\n"
+                for row in invalid_rows:
+                    error_msg += f"  • ردیف {row['row_index']}: {', '.join(row['errors'])}\n"
+            error_msg += "\nلطفاً مجدداً تلاش کنید."
+            await message.answer(error_msg)
             return
+
+        # نمایش گزارش نقص‌ها (اگر وجود دارد) اما ادامه روند
+        if invalid_rows:
+            warning = f"⚠️ *توجه: {len(invalid_rows)} ردیف ناقص شناسایی شد و از روند ثبت حذف گردید.*\n\n📋 *جزئیات ردیف‌های ناقص:*\n"
+            for row in invalid_rows:
+                warning += f"  • ردیف {row['row_index']}: {', '.join(row['errors'])}\n"
+            warning += f"\n✅ *{len(items)} ردیف معتبر برای ثبت باقی مانده است.*"
+            await message.answer(warning)
 
     else:
         await message.answer("⚠️ لطفاً فقط فایل اکسل (.xlsx) معتبر ارسال فرمایید.")
@@ -442,11 +468,28 @@ async def bulk_file_upload_handler(message: Message, state: FSMContext):
     if items:
         first_item = items[0]
         if service_type == "lavayeh":
-            preview_text += f"📋 شماره پرونده: `{first_item.get('tracking_code', '-')}`\n"
+            method = first_item.get('method', '')
+            if method == "بایگانی":
+                preview_text += f"📋 روش: *بایگانی*\n"
+                preview_text += f"🏛 شعبه: `{first_item.get('branch_name', '-')}`\n"
+                preview_text += f"📂 شماره بایگانی: `{first_item.get('archive_number', '-')}`\n"
+            else:
+                preview_text += f"📋 شماره پرونده: `{first_item.get('case_number', '-')}`\n"
+                preview_text += f"🔢 ردیف فرعی: `{first_item.get('sub_row', '1')}`\n"
             preview_text += f"📝 عنوان: {first_item.get('title', '-')}\n"
+            preview_text += f"👥 تعداد ارائه‌دهندگان: *{len(first_item.get('providers', []))} نفر*\n"
+            if first_item.get('lawyer_id'):
+                preview_text += f"⚖️ وکیل/نماینده: `{first_item['lawyer_id']}`\n"
         else:
-            preview_text += f"👤 اظهارکننده: `{first_item.get('declarant_id', '-')}`\n"
-            preview_text += f"📝 عنوان: {first_item.get('subject', '-')}\n"
+            first_decl = (first_item.get('declarants', [{}]) or [{}])[0]
+            decl_type = first_decl.get('type', '')
+            preview_text += f"👤 اظهارکننده: `{first_decl.get('id', '-')}`"
+            if decl_type:
+                preview_text += f" ({decl_type})"
+            preview_text += "\n"
+            preview_text += f"👥 تعداد اظهارکننده‌ها: *{len(first_item.get('declarants', []))} نفر*\n"
+            preview_text += f"👥 تعداد مخاطب‌ها: *{len(first_item.get('addressees', []))} نفر*\n"
+            preview_text += f"📝 عنوان: {first_item.get('title', '-')}\n"
     
     preview_text += "\nآیا می‌خواهید پیوستی برای این ردیف ارسال کنید؟"
     
@@ -503,11 +546,11 @@ async def bulk_attachment_row_handler(message: Message, state: FSMContext):
         row_text = f"🔢 *ردیف {next_index + 1} از {len(items)}:*\n"
         
         if service_type == "lavayeh":
-            row_text += f"📋 شماره پرونده: `{next_item.get('tracking_code', '-')}`\n"
+            row_text += f"📋 شماره پرونده: `{next_item.get('case_number', '-')}`\n"
             row_text += f"📝 عنوان: {next_item.get('title', '-')}\n"
         else:
-            row_text += f"👤 اظهارکننده: `{next_item.get('declarant_id', '-')}`\n"
-            row_text += f"📝 عنوان: {next_item.get('subject', '-')}\n"
+            row_text += f"👤 اظهارکننده: `{(next_item.get('declarants', [{}]) or [{}])[0].get('id', '-')}`\n"
+            row_text += f"📝 عنوان: {next_item.get('title', '-')}\n"
         
         row_text += "\nآیا می‌خواهید پیوستی برای این ردیف ارسال کنید؟"
         
@@ -665,11 +708,11 @@ async def bulk_attachment_more_handler(message: Message, state: FSMContext):
         row_text = f"🔢 *ردیف {next_index + 1} از {len(items)}:*\n"
         
         if service_type == "lavayeh":
-            row_text += f"📋 شماره پرونده: `{next_item.get('tracking_code', '-')}`\n"
+            row_text += f"📋 شماره پرونده: `{next_item.get('case_number', '-')}`\n"
             row_text += f"📝 عنوان: {next_item.get('title', '-')}\n"
         else:
-            row_text += f"👤 اظهارکننده: `{next_item.get('declarant_id', '-')}`\n"
-            row_text += f"📝 عنوان: {next_item.get('subject', '-')}\n"
+            row_text += f"👤 اظهارکننده: `{(next_item.get('declarants', [{}]) or [{}])[0].get('id', '-')}`\n"
+            row_text += f"📝 عنوان: {next_item.get('title', '-')}\n"
         
         row_text += "\nآیا می‌خواهید پیوستی برای این ردیف ارسال کنید؟"
         
@@ -750,9 +793,9 @@ async def bulk_confirm_handler(message: Message, state: FSMContext):
         # نمایش جزئیات چند ردیف اول
         for i, item in enumerate(items[:5], 1):
             if service_type == "lavayeh":
-                admin_message += f"• ردیف {i}: پرونده {item.get('tracking_code', '-')} - {item.get('title', '-')}\n"
+                admin_message += f"• ردیف {i}: پرونده {item.get('case_number', '-')} - {item.get('title', '-')}\n"
             else:
-                admin_message += f"• ردیف {i}: اظهارکننده {item.get('declarant_id', '-')} - {item.get('subject', '-')}\n"
+                admin_message += f"• ردیف {i}: اظهارکننده {(item.get('declarants', [{}]) or [{}])[0].get('id', '-')} - {item.get('title', '-')}\n"
         
         if len(items) > 5:
             admin_message += f"... و {len(items) - 5} ردیف دیگر\n"
