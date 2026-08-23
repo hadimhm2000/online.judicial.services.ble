@@ -2423,6 +2423,38 @@ async def send_lavayeh_result(
 # پرداخت هزینه لایحه
 # ══════════════════════════════════════════════════════════════════════════════
 
+async def _send_lavayeh_invoice(bot: Bot, user_id: int, amount: int, service_label: str) -> bool:
+    """
+    ارسال فاکتور پرداخت بله (sendInvoice) برای مبلغ مشخص.
+    خروجی True یعنی فاکتور با موفقیت ارسال شد و درگاه پرداخت متصل است؛
+    False یعنی خطا رخ داده و کاربر نباید مسدود (blocked) بماند بدون راه پرداخت.
+    """
+    amount_toman = amount // 10
+    try:
+        invoice_payload = _json.dumps({"type": "lavayeh", "uid": user_id})
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+            invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
+            invoice_data = {
+                "chat_id": user_id,
+                "title": f"فاکتور {service_label}",
+                "description": f"هزینه خدمات {service_label}\nمبلغ: {amount_toman:,} تومان ({amount:,} ریال)",
+                "payload": invoice_payload,
+                "provider_token": BALE_WALLET_TOKEN,
+                "currency": "IRR",
+                "prices": [{"label": service_label, "amount": amount}],
+            }
+            logging.info(f"[LAVAYEH] ارسال sendInvoice (یادآوری/کنسلی) به chat_id={user_id}, مبلغ={amount:,} ریال")
+            async with session.post(invoice_url, json=invoice_data) as resp:
+                result = await resp.json()
+                logging.info(f"[LAVAYEH] پاسخ sendInvoice (یادآوری/کنسلی): {result}")
+                if not result.get("ok"):
+                    logging.error(f"[LAVAYEH] خطای sendInvoice (یادآوری/کنسلی): {result}")
+                    return False
+        return True
+    except Exception as e:
+        logging.error(f"[LAVAYEH] خطا در ارسال فاکتور بله (یادآوری/کنسلی): {e}", exc_info=True)
+        return False
+
 # ══════════════════════════════════════════════════════════════════════════════
 # هندلر pre_checkout_query برای لایحه/اظهارنامه — تایید خودکار
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2692,6 +2724,9 @@ async def lavayeh_payment_reminder_loop(bot: Bot):
         try:
             now = datetime.datetime.now()
             for user_id, info in list(runtime_state.pending_lavayeh_payments.items()):
+                # ادمین مشمول یادآوری/مسدودسازی کنسلی نمی‌شود
+                if user_id == ADMIN_ID:
+                    continue
                 if info.get("reminder_sent") or info.get("blocked"):
                     continue
                 age = now - info["invoice_time"]
@@ -2713,28 +2748,71 @@ async def lavayeh_payment_reminder_loop(bot: Bot):
 
 
 @lavayeh_router.message(Form.lavayeh_payment_reminder_response, F.text == "خیر")
-async def lavayeh_reminder_no(message: Message, state: FSMContext):
-    await message.answer(
-        "مورد ثبتی شما تا پایان فردا ابطال خواهد شد؛ هرچه سریع‌تر پرداخت فرمایید.",
-        reply_markup=ReplyKeyboardRemove()
-    )
+async def lavayeh_reminder_no(message: Message, state: FSMContext, bot: Bot):
+    """کاربر گفته کنسل نیست؛ فاکتور اصلی را مجدداً ارسال می‌کنیم تا روند لایحه ادامه پیدا کند."""
+    user_id = message.from_user.id
+    pending = runtime_state.pending_lavayeh_payments.get(user_id)
+    if not pending:
+        await message.answer("⚠️ فاکتور فعالی برای شما ثبت نشده است.", reply_markup=ReplyKeyboardRemove())
+        await state.set_state(Form.waiting_for_lavayeh_payment_receipt)
+        return
+
+    service_label = "اظهارنامه" if pending.get("is_ezhharnameh") else "لایحه"
+    invoice_sent = await _send_lavayeh_invoice(bot, user_id, pending["final_fee"], service_label)
+
+    if invoice_sent:
+        await message.answer(
+            "مورد ثبتی شما تا پایان فردا ابطال خواهد شد؛ هرچه سریع‌تر پرداخت فرمایید.\n\n"
+            "⏳ فاکتور پرداخت مجدداً ارسال شد. پس از پرداخت موفق، ربات به‌صورت خودکار ادامه‌ی روند را آغاز می‌کند.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+    else:
+        await message.answer(
+            "⚠️ خطا در ارسال مجدد فاکتور پرداخت. لطفاً کمی بعد دوباره «بله/خیر» را ارسال کنید یا با پشتیبانی تماس بگیرید.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+
+    # مسدود نشده — فرآیند لایحه برای کاربر باز و فعال می‌ماند
+    pending["blocked"] = False
     await state.set_state(Form.waiting_for_lavayeh_payment_receipt)
 
 
 @lavayeh_router.message(Form.lavayeh_payment_reminder_response, F.text == "بله")
-async def lavayeh_reminder_yes(message: Message, state: FSMContext):
+async def lavayeh_reminder_yes(message: Message, state: FSMContext, bot: Bot):
+    """کاربر تایید کرده که مورد ثبتی کنسل شده؛ فاکتور مبلغ باقیمانده را می‌سازیم و درگاه پرداخت را وصل می‌کنیم."""
     user_id = message.from_user.id
     pending = runtime_state.pending_lavayeh_payments.get(user_id)
     if not pending:
         await message.answer("⚠️ فاکتور فعالی برای شما ثبت نشده است.", reply_markup=ReplyKeyboardRemove())
         return
+
     reduced_amount = pending["final_fee"] - pending["court_total"]
-    pending["blocked"] = True
-    pending["final_fee"] = reduced_amount
-    await message.answer(
-        f"لطفاً هزینه ثبت لایحه را پرداخت بفرمائید.\n"
-        f"مبلغ: *{reduced_amount:,} ریال*\n\nباتشکر",
-        reply_markup=ReplyKeyboardRemove())
+    service_label = "اظهارنامه" if pending.get("is_ezhharnameh") else "لایحه"
+
+    invoice_sent = await _send_lavayeh_invoice(bot, user_id, reduced_amount, service_label)
+
+    if invoice_sent:
+        # فقط وقتی فاکتور واقعاً ساخته و ارسال شد، کاربر مسدود می‌شود —
+        # در غیر این صورت مسدود کردن بدون راه پرداخت، ربات را برای همیشه قفل می‌کند
+        pending["blocked"] = True
+        pending["final_fee"] = reduced_amount
+        await message.answer(
+            f"لطفاً هزینه ثبت لایحه‌ای که کنسل شده است را پرداخت بفرمائید.\n"
+            f"مبلغ: *{reduced_amount:,} ریال*\n\n"
+            f"⏳ فاکتور پرداخت ارسال شد. پس از پرداخت موفق، ربات به‌صورت خودکار متوجه شده و مجدداً فعال می‌شود.\n\nباتشکر",
+            reply_markup=ReplyKeyboardRemove())
+    else:
+        await message.answer(
+            "⚠️ خطا در ساخت فاکتور پرداخت. لطفاً کمی بعد دوباره «بله» را ارسال کنید یا با پشتیبانی تماس بگیرید.",
+            reply_markup=ReplyKeyboardRemove())
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"⚠️ خطا در ارسال فاکتور کنسلی لایحه برای کاربر {user_id} — sendInvoice ناموفق بود."
+            )
+        except Exception:
+            pass
+
     await state.set_state(Form.waiting_for_lavayeh_payment_receipt)
 
 

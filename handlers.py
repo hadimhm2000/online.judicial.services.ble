@@ -117,10 +117,13 @@ router.include_router(regional_value_router)
 
 # ── نگهبان: مسدودسازی کاربرانی که فاکتور لایحه کنسل‌شده را پرداخت نکرده‌اند ──
 async def _is_blocked_lavayeh_user(message: types.Message) -> bool:
+    # ادمین هرگز مشمول این مسدودسازی نمی‌شود
+    if message.from_user and message.from_user.id == ADMIN_ID:
+        return False
     pending = runtime_state.pending_lavayeh_payments.get(message.from_user.id)
     return bool(pending and pending.get("blocked"))
 
-@router.message(StateFilter("*"), _is_blocked_lavayeh_user, ~F.photo)
+@router.message(StateFilter("*"), _is_blocked_lavayeh_user, ~F.photo, ~F.successful_payment)
 async def block_unpaid_cancelled_lavayeh_user(message: types.Message):
     await message.answer(
         "لطفا هزینه ثبت لایحه‌ای که کنسل شده است را پرداخت بفرمائید، "
