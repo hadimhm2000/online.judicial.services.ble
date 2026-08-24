@@ -137,6 +137,10 @@ class Form(StatesGroup):
     bulk_attachment_title = State() # انتخاب عنوان پیوست برای ردیف جاری
     bulk_attachment_images = State() # دریافت تصاویر پیوست
     bulk_attachment_more = State()  # آیا پیوست بیشتری برای این ردیف هست؟
+    bulk_attachment_all_confirm = State()  # تأیید پیوست مشابه برای همه ردیف‌ها
+    bulk_attachment_all_title = State()    # انتخاب عنوان پیوست مشابه
+    bulk_attachment_all_images = State()   # دریافت تصاویر پیوست مشابه
+    bulk_attachment_all_more = State()     # آیا پیوست مشابه دیگری هم هست؟
     bulk_confirm = State()          # تایید نهایی و صدور کد رهگیری دسته‌جمعی
     bulk_admin_pending = State()    # در انتظار تایید مدیر
 
