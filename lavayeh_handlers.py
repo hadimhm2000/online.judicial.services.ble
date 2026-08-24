@@ -43,7 +43,11 @@ from keyboards import (
     continue_kb,
     bulk_choice_kb,
     bulk_input_method_kb,
-    bulk_confirm_kb)
+    bulk_confirm_kb,
+    bulk_attachment_all_confirm_kb,
+    bulk_attachment_all_title_kb,
+    bulk_attachment_all_title_next_kb,
+    bulk_attachment_all_more_kb)
 from stamp_duty import calculate_stamp_duty, format_result_fa
 from bulk_submissions import (
     parse_excel_file,
@@ -520,6 +524,20 @@ async def bulk_attachment_row_handler(message: Message, state: FSMContext):
         await state.set_state(Form.bulk_attachment_title)
         return
     
+    elif text == "🔗 پیوست مشابه برای همه ردیف‌ها":
+        total = len(items)
+        await message.answer(
+            f"🔗 *پیوست مشابه برای همه ردیف‌ها*\n\n"
+            f"⚠️ *توجه بسیار مهم:*\n"
+            f"مدارکی که در مرحله بعد ارسال می‌کنید، برای *تمامی {total} ردیف* به‌صورت یکسان اضافه خواهد شد.\n\n"
+            f"یعنی هر مدرکی که بفرستید، در سامانه برای هر ردیف به‌صورت جداگانه آپلود می‌شود.\n\n"
+            f"آیا مطمئن هستید؟",
+            reply_markup=bulk_attachment_all_confirm_kb,
+            parse_mode="Markdown"
+        )
+        await state.set_state(Form.bulk_attachment_all_confirm)
+        return
+    
     elif text == "⏭ رد شدن از این ردیف (بدون پیوست)":
         # ذخیره پیوست‌های ردیف فعلی (که خالی است) و رفتن به ردیف بعدی
         current_attachments = data.get("bulk_current_row_attachments", [])
@@ -731,8 +749,247 @@ async def bulk_attachment_more_handler(message: Message, state: FSMContext):
         await message.answer("⚠️ لطفاً یکی از گزینه‌های منو را انتخاب فرمایید:", reply_markup=bulk_attachment_more_kb)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# هندلرهای پیوست مشابه برای همه ردیف‌ها
+# ══════════════════════════════════════════════════════════════════════════════
+
+@lavayeh_router.message(Form.bulk_attachment_all_confirm)
+async def bulk_attachment_all_confirm_handler(message: Message, state: FSMContext):
+    """تأیید یا انصراف از پیوست مشابه برای همه ردیف‌ها"""
+    from keyboards import bulk_attachment_row_kb
+    text = message.text or ""
+    data = await state.get_data()
+    items = data.get("bulk_items", [])
+    total = len(items)
+
+    if text == "✅ بله، برای همه ردیف‌ها اضافه شود":
+        # ابتدا پیوست‌های ردیف فعلی را ذخیره کن
+        current_index = data.get("bulk_current_row_index", 0)
+        current_attachments = data.get("bulk_current_row_attachments", [])
+        if current_index < len(items):
+            items[current_index]["attachments"] = current_attachments
+
+        # ریست لیست پیوست‌های مشترک و رفتن به انتخاب عنوان
+        await state.update_data(
+            bulk_items=items,
+            bulk_all_attachments=[],
+        )
+        await message.answer(
+            "📎 *عنوان پیوست مشترک:*\n\n"
+            "لطفاً عنوان مدارک را انتخاب یا تایپ کنید:\n"
+            "(مثلاً «کارت ملی»، «وکالتنامه»، «مستندات»)",
+            reply_markup=bulk_attachment_all_title_kb,
+            parse_mode="Markdown"
+        )
+        await state.set_state(Form.bulk_attachment_all_title)
+        return
+
+    elif text == "🔙 بازگشت":
+        # بازگشت به کیبورد ردیف فعلی
+        await message.answer(
+            "🔄 بازگشت به پیوست‌گذاری ردیف به ردیف.",
+            reply_markup=bulk_attachment_row_kb
+        )
+        await state.set_state(Form.bulk_attachment_row)
+        return
+
+    else:
+        await message.answer(
+            "⚠️ لطفاً یکی از گزینه‌های منو را انتخاب فرمایید:",
+            reply_markup=bulk_attachment_all_confirm_kb
+        )
+
+
+@lavayeh_router.message(Form.bulk_attachment_all_title)
+async def bulk_attachment_all_title_handler(message: Message, state: FSMContext):
+    """دریافت عنوان پیوست مشترک و رفتن به دریافت تصاویر"""
+    text = (message.text or "").strip()
+    data = await state.get_data()
+    all_attachments = data.get("bulk_all_attachments", [])
+
+    if text == "❌ انصراف":
+        # بازگشت به کیبورد ردیف
+        from keyboards import bulk_attachment_row_kb
+        await message.answer("🔄 بازگشت به پیوست‌گذاری ردیف به ردیف.", reply_markup=bulk_attachment_row_kb)
+        await state.set_state(Form.bulk_attachment_row)
+        return
+
+    if text == "⏭ رد کردن (بدون مدرک)":
+        # بدون مدرک رفتن به توزیع
+        await _distribute_all_attachments_and_finish(message, state)
+        return
+
+    # تعیین عنوان
+    if text == "🔹 عنوان مهم نیست (سایر مستندات)":
+        title = "مستندات"
+    else:
+        title = text
+
+    await state.update_data(
+        bulk_all_attachment_title=title,
+        bulk_all_attachment_images=[],
+    )
+    await message.answer(
+        f"📷 *ارسال تصاویر «{title}»*\n\n"
+        f"لطفاً تصاویر مدارک را یکی‌یکی بفرستید.\n"
+        f"وقتی تمام شدید، روی «✅ اتمام ارسال مدارک» بزنید.",
+        reply_markup=bulk_attachment_all_more_kb,
+        parse_mode="Markdown"
+        # نکته: کاربر باید عکس بفرستد — اگر متن فرستاد هندلر پایین را می‌گیرد
+    )
+    await state.set_state(Form.bulk_attachment_all_images)
+
+
+@lavayeh_router.message(Form.bulk_attachment_all_images, F.photo)
+async def bulk_attachment_all_images_handler(message: Message, state: FSMContext):
+    """دریافت هر تصویر پیوست مشترک"""
+    data = await state.get_data()
+    images = data.get("bulk_all_attachment_images", [])
+
+    if message.photo:
+        # بزرگترین سایز عکس
+        photo = message.photo[-1]
+        images.append({
+            "file_id": photo.file_id,
+            "file_unique_id": photo.file_unique_id,
+        })
+        await state.update_data(bulk_all_attachment_images=images)
+        count = len(images)
+        await message.answer(f"✅ تصویر {count} دریافت شد. ادامه بدهید یا «✅ اتمام ارسال مدارک» را بزنید.")
+
+
+@lavayeh_router.message(Form.bulk_attachment_all_images, F.text == "✅ اتمام ارسال مدارک")
+async def bulk_attachment_all_images_done_handler(message: Message, state: FSMContext):
+    """اتمام ارسال تصاویر یک گروه پیوست مشترک → ذخیره در لیست و پرسش ادامه"""
+    data = await state.get_data()
+    images = data.get("bulk_all_attachment_images", [])
+    title = data.get("bulk_all_attachment_title", "مستندات")
+    all_attachments = data.get("bulk_all_attachments", [])
+
+    if not images:
+        await message.answer(
+            "⚠️ هیچ تصویری ارسال نشد! لطفاً حداقل یک تصویر بفرستید یا «❌ انصراف» را بزنید.",
+            reply_markup=bulk_attachment_all_more_kb
+        )
+        return
+
+    # ذخیره این گروه پیوست
+    all_attachments.append({
+        "title": title,
+        "images": images,
+    })
+
+    img_count = len(images)
+    await message.answer(
+        f"✅ گروه پیوست «{title}» با {img_count} تصویر ثبت شد.\n\n"
+        f"آیا پیوست مشابه دیگری هم دارید؟",
+        reply_markup=bulk_attachment_all_title_next_kb,
+        parse_mode="Markdown"
+    )
+    await state.update_data(
+        bulk_all_attachments=all_attachments,
+        bulk_all_attachment_images=[],
+        bulk_all_attachment_title="",
+    )
+    await state.set_state(Form.bulk_attachment_all_more)
+
+
+@lavayeh_router.message(Form.bulk_attachment_all_images, F.text)
+async def bulk_attachment_all_images_text_handler(message: Message, state: FSMContext):
+    """نادیده گرفتن متن‌های ناخواسته در حالت دریافت عکس"""
+    text = (message.text or "").strip()
+    if text == "❌ انصراف":
+        from keyboards import bulk_attachment_row_kb
+        await message.answer("🔄 بازگشت به پیوست‌گذاری ردیف به ردیف.", reply_markup=bulk_attachment_row_kb)
+        await state.set_state(Form.bulk_attachment_row)
+        return
+    await message.answer(
+        "⚠️ لطفاً فقط تصویر بفرستید.\n"
+        "وقتی تمام شدید «✅ اتمام ارسال مدارک» را بزنید.",
+        reply_markup=bulk_attachment_all_more_kb
+    )
+
+
+@lavayeh_router.message(Form.bulk_attachment_all_more)
+async def bulk_attachment_all_more_handler(message: Message, state: FSMContext):
+    """آیا پیوست مشترک دیگری هم هست؟"""
+    text = (message.text or "").strip()
+
+    if text == "➕ افزودن پیوست دیگر (برای همه ردیف‌ها)":
+        await message.answer(
+            "📎 *عنوان پیوست مشترک جدید:*\n\n"
+            "لطفاً عنوان را انتخاب یا تایپ کنید:",
+            reply_markup=bulk_attachment_all_title_next_kb,
+            parse_mode="Markdown"
+        )
+        await state.set_state(Form.bulk_attachment_all_title)
+        return
+
+    elif text == "✅ اتمام ارسال مدارک":
+        await _distribute_all_attachments_and_finish(message, state)
+        return
+
+    elif text == "❌ انصراف":
+        from keyboards import bulk_attachment_row_kb
+        await message.answer("🔄 بازگشت به پیوست‌گذاری ردیف به ردیف.", reply_markup=bulk_attachment_row_kb)
+        await state.set_state(Form.bulk_attachment_row)
+        return
+
+    else:
+        # کاربر عنوانی تایپ کرده (مثل عنوان پیوست)
+        title = text
+        await state.update_data(bulk_all_attachment_title=title, bulk_all_attachment_images=[])
+        await message.answer(
+            f"📷 *ارسال تصاویر «{title}»*\n\n"
+            f"لطفاً تصاویر را بفرستید.",
+            reply_markup=bulk_attachment_all_more_kb,
+            parse_mode="Markdown"
+        )
+        await state.set_state(Form.bulk_attachment_all_images)
+
+
+async def _distribute_all_attachments_and_finish(message: Message, state: FSMContext):
+    """توزیع پیوست‌های مشترک روی همه ردیف‌ها و رفتن به تایید نهایی.
+
+    پیوست‌های قبلی هر ردیف حفظ می‌شوند و پیوست‌های مشترک به انتهای لیست
+    هر ردیف اضافه می‌گردند.
+    """
+    data = await state.get_data()
+    items = data.get("bulk_items", [])
+    all_attachments = data.get("bulk_all_attachments", [])
+    total_rows = len(items)
+    total_groups = len(all_attachments)
+    total_images = sum(len(g.get("images", [])) for g in all_attachments)
+
+    if not all_attachments:
+        # هیچ پیوستی ثبت نشد، مستقیم به تایید نهایی برو
+        await _go_to_bulk_confirm(message, state)
+        return
+
+    # توزیع روی همه ردیف‌ها (deep copy برای جلوگیری از اشتراک مرجع)
+    import copy
+    for item in items:
+        existing = item.get("attachments", [])
+        for att_group in all_attachments:
+            existing.append(copy.deepcopy(att_group))
+        item["attachments"] = existing
+
+    await state.update_data(bulk_items=items)
+
+    await message.answer(
+        f"✅ *پیوست‌های مشترک با موفقیت توزیع شد!*\n\n"
+        f"📦 تعداد ردیف‌ها: *{total_rows}*\n"
+        f"📎 گروه پیوست: *{total_groups}*\n"
+        f"🖼 تعداد تصاویر در هر ردیف: *{total_images}*\n\n"
+        f"این مدارک برای *هر یک* از {total_rows} ردیف در سامانه آپلود خواهند شد.",
+        parse_mode="Markdown"
+    )
+
+    # رفتن به تایید نهایی
+    await _go_to_bulk_confirm(message, state)
+
+
 async def _go_to_bulk_confirm(message: Message, state: FSMContext):
-    """رفتن به مرحله تایید نهایی ثبت دسته‌جمعی"""
     data = await state.get_data()
     items = data.get("bulk_items", [])
     tracking_code = data.get("bulk_tracking_code", "")

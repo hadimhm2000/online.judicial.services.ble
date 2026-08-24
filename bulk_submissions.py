@@ -8,6 +8,7 @@
 
 import os
 import re
+import json
 import random
 import string
 import asyncio
@@ -20,6 +21,57 @@ from openpyxl.utils import get_column_letter
 logger = logging.getLogger(__name__)
 
 BULK_TASKS = {}
+
+# ══════════════════════════════════════════════════════════════════════
+# نگاشت «نام کامل شعبه» -> «کد ۵ رقمی شعبه» (#txtCourtCode)
+# ══════════════════════════════════════════════════════════════════════
+_BRANCH_CODE_LOOKUP_PATH = os.path.join(os.path.dirname(__file__), "branch_code_lookup.json")
+_branch_code_cache = None
+
+
+def _load_branch_code_lookup() -> dict:
+    """بارگذاری و کش کردن branch_code_lookup.json"""
+    global _branch_code_cache
+    if _branch_code_cache is None:
+        try:
+            with open(_BRANCH_CODE_LOOKUP_PATH, encoding="utf-8") as f:
+                _branch_code_cache = json.load(f)
+            logger.info(f"[BULK] branch_code_lookup.json بارگذاری شد ({len(_branch_code_cache)} ورودی)")
+        except FileNotFoundError:
+            logger.error(f"[BULK] branch_code_lookup.json پیدا نشد در {_BRANCH_CODE_LOOKUP_PATH}")
+            _branch_code_cache = {}
+        except Exception as e:
+            logger.error(f"[BULK] خطا در بارگذاری branch_code_lookup.json: {e}")
+            _branch_code_cache = {}
+    return _branch_code_cache
+
+
+def _resolve_branch_code(branch_name: str) -> str:
+    """استخراج کد ۵ رقمی شعبه از نام شعبه با استفاده از branch_code_lookup.json.
+
+    جستجو در چند قالب انجام می‌شود:
+    1. تطبیق دقیق نام کامل
+    2. جستجوی زیررشته (اگر نام شعبه بخشی از کلید باشد)
+    3. جستجوی معکوس (اگر کلید بخشی از نام شعبه باشد)
+    """
+    if not branch_name:
+        return ""
+
+    lookup = _load_branch_code_lookup()
+    branch_name = branch_name.strip()
+
+    # ۱) تطبیق دقیق
+    if branch_name in lookup:
+        return lookup[branch_name]
+
+    # ۲) جستجوی زیررشته - نام شعبه بخشی از کلید باشد
+    for key, code in lookup.items():
+        if branch_name in key or key in branch_name:
+            logger.info(f"[BULK] تطبیق شعبه: '{branch_name}' -> '{key}' (کد: {code})")
+            return code
+
+    logger.warning(f"[BULK] کد شعبه برای '{branch_name}' پیدا نشد")
+    return ""
 
 
 def generate_tracking_code(prefix="BLK") -> str:
@@ -496,7 +548,11 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
     except Exception as e:
         logger.error(f"خطا در ارسال پیام شروع پردازش: {e}")
 
+    # ── مجموعه جلوگیری از ثبت تکراری در سطح صف ──
+    _queued_bulk_keys = set()
+
     queued = 0
+    skipped_duplicates = 0
     errors = 0
     for idx, item in enumerate(items, start=1):
         try:
@@ -546,7 +602,7 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
                 system_title = "لایحه دفاعیه" if title == "سایر عناوین" else title
 
                 providers = item.get("providers", [])
-                persons = [{"person_type": "", "national_id": _sanitize_text(pid)} for pid in providers]
+                persons = [{"person_type": "شخص حقیقی", "national_id": _sanitize_text(pid)} for pid in providers]
                 if item.get("lawyer_id"):
                     persons.append({"person_type": "وکیل", "national_id": _sanitize_text(item["lawyer_id"])})
 
@@ -555,7 +611,27 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
                     if method == "شماره پرونده" \
                     else _sanitize_text(item.get("archive_number", ""))
 
+                # استخراج کد شعبه از نام شعبه (برای روش بایگانی)
+                _branch_name_raw = item.get("branch_name", "")
+                _resolved_branch_code = _resolve_branch_code(_branch_name_raw) \
+                    if method == "شعبه و شماره بایگانی" else ""
+                if method == "شعبه و شماره بایگانی" and _resolved_branch_code:
+                    logger.info(f"[BULK-QUEUE] کد شعبه استخراج شد: '{_branch_name_raw}' -> '{_resolved_branch_code}'")
+                elif method == "شعبه و شماره بایگانی":
+                    logger.warning(f"[BULK-QUEUE] ⚠️ کد شعبه برای '{_branch_name_raw}' پیدا نشد!")
+
                 # ساخت داده‌ها دقیقاً مشابه FSM state فلوی ثبت تکی لایحه
+                # ══════════════════════════════════════════════════════════
+                # جلوگیری از ثبت تکراری در سطح صف: اگر این مورد قبلاً
+                # در صف قرار گرفته، دوباره اضافه نکن
+                # ══════════════════════════════════════════════════════════
+                _dup_key = f"{actual_tracking}:{item.get('sub_row', 1)}"
+                if _dup_key in _queued_bulk_keys:
+                    logger.warning(f"[BULK-QUEUE] ⚠️ ردیف تکراری رد شد: {_dup_key} (مورد {idx})")
+                    item["status"] = "duplicate_skipped"
+                    continue
+                _queued_bulk_keys.add(_dup_key)
+
                 fsm_data = {
                     "lavayeh_title": title,
                     "lavayeh_system_title": system_title,
@@ -569,7 +645,8 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
                     "tracking_method": "case_number" if method == "شماره پرونده" else "archive_number",
                     "lavayeh_archive_number": _sanitize_text(item.get("archive_number", "")),
                     "lavayeh_branch_name": _sanitize_text(item.get("branch_name", "")),
-                    "lavayeh_branch_code": "",
+                    "lavayeh_branch_code": _resolved_branch_code,
+                    "_is_bulk": True,
                 }
 
                 if _send_lavayeh_fn:
@@ -592,8 +669,14 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
                         "tracking_method": "case_number" if method == "شماره پرونده" else "archive_number",
                         "lavayeh_archive_number": _sanitize_text(item.get("archive_number", "")),
                         "lavayeh_branch_name": _sanitize_text(item.get("branch_name", "")),
-                        "lavayeh_branch_code": "",
+                        "lavayeh_branch_code": _resolved_branch_code,
+                        "_is_bulk": True,
                     })
+
+            if item.get("status") == "duplicate_skipped":
+                skipped_duplicates += 1
+                logger.warning(f"[BULK-QUEUE] مورد {idx} تکراری رد شد")
+                continue
 
             item["status"] = "queued"
             queued += 1
@@ -618,10 +701,11 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
     task_data["queued_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     task_data["queued_count"] = queued
 
+    dup_note = f"\n⚠️ {skipped_duplicates} مورد تکراری رد شد." if skipped_duplicates else ""
     error_note = f"\n⚠️ {errors} مورد خطا داشت." if errors else ""
     try:
         await bot.send_message(user_id,
-            f"✅ *تمام {queued} مورد در صف پردازش سامانه قرار گرفت!*{error_note}\n\n"
+            f"✅ *تمام {queued} مورد در صف پردازش سامانه قرار گرفت!*{error_note}{dup_note}\n\n"
             f"🔒 کد پیگیری: `{tracking_code}`\n"
             f"📥 موارد در صف: *{queued} از {total}*\n\n"
             f"⏳ موارد یکی‌یکی ثبت خواهند شد و نتیجه هر مورد برایتان ارسال می‌شود.",

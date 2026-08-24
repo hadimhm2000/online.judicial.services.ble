@@ -601,9 +601,47 @@ bulk_confirm_kb = ReplyKeyboardMarkup(
 bulk_attachment_row_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📎 افزودن پیوست برای این ردیف")],
+        [KeyboardButton(text="🔗 پیوست مشابه برای همه ردیف‌ها")],
         [KeyboardButton(text="⏭ رد شدن از این ردیف (بدون پیوست)")],
         [KeyboardButton(text="✅ اتمام پیوست‌گذاری و ادامه")],
         [KeyboardButton(text="❌ انصراف")]
+    ],
+    resize_keyboard=True
+)
+
+# کیبورد تأیید پیوست مشابه برای همه ردیف‌ها
+bulk_attachment_all_confirm_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="✅ بله، برای همه ردیف‌ها اضافه شود")],
+        [KeyboardButton(text="🔙 بازگشت")],
+    ],
+    resize_keyboard=True
+)
+
+# کیبورد انتخاب عنوان پیوست مشابه (اولین بار)
+bulk_attachment_all_title_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🔹 عنوان مهم نیست (سایر مستندات)"), KeyboardButton(text="⏭ رد کردن (بدون مدرک)")],
+        [KeyboardButton(text="❌ انصراف")],
+    ],
+    resize_keyboard=True
+)
+
+# کیبورد ادامه پیوست مشابه (آیا پیوست دیگری هم هست؟)
+bulk_attachment_all_more_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="➕ افزودن پیوست دیگر (برای همه ردیف‌ها)")],
+        [KeyboardButton(text="✅ اتمام ارسال مدارک")],
+        [KeyboardButton(text="❌ انصراف")],
+    ],
+    resize_keyboard=True
+)
+
+# کیبورد انتخاب عنوان پیوست مشابه (دوم به بعد)
+bulk_attachment_all_title_next_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🔹 عنوان مهم نیست (سایر مستندات)")],
+        [KeyboardButton(text="❌ انصراف")],
     ],
     resize_keyboard=True
 )
