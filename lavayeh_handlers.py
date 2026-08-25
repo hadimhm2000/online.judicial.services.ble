@@ -794,6 +794,16 @@ async def bulk_attachment_all_confirm_handler(message: Message, state: FSMContex
         await state.set_state(Form.bulk_attachment_row)
         return
 
+    elif text == "❌ خیر، بدون پیوست مشترک ادامه بده":
+        # ذخیره پیوست‌های ردیف فعلی و رفتن مستقیم به تایید اطلاعات
+        current_index = data.get("bulk_current_row_index", 0)
+        current_attachments = data.get("bulk_current_row_attachments", [])
+        if current_index < len(items):
+            items[current_index]["attachments"] = current_attachments
+        await state.update_data(bulk_items=items)
+        await _go_to_bulk_confirm(message, state)
+        return
+
     else:
         await message.answer(
             "⚠️ لطفاً یکی از گزینه‌های منو را انتخاب فرمایید:",
@@ -884,7 +894,7 @@ async def bulk_attachment_all_images_done_handler(message: Message, state: FSMCo
     await message.answer(
         f"✅ گروه پیوست «{title}» با {img_count} تصویر ثبت شد.\n\n"
         f"آیا پیوست مشابه دیگری هم دارید؟",
-        reply_markup=bulk_attachment_all_title_next_kb,
+        reply_markup=bulk_attachment_all_more_kb,
         parse_mode="Markdown"
     )
     await state.update_data(
@@ -916,17 +926,18 @@ async def bulk_attachment_all_more_handler(message: Message, state: FSMContext):
     """آیا پیوست مشترک دیگری هم هست؟"""
     text = (message.text or "").strip()
 
-    if text == "➕ افزودن پیوست دیگر (برای همه ردیف‌ها)":
+    if text == "✅ بله":
         await message.answer(
             "📎 *عنوان پیوست مشترک جدید:*\n\n"
-            "لطفاً عنوان را انتخاب یا تایپ کنید:",
+            "لطفاً عنوان را انتخاب یا تایپ کنید:\n"
+            "(مثلاً «کارت ملی»، «وکالتنامه»)",
             reply_markup=bulk_attachment_all_title_next_kb,
             parse_mode="Markdown"
         )
         await state.set_state(Form.bulk_attachment_all_title)
         return
 
-    elif text == "✅ اتمام ارسال مدارک":
+    elif text == "❌ خیر":
         await _distribute_all_attachments_and_finish(message, state)
         return
 
@@ -937,16 +948,10 @@ async def bulk_attachment_all_more_handler(message: Message, state: FSMContext):
         return
 
     else:
-        # کاربر عنوانی تایپ کرده (مثل عنوان پیوست)
-        title = text
-        await state.update_data(bulk_all_attachment_title=title, bulk_all_attachment_images=[])
         await message.answer(
-            f"📷 *ارسال تصاویر «{title}»*\n\n"
-            f"لطفاً تصاویر را بفرستید.",
-            reply_markup=bulk_attachment_all_more_kb,
-            parse_mode="Markdown"
+            "⚠️ لطفاً یکی از گزینه‌های منو را انتخاب فرمایید:",
+            reply_markup=bulk_attachment_all_more_kb
         )
-        await state.set_state(Form.bulk_attachment_all_images)
 
 
 async def _distribute_all_attachments_and_finish(message: Message, state: FSMContext):
