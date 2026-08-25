@@ -597,7 +597,7 @@ async def process_lavayeh_task(data: dict, bot: Bot):
 
             pdf_path = await _print_lavayeh(sana_page, browser_context, tracking_code, bot, user_id)
 
-            from lavayeh_handlers import send_lavayeh_result
+            from lavayeh_handlers import send_lavayeh_result, send_bulk_item_result
             national_ids = ", ".join([p.get("national_id", "") for p in persons if p.get("national_id")])
             # ── ارسال نتیجه به همراه اطلاعات لازم برای مرحله امضا ──────
             # نکته مهم: باید فقط «کد رهگیری» خام (tracking_code) به مرحله امضا

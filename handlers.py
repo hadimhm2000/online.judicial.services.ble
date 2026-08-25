@@ -321,7 +321,9 @@ async def global_successful_payment_handler(message: types.Message, state: FSMCo
     if current_state in (Form.waiting_for_lavayeh_prepay,
                          Form.waiting_for_ezhhar_prepay,
                          Form.waiting_for_ealam_payment_receipt,
-                         Form.stamp_calc_waiting_payment):
+                         Form.stamp_calc_waiting_payment,
+                         Form.bulk_prepay_wait,
+                         Form.bulk_settlement_wait):
         return
 
     # ── پرداخت اشتراک ماهیانه ──
