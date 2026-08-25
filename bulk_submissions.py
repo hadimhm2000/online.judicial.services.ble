@@ -747,6 +747,7 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
                     "ezhhar_attachments": item.get("attachments", []),
                     "_is_bulk": True,
                     "batch_tracking_code": tracking_code,
+                    "_bulk_row_index": item.get("row_index", idx),
                 }
 
                 logger.info(f"[BULK-QUEUE] اظهارنامه مورد {idx}: {len(transformed_declarants)} اظهارکننده, {len(transformed_addressees)} مخاطب")
@@ -776,6 +777,7 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
                         "ezhhar_attachments": item.get("attachments", []),
                         "_is_bulk": True,
                         "batch_tracking_code": tracking_code,
+                        "_bulk_row_index": item.get("row_index", idx),
                     })
             else:
                 method = item.get("method", "شماره پرونده")
@@ -828,6 +830,7 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
                     "lavayeh_branch_name": _sanitize_text(item.get("branch_name", "")),
                     "lavayeh_branch_code": _resolved_branch_code,
                     "_is_bulk": True,
+                    "batch_tracking_code": tracking_code,
                 }
 
                 if _send_lavayeh_fn:
