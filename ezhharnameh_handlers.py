@@ -159,6 +159,12 @@ async def ezhhar_declarant_person_type_handler(message: Message, state: FSMConte
         await state.set_state(Form.ezhhar_addressee_person_type)
         return
 
+    if text == "🔙 بازگشت به منوی اصلی":
+        await state.clear()
+        await message.answer("عملیات لغو شد. بازگشت به منوی اصلی.", reply_markup=flow_type_kb)
+        await state.set_state(Form.waiting_for_flow_type)
+        return
+
     if text not in ["شخص حقیقی", "شخص حقوقی", "وکیل"]:
         await message.answer(
             "⚠️ لطفاً یکی از گزینه‌های موجود را انتخاب کنید:",

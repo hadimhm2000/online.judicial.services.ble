@@ -18,7 +18,7 @@ from aiogram.types import Message, ReplyKeyboardRemove, InlineKeyboardMarkup, In
 
 import runtime_state
 from bale_file_sender import send_document_direct
-from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, calculate_lavayeh_fee, format_lavayeh_fee_explanation, LAVAYEH_SERVICE_FEE, EZHHARNAMEH_SERVICE_FEE
+from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, calculate_lavayeh_fee, format_lavayeh_fee_explanation, LAVAYEH_SERVICE_FEE, EZHHARNAMEH_SERVICE_FEE, BULK_PREPAY_PER_ROW_TOMAN
 from exempt_users import is_exempt_user
 from sheets import log_event
 
@@ -54,7 +54,8 @@ from bulk_submissions import (
     parse_text_or_image_input,
     generate_tracking_code,
     BULK_TASKS,
-    run_bulk_processing_task)
+    run_bulk_processing_task,
+    count_processable_items)
 
 lavayeh_router = Router()
 
@@ -1026,58 +1027,64 @@ async def bulk_confirm_handler(message: Message, state: FSMContext):
         service_fa = "لایحه" if service_type == "lavayeh" else "اظهارنامه"
         total_attachments = sum(len(item.get("attachments", [])) for item in items)
         
-        # ذخیره در BULK_TASKS
+        # شمارش ردیف‌های واقعاً قابل پردازش
+        processable_count = count_processable_items(items, service_type)
+        if processable_count == 0:
+            await message.answer("⚠️ هیچ ردیف قابل پردازشی یافت نشد. لطفاً فایل را بررسی کنید.")
+            return
+        
+        prepay_rial = processable_count * BULK_PREPAY_PER_ROW_TOMAN * 10  # تومان → ریال
+        prepay_toman = processable_count * BULK_PREPAY_PER_ROW_TOMAN
+        
+        # ذخیره در BULK_TASKS (بدون ارسال به مدیر — پس از پرداخت ارسال می‌شود)
         BULK_TASKS[tracking_code] = {
             "user_id": message.from_user.id,
             "username": message.from_user.username or message.from_user.first_name,
             "service_type": service_type,
             "items": items,
-            "status": "pending_admin",  # در انتظار تایید مدیر
+            "status": "pending_admin",
+            "prepaid_total_rial": prepay_rial,
             "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         
-        # ارسال پیام به مدیر برای تایید — بدون فرمت Markdown
-        admin_message = (
-            f"📋 درخواست جدید ثبت دسته‌جمعی {service_fa}\n\n"
-            f"🔖 کد رهگیری: {tracking_code}\n"
-            f"👤 کاربر: @{message.from_user.username or message.from_user.first_name} (ID: {message.from_user.id})\n"
-            f"📦 تعداد موارد: {len(items)} {service_fa}\n"
-            f"📎 تعداد پیوست‌ها: {total_attachments} پیوست\n"
-            f"⏰ زمان درخواست: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-            f"📄 جزئیات ردیف‌ها:\n"
-        )
+        # ذخیره tracking_code در state برای بازیابی پس از پرداخت
+        await state.update_data(bulk_prepay_tracking_code=tracking_code)
         
-        # نمایش جزئیات چند ردیف اول
-        for i, item in enumerate(items[:5], 1):
-            if service_type == "lavayeh":
-                admin_message += f"• ردیف {i}: پرونده {item.get('case_number', '-')} - {item.get('title', '-')}\n"
-            else:
-                admin_message += f"• ردیف {i}: اظهارکننده {(item.get('declarants', [{}]) or [{}])[0].get('id', '-')} - {item.get('title', '-')}\n"
-        
-        if len(items) > 5:
-            admin_message += f"... و {len(items) - 5} ردیف دیگر\n"
-        
-        admin_message += (
-            f"\n⚠️ برای تایید یا رد این درخواست، لطفاً دستورات زیر را ارسال کنید:\n"
-            f"✅ تایید: /approve_bulk {tracking_code}\n"
-            f"❌ رد: /reject_bulk {tracking_code}"
-        )
-        
+        # صدور فاکتور پیش‌پرداخت
         try:
-            await message.bot.send_message(ADMIN_ID, admin_message)
-            logging.info(f"[BULK] اطلاع به مدیر ارسال شد برای {tracking_code}.")
+            invoice_payload = _json.dumps({"type": "bulk_prepay", "uid": message.from_user.id, "tracking_code": tracking_code})
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+                invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
+                invoice_data = {
+                    "chat_id": message.from_user.id,
+                    "title": f"پیش‌پرداخت ثبت دسته‌جمعی {service_fa}",
+                    "description": f"پیش‌پرداخت {processable_count} ردیف {service_fa}\nمبلغ: {prepay_toman:,} تومان ({prepay_rial:,} ریال)",
+                    "payload": invoice_payload,
+                    "provider_token": BALE_WALLET_TOKEN,
+                    "currency": "IRR",
+                    "prices": [{"label": f"پیش‌پرداخت {processable_count} {service_fa}", "amount": prepay_rial}],
+                }
+                logging.info(f"[BULK-PREPAY] ارسال sendInvoice پیش‌پرداخت: user={message.from_user.id}, مبلغ={prepay_rial:,} ریال, تعداد={processable_count}")
+                async with session.post(invoice_url, json=invoice_data) as resp:
+                    result = await resp.json()
+                    if not result.get("ok"):
+                        logging.error(f"[BULK-PREPAY] خطای sendInvoice: {result}")
+                        raise Exception(result.get("description", "خطا در ارسال فاکتور"))
         except Exception as e:
-            logging.error(f"[BULK] خطا در ارسال به مدیر: {e}", exc_info=True)
+            logging.error(f"[BULK-PREPAY] خطا در صدور فاکتور پیش‌پرداخت: {e}", exc_info=True)
+            await message.answer("⚠️ خطا در ساخت فاکتور پیش‌پرداخت. لطفاً کمی بعد دوباره تلاش کنید.")
+            return
         
-        await state.clear()
         await message.answer(
-            f"✅ *درخواست شما برای تایید مدیر ارسال شد!*\n\n"
-            f"🔖 کد رهگیری: `{tracking_code}`\n"
-            f"📦 تعداد موارد: *{len(items)} {service_fa}*\n\n"
-            f"⏳ پس از تایید مدیر، پردازش خودکار آغاز خواهد شد و نتیجه برای شما ارسال می‌گردد.\n\n"
-            f"شما می‌توانید به منوی اصلی بازگردید و سایر امور خود را انجام دهید.",
-            reply_markup=flow_type_kb)
-        await state.set_state(Form.waiting_for_flow_type)
+            f"⏳ *فاکتور پیش‌پرداخت ارسال شد!*\n\n"
+            f"💰 مبلغ: *{prepay_toman:,} تومان* ({prepay_rial:,} ریال)\n"
+            f"📦 تعداد ردیف: *{processable_count} {service_fa}*\n"
+            f"🔹 کد رهگیری: `{tracking_code}`\n\n"
+            f"پس از پرداخت، درخواست شما برای تایید مدیر ارسال خواهد شد.",
+            parse_mode="Markdown",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await state.set_state(Form.bulk_prepay_wait)
         return
     elif text == "🔄 ارسال مجدد فایل / اصلاح":
         await message.answer("لطفاً روش ارسال اطلاعات را مجدداً انتخاب کنید:", reply_markup=bulk_input_method_kb)
@@ -2327,6 +2334,212 @@ async def lavayeh_prepay_successful_payment(message: Message, state: FSMContext,
     await state.clear()
 
 
+# ══════════════════════════════════════════════════════════════════════
+# پرداخت پیش‌پرداخت دسته‌جمعی (مشترک لایحه/اظهارنامه)
+# ══════════════════════════════════════════════════════════════════════
+
+@lavayeh_router.pre_checkout_query()
+async def bulk_prepay_pre_checkout(pre_checkout_query: PreCheckoutQuery, bot: Bot):
+    """تایید خودکار درخواست پیش‌پرداخت دسته‌جمعی"""
+    try:
+        await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+        logging.info(f"[BULK-PREPAY] pre_checkout تایید شد برای کاربر {pre_checkout_query.from_user.id}")
+    except Exception as e:
+        logging.error(f"[BULK-PREPAY] خطا در answer_pre_checkout_query: {e}")
+
+
+@lavayeh_router.message(Form.bulk_prepay_wait, F.successful_payment)
+async def bulk_prepay_successful_payment(message: Message, state: FSMContext, bot: Bot):
+    """پرداخت موفق پیش‌پرداخت دسته‌جمعی — ارسال به مدیر"""
+    user_id = message.from_user.id
+    data = await state.get_data()
+    tracking_code = data.get("bulk_prepay_tracking_code", "")
+    payment = message.successful_payment
+    
+    if not tracking_code or tracking_code not in BULK_TASKS:
+        logging.error(f"[BULK-PREPAY] tracking_code یافت نشد: {tracking_code}")
+        await message.answer("⚠️ خطا: اطلاعات پرداخت یافت نشد. لطفاً به مدیریت اطلاع دهید.")
+        await state.clear()
+        return
+    
+    task_data = BULK_TASKS[tracking_code]
+    service_type = task_data.get("service_type", "lavayeh")
+    service_fa = "لایحه" if service_type == "lavayeh" else "اظهارنامه"
+    items = task_data.get("items", [])
+    prepaid_rial = task_data.get("prepaid_total_rial", 0)
+    
+    logging.info(f"[BULK-PREPAY] پرداخت موفق پیش‌پرداخت: user={user_id}, tracking={tracking_code}, مبلغ={prepaid_rial:,} ریال")
+    
+    await message.answer("✅ *پرداخت پیش‌پرداخت تایید شد!*", parse_mode="Markdown")
+    await message.answer(
+        f"💰 مبلغ: *{prepaid_rial // 10:,} تومان*\n\n"
+        f"📦 نوع: *ثبت دسته‌جمعی {service_fa}*\n\n"
+        f"⏳ درخواست شما برای تایید مدیر ارسال شد...",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    
+    await log_event(
+        "پرداخت", f"پیش‌پرداخت دسته‌جمعی {service_fa}", message.from_user.full_name, user_id,
+        doc_name=f"پیش‌پرداخت دسته‌جمعی {len(items)} ردیف", payment_status="پرداخت شده (کیف پول بله)",
+        note=f"مبلغ: {prepaid_rial:,} ریال | tracking: {tracking_code} | payment_id: {payment.telegram_payment_charge_id}"
+    )
+    
+    # ارسال پیام به مدیر
+    total_attachments = sum(len(item.get("attachments", [])) for item in items)
+    admin_message = (
+        f"📋 درخواست ثبت دسته‌جمعی {service_fa} (پرداخت شده)\n\n"
+        f"🔹 کد رهگیری: {tracking_code}\n"
+        f"👤 کاربر: @{message.from_user.username or message.from_user.first_name} (ID: {user_id})\n"
+        f"📦 تعداد موارد: {len(items)} {service_fa}\n"
+        f"📎 تعداد پیوست‌ها: {total_attachments} پیوست\n"
+        f"⏰ زمان: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"💰 پیش‌پرداخت: {prepaid_rial:,} ریال\n\n"
+        f"📄 جزئیات ردیف‌ها:\n"
+    )
+    for i, item in enumerate(items[:5], 1):
+        if service_type == "lavayeh":
+            admin_message += f"• ردیف {i}: پرونده {item.get('case_number', '-')} - {item.get('title', '-')}\n"
+        else:
+            admin_message += f"• ردیف {i}: اظهارکننده {(item.get('declarants', [{}]) or [{}])[0].get('id', '-')} - {item.get('title', '-')}\n"
+    if len(items) > 5:
+        admin_message += f"... و {len(items) - 5} ردیف دیگر\n"
+    admin_message += (
+        f"\n⚠️ برای تایید یا رد:\n"
+        f"✅ تایید: /approve_bulk {tracking_code}\n"
+        f"❌ رد: /reject_bulk {tracking_code}"
+    )
+    
+    try:
+        await message.bot.send_message(ADMIN_ID, admin_message)
+        logging.info(f"[BULK-PREPAY] اطلاع به مدیر ارسال شد برای {tracking_code}.")
+    except Exception as e:
+        logging.error(f"[BULK-PREPAY] خطا در ارسال به مدیر: {e}", exc_info=True)
+    
+    await message.answer(
+        f"✅ *درخواست شما برای تایید مدیر ارسال شد!*\n\n"
+        f"🔹 کد رهگیری: `{tracking_code}`\n"
+        f"📦 تعداد موارد: *{len(items)} {service_fa}*\n\n"
+        f"⏳ پس از تایید مدیر، پردازش خودکار آغاز خواهد شد.",
+        parse_mode="Markdown"
+    )
+    await state.clear()
+
+
+@lavayeh_router.message(Form.bulk_settlement_wait, F.successful_payment)
+async def bulk_settlement_successful_payment(message: Message, state: FSMContext, bot: Bot):
+    """پرداخت موفق تسویه باقیمانده — نمایش منوی امضا"""
+    user_id = message.from_user.id
+    
+    await message.answer("✅ *پرداخت تسویه تایید شد!*", parse_mode="Markdown")
+    
+    # یافتن batch_tracking_code از BULK_TASKS بر اساس user_id
+    batch_tc = None
+    for tc, td in BULK_TASKS.items():
+        if td.get("user_id") == user_id and td.get("status") in ("queued", "processing"):
+            batch_tc = tc
+            break
+    
+    if batch_tc:
+        from bulk_submissions import _show_bulk_sign_menu
+        await _show_bulk_sign_menu(bot, user_id, batch_tc)
+    else:
+        await message.answer("⚠️ اطلاعات دسته جمعی یافت نشد. لطفاً به مدیریت اطلاع دهید.")
+    
+    await state.clear()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# هندلرهای امضای دسته‌جمعی
+# ══════════════════════════════════════════════════════════════════════
+
+@lavayeh_router.callback_query(F.data.startswith("bulk_sign_select:"))
+async def bulk_sign_select_callback(callback: CallbackQuery, bot: Bot):
+    """انتخاب کد رهگیری برای امضای دسته‌جمعی"""
+    user_id = callback.from_user.id
+    data_str = callback.data.split(":", 1)
+    if len(data_str) < 2:
+        await callback.answer("⚠️ خطا در انتخاب", show_alert=True)
+        return
+    
+    selected_tc = data_str[1]
+    
+    # یافتن batch_tracking_code
+    batch_tc = None
+    target_item = None
+    for tc, td in BULK_TASKS.items():
+        if td.get("user_id") == user_id:
+            for item in td.get("signable_items", []):
+                if item.get("tracking_code") == selected_tc and item.get("status") == "awaiting_sign":
+                    batch_tc = tc
+                    target_item = item
+                    break
+            if batch_tc:
+                break
+    
+    if not batch_tc or not target_item:
+        await callback.answer("⚠️ این کد رهگیری یافت نشد یا دیگر قابل امضا نیست.", show_alert=True)
+        return
+    
+    task_data = BULK_TASKS[batch_tc]
+    
+    # بررسی قفل هم‌زمانی
+    if task_data.get("signing_in_progress"):
+        await callback.answer("⏳ در حال امضای کد دیگری هستید. لطفاً صبر کنید.", show_alert=True)
+        return
+    
+    # قفل امضا
+    task_data["signing_in_progress"] = selected_tc
+    
+    await callback.answer(f"✅ انتخاب شد: {selected_tc}")
+    
+    # شروع فلوی امضا برای این آیتم
+    is_ezhhar = target_item.get("is_ezhharnameh", False)
+    title = target_item.get("title", "")
+    province = ""
+    row_number = 1
+    persons = target_item.get("persons", [])
+    national_ids = ", ".join(target_item.get("national_ids", []))
+    court_total = target_item.get("court_total", 0)
+    
+    try:
+        await _go_to_sign_flow_after_prepaid(
+            bot, user_id, is_ezhhar,
+            title, province, row_number, persons,
+            selected_tc, national_ids, court_total
+        )
+    except Exception as e:
+        logging.error(f"[BULK-SIGN] خطا در شروع امضا: {e}", exc_info=True)
+        task_data["signing_in_progress"] = None
+        await bot.send_message(user_id, f"⚠️ خطا در شروع فرآیند امضا: {e}")
+
+
+@lavayeh_router.callback_query(F.data.startswith("bulk_sign_list:"))
+async def bulk_sign_list_callback(callback: CallbackQuery, bot: Bot):
+    """نمایش لیست کامل کدهای رهگیری"""
+    user_id = callback.from_user.id
+    data_str = callback.data.split(":", 1)
+    if len(data_str) < 2:
+        await callback.answer("⚠️ خطا", show_alert=True)
+        return
+    
+    batch_tc = data_str[1]
+    from bulk_submissions import format_bulk_tracking_list
+    text = format_bulk_tracking_list(batch_tc)
+    
+    try:
+        await bot.send_message(user_id, text, parse_mode="Markdown")
+    except Exception:
+        await bot.send_message(user_id, text)
+    await callback.answer()
+
+
+@lavayeh_router.callback_query(F.data == "bulk_sign_disabled")
+async def bulk_sign_disabled_callback(callback: CallbackQuery):
+    """دکمه‌های غیرفعال در منوی امضا"""
+    await callback.answer("⏳ این مورد فعلاً در دسترس نیست.", show_alert=False)
+
+
 # هندلر دکمه «پرداخت انجام شد» — فال‌بک
 @lavayeh_router.callback_query(F.data == "lavayeh_prepay_done", Form.waiting_for_lavayeh_prepay)
 async def lavayeh_prepay_done_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
@@ -2552,6 +2765,70 @@ async def _go_to_sign_flow_after_prepaid(
             "آیا برای ارسال کد امضا آماده هستید؟",
             reply_markup=lavayeh_sign_ready_kb)
         await user_state.set_state(Form.lavayeh_sign_ready)
+
+
+async def send_bulk_item_result(
+    bot: Bot,
+    user_id: int,
+    pdf_path: str,
+    court_total: int,
+    tracking_code: str = "",
+    national_ids: str = "",
+    lavayeh_title: str = "",
+    is_ezhharnameh: bool = False,
+    batch_tracking_code: str = "",
+    row_index: int = 0,
+    lavayeh_persons: list = None,
+    lavayeh_bill_no: str = "",
+):
+    """نتیجه ثبت یک ردیف دسته‌جمعی — بدون فاکتور و بدون امضا.
+    
+    فقط پیام ثبت+هزینه ارسال می‌کند و آیتم را به لیست signable_items اضافه می‌کند.
+    """
+    if lavayeh_persons is None:
+        lavayeh_persons = []
+    
+    service_label = "اظهارنامه" if is_ezhharnameh else "لایحه"
+    
+    # ارسال PDF اگر موجود باشد
+    if pdf_path and os.path.exists(pdf_path):
+        doc_caption = f"📄 *نسخه ثبت‌شده {service_label} (دسته‌جمعی - ردیف {row_index})" 
+        await send_document_direct(user_id, pdf_path, caption=doc_caption)
+        try:
+            os.remove(pdf_path)
+        except Exception:
+            pass
+    
+    # پیام ثبت موفق
+    msg = (
+        f"✅ *ردیف {row_index}* ({lavayeh_title}) *با موفقیت ثبت شد.*\n\n"
+        f"🔹 کد رهگیری: `{tracking_code}`\n"
+        f"💰 هزینه سامانه: *{court_total:,} ریال*"
+    )
+    
+    try:
+        await bot.send_message(user_id, msg, parse_mode="Markdown")
+    except Exception:
+        await bot.send_message(user_id, msg)
+    
+    # اضافه به signable_items در BULK_TASKS
+    if batch_tracking_code and batch_tracking_code in BULK_TASKS:
+        nat_id_list = [p.get("national_id", "") for p in lavayeh_persons if p.get("national_id")]
+        BULK_TASKS[batch_tracking_code].setdefault("signable_items", []).append({
+            "tracking_code": tracking_code,
+            "lavayeh_bill_no": lavayeh_bill_no,
+            "court_total": court_total,
+            "title": lavayeh_title,
+            "is_ezhharnameh": is_ezhharnameh,
+            "national_ids": nat_id_list,
+            "persons": lavayeh_persons,
+            "row_index": row_index,
+            "status": "awaiting_sign",
+            "disabled_until": None,
+        })
+        logging.info(f"[BULK-ITEM] ردیف {row_index} اضافه به signable_items: {tracking_code} (بچ: {batch_tracking_code})")
+    else:
+        logging.warning(f"[BULK-ITEM] batch_tracking_code یافت نشد: {batch_tracking_code}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
