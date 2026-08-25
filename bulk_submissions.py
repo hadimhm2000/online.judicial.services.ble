@@ -903,11 +903,18 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
         prepaid_total = task_data.get("prepaid_total_rial", 0)
         remaining = total_court_cost - prepaid_total
 
+        if remaining > 0:
+            diff_line = f"\U0001f4b0 مابه‌التفاوه (باقیمانده): *{remaining:,} ریال*"
+        elif remaining < 0:
+            diff_line = f"\u2705 پیش‌پرداخت پوشش داده (مازاد: {abs(remaining):,} ریال)"
+        else:
+            diff_line = "\u2705 پیش‌پرداخت دقیقاً برابر هزینه سامانه"
+
         report_msg = (
             f"\U0001f9fe *گزارش مالی دسته‌جمعی (`{tracking_code}`)*\n\n"
             f"\U0001f4b0 مجموع هزینه واقعی سامانه: *{total_court_cost:,} ریال*\n"
             f"\U0001f4b3 مجموع پیش‌پرداخت شما: *{prepaid_total:,} ریال*\n"
-            f"{'\U0001f4b0 مابه‌التفاوه (باقیمانده): *' + f'{remaining:,} ریال*' if remaining > 0 else '\u2705 پیش‌پرداخت پوشش داده (مازاد: ' + f'{abs(remaining):,} ریال)' if remaining < 0 else '\u2705 پیش‌پرداخت دقیقاً برابر هزینه سامانه'}"
+            f"{diff_line}"
         )
 
         # فهرست ردیف‌های ناموفق
