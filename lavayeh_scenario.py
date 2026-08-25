@@ -479,6 +479,25 @@ async def process_lavayeh_task(data: dict, bot: Bot):
             lavayeh_bill_no = await _extract_bill_no(sana_page)
             logging.info(f"[LAVAYEH] bill_no: {lavayeh_bill_no} (user={user_id})")
 
+            # ══════════════════════════════════════════════════════════
+            # بررسی نهایی: حتی اگر «ثبت موقت» با موفقیت popup نشان داد،
+            # اگر استخراج کد رهگیری/شماره لایحه (bill_no) به هر دلیل شکست
+            # بخورد، ادامه دادن فرایند (منضمات، هزینه، ارسال به کاربر) کاملاً
+            # ناقص و گمراه‌کننده است — قبلاً این حالت بی‌صدا ادامه پیدا
+            # می‌کرد. حالا به‌صراحت متوقف و خطا اعلام می‌شود.
+            # ══════════════════════════════════════════════════════════
+            if not lavayeh_bill_no:
+                err_msg = "ثبت موقت انجام شد ولی شماره/کد لایحه از سامانه قابل استخراج نبود."
+                await bot.send_message(
+                    user_id,
+                    f"⚠️ *خطا در ثبت موقت:*\n\n«{err_msg}»\n\n"
+                    "فرآیند متوقف شد. لطفاً به مدیریت اطلاع دهید.")
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"❌ [LAVAYEH] bill_no استخراج نشد برای کاربر {user_id} — بررسی صفحه لازم است."
+                )
+                raise LavayehFatalError(err_msg)
+
             # ── ثبت کلید در مجموعه جلوگیری از تکرار ──
             # بعد از ثبت موقت موفق، کلید را ثبت می‌کنیم تا اگر retry شد،
             # لایحه دوباره ثبت موقت نشود
@@ -1184,27 +1203,32 @@ async def _click_save_temp_with_retry(page, bot: Bot, user_id: int, max_retries:
 
         error_text = await _get_and_close_error_popup_text(page)
         if error_text:
-            # بررسی session expiry در متن خطا
+            # بررسی session expiry در متن خطا — این مورد واقعاً موقتی است و
+            # با تمدید نشست دوباره تلاش می‌کنیم
             if ("منقضی" in error_text or "منقضي" in error_text or
                 "رایانه ای دیگر" in error_text or "اعتبار ورود" in error_text):
                 logging.warning(f"[LAVAYEH] session expiry in error text after save")
                 await handle_session_expired(bot, user_id, page=page)
                 continue
 
-            if "درج نشده" in error_text or ("شخص" in error_text and "سامانه" in error_text):
-                await bot.send_message(
-                    user_id,
-                    f"⚠️ *خطا در ثبت موقت:*\n\n«{error_text}»\n\n"
-                    "فرآیند متوقف شد. اطلاعات اشخاص را بررسی و مجدداً اقدام نمایید.")
-                await bot.send_message(
-                    ADMIN_ID,
-                    f"❌ [LAVAYEH] خطای قطعی در ثبت موقت کاربر {user_id}: {error_text}"
-                )
-                raise LavayehFatalError(error_text)
-
-            logging.warning(f"[LAVAYEH] ثبت موقت: «{error_text}» (تلاش {attempt + 1})")
-            await asyncio.sleep(5)
-            continue
+            # ══════════════════════════════════════════════════════════
+            # هر پیام خطای دیگری که سامانه به‌صورت popup سویت‌الرت نشان
+            # می‌دهد (مثلاً «شخص ... در فهرست اشخاص پرونده نیست»، «امکان
+            # ثبت وجود ندارد» و مشابه آن) یک خطای واقعیِ داده/کسب‌وکار است
+            # که با تلاش مجدد حل نمی‌شود — قبلاً کد فقط چند عبارت خاص را
+            # قطعی می‌دانست و بقیه را ۵ بار بی‌صدا تلاش مجدد می‌کرد و در
+            # پایان بدون خطا و بدون کد رهگیری برمی‌گشت. حالا هر پیام خطای
+            # غیر از انقضای نشست، بلافاصله قطعی در نظر گرفته می‌شود.
+            # ══════════════════════════════════════════════════════════
+            await bot.send_message(
+                user_id,
+                f"⚠️ *خطا در ثبت موقت:*\n\n«{error_text}»\n\n"
+                "فرآیند متوقف شد. اطلاعات را بررسی و مجدداً اقدام نمایید.")
+            await bot.send_message(
+                ADMIN_ID,
+                f"❌ [LAVAYEH] خطای قطعی در ثبت موقت کاربر {user_id}: {error_text}"
+            )
+            raise LavayehFatalError(error_text)
 
         # ══════════════════════════════════════════════════════════
         # اگر نه موفقیت و نه خطا: فقط صبر بیشتر و تلاش مجدد
@@ -1212,6 +1236,23 @@ async def _click_save_temp_with_retry(page, bot: Bot, user_id: int, max_retries:
         # ══════════════════════════════════════════════════════════
         logging.info(f"[LAVAYEH] ثبت موقت: پاسخ قطعی دریافت نشد، صبر بیشتر... (تلاش {attempt + 1})")
         await asyncio.sleep(5)
+
+    # ══════════════════════════════════════════════════════════════
+    # اگر بعد از max_retries تلاش، نه popup موفقیت و نه popup خطا هرگز
+    # ظاهر نشد (سامانه پاسخ قطعی نداد)، قبلاً تابع بی‌صدا برمی‌گشت و
+    # پردازش با bill_no خالی ادامه پیدا می‌کرد. حالا این حالت هم یک خطای
+    # قطعی محسوب می‌شود تا کاربر و مدیر بی‌اطلاع نمانند.
+    # ══════════════════════════════════════════════════════════════
+    timeout_msg = "سامانه پس از چند تلاش، پاسخ قطعی (موفقیت یا خطا) برای «ثبت موقت» نداد."
+    await bot.send_message(
+        user_id,
+        f"⚠️ *خطا در ثبت موقت:*\n\n«{timeout_msg}»\n\n"
+        "فرآیند متوقف شد. لطفاً کمی بعد دوباره تلاش کنید یا به مدیریت اطلاع دهید.")
+    await bot.send_message(
+        ADMIN_ID,
+        f"❌ [LAVAYEH] عدم پاسخ قطعی در ثبت موقت کاربر {user_id} پس از {max_retries} تلاش."
+    )
+    raise LavayehFatalError(timeout_msg)
 
 
 async def _click_goto_main(page, bot: Bot, user_id: int, max_retries: int = 5):

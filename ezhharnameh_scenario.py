@@ -675,8 +675,6 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
                         tracking_code=bill_no,
                         national_ids=nat_ids,
                         lavayeh_title=f"اظهارنامه — {subject}",
-                        lavayeh_province="",
-                        lavayeh_row_number=1,
                         lavayeh_persons=declarants,
                         is_ezhharnameh=True,
                         batch_tracking_code=batch_tc,
