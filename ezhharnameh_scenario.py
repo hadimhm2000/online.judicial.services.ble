@@ -645,7 +645,7 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
             pdf_path = await _print_ezhharnameh(sana_page, browser_context, bill_no, bot, user_id)
 
             # ── ۱۳. ارسال نتیجه ──────────────────────────────────────────
-            from lavayeh_handlers import send_lavayeh_result
+            from lavayeh_handlers import send_lavayeh_result, send_bulk_item_result
             nat_ids = ", ".join([
                 p.get("national_id", "") for p in declarants if p.get("national_id")
             ])
@@ -666,15 +666,33 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
                     f"⚠️ [EZHHAR] جدول هزینه نمایش داده نشد. کاربر {user_id} | کد: {bill_no}"
                 )
             else:
-                await send_lavayeh_result(
-                    bot, user_id, pdf_path, final_total,
-                    tracking_code=bill_no,
-                    national_ids=nat_ids,
-                    lavayeh_title=f"اظهارنامه — {subject}",
-                    lavayeh_province="",
-                    lavayeh_row_number=1,
-                    lavayeh_persons=declarants,
-                    skip_fee_calc=True,  # هزینه اظهارنامه قبلاً با فرمول جدید محاسبه شده
+                is_bulk = data.get("_is_bulk", False)
+                batch_tc = data.get("batch_tracking_code", "")
+                row_idx = data.get("_bulk_row_index", 0)
+                if is_bulk:
+                    await send_bulk_item_result(
+                        bot, user_id, pdf_path, final_total,
+                        tracking_code=bill_no,
+                        national_ids=nat_ids,
+                        lavayeh_title=f"اظهارنامه — {subject}",
+                        lavayeh_province="",
+                        lavayeh_row_number=1,
+                        lavayeh_persons=declarants,
+                        is_ezhharnameh=True,
+                        batch_tracking_code=batch_tc,
+                        row_index=row_idx,
+                        lavayeh_bill_no="",
+                    )
+                else:
+                    await send_lavayeh_result(
+                        bot, user_id, pdf_path, final_total,
+                        tracking_code=bill_no,
+                        national_ids=nat_ids,
+                        lavayeh_title=f"اظهارنامه — {subject}",
+                        lavayeh_province="",
+                        lavayeh_row_number=1,
+                        lavayeh_persons=declarants,
+                        skip_fee_calc=True,  # هزینه اظهارنامه قبلاً با فرمول جدید محاسبه شده
                     is_ezhharnameh=True,  # برای تمایز لایحه/اظهارنامه در جریان امضا
                     prepaid=is_prepaid,
                 )
