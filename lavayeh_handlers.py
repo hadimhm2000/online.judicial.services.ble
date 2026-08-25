@@ -47,7 +47,8 @@ from keyboards import (
     bulk_attachment_all_confirm_kb,
     bulk_attachment_all_title_kb,
     bulk_attachment_all_title_next_kb,
-    bulk_attachment_all_more_kb)
+    bulk_attachment_all_more_kb,
+    bulk_attachment_all_more_choice_kb)
 from stamp_duty import calculate_stamp_duty, format_result_fa
 from bulk_submissions import (
     parse_excel_file,
@@ -894,7 +895,7 @@ async def bulk_attachment_all_images_done_handler(message: Message, state: FSMCo
     await message.answer(
         f"✅ گروه پیوست «{title}» با {img_count} تصویر ثبت شد.\n\n"
         f"آیا پیوست مشابه دیگری هم دارید؟",
-        reply_markup=bulk_attachment_all_more_kb,
+        reply_markup=bulk_attachment_all_more_choice_kb,
         parse_mode="Markdown"
     )
     await state.update_data(
@@ -950,7 +951,7 @@ async def bulk_attachment_all_more_handler(message: Message, state: FSMContext):
     else:
         await message.answer(
             "⚠️ لطفاً یکی از گزینه‌های منو را انتخاب فرمایید:",
-            reply_markup=bulk_attachment_all_more_kb
+            reply_markup=bulk_attachment_all_more_choice_kb
         )
 
 
@@ -993,6 +994,40 @@ async def _distribute_all_attachments_and_finish(message: Message, state: FSMCon
 
     # رفتن به تایید نهایی
     await _go_to_bulk_confirm(message, state)
+
+
+async def _notify_admin_bulk_request(bot: Bot, user_id: int, tracking_code: str,
+                                     service_fa: str, processable_count: int, items: list):
+    """ارسال پیام درخواست ثبت دسته‌جمعی به مدیر (مشابه کد پس از پرداخت موفق)"""
+    service_type = "lavayeh" if service_fa == "لایحه" else "ezhharnameh"
+    total_attachments = sum(len(item.get("attachments", [])) for item in items)
+    admin_message = (
+        f"📋 درخواست ثبت دسته‌جمعی {service_fa} (معاف از هزینه)\n\n"
+        f"🔹 کد رهگیری: {tracking_code}\n"
+        f"👤 کاربر ID: {user_id}\n"
+        f"📦 تعداد موارد: {len(items)} {service_fa}\n"
+        f"📎 تعداد پیوست‌ها: {total_attachments} پیوست\n"
+        f"⏰ زمان: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"💰 پیش‌پرداخت: معاف\n\n"
+        f"📄 جزئیات ردیف‌ها:\n"
+    )
+    for i, item in enumerate(items[:5], 1):
+        if service_type == "lavayeh":
+            admin_message += f"• ردیف {i}: پرونده {item.get('case_number', '-')} - {item.get('title', '-') }\n"
+        else:
+            admin_message += f"• ردیف {i}: اظهارکننده {(item.get('declarants', [{}]) or [{}])[0].get('id', '-')} - {item.get('title', '-')}\n"
+    if len(items) > 5:
+        admin_message += f"... و {len(items) - 5} ردیف دیگر\n"
+    admin_message += (
+        f"\n⚠️ برای تایید یا رد:\n"
+        f"✅ تایید: /approve_bulk {tracking_code}\n"
+        f"❌ رد: /reject_bulk {tracking_code}"
+    )
+    try:
+        await bot.send_message(ADMIN_ID, admin_message)
+        logging.info(f"[BULK-EXEMPT] اطلاع به مدیر ارسال شد برای {tracking_code}.")
+    except Exception as e:
+        logging.error(f"[BULK-EXEMPT] خطا در ارسال به مدیر: {e}", exc_info=True)
 
 
 async def _go_to_bulk_confirm(message: Message, state: FSMContext):
@@ -1040,6 +1075,31 @@ async def bulk_confirm_handler(message: Message, state: FSMContext):
         
         prepay_rial = processable_count * BULK_PREPAY_PER_ROW_TOMAN * 10  # تومان → ریال
         prepay_toman = processable_count * BULK_PREPAY_PER_ROW_TOMAN
+        
+        # بررسی معافیت مدیر از پیش‌پرداخت
+        user_id = message.from_user.id
+        if await is_exempt_user(user_id):
+            BULK_TASKS[tracking_code] = {
+                "user_id": user_id,
+                "username": message.from_user.username or message.from_user.first_name,
+                "service_type": service_type,
+                "items": items,
+                "status": "pending_admin",
+                "prepaid_total_rial": 0,
+                "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            # ارسال مستقیم به مدیر بدون پیش‌پرداخت
+            await _notify_admin_bulk_request(message.bot, user_id, tracking_code, service_fa, processable_count, items)
+            await state.clear()
+            await message.answer(
+                f"✅ *درخواست ثبت دسته‌جمعی شما (معاف از هزینه) ارسال شد.*\n\n"
+                f"🔹 کد رهگیری: `{tracking_code}`\n"
+                f"📦 تعداد: *{processable_count} {service_fa}*\n\n"
+                f"پس از تایید مدیر، پردازش خودکار آغاز خواهد شد.",
+                parse_mode="Markdown",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return
         
         # ذخیره در BULK_TASKS (بدون ارسال به مدیر — پس از پرداخت ارسال می‌شود)
         BULK_TASKS[tracking_code] = {

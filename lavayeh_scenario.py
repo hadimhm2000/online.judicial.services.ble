@@ -779,9 +779,9 @@ async def _click_taqdim_lavayeh(page, bot: Bot, user_id: int):
 
         clicked = await page.evaluate('''() => {
             const btn = document.querySelector('button[ng-click*="setJSSBillType"]');
-            if (btn) {{ btn.click(); return true; }}
+            if (btn) { btn.click(); return true; }
             return false;
-        }}''')
+        }''')
         if not clicked:
             await safe_click_by_text(page, "تقدیم لایحه", bot, user_id)
         await asyncio.sleep(3)
@@ -799,7 +799,7 @@ async def _click_taqdim_lavayeh(page, bot: Bot, user_id: int):
         loaded = await page.evaluate('''() => {
             const steps = Array.from(document.querySelectorAll('.box h5, .step'));
             return steps.some(el => el.innerText && el.innerText.includes("ثبت"));
-        }}''')
+        }''')
         if loaded:
             return
         await asyncio.sleep(5)
@@ -1075,33 +1075,22 @@ async def _click_save_temp_with_retry(page, bot: Bot, user_id: int, max_retries:
         # محافظت تکراری: ابتدا بررسی می‌کنیم آیا دکمه ثبت موقت
         # قبلاً کلیک شده و منتظر پاسخ هستیم
         # ══════════════════════════════════════════════════════════
-        # غیرفعال کردن دکمه قبل از کلیک (جلوگیری از دابل‌کلیک)
-        await page.evaluate('''() => {
-            const btn = document.querySelector('#btnSave');
-            if (btn) btn.disabled = true;
-        }''')
-
+        # ══════════════════════════════════════════════
+        # کلیک دکمه ثبت موقت
+        # ══════════════════════════════════════════════
         clicked = await page.evaluate('''() => {
             const btn = document.querySelector('#btnSave');
             if (btn) {
-                if (!btn.disabled) { btn.click(); return true; }
-                // دکمه قبلاً غیرفعال شده — یعنی قبلاً کلیک شده
-                return "already_clicked";
+                if (!btn.disabled) {
+                    btn.click();
+                    return true;
+                }
             }
             return false;
         }''')
 
-        if clicked == "already_clicked":
-            logging.info(f"[LAVAYEH] دکمه ثبت موقت قبلاً کلیک شده — فقط منتظر پاسخ می‌مانیم (تلاش {attempt+1})")
-        elif not clicked:
-            await safe_click_by_text(page, "ثبت موقت", bot, user_id)
-
-        # فعال کردن مجدد دکمه بعد از ۲ ثانیه (در صورت نیاز به retry)
-        await asyncio.sleep(2)
-        await page.evaluate('''() => {
-            const btn = document.querySelector('#btnSave');
-            if (btn) btn.disabled = false;
-        }''')
+        if not clicked:
+            await safe_click_by_text(page, 'ثبت موقت', bot, user_id)
 
         # صبر اولیه
         await asyncio.sleep(3)

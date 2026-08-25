@@ -628,8 +628,18 @@ bulk_attachment_all_title_kb = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# کیبورد ادامه پیوست مشابه (آیا پیوست دیگری هم هست؟)
+# کیبورد حین ارسال تصاویر پیوست مشترک (دکمه اتمام)
 bulk_attachment_all_more_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="➕ افزودن پیوست دیگر (برای همه ردیف‌ها)"  )],
+        [KeyboardButton(text="✅ اتمام ارسال مدارک")],
+        [KeyboardButton(text="❌ انصراف")],
+    ],
+    resize_keyboard=True
+)
+
+# کیبورد سوال «آیا پیوست مشابه دیگری هم دارید؟» (بله/خیر/انصراف)
+bulk_attachment_all_more_choice_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="✅ بله"), KeyboardButton(text="❌ خیر")],
         [KeyboardButton(text="❌ انصراف")],
