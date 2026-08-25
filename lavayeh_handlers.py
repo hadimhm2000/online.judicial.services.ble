@@ -2329,6 +2329,8 @@ async def _send_lavayeh_task_to_queue(data: dict, user_id: int, title: str):
             "lavayeh_archive_number": data.get("lavayeh_archive_number", ""),
             "lavayeh_branch_name": data.get("lavayeh_branch_name", ""),
             "lavayeh_branch_code": data.get("lavayeh_branch_code", ""),
+            "_is_bulk": data.get("_is_bulk", False),
+            "batch_tracking_code": data.get("batch_tracking_code", ""),
         })
 
 

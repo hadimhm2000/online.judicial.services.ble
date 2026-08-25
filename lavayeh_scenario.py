@@ -175,6 +175,25 @@ async def process_lavayeh_task(data: dict, bot: Bot):
         f"عنوان: {title} | کد: {tracking_code} | استان: {province}"
     )
 
+    # ══════════════════════════════════════════════════════════════
+    # بررسی توقف بچ: اگر بچ متوقف شده، این ردیف را رد کن
+    # ══════════════════════════════════════════════════════════════
+    _is_bulk_check = data.get("_is_bulk", False)
+    _batch_tc_check = data.get("batch_tracking_code", "")
+    if _is_bulk_check and _batch_tc_check:
+        try:
+            from bulk_submissions import BULK_TASKS as _BT_CHECK
+            if _batch_tc_check in _BT_CHECK and _BT_CHECK[_batch_tc_check].get("status") == "stopped":
+                logging.warning(f"[LAVAYEH] ردیف {row_number} رد شد — بچ {_batch_tc_check} متوقف شده")
+                await bot.send_message(
+                    user_id,
+                    f"⏭️ ردیف {row_number} (کد: `{tracking_code}`) رد شد به دلیل توقف فرآیند دسته‌جمعی.",
+                    parse_mode="Markdown"
+                )
+                return
+        except Exception:
+            pass
+
     max_attempts = 3
     lavayeh_bill_no = ""
     for attempt in range(max_attempts):
@@ -604,15 +623,32 @@ async def process_lavayeh_task(data: dict, bot: Bot):
             # برود، نه رشته ترکیبی — چون همین مقدار بعداً عیناً در فیلد
             # #billNo برای استعلام لایحه تایپ می‌شود. اطلاع از «کد لایحه» فقط
             # برای مدیر لاگ می‌شود، نه برای مرحله امضا.
-            await send_lavayeh_result(
-                bot, user_id, pdf_path, court_total,
-                tracking_code=tracking_code,
-                national_ids=national_ids,
-                lavayeh_title=title,
-                lavayeh_province=province,
-                lavayeh_row_number=row_number,
-                lavayeh_persons=persons,
-                prepaid=is_prepaid)
+            # ── bulk vs single: انتخاب تابع مناسب ارسال نتیجه ──────
+            is_bulk = data.get("_is_bulk", False)
+            batch_tracking_code = data.get("batch_tracking_code", "")
+
+            if is_bulk and batch_tracking_code:
+                # فلوی دسته‌جمعی: بدون فاکتور، اضافه به signable_items
+                await send_bulk_item_result(
+                    bot, user_id, pdf_path, court_total,
+                    tracking_code=tracking_code,
+                    national_ids=national_ids,
+                    lavayeh_title=title,
+                    batch_tracking_code=batch_tracking_code,
+                    row_index=row_number,
+                    lavayeh_persons=persons,
+                    lavayeh_bill_no=lavayeh_bill_no or "")
+            else:
+                # فلوی تکی: فاکتور + امضای انفرادی
+                await send_lavayeh_result(
+                    bot, user_id, pdf_path, court_total,
+                    tracking_code=tracking_code,
+                    national_ids=national_ids,
+                    lavayeh_title=title,
+                    lavayeh_province=province,
+                    lavayeh_row_number=row_number,
+                    lavayeh_persons=persons,
+                    prepaid=is_prepaid)
             if lavayeh_bill_no:
                 await bot.send_message(
                     ADMIN_ID,
@@ -637,30 +673,55 @@ async def process_lavayeh_task(data: dict, bot: Bot):
             # در bulk flow این کار را نکن چون ممکنه تسک‌های بعدی هم
             # نیاز به همین کاربر داشته باشند
             # ══════════════════════════════════════════════════════════
-            is_bulk = data.get("_is_bulk", False)
             if not is_bulk:
                 runtime_state.active_lavayeh_users.discard(user_id)
             return
 
         except LavayehFatalError as e:
+            is_bulk_err = data.get("_is_bulk", False)
+            batch_tc_err = data.get("batch_tracking_code", "")
+            row_num_err = data.get("lavayeh_row_number", 1)
+
+            # ── پیام خطا به کاربر با شماره ردیف ──
+            if is_bulk_err:
+                error_msg = (
+                    f"❌ *خطا در ثبت موقت (ردیف {row_num_err}):*\n\n"
+                    f"«{str(e)}»\n\n"
+                    f"فرآیند دسته‌جمعی متوقف شد.\n"
+                    f"لطفاً اطلاعات ردیف {row_num_err} را بررسی و اصلاح نمایید."
+                )
+                # توقف پردازش بقیه ردیف‌های این بچ
+                if batch_tc_err:
+                    try:
+                        from bulk_submissions import BULK_TASKS
+                        if batch_tc_err in BULK_TASKS:
+                            BULK_TASKS[batch_tc_err]["status"] = "stopped"
+                            logging.warning(f"[LAVAYEH] بچ {batch_tc_err} متوقف شد به دلیل خطای قطعی در ردیف {row_num_err}")
+                    except Exception as log_err:
+                        logging.error(f"[LAVAYEH] خطا در توقف بچ: {log_err}")
+            else:
+                error_msg = (
+                    f"⚠️ *خطا در ثبت موقت:*\n\n"
+                    f"«{str(e)}»\n\n"
+                    f"فرآیند متوقف شد. اطلاعات اشخاص را بررسی و مجدداً اقدام نمایید."
+                )
+
             runtime_state.active_lavayeh_users.discard(user_id)
             logging.info(f"[LAVAYEH] خطای قطعی برای user={user_id}: {e}")
-            await bot.send_message(
-                user_id,
-                f"⚠️ {str(e)}")
+            await bot.send_message(user_id, error_msg, parse_mode="Markdown")
             await bot.send_message(
                 ADMIN_ID,
-                f"❌ [LAVAYEH] خطای قطعی کاربر {user_id}: {str(e)[:200]}"
+                f"❌ [LAVAYEH] خطای قطعی کاربر {user_id} (ردیف {row_num_err}): {str(e)[:200]}"
             )
             await log_event(
                 "خطای سامانه", "لایحه", str(user_id), user_id,
                 tracking_code=tracking_code, doc_name=title,
-                note=f"خطای قطعی: {str(e)[:200]}"
+                note=f"خطای قطعی ردیف {row_num_err}: {str(e)[:200]}"
             )
             await _safe_register_case(
                 event_type="خطای سامانه", full_name=str(user_id), user_id=user_id,
                 trackingCode=tracking_code or "", documentCategory=title,
-                errorDetails=f"خطای قطعی: {str(e)[:200]}", errorStep="FATAL_ERROR")
+                errorDetails=f"خطای قطعی ردیف {row_num_err}: {str(e)[:200]}", errorStep="FATAL_ERROR")
             return
 
         except Exception as e:
