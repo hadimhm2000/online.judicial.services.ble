@@ -31,8 +31,20 @@ def get_flow_type_kb(user_id: int) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
-# نام مستعار — handlers.py از این نام استفاده می‌کند
-get_main_menu_kb = get_flow_type_kb
+# ══════════════════════════════════════════════════════════════════
+# ⚠️ باگ رفع‌شده: این قبلاً `get_main_menu_kb = get_flow_type_kb` بود —
+# یعنی هر جا در handlers.py که برای بازگشت به «صفحهٔ انتخاب نوع استعلام»
+# (کدرهگیری/شماره تماس/کدملی، همان Form.main_menu) از get_main_menu_kb
+# استفاده می‌شد، در واقع کیبورد منوی اصلی واقعی ربات (get_flow_type_kb)
+# نمایش داده می‌شد. state به‌درستی روی Form.main_menu می‌ماند، ولی چون
+# دکمه‌های نمایش‌داده‌شده متعلق به منوی اصلی بودند، از دید کاربر دقیقاً
+# مثل این بود که «بازگشت» او را مستقیم به منوی اصلی برده — درحالی‌که این
+# دو صفحه کاملاً متفاوت‌اند. حالا این تابع واقعاً همان کیبورد صفحهٔ
+# انتخاب نوع استعلام (main_menu_kb) را برمی‌گرداند.
+# ══════════════════════════════════════════════════════════════════
+def get_main_menu_kb(user_id: int = None) -> ReplyKeyboardMarkup:
+    """کیبورد صفحهٔ انتخاب نوع استعلام (Form.main_menu) — نه منوی اصلی ربات."""
+    return main_menu_kb
 
 # کیبورد بدون تست و بدون user_id (fallback)
 flow_type_kb = ReplyKeyboardMarkup(
