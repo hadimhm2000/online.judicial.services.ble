@@ -60,6 +60,8 @@ from bulk_submissions import (
 
 lavayeh_router = Router()
 
+from panel_sync import upsert_case_to_panel
+
 # ── include کردن روتر امضا ──────────────────────────────────────────────────
 from lavayeh_sign_handlers import lavayeh_sign_router
 lavayeh_router.include_router(lavayeh_sign_router)
@@ -2775,6 +2777,7 @@ async def _go_to_sign_flow_after_prepaid(
     tracking_code: str,
     national_ids: str,
     court_total: int,
+    service_type: str | None = None,
 ):
     """انتقال مستقیم به فلوی امضای الکترونیک بدون نیاز به پرداخت.
 
@@ -2782,6 +2785,8 @@ async def _go_to_sign_flow_after_prepaid(
     در سامانه ثبت شده، این تابع فلوی امضا را آغاز می‌کند.
     """
     user_state = runtime_state.dp.fsm.resolve_context(bot, user_id, user_id)
+    if service_type is None:
+        service_type = "EZHHARNAMEH" if is_ezhharnameh else "LAVAYEH"
 
     if is_ezhharnameh:
         sign_persons = []
@@ -2795,6 +2800,7 @@ async def _go_to_sign_flow_after_prepaid(
         runtime_state.pending_ezhhar_sign[user_id] = {
             "tracking_code": tracking_code,
             "is_ezhharnameh": True,
+            "service_type": service_type,
             "sign_persons": sign_persons,
             "persons_awaiting_sign": list(range(len(sign_persons))),
             "current_person_idx": 0,
@@ -2819,6 +2825,7 @@ async def _go_to_sign_flow_after_prepaid(
             "province": lavayeh_province,
             "row_number": lavayeh_row_number,
             "persons": lavayeh_persons,
+            "service_type": service_type,
             "sign_persons": [],
             "persons_awaiting_sign": [],
             "current_person_idx": None,
@@ -2850,6 +2857,7 @@ async def send_bulk_item_result(
     row_index: int = 0,
     lavayeh_persons: list = None,
     lavayeh_bill_no: str = "",
+    service_type: str | None = None,
 ):
     """نتیجه ثبت یک ردیف دسته‌جمعی — بدون فاکتور و بدون امضا.
     
@@ -2857,8 +2865,25 @@ async def send_bulk_item_result(
     """
     if lavayeh_persons is None:
         lavayeh_persons = []
-    
+    if service_type is None:
+        service_type = "EZHHARNAMEH" if is_ezhharnameh else "LAVAYEH"
+
     service_label = "اظهارنامه" if is_ezhharnameh else "لایحه"
+
+    try:
+        await upsert_case_to_panel(
+            bale_user_id=user_id,
+            full_name=str(user_id),
+            service_type=service_type,
+            status="PROCESSING",
+            tracking_code=tracking_code or None,
+            document_category=f"{lavayeh_title} (دسته‌جمعی — ردیف {row_index})",
+            fee=court_total,
+            fee_status="UNPAID",
+            result_summary=f"ردیف {row_index} از دسته {batch_tracking_code} ثبت شد؛ در انتظار پرداخت/امضای دسته",
+        )
+    except Exception as panel_err:
+        logging.warning(f"[BULK-ITEM] خطا در ثبت پرونده دسته‌جمعی در پنل: {panel_err}")
     
     # ارسال PDF اگر موجود باشد
     if pdf_path and os.path.exists(pdf_path):
@@ -2929,9 +2954,12 @@ async def send_lavayeh_result(
     lavayeh_persons: list = None,
     skip_fee_calc: bool = False,
     is_ezhharnameh: bool = False,
-    prepaid: bool = False):
+    prepaid: bool = False,
+    service_type: str | None = None):
     if lavayeh_persons is None:
         lavayeh_persons = []
+    if service_type is None:
+        service_type = "EZHHARNAMEH" if is_ezhharnameh else "LAVAYEH"
 
     if not hasattr(runtime_state, "active_lavayeh_users"):
         runtime_state.active_lavayeh_users = set()
@@ -2955,8 +2983,9 @@ async def send_lavayeh_result(
 
     await bot.send_message(user_id, fee_text)
 
-    service_label = "اظهارنامه" if is_ezhharnameh else "لایحه"
-    doc_type = "اظهارنامه" if is_ezhharnameh else "لایحه"
+    _SERVICE_LABELS = {"LAVAYEH": "لایحه", "EZHHARNAMEH": "اظهارنامه", "CHECK": "چک", "TAJDID_NAZAR": "تجدیدنظر"}
+    service_label = _SERVICE_LABELS.get(service_type, "اظهارنامه" if is_ezhharnameh else "لایحه")
+    doc_type = service_label
 
     # بررسی معافیت از پرداخت
     if await is_exempt_user(user_id):
@@ -2980,17 +3009,32 @@ async def send_lavayeh_result(
             "lavayeh_row_number": lavayeh_row_number,
             "lavayeh_persons": lavayeh_persons,
             "is_ezhharnameh": is_ezhharnameh,
+            "service_type": service_type,
         }
         await bot.send_message(
             user_id,
             f"✅ *معافیت از پرداخت*\n\n"
             f"شما در لیست کاربران معاف هستید."
             f"\nثبت {service_label} بدون نیاز به پرداخت انجام شد.")
+        try:
+            await upsert_case_to_panel(
+                bale_user_id=user_id,
+                full_name=str(user_id),
+                service_type=service_type,
+                status="PROCESSING",
+                tracking_code=tracking_code or None,
+                document_category=lavayeh_title,
+                fee=0,
+                fee_status="MANUAL_APPROVED",
+                result_summary="معاف از پرداخت؛ در انتظار امضای الکترونیک",
+            )
+        except Exception as panel_err:
+            logging.warning(f"[LAVAYEH] خطا در آپدیت پرونده معاف در پنل: {panel_err}")
         # رفتن مستقیم به فلوی امضا
         await _go_to_sign_flow_after_prepaid(
             bot, user_id, is_ezhharnameh, lavayeh_title,
             lavayeh_province, lavayeh_row_number, lavayeh_persons,
-            tracking_code, national_ids, court_total
+            tracking_code, national_ids, court_total, service_type=service_type
         )
         return
 
@@ -3004,11 +3048,24 @@ async def send_lavayeh_result(
             f"✅ پرداخت خدمات شما قبلاً تایید شده است.",
             reply_markup=ReplyKeyboardRemove()
         )
+        try:
+            await upsert_case_to_panel(
+                bale_user_id=user_id,
+                full_name=str(user_id),
+                service_type=service_type,
+                status="PROCESSING",
+                tracking_code=tracking_code or None,
+                document_category=lavayeh_title,
+                fee_status="PAID",
+                result_summary="پرداخت قبلی تایید شده؛ در انتظار امضای الکترونیک",
+            )
+        except Exception as panel_err:
+            logging.warning(f"[LAVAYEH] خطا در آپدیت پرونده پیش‌پرداخت‌شده در پنل: {panel_err}")
         # رفتن مستقیم به فلوی امضا
         await _go_to_sign_flow_after_prepaid(
             bot, user_id, is_ezhharnameh, lavayeh_title,
             lavayeh_province, lavayeh_row_number, lavayeh_persons,
-            tracking_code, national_ids, court_total
+            tracking_code, national_ids, court_total, service_type=service_type
         )
         return
 
@@ -3070,7 +3127,23 @@ async def send_lavayeh_result(
         "lavayeh_row_number": lavayeh_row_number,
         "lavayeh_persons": lavayeh_persons,
         "is_ezhharnameh": is_ezhharnameh,
+        "service_type": service_type,
     }
+
+    try:
+        await upsert_case_to_panel(
+            bale_user_id=user_id,
+            full_name=str(user_id),
+            service_type=service_type,
+            status="PENDING_PAYMENT",
+            tracking_code=tracking_code or None,
+            document_category=lavayeh_title,
+            fee=final_fee,
+            fee_status="UNPAID",
+            result_summary="فاکتور ارسال شد؛ در انتظار پرداخت کاربر",
+        )
+    except Exception as panel_err:
+        logging.warning(f"[LAVAYEH] خطا در ثبت پرونده (در انتظار پرداخت) در پنل: {panel_err}")
 
     user_state = runtime_state.dp.fsm.resolve_context(bot, user_id, user_id)
     await user_state.set_state(Form.waiting_for_lavayeh_payment_receipt)
@@ -3141,6 +3214,7 @@ async def lavayeh_successful_payment(message: Message, state: FSMContext, bot: B
 
     payment = message.successful_payment
     is_ezhhar = pending.get("is_ezhharnameh", False)
+    svc_type = pending.get("service_type") or ("EZHHARNAMEH" if is_ezhhar else "LAVAYEH")
     doc_type = "اظهارنامه" if is_ezhhar else "لایحه"
     final_fee_toman = pending["final_fee"] // 10
 
@@ -3176,6 +3250,20 @@ async def lavayeh_successful_payment(message: Message, state: FSMContext, bot: B
     except Exception as e:
         logging.error(f"[LAVAYEH-PAYMENT] خطا در ارسال اطلاع به ادمین (ADMIN_ID={ADMIN_ID}): {e}", exc_info=True)
 
+    try:
+        await upsert_case_to_panel(
+            bale_user_id=user_id,
+            full_name=message.from_user.full_name,
+            service_type=svc_type,
+            status="PROCESSING",
+            tracking_code=pending.get("tracking_code", "") or None,
+            fee=pending["final_fee"],
+            fee_status="PAID",
+            result_summary="پرداخت انجام شد؛ در انتظار امضای الکترونیک",
+        )
+    except Exception as panel_err:
+        logging.warning(f"[LAVAYEH-PAYMENT] خطا در آپدیت پرونده در پنل: {panel_err}")
+
     # ── انتقال به مرحله امضای الکترونیک ──
     if is_ezhhar:
         raw_persons = pending.get("lavayeh_persons", [])
@@ -3190,6 +3278,7 @@ async def lavayeh_successful_payment(message: Message, state: FSMContext, bot: B
         runtime_state.pending_ezhhar_sign[user_id] = {
             "tracking_code": pending.get("tracking_code", ""),
             "is_ezhharnameh": True,
+            "service_type": svc_type,
             "sign_persons": sign_persons,
             "persons_awaiting_sign": list(range(len(sign_persons))),
             "current_person_idx": 0,
@@ -3216,6 +3305,7 @@ async def lavayeh_successful_payment(message: Message, state: FSMContext, bot: B
             "province": pending.get("lavayeh_province", ""),
             "row_number": pending.get("lavayeh_row_number", 1),
             "persons": pending.get("lavayeh_persons", []),
+            "service_type": svc_type,
             "sign_persons": [],
             "persons_awaiting_sign": [],
             "current_person_idx": None,
@@ -3266,6 +3356,7 @@ async def admin_approve_lavayeh_receipt(callback: CallbackQuery, bot: Bot):
         return
 
     is_ezhhar = pending.get("is_ezhharnameh", False)
+    svc_type = pending.get("service_type") or ("EZHHARNAMEH" if is_ezhhar else "LAVAYEH")
     doc_type = "اظهارنامه" if is_ezhhar else "لایحه"
     await bot.send_message(user_id, f"✅ *رسید شما توسط مدیریت تایید شد.*\n\nهزینه {doc_type} تایید شد. متشکریم 🙏", reply_markup=ReplyKeyboardRemove())
     await log_event(
@@ -3274,6 +3365,15 @@ async def admin_approve_lavayeh_receipt(callback: CallbackQuery, bot: Bot):
         doc_name=doc_type, payment_status="پرداخت شده (تایید دستی)",
         note=f"مبلغ: {review['expected_amount']:,} ریال"
     )
+    try:
+        await upsert_case_to_panel(
+            bale_user_id=user_id, full_name=str(user_id), service_type=svc_type,
+            status="PROCESSING", tracking_code=pending.get("tracking_code", "") or None,
+            fee=review['expected_amount'], fee_status="PAID",
+            result_summary="پرداخت با تایید دستی مدیر ثبت شد؛ در انتظار امضای الکترونیک",
+        )
+    except Exception as panel_err:
+        logging.warning(f"[LAVAYEH] خطا در آپدیت پرونده (تایید دستی) در پنل: {panel_err}")
 
     user_state = runtime_state.dp.fsm.resolve_context(bot, user_id, user_id)
 
@@ -3291,6 +3391,7 @@ async def admin_approve_lavayeh_receipt(callback: CallbackQuery, bot: Bot):
         runtime_state.pending_ezhhar_sign[user_id] = {
             "tracking_code": pending.get("tracking_code", ""),
             "is_ezhharnameh": True,
+            "service_type": svc_type,
             "sign_persons": sign_persons,
             "persons_awaiting_sign": list(range(len(sign_persons))),
             "current_person_idx": 0,
@@ -3317,6 +3418,7 @@ async def admin_approve_lavayeh_receipt(callback: CallbackQuery, bot: Bot):
             "province": pending.get("lavayeh_province", ""),
             "row_number": pending.get("lavayeh_row_number", 1),
             "persons": pending.get("lavayeh_persons", []),
+            "service_type": svc_type,
             "sign_persons": [],
             "persons_awaiting_sign": [],
             "current_person_idx": None,

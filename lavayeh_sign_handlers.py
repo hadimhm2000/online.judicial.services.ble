@@ -23,6 +23,7 @@ from aiogram.types import Message, ReplyKeyboardRemove, ReplyKeyboardMarkup, Key
 
 import runtime_state
 from config import ADMIN_ID
+from panel_sync import mark_case_ready_to_send_by_tracking
 from keyboards import (
     lavayeh_sign_ready_kb,
     lavayeh_sign_resend_kb,
@@ -333,6 +334,13 @@ async def on_lavayeh_sign_submit_success(bot: Bot, user_id: int, row_idx: int, s
         await bot.send_message(
             ADMIN_ID, f"✅ [SIGN] امضای لایحه کاربر {user_id} کامل شد."
         )
+        try:
+            tracking_code = sign_info.get("tracking_code", "")
+            if tracking_code:
+                svc_type = sign_info.get("service_type", "LAVAYEH")
+                await mark_case_ready_to_send_by_tracking(user_id, svc_type, tracking_code)
+        except Exception as panel_err:
+            logging.warning(f"[SIGN] خطا در انتقال پرونده لایحه به آماده‌ارسال: {panel_err}")
         await state.clear()
     else:
         # اشخاص دیگری هم باید امضا کنند
@@ -885,6 +893,13 @@ async def on_ezhhar_sign_submit_success(bot: Bot, user_id: int, row_idx: int, st
             "باتشکر از همراهی شما 🙏",
             reply_markup=restart_kb)
         await bot.send_message(ADMIN_ID, f"✅ [EZHHAR_SIGN] امضای اظهارنامه کاربر {user_id} کامل شد.")
+        try:
+            tracking_code = sign_info.get("tracking_code", "")
+            if tracking_code:
+                svc_type = sign_info.get("service_type", "EZHHARNAMEH")
+                await mark_case_ready_to_send_by_tracking(user_id, svc_type, tracking_code)
+        except Exception as panel_err:
+            logging.warning(f"[EZHHAR_SIGN] خطا در انتقال پرونده اظهارنامه به آماده‌ارسال: {panel_err}")
         await state.clear()
     else:
         all_persons = sign_info.get("sign_persons", [])

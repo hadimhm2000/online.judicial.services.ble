@@ -98,6 +98,9 @@ async def process_check_task(data: dict, bot: Bot):
     branch_code = data.get("check_branch_code", "")
     branch_name = data.get("check_branch_name", "")
     check_text_html = data.get("check_text_html", "")
+    is_bulk_check = data.get("_is_bulk_check", False)
+    bulk_row_index = data.get("_bulk_row_index", 0)
+    _doc_category_suffix = f" (دسته‌جمعی — ردیف {bulk_row_index})" if is_bulk_check else ""
 
     has_lawyer = any(p.get("person_type") == "وکیل" for p in plaintiffs)
     has_legal_plaintiff = any(p.get("person_type") == "شخص حقوقی" for p in plaintiffs)
@@ -108,6 +111,18 @@ async def process_check_task(data: dict, bot: Bot):
         f"plaintiffs={len(plaintiffs)} defendants={len(defendants)} "
         f"is_high_amount={is_high_amount} branch={branch_code}"
     )
+
+    try:
+        from panel_sync import upsert_case_to_panel as _upsert_early
+        await _upsert_early(
+            bale_user_id=user_id, full_name=str(user_id),
+            service_type="CHECK", status="PROCESSING",
+            document_category=f"دادخواست چک — {request_title}{_doc_category_suffix}",
+            branch_name=branch_name, branch_code=branch_code,
+            result_summary="در حال ثبت در سامانه سنا",
+        )
+    except Exception as panel_err:
+        logging.warning(f"[CHECK] خطا در ثبت اولیه پرونده در پنل: {panel_err}")
 
     await bot.send_message(
         user_id,
@@ -829,12 +844,13 @@ async def process_check_task(data: dict, bot: Bot):
                     bot, user_id, pdf_path, final_total,
                     tracking_code=bill_no,
                     national_ids=nat_ids,
-                    lavayeh_title=f"دادخواست چک — {request_title}",
+                    lavayeh_title=f"دادخواست چک — {request_title}{_doc_category_suffix}",
                     lavayeh_province="",
                     lavayeh_row_number=1,
                     lavayeh_persons=plaintiffs,
                     skip_fee_calc=True,
-                    is_ezhharnameh=False)
+                    is_ezhharnameh=False,
+                    service_type="CHECK")
                 await bot.send_message(
                     ADMIN_ID,
                     f"✅ [CHECK] ثبت دادخواست چک کاربر {user_id} موفق."
@@ -846,6 +862,18 @@ async def process_check_task(data: dict, bot: Bot):
                     f"📄 دادخواست چک با کد بایگانی `{bill_no}` ثبت شد "
                     f"اما خطا در چاپ PDF رخ داد."
                     f"با مدیریت تماس بگیرید.")
+                try:
+                    from panel_sync import upsert_case_to_panel
+                    await upsert_case_to_panel(
+                        bale_user_id=user_id, full_name=str(user_id),
+                        service_type="CHECK", status="FAILED",
+                        tracking_code=bill_no or None,
+                        document_category=f"دادخواست چک — {request_title}{_doc_category_suffix}",
+                        error_details="ثبت در سامانه انجام شد اما چاپ PDF ناموفق بود",
+                        error_step="print_pdf",
+                    )
+                except Exception as panel_err:
+                    logging.warning(f"[CHECK] خطا در ثبت شکست پرونده در پنل: {panel_err}")
 
             return
 
@@ -867,6 +895,18 @@ async def process_check_task(data: dict, bot: Bot):
                     "⚠️ ثبت دادخواست چک با اختلال مواجه شد. پشتیبانی پیگیری خواهد کرد."
                 )
                 await bot.send_message(ADMIN_ID, f"❌ [CHECK] کاربر {user_id} پس از {max_attempts} تلاش ناموفق.")
+                try:
+                    from panel_sync import upsert_case_to_panel
+                    await upsert_case_to_panel(
+                        bale_user_id=user_id, full_name=str(user_id),
+                        service_type="CHECK", status="FAILED",
+                        tracking_code=tracking_no or None,
+                        document_category=f"دادخواست چک — {request_title}{_doc_category_suffix}",
+                        error_details=f"پس از {max_attempts} تلاش ناموفق: {str(e)[:200]}",
+                        error_step="MAX_RETRIES_EXCEEDED",
+                    )
+                except Exception as panel_err:
+                    logging.warning(f"[CHECK] خطا در ثبت شکست پرونده در پنل: {panel_err}")
             try:
                 from bug_reporter import report_bug
                 await report_bug(bot, where="process_check_task", error=e,
@@ -1155,11 +1195,11 @@ async def _print_check(page, browser_context, bill_no: str, bot: Bot, user_id: i
                 await new_page.goto(print_url, timeout=30000, wait_until="domcontentloaded")
                 await asyncio.sleep(5)
 
-                # ذخیره PDF
-                pdf_dir = "/home/z/my-project/online.judicial.services/public/uploads"
-                os.makedirs(pdf_dir, exist_ok=True)
+                # ذخیره PDF — قبلاً مسیر لینوکسی هاردکد (/home/z/my-project/...) بود
+                # که روی VPS ویندوزی وجود ندارد و باعث خطا/عدم ارسال PDF می‌شد.
+                # مثل لایحه/اظهارنامه از مسیر نسبی (سازگار با ویندوز و لینوکس) استفاده می‌کنیم.
                 pdf_filename = f"check_{bill_no}_{int(time.time())}.pdf"
-                pdf_path = os.path.join(pdf_dir, pdf_filename)
+                pdf_path = pdf_filename
 
                 await new_page.pdf(path=pdf_path, format="A4")
                 logging.info(f"[CHECK] PDF saved: {pdf_path}")

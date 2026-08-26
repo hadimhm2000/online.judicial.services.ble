@@ -1713,6 +1713,17 @@ async def tn_confirm_handler(message: Message, state: FSMContext, bot: Bot):
 
         await runtime_state.job_queue.put(job_data)
 
+        try:
+            from panel_sync import upsert_case_to_panel
+            await upsert_case_to_panel(
+                bale_user_id=user_id, full_name=str(user_id),
+                service_type="TAJDID_NAZAR", status="PROCESSING",
+                document_category=case_type,
+                result_summary="در حال ثبت در سامانه سنا",
+            )
+        except Exception as panel_err:
+            logging.warning(f"[TN] خطا در ثبت اولیه پرونده در پنل: {panel_err}")
+
         await message.answer(
             f"✅ *درخواست {case_type} تایید شد و به صف پردازش ارسال شد.*\n\n"
             f"⏳ ثبت در سامانه قضایی در حال انجام است."

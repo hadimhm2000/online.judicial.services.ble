@@ -27,6 +27,7 @@ import runtime_state
 from bale_file_sender import send_document_direct
 from config import ADMIN_ID, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, REGIONAL_VALUE_FEE
 from keyboards import back_only_kb, get_main_menu_kb
+from panel_sync import register_case_to_panel, update_case_in_panel
 from states import Form
 from tax_geolocation_query import get_province_list, find_land_use_value, extract_all_land_use_values
 
@@ -207,6 +208,25 @@ async def process_land_use(message: Message, state: FSMContext, bot: Bot):
 
     await state.update_data(rv_land_use=land_use)
 
+    # ── ثبت پرونده در پنل ادمین (از همون ابتدا، قبل از پرداخت) ──
+    data_so_far = await state.get_data()
+    try:
+        case = await register_case_to_panel(
+            bale_user_id=message.from_user.id,
+            full_name=message.from_user.full_name,
+            service_type="REGIONAL_VALUE",
+            status="PENDING_PAYMENT",
+            document_category="ارزش منطقه‌ای",
+            province=data_so_far.get("rv_province", ""),
+            fee=REGIONAL_VALUE_FEE,
+            fee_status="UNPAID",
+        )
+        panel_case_id = case.get("id") if case else None
+        if panel_case_id:
+            await state.update_data(rv_panel_case_id=panel_case_id)
+    except Exception as panel_err:
+        logger.warning(f"[RV] خطا در ثبت اولیه پرونده در پنل: {panel_err}")
+
     # ═══ معافیت ادمین از پرداخت ═══
     if message.from_user.id == ADMIN_ID:
         await message.answer(
@@ -271,6 +291,17 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
     address = data.get("rv_address", "")
     area = data.get("rv_area", 0)
     land_use = data.get("rv_land_use", "مسکونی")
+    panel_case_id = data.get("rv_panel_case_id")
+    is_admin_exempt_early = (user_id == ADMIN_ID)
+
+    try:
+        await update_case_in_panel(
+            panel_case_id,
+            status="PROCESSING",
+            feeStatus="MANUAL_APPROVED" if is_admin_exempt_early else "PAID",
+        )
+    except Exception as panel_err:
+        logger.warning(f"[RV] خطا در آپدیت پرداخت پرونده در پنل: {panel_err}")
 
     await message.answer("⏳ در حال استعلام ارزش منطقه‌ای... لطفاً چند لحظه صبر کنید.")
 
@@ -295,6 +326,14 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
                 "لطفاً از ابتدا تلاش کنید.",
                 reply_markup=get_main_menu_kb(user_id),
             )
+            try:
+                await update_case_in_panel(
+                    panel_case_id, status="FAILED",
+                    errorDetails="نتیجه‌ای از سامانه مالیاتی دریافت نشد",
+                    errorStep="tax_query",
+                )
+            except Exception as panel_err:
+                logger.warning(f"[RV] خطا در آپدیت شکست پرونده در پنل: {panel_err}")
             await state.clear()
             return
 
@@ -314,6 +353,14 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
                 "\n\U0001f4de 09306186888",
                 reply_markup=get_main_menu_kb(user_id),
             )
+            try:
+                await update_case_in_panel(
+                    panel_case_id, status="FAILED",
+                    errorDetails="هیچ ارزش منطقه‌ای برای این موقعیت ثبت نشده",
+                    errorStep="no_value_found",
+                )
+            except Exception as panel_err:
+                logger.warning(f"[RV] خطا در آپدیت شکست پرونده در پنل: {panel_err}")
             await state.clear()
             return
 
@@ -334,6 +381,14 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
                 f"لطفاً از ابتدا با کاربری متفاوت تلاش کنید.",
                 reply_markup=get_main_menu_kb(user_id),
             )
+            try:
+                await update_case_in_panel(
+                    panel_case_id, status="FAILED",
+                    errorDetails=f"کاربری {land_use} برای این موقعیت تعریف نشده",
+                    errorStep="land_use_not_found",
+                )
+            except Exception as panel_err:
+                logger.warning(f"[RV] خطا در آپدیت شکست پرونده در پنل: {panel_err}")
             await state.clear()
             return
 
@@ -418,12 +473,28 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
         except Exception as e:
             logging.error(f"[RV] خطا در ارسال اطلاع به ادمین: {e}")
 
+        try:
+            await update_case_in_panel(
+                panel_case_id,
+                status="COMPLETED",
+                resultSummary=f"ارزش کل: {total_value:,} ریال ({land_use}، {area:,.0f} متر مربع)",
+            )
+        except Exception as panel_err:
+            logger.warning(f"[RV] خطا در آپدیت موفقیت پرونده در پنل: {panel_err}")
+
     except ValueError as e:
         await message.answer(
             f"⚠️ خطا در استعلام: {e}\n\n"
             f"لطفاً آدرس و استان را بررسی و از ابتدا تلاش کنید.",
             reply_markup=get_main_menu_kb(user_id),
         )
+        try:
+            await update_case_in_panel(
+                panel_case_id, status="FAILED",
+                errorDetails=str(e), errorStep="value_error",
+            )
+        except Exception as panel_err:
+            logger.warning(f"[RV] خطا در آپدیت شکست پرونده در پنل: {panel_err}")
     except Exception as e:
         logging.error(f"[RV] خطا در پردازش استعلام ارزش منطقه‌ای: {e}", exc_info=True)
         await message.answer(
@@ -431,5 +502,12 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
             "اگر مشکل ادامه داشت، با پشتیبانی تماس بگیرید.",
             reply_markup=get_main_menu_kb(user_id),
         )
+        try:
+            await update_case_in_panel(
+                panel_case_id, status="FAILED",
+                errorDetails=str(e), errorStep="unhandled_exception",
+            )
+        except Exception as panel_err:
+            logger.warning(f"[RV] خطا در آپدیت شکست پرونده در پنل: {panel_err}")
 
     await state.clear()

@@ -12,7 +12,7 @@ import runtime_state
 from bale_file_sender import send_document_direct
 from config import ADMIN_ID, DEBUG_LOG_REQUESTS, FEES, get_fee
 from sheets import log_event
-from panel_sync import register_inquiry_to_panel
+from panel_sync import register_inquiry_to_panel, register_failed_inquiry_to_panel
 from keyboards import admin_login_kb, confirm_single_kb, confirm_cart_kb
 from browser_helpers import (
     human_delay, force_click_by_text, soft_click_if_exists, human_type,
@@ -915,12 +915,28 @@ async def process_task(data, bot: Bot):
                         f"⚠️ *پیام سامانه:*\\n\\n{alert_message}\\n\\n"
                         "فرآیند متوقف شد.")
                     await bot.send_message(ADMIN_ID, f"⚠️ [PHONE_SEARCH] خطای ثنا برای {phone_number} (کاربر {user_id}): {alert_message}")
+                    try:
+                        await register_failed_inquiry_to_panel(
+                            user_id=user_id, full_name=data.get('full_name', ''),
+                            tracking_code=phone_number, doc_category="شماره تماس",
+                            error_details=alert_message, error_step="sana_alert",
+                        )
+                    except Exception as panel_err:
+                        logger.warning(f"خطا در ثبت استعلام ناموفق موبایل: {panel_err}")
                     return
 
                 table_ready, has_results = await _wait_for_mobile_search_table(sana_page, timeout_sec=30)
                 if table_ready and not has_results:
                     await safe_click_by_text(sana_page, "بستن", bot, user_id)
                     await bot.send_message(user_id, f"❌ براساس شماره {phone_number}، موردی یافت نشد.")
+                    try:
+                        await register_failed_inquiry_to_panel(
+                            user_id=user_id, full_name=data.get('full_name', ''),
+                            tracking_code=phone_number, doc_category="شماره تماس",
+                            error_details="موردی یافت نشد", error_step="no_results",
+                        )
+                    except Exception as panel_err:
+                        logger.warning(f"خطا در ثبت استعلام ناموفق موبایل: {panel_err}")
                     return
 
                 if not table_ready:
@@ -939,6 +955,14 @@ async def process_task(data, bot: Bot):
                     if table_ready and not has_results:
                         await safe_click_by_text(sana_page, "بستن", bot, user_id)
                         await bot.send_message(user_id, f"❌ براساس شماره {phone_number}، موردی یافت نشد.")
+                        try:
+                            await register_failed_inquiry_to_panel(
+                                user_id=user_id, full_name=data.get('full_name', ''),
+                                tracking_code=phone_number, doc_category="شماره تماس",
+                                error_details="موردی یافت نشد (تلاش دوم)", error_step="no_results",
+                            )
+                        except Exception as panel_err:
+                            logger.warning(f"خطا در ثبت استعلام ناموفق موبایل: {panel_err}")
                         return
 
                 if not table_ready:
@@ -947,6 +971,14 @@ async def process_task(data, bot: Bot):
                         f"⚠️ *استعلام شماره تماس {phone_number} با تاخیر سامانه مواجه شد و نتیجه‌ای دریافت نشد.*\n\n"
                         "لطفاً کمی بعد دوباره تلاش کنید.")
                     await bot.send_message(ADMIN_ID, f"⚠️ [PHONE_SEARCH] جدول نتایج برای موبایل {phone_number} (کاربر {user_id}) حتی بعد از تلاش دوم ظاهر نشد.")
+                    try:
+                        await register_failed_inquiry_to_panel(
+                            user_id=user_id, full_name=data.get('full_name', ''),
+                            tracking_code=phone_number, doc_category="شماره تماس",
+                            error_details="جدول نتایج ظاهر نشد (تایم‌اوت)", error_step="table_timeout",
+                        )
+                    except Exception as panel_err:
+                        logger.warning(f"خطا در ثبت استعلام ناموفق موبایل: {panel_err}")
                     return
 
                 persons = await sana_page.evaluate('''() => {
@@ -979,6 +1011,14 @@ async def process_task(data, bot: Bot):
                 await resilient_sleep(sana_page, 2, bot, user_id)
                 if not persons:
                     await bot.send_message(user_id, f"❌ براساس شماره {phone_number}، موردی یافت نشد.")
+                    try:
+                        await register_failed_inquiry_to_panel(
+                            user_id=user_id, full_name=data.get('full_name', ''),
+                            tracking_code=phone_number, doc_category="شماره تماس",
+                            error_details="موردی یافت نشد", error_step="no_persons_extracted",
+                        )
+                    except Exception as panel_err:
+                        logger.warning(f"خطا در ثبت استعلام ناموفق موبایل: {panel_err}")
                     return
 
                 await bot.send_message(ADMIN_ID, f"✅ تعداد {len(persons)} شخص یافت شد.")
@@ -1078,6 +1118,17 @@ async def process_task(data, bot: Bot):
 
                 if has_error:
                     await bot.send_message(user_id, f"❌ کدملی `{national_id}` فاقد ثبت‌نام ثنا می‌باشد.")
+                    try:
+                        await register_failed_inquiry_to_panel(
+                            user_id=user_id,
+                            full_name=data.get('full_name', ''),
+                            tracking_code=national_id,
+                            doc_category="کد ملی",
+                            error_details="کدملی فاقد ثبت‌نام ثنا",
+                            error_step="lookup_not_found",
+                        )
+                    except Exception as panel_err:
+                        logger.warning(f"خطا در ثبت استعلام ناموفق کد ملی: {panel_err}")
                     await sana_page.goto("https://sakha2.adliran.ir/Offices/Index")
                     return
 
@@ -1097,6 +1148,17 @@ async def process_task(data, bot: Bot):
                     await bot.send_message(
                         user_id, f"❌ استخراج اطلاعات ثنا برای کدملی `{national_id}` ناموفق بود."
                     )
+                    try:
+                        await register_failed_inquiry_to_panel(
+                            user_id=user_id,
+                            full_name=data.get('full_name', ''),
+                            tracking_code=national_id,
+                            doc_category="کد ملی",
+                            error_details="استخراج اطلاعات پروفایل ناموفق بود (ساختار صفحه یافت نشد)",
+                            error_step="profile_extraction",
+                        )
+                    except Exception as panel_err:
+                        logger.warning(f"خطا در ثبت استعلام ناموفق کد ملی: {panel_err}")
                     await sana_page.goto("https://sakha2.adliran.ir/Offices/Index")
                     return
 
@@ -1375,6 +1437,16 @@ async def process_task(data, bot: Bot):
                     except Exception as print_err:
                         logging.error(f"خطا در چاپ: {print_err}")
                         await bot.send_message(user_id, "⚠️ چاپ پرونده با خطا مواجه شد.")
+
+                        try:
+                            await register_failed_inquiry_to_panel(
+                                user_id=user_id, full_name=data.get('full_name', ''),
+                                tracking_code=tracking_code, doc_category=category,
+                                doc_subcategory=subcategory,
+                                error_details=str(print_err), error_step="print_document",
+                            )
+                        except Exception as panel_err:
+                            logger.warning(f"خطا در ثبت استعلام ناموفق کد پیگیری: {panel_err}")
 
                         try:
                             from bug_reporter import report_bug
