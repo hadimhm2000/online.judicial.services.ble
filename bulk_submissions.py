@@ -831,6 +831,9 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
                     "lavayeh_branch_code": _resolved_branch_code,
                     "_is_bulk": True,
                     "batch_tracking_code": tracking_code,
+                    # شمارهٔ ردیف واقعی اکسل (نه sub_row) — برای اینکه در پیام
+                    # خطا مشخص باشد این مورد دقیقاً برای کدام ردیف/پرونده است
+                    "_bulk_row_index": item.get("row_index", idx),
                 }
 
                 if _send_lavayeh_fn:
@@ -855,6 +858,8 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
                         "lavayeh_branch_name": _sanitize_text(item.get("branch_name", "")),
                         "lavayeh_branch_code": _resolved_branch_code,
                         "_is_bulk": True,
+                        "batch_tracking_code": tracking_code,
+                        "_bulk_row_index": item.get("row_index", idx),
                     })
 
             if item.get("status") == "duplicate_skipped":
@@ -884,6 +889,10 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
     task_data["status"] = "queued"
     task_data["queued_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     task_data["queued_count"] = queued
+    # شمارندهٔ ردیف‌های واقعاً تمام‌شده (موفق یا ناموفق) — گزارش مالی و
+    # فاکتور تسویه فقط وقتی صدا زده می‌شوند که این عدد به queued برسد،
+    # نه بلافاصله بعد از اینکه همهٔ ردیف‌ها فقط «در صف» قرار گرفتند.
+    task_data["completed_count"] = 0
 
     dup_note = f"\n⚠️ {skipped_duplicates} مورد تکراری رد شد." if skipped_duplicates else ""
     error_note = f"\n⚠️ {errors} مورد خطا داشت." if errors else ""
@@ -892,15 +901,64 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
             f"✅ *تمام {queued} مورد در صف پردازش سامانه قرار گرفت!*{error_note}{dup_note}\n\n"
             f"🔒 کد پیگیری: `{tracking_code}`\n"
             f"📥 موارد در صف: *{queued} از {total}*\n\n"
-            f"⏳ موارد یکی‌یکی ثبت خواهند شد و نتیجه هر مورد برایتان ارسال می‌شود.",
+            f"⏳ موارد یکی‌یکی ثبت خواهند شد و نتیجه هر مورد برایتان ارسال می‌شود.\n"
+            f"📊 گزارش مالی نهایی و صورتحساب فقط پس از پردازش *کامل همهٔ موارد* "
+            f"ارسال خواهد شد.",
             parse_mode="Markdown")
     except Exception as e:
         logger.error(f"خطا در ارسال پیام پایان: {e}")
+
+    # ══════════════════════════════════════════════════════════════
+    # ⚠️ توجه مهم: اینجا فقط صف‌بندی (enqueue) همهٔ ردیف‌ها تمام شده،
+    # نه پردازش واقعی آن‌ها! پردازش واقعی توسط worker مصرف‌کنندهٔ صف
+    # (scenarios.py::process_task) به‌صورت ترتیبی و با تاخیر قابل‌توجه
+    # (هر ردیف می‌تواند چند ثانیه تا چند دقیقه طول بکشد) انجام می‌شود.
+    # قبلاً گزارش مالی و فاکتور تسویه همین‌جا (بلافاصله بعد از این حلقه)
+    # صدا زده می‌شد که باعث می‌شد signable_items همیشه خالی باشد و گزارش
+    # اشتباه («هیچ ردیفی موفق نبود») حتی قبل از شروع پردازش واقعی ارسال
+    # شود. حالا گزارش مالی/فاکتور تسویه/منوی امضا فقط از طریق
+    # bulk_submissions.mark_bulk_item_done() فراخوانی می‌شود — که بعد از
+    # ثبت *هر* ردیف (چه موفق چه ناموفق) صدا زده می‌شود و فقط وقتی که
+    # آخرین ردیف تمام شده باشد finalize_bulk_batch را اجرا می‌کند.
+    # ══════════════════════════════════════════════════════════════
+
+
+async def mark_bulk_item_done(bot, user_id: int, tracking_code: str):
+    """
+    باید دقیقاً یک‌بار برای هر ردیف دسته‌جمعی (چه موفق چه ناموفق) صدا زده
+    شود — چه از send_bulk_item_result (موفقیت) و چه از except
+    LavayehFatalError/EzhharFatalError (شکست). وقتی شمار ردیف‌های
+    تمام‌شده به تعداد ردیف‌های صف‌شده برسد، گزارش مالی نهایی و فاکتور
+    تسویه/منوی امضا را اجرا می‌کند.
+    """
+    task_data = BULK_TASKS.get(tracking_code)
+    if not task_data:
+        return
+    task_data["completed_count"] = task_data.get("completed_count", 0) + 1
+    queued_count = task_data.get("queued_count", 0)
+    logger.info(
+        f"[BULK] بچ {tracking_code}: {task_data['completed_count']}/{queued_count} ردیف تمام شد"
+    )
+    if queued_count and task_data["completed_count"] >= queued_count:
+        await finalize_bulk_batch(bot, user_id, tracking_code)
+
+
+async def finalize_bulk_batch(bot, user_id: int, tracking_code: str):
+    """
+    گزارش مالی نهایی + صدور فاکتور تسویه (در صورت نیاز) + نمایش منوی
+    انتخاب کد رهگیری برای امضا — فقط باید پس از تمام‌شدن *واقعی* پردازش
+    همهٔ ردیف‌های یک بچ صدا زده شود (از mark_bulk_item_done).
+    """
+    task_data = BULK_TASKS.get(tracking_code)
+    if not task_data:
+        return
 
     # ══════════════════════════════════════════════════════════
     # گزارش مالی و صدور فاکتور تسویه (در صورت نیاز)
     # ══════════════════════════════════════════════════════════
     signable_items = task_data.get("signable_items", [])
+    failures = task_data.get("failures", [])
+
     if signable_items:
         total_court_cost = sum(item.get("court_total", 0) for item in signable_items if item.get("status") != "failed")
         prepaid_total = task_data.get("prepaid_total_rial", 0)
@@ -914,18 +972,23 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
             diff_line = "\u2705 پیش‌پرداخت دقیقاً برابر هزینه سامانه"
 
         report_msg = (
-            f"\U0001f9fe *گزارش مالی دسته‌جمعی (`{tracking_code}`)*\n\n"
+            f"\U0001f9fe *گزارش مالی نهایی دسته‌جمعی (`{tracking_code}`)*\n\n"
             f"\U0001f4b0 مجموع هزینه واقعی سامانه: *{total_court_cost:,} ریال*\n"
             f"\U0001f4b3 مجموع پیش‌پرداخت شما: *{prepaid_total:,} ریال*\n"
-            f"{diff_line}"
+            f"{diff_line}\n\n"
+            f"\U0001f4cb *تعداد ردیف‌های ثبت‌شده (آمادهٔ امضا):* {len(signable_items)}"
         )
 
-        # فهرست ردیف‌های ناموفق
+        # فهرست ردیف‌های ناموفق (چه در signable_items با status=failed، چه
+        # در لیست جداگانهٔ failures که در except LavayehFatalError/
+        # EzhharFatalError ثبت می‌شود)
         failed_items = [item for item in signable_items if item.get("status") == "failed"]
-        if failed_items:
-            report_msg += f"\n\n\u274c *{len(failed_items)} ردیف ناموفق:*\n"
+        if failed_items or failures:
+            report_msg += f"\n\n\u274c *ردیف‌های ناموفق ({len(failed_items) + len(failures)}):*\n"
             for fi in failed_items:
                 report_msg += f"  \u2022 ردیف {fi.get('row_index', '?')}: {fi.get('title', '?')} — {fi.get('error_summary', 'خطای نامشخص')}\n"
+            for fi in failures:
+                report_msg += f"  \u2022 ردیف {fi.get('row_index', '?')}: {fi.get('title', '?')} — {fi.get('error', 'خطای نامشخص')[:150]}\n"
 
         try:
             await bot.send_message(user_id, report_msg, parse_mode="Markdown")
@@ -977,7 +1040,13 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
         else:
             # remaining <= 0 → مستقیم به منوی امضا
             await _show_bulk_sign_menu(bot, user_id, tracking_code)
-    elif signable_items is not None and len(signable_items) == 0:
+    else:
         # هیچ ردیفی موفق نبود
+        fail_lines = ""
+        if failures:
+            fail_lines = "\n\n" + "\n".join(
+                f"\u2022 ردیف {fi.get('row_index', '?')}: {fi.get('title', '?')} — {fi.get('error', 'خطای نامشخص')[:150]}"
+                for fi in failures
+            )
         await _safe_send(bot, user_id,
-            f"\u274c هیچ ردیفی با موفقیت ثبت نشد. لطفاً خطاهای گزارش‌شده را برطرف و مجدداً تلاش فرمایید.")
+            f"\u274c هیچ ردیفی با موفقیت ثبت نشد. لطفاً خطاهای گزارش‌شده را برطرف و مجدداً تلاش فرمایید.{fail_lines}")

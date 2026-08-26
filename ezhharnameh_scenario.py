@@ -457,6 +457,23 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
             bill_no = await _extract_bill_no(sana_page)
             logging.info(f"[EZHHAR] bill_no={bill_no}")
 
+            # ══════════════════════════════════════════════════════════
+            # بررسی نهایی: اگر «ثبت موقت» موفق نشان داده شد ولی استخراج
+            # کد رهگیری شکست خورد، ادامهٔ فرایند ناقص و گمراه‌کننده است.
+            # قبلاً این حالت بی‌صدا ادامه پیدا می‌کرد.
+            # ══════════════════════════════════════════════════════════
+            if not bill_no:
+                err_msg = "ثبت موقت انجام شد ولی کد رهگیری اظهارنامه از سامانه قابل استخراج نبود."
+                await bot.send_message(
+                    user_id,
+                    f"⚠️ *خطا در ثبت موقت:*\n\n«{err_msg}»\n\n"
+                    "فرآیند متوقف شد. لطفاً به مدیریت اطلاع دهید.")
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"❌ [EZHHAR] bill_no استخراج نشد برای کاربر {user_id} — بررسی صفحه لازم است."
+                )
+                raise EzhharFatalError(err_msg)
+
             # ذخیره کدرهگیری در گوگل شیت + اطلاع به مدیر
             if bill_no:
                 await log_event("ثبت موقت", "اظهارنامه", str(user_id), user_id,
@@ -745,7 +762,36 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
 
         except EzhharFatalError as e:
             logging.error(f"[EZHHAR] خطای قطعی user={user_id}: {e}")
-            await bot.send_message(user_id, f"⚠️ *خطای قطعی:* {str(e)[:200]}")
+            is_bulk_err = data.get("_is_bulk", False)
+            batch_tc_err = data.get("batch_tracking_code", "")
+            row_num_err = data.get("_bulk_row_index", "")
+
+            if is_bulk_err:
+                await bot.send_message(
+                    user_id,
+                    f"❌ *خطا در ثبت موقت اظهارنامه (ردیف {row_num_err} — موضوع: {subject}):*\n\n"
+                    f"«{str(e)[:300]}»\n\n"
+                    f"این ردیف ثبت نشد؛ پردازش بقیهٔ ردیف‌های دسته ادامه دارد.")
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"❌ [EZHHAR] ردیف {row_num_err} (موضوع: {subject}) در بچ "
+                    f"{batch_tc_err} با خطا مواجه شد و ثبت نشد:\n«{str(e)[:300]}»"
+                )
+                if batch_tc_err:
+                    try:
+                        from bulk_submissions import BULK_TASKS, mark_bulk_item_done
+                        if batch_tc_err in BULK_TASKS:
+                            BULK_TASKS[batch_tc_err].setdefault("failures", []).append({
+                                "row_index": row_num_err,
+                                "title": subject,
+                                "error": str(e)[:300],
+                            })
+                        await mark_bulk_item_done(bot, user_id, batch_tc_err)
+                    except Exception as log_err:
+                        logging.error(f"[EZHHAR] خطا در ثبت گزارش شکست ردیف: {log_err}")
+            else:
+                await bot.send_message(user_id, f"⚠️ *خطای قطعی:* {str(e)[:200]}")
+
             await log_event(
                 "خطای سامانه", "اظهارنامه", str(user_id), user_id,
                 doc_name=subject, note=f"خطای قطعی: {str(e)[:200]}"
@@ -775,6 +821,26 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
                     doc_name=subject,
                     note=f"پس از {max_attempts} تلاش ناموفق: {str(e)[:200]}"
                 )
+                # ══════════════════════════════════════════════════════════
+                # مشابه لایحه: اگر این ردیف بخشی از یک بچ دسته‌جمعی بود،
+                # باید mark_bulk_item_done صدا زده شود، وگرنه شمارندهٔ
+                # تکمیل بچ هرگز کامل نمی‌شود و گزارش پایانی/فاکتور
+                # تسویه/منوی امضا برای کل بچ برای همیشه معلق می‌ماند.
+                # ══════════════════════════════════════════════════════════
+                if data.get("_is_bulk") and data.get("batch_tracking_code"):
+                    _batch_tc_generic = data.get("batch_tracking_code")
+                    _row_generic = data.get("_bulk_row_index", "")
+                    try:
+                        from bulk_submissions import BULK_TASKS, mark_bulk_item_done
+                        if _batch_tc_generic in BULK_TASKS:
+                            BULK_TASKS[_batch_tc_generic].setdefault("failures", []).append({
+                                "row_index": _row_generic,
+                                "title": subject,
+                                "error": f"پس از {max_attempts} تلاش ناموفق: {str(e)[:200]}",
+                            })
+                        await mark_bulk_item_done(bot, user_id, _batch_tc_generic)
+                    except Exception as log_err:
+                        logging.error(f"[EZHHAR] خطا در mark_bulk_item_done (شکست عمومی): {log_err}")
             try:
                 from bug_reporter import report_bug
                 await report_bug(bot, where="process_ezhharnameh_task", error=e,
@@ -1158,6 +1224,20 @@ async def _close_popup(page) -> bool:
     return closed
 
 
+async def _raise_fatal_ezhhar_save_error(bot: Bot, user_id: int, error_text: str):
+    """
+    مشابه _raise_fatal_temp_save_error در lavayeh_scenario.py — پیام خطای
+    «ثبت موقت» اظهارنامه را به کاربر می‌فرستد و EzhharFatalError raise
+    می‌کند. جزئیات شمارهٔ ردیف/بچ در محل except EzhharFatalError در
+    process_ezhharnameh_task اضافه می‌شود (چون اینجا به data دسترسی نداریم).
+    """
+    await bot.send_message(
+        user_id,
+        f"⚠️ *خطا در ثبت موقت اظهارنامه:*\n\n«{error_text}»\n\n"
+        "فرآیند متوقف شد.")
+    raise EzhharFatalError(error_text)
+
+
 async def _click_save_temp(page, bot: Bot, user_id: int, max_retries: int = 5):
     for attempt in range(max_retries):
         # بررسی session expiry قبل از هر تلاش
@@ -1177,12 +1257,19 @@ async def _click_save_temp(page, bot: Bot, user_id: int, max_retries: int = 5):
         # صبر اولیه
         await asyncio.sleep(5)
 
-        # منتظر ناپدید شدن لودینگ
-        had_loading_error = await wait_for_horizontal_loading_bar(page, bot, user_id, timeout=60)
-        if had_loading_error:
-            logging.warning(f"[EZHHAR] خطا بعد از لودینگ ثبت موقت — تلاش مجدد")
-            await asyncio.sleep(5)
+        # ══════════════════════════════════════════════════════════
+        # منتظر ناپدید شدن لودینگ. مثل لایحه، این تابع ممکن است خودش به
+        # پاپ‌آپ خطای واقعی سامانه برخورد کند و آن را ببندد — قبلاً فقط
+        # True/False برمی‌گرداند و متن دقیق خطا برای همیشه گم می‌شد و کد
+        # فقط ۵ بار بی‌صدا retry می‌کرد. حالا متن واقعی خطا برگردانده
+        # می‌شود و مستقیماً به‌عنوان خطای قطعی گزارش می‌شود.
+        # ══════════════════════════════════════════════════════════
+        loading_result = await wait_for_horizontal_loading_bar(page, bot, user_id, timeout=60)
+        if loading_result == "SESSION_EXPIRED":
+            logging.info(f"[EZHHAR] session renewed after save attempt {attempt+1} (during loading wait)")
             continue
+        elif loading_result:
+            await _raise_fatal_ezhhar_save_error(bot, user_id, loading_result)
 
         # بررسی session expiry بعد از ثبت
         had_expiry = await check_and_handle_expiry(page, bot, user_id)
@@ -1226,8 +1313,16 @@ async def _click_save_temp(page, bot: Bot, user_id: int, max_retries: int = 5):
                 logging.warning(f"[EZHHAR] session expiry in error text after save")
                 await handle_session_expired(bot, user_id, page=page)
                 continue
-            raise EzhharFatalError(error_text)
+            await _raise_fatal_ezhhar_save_error(bot, user_id, error_text)
         await asyncio.sleep(5)
+
+    # ══════════════════════════════════════════════════════════════
+    # اگر بعد از max_retries تلاش، نه popup موفقیت و نه popup خطا هرگز
+    # ظاهر نشد، قبلاً تابع بی‌صدا برمی‌گشت و پردازش با bill_no خالی ادامه
+    # پیدا می‌کرد. حالا این حالت هم یک خطای قطعی محسوب می‌شود.
+    # ══════════════════════════════════════════════════════════════
+    timeout_msg = "سامانه پس از چند تلاش، پاسخ قطعی (موفقیت یا خطا) برای «ثبت موقت» اظهارنامه نداد."
+    await _raise_fatal_ezhhar_save_error(bot, user_id, timeout_msg)
 
 
 async def _click_goto_main(page, bot: Bot, user_id: int):
