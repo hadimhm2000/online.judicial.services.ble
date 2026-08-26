@@ -860,11 +860,14 @@ async def bulk_attachment_all_images_handler(message: Message, state: FSMContext
 
     if message.photo:
         # بزرگترین سایز عکس
+        # نکته مهم: باید فقط رشتهٔ file_id ذخیره شود، دقیقاً مثل مسیر
+        # پیوست تک‌ردیفی (bulk_attachment_images_handler) — نسخهٔ قبلی این
+        # هندلر به‌اشتباه یک dict شامل file_id/file_unique_id ذخیره می‌کرد
+        # که در _download_images_from_bale با bot.get_file(file_id) که
+        # انتظار رشته دارد سازگار نبود و باعث خطای اعتبارسنجی pydantic و
+        # شکست کامل و بی‌صدای آپلود «پیوست برای همه» می‌شد.
         photo = message.photo[-1]
-        images.append({
-            "file_id": photo.file_id,
-            "file_unique_id": photo.file_unique_id,
-        })
+        images.append(photo.file_id)
         await state.update_data(bulk_all_attachment_images=images)
         count = len(images)
         await message.answer(f"✅ تصویر {count} دریافت شد. ادامه بدهید یا «✅ اتمام ارسال مدارک» را بزنید.")
@@ -2896,6 +2899,18 @@ async def send_bulk_item_result(
         logging.info(f"[BULK-ITEM] ردیف {row_index} اضافه به signable_items: {tracking_code} (بچ: {batch_tracking_code})")
     else:
         logging.warning(f"[BULK-ITEM] batch_tracking_code یافت نشد: {batch_tracking_code}")
+
+    # ══════════════════════════════════════════════════════════════
+    # اطلاع به bulk_submissions که یک ردیف دیگر (این یکی با موفقیت) تمام
+    # شد — اگر این آخرین ردیف صف‌شدهٔ این بچ بود، گزارش مالی نهایی/فاکتور
+    # تسویه/منوی امضا همین‌جا (نه زودتر) اجرا می‌شود.
+    # ══════════════════════════════════════════════════════════════
+    if batch_tracking_code:
+        try:
+            from bulk_submissions import mark_bulk_item_done
+            await mark_bulk_item_done(bot, user_id, batch_tracking_code)
+        except Exception as e:
+            logging.error(f"[BULK-ITEM] خطا در mark_bulk_item_done: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

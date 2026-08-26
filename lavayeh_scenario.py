@@ -176,23 +176,11 @@ async def process_lavayeh_task(data: dict, bot: Bot):
     )
 
     # ══════════════════════════════════════════════════════════════
-    # بررسی توقف بچ: اگر بچ متوقف شده، این ردیف را رد کن
+    # ⚠️ قبلاً اینجا بررسی می‌شد که آیا بچ «متوقف شده» و در آن صورت این
+    # ردیف بدون هیچ تلاشی رد می‌شد. طبق تصمیم صریح، خطای یک ردیف نباید
+    # پردازش بقیهٔ ردیف‌های دسته را متوقف کند، پس این بررسی حذف شد — هر
+    # ردیف مستقل از نتیجهٔ ردیف‌های قبلی پردازش می‌شود.
     # ══════════════════════════════════════════════════════════════
-    _is_bulk_check = data.get("_is_bulk", False)
-    _batch_tc_check = data.get("batch_tracking_code", "")
-    if _is_bulk_check and _batch_tc_check:
-        try:
-            from bulk_submissions import BULK_TASKS as _BT_CHECK
-            if _batch_tc_check in _BT_CHECK and _BT_CHECK[_batch_tc_check].get("status") == "stopped":
-                logging.warning(f"[LAVAYEH] ردیف {row_number} رد شد — بچ {_batch_tc_check} متوقف شده")
-                await bot.send_message(
-                    user_id,
-                    f"⏭️ ردیف {row_number} (کد: `{tracking_code}`) رد شد به دلیل توقف فرآیند دسته‌جمعی.",
-                    parse_mode="Markdown"
-                )
-                return
-        except Exception:
-            pass
 
     max_attempts = 3
     lavayeh_bill_no = ""
@@ -699,39 +687,73 @@ async def process_lavayeh_task(data: dict, bot: Bot):
         except LavayehFatalError as e:
             is_bulk_err = data.get("_is_bulk", False)
             batch_tc_err = data.get("batch_tracking_code", "")
-            row_num_err = data.get("lavayeh_row_number", 1)
+            # ══════════════════════════════════════════════════════════
+            # شمارهٔ ردیف واقعی اکسل (_bulk_row_index) باید استفاده شود، نه
+            # lavayeh_row_number (که در واقع «ردیف فرعی»/sub_row داخل یک
+            # پروندهٔ واحد است و برای موارد دسته‌جمعی همیشه ۱ بوده — به
+            # همین دلیل در گزارش‌های قبلی همهٔ ردیف‌ها «ردیف 1» نشان داده
+            # می‌شدند و کاربر نمی‌توانست بفهمد خطا برای کدام پرونده است).
+            # ══════════════════════════════════════════════════════════
+            row_num_err = data.get("_bulk_row_index") or data.get("lavayeh_row_number", 1)
 
-            # ── پیام خطا به کاربر با شماره ردیف ──
+            # ── پیام خطا به کاربر با شماره ردیف واقعی + کد پرونده ──
             if is_bulk_err:
                 error_msg = (
-                    f"❌ *خطا در ثبت موقت (ردیف {row_num_err}):*\n\n"
+                    f"❌ *خطا در ثبت موقت (ردیف {row_num_err} — کد: `{tracking_code}`):*\n\n"
                     f"«{str(e)}»\n\n"
-                    f"فرآیند دسته‌جمعی متوقف شد.\n"
-                    f"لطفاً اطلاعات ردیف {row_num_err} را بررسی و اصلاح نمایید."
+                    f"این ردیف ثبت نشد؛ پردازش بقیهٔ ردیف‌های دسته ادامه دارد."
                 )
-                # توقف پردازش بقیه ردیف‌های این بچ
+                # ══════════════════════════════════════════════════════════
+                # ⚠️ قبلاً اینجا با ست‌کردن status="stopped" کل بچ متوقف
+                # می‌شد و همهٔ ردیف‌های بعدی بدون حتی یک تلاش رد می‌شدند.
+                # طبق درخواست صریح، خطای یک ردیف نباید بقیهٔ ردیف‌ها را
+                # متوقف کند — فقط همین یک ردیف باید ثبت‌نشده گزارش شود و
+                # پردازش باید به ردیف بعدی برود. این رفتار عمداً حذف شد.
+                # فقط شمار خطاها را برای گزارش پایانی دسته ثبت می‌کنیم.
+                # ══════════════════════════════════════════════════════════
                 if batch_tc_err:
                     try:
-                        from bulk_submissions import BULK_TASKS
+                        from bulk_submissions import BULK_TASKS, mark_bulk_item_done
                         if batch_tc_err in BULK_TASKS:
-                            BULK_TASKS[batch_tc_err]["status"] = "stopped"
-                            logging.warning(f"[LAVAYEH] بچ {batch_tc_err} متوقف شد به دلیل خطای قطعی در ردیف {row_num_err}")
+                            BULK_TASKS[batch_tc_err].setdefault("failures", []).append({
+                                "row_index": row_num_err,
+                                "tracking_code": tracking_code,
+                                "title": title,
+                                "error": str(e),
+                            })
+                            logging.warning(
+                                f"[LAVAYEH] ردیف {row_num_err} (کد {tracking_code}) در بچ "
+                                f"{batch_tc_err} با خطای قطعی رد شد؛ پردازش ادامه می‌یابد."
+                            )
+                        # اطلاع به bulk_submissions که این ردیف (ناموفق) هم
+                        # تمام شد — اگر آخرین ردیف بود، گزارش پایانی اجرا شود
+                        await mark_bulk_item_done(bot, user_id, batch_tc_err)
                     except Exception as log_err:
-                        logging.error(f"[LAVAYEH] خطا در توقف بچ: {log_err}")
+                        logging.error(f"[LAVAYEH] خطا در ثبت گزارش شکست ردیف: {log_err}")
+                # اطلاع فوری به مدیر دربارهٔ همین ردیف ناموفق (طبق تصمیم قبلی
+                # دربارهٔ اعلام لحظه‌ای خطا، مستقل از گزارش پایانی دسته)
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"❌ [LAVAYEH] ردیف {row_num_err} (کد: {tracking_code}) در بچ "
+                    f"{batch_tc_err} با خطا مواجه شد و ثبت نشد:\n«{str(e)}»"
+                )
             else:
                 error_msg = (
                     f"⚠️ *خطا در ثبت موقت:*\n\n"
                     f"«{str(e)}»\n\n"
                     f"فرآیند متوقف شد. اطلاعات اشخاص را بررسی و مجدداً اقدام نمایید."
                 )
+                # برای فلوی تکی، پیام ادمین همین‌جا فرستاده می‌شود (بخش بالا
+                # برای دسته‌جمعی از قبل پیام کامل با شماره ردیف فرستاده است،
+                # پس اینجا از تکرار پیام برای ادمین جلوگیری می‌شود)
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"❌ [LAVAYEH] خطای قطعی کاربر {user_id}: {str(e)[:200]}"
+                )
 
             runtime_state.active_lavayeh_users.discard(user_id)
             logging.info(f"[LAVAYEH] خطای قطعی برای user={user_id}: {e}")
             await bot.send_message(user_id, error_msg, parse_mode="Markdown")
-            await bot.send_message(
-                ADMIN_ID,
-                f"❌ [LAVAYEH] خطای قطعی کاربر {user_id} (ردیف {row_num_err}): {str(e)[:200]}"
-            )
             await log_event(
                 "خطای سامانه", "لایحه", str(user_id), user_id,
                 tracking_code=tracking_code, doc_name=title,
@@ -781,6 +803,30 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                     event_type="خطای سامانه", full_name=str(user_id), user_id=user_id,
                     trackingCode=tracking_code or "", documentCategory=title,
                     errorDetails=f"پس از {max_attempts} تلاش ناموفق: {str(e)[:200]}", errorStep="MAX_RETRIES_EXCEEDED")
+
+                # ══════════════════════════════════════════════════════════
+                # ⚠️ این مسیر شکست عمومی (نه LavayehFatalError) قبلاً در حالت
+                # دسته‌جمعی هرگز mark_bulk_item_done را صدا نمی‌زد — یعنی
+                # اگر یک ردیف به‌خاطر خطای عمومی (نه خطای کسب‌وکار) شکست
+                # می‌خورد، شمارندهٔ تکمیل بچ هرگز کامل نمی‌شد و گزارش
+                # مالی/فاکتور تسویه/منوی امضا برای کل بچ برای همیشه معلق
+                # می‌ماند. اینجا اضافه شد تا این حالت هم درست lehandled شود.
+                # ══════════════════════════════════════════════════════════
+                if data.get("_is_bulk") and data.get("batch_tracking_code"):
+                    _batch_tc_generic = data.get("batch_tracking_code")
+                    _row_generic = data.get("_bulk_row_index") or data.get("lavayeh_row_number", 1)
+                    try:
+                        from bulk_submissions import BULK_TASKS, mark_bulk_item_done
+                        if _batch_tc_generic in BULK_TASKS:
+                            BULK_TASKS[_batch_tc_generic].setdefault("failures", []).append({
+                                "row_index": _row_generic,
+                                "tracking_code": tracking_code,
+                                "title": title,
+                                "error": f"پس از {max_attempts} تلاش ناموفق: {str(e)[:200]}",
+                            })
+                        await mark_bulk_item_done(bot, user_id, _batch_tc_generic)
+                    except Exception as log_err:
+                        logging.error(f"[LAVAYEH] خطا در mark_bulk_item_done (شکست عمومی): {log_err}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1143,6 +1189,21 @@ async def _click_sana_query_with_retry(
         await asyncio.sleep(3)
 
 
+async def _raise_fatal_temp_save_error(bot: Bot, user_id: int, error_text: str):
+    """
+    ارسال پیام خطای «ثبت موقت» به کاربر و raise کردن LavayehFatalError.
+    توجه: پیام به ADMIN_ID اینجا ارسال نمی‌شود — چون در این سطح شمارهٔ
+    ردیف/بچ/کد پرونده در دسترس نیست. اطلاع‌رسانی کامل به مدیر (با تمام
+    جزئیات) در except LavayehFatalError در process_lavayeh_task انجام
+    می‌شود تا مدیر فقط یک پیام کامل ببیند، نه دو پیام پراکنده.
+    """
+    await bot.send_message(
+        user_id,
+        f"⚠️ *خطا در ثبت موقت:*\n\n«{error_text}»\n\n"
+        "فرآیند متوقف شد. اطلاعات را بررسی و مجدداً اقدام نمایید.")
+    raise LavayehFatalError(error_text)
+
+
 async def _click_save_temp_with_retry(page, bot: Bot, user_id: int, max_retries: int = 5):
     for attempt in range(max_retries):
         # بررسی session expiry قبل از هر تلاش
@@ -1175,12 +1236,21 @@ async def _click_save_temp_with_retry(page, bot: Bot, user_id: int, max_retries:
         # صبر اولیه
         await asyncio.sleep(3)
 
-        # منتظر ناپدید شدن لودینگ
-        had_loading_error = await wait_for_horizontal_loading_bar(page, bot, user_id, timeout=60)
-        if had_loading_error:
-            logging.warning(f"[LAVAYEH] خطا بعد از لودینگ ثبت موقت — تلاش مجدد")
-            await asyncio.sleep(5)
+        # ══════════════════════════════════════════════════════════
+        # منتظر ناپدید شدن لودینگ. توجه: این تابع خودش ممکن است در همین
+        # لحظه به یک پاپ‌آپ خطای واقعی (مثلاً «شخص ... در فهرست اشخاص
+        # پرونده نیست») برخورد کند و آن را ببندد — قبلاً این تابع فقط
+        # True/False برمی‌گرداند و متن دقیق خطا برای همیشه گم می‌شد؛
+        # کد فقط retry بی‌نتیجه انجام می‌داد. حالا متن واقعی خطا برگردانده
+        # می‌شود و اینجا مستقیماً به‌عنوان خطای قطعی گزارش می‌شود.
+        # ══════════════════════════════════════════════════════════
+        loading_result = await wait_for_horizontal_loading_bar(page, bot, user_id, timeout=60)
+        if loading_result == "SESSION_EXPIRED":
+            logging.info(f"[LAVAYEH] session renewed after save attempt {attempt+1} (during loading wait)")
             continue
+        elif loading_result:
+            # رشتهٔ متن خطای واقعی سامانه — قطعی است، دیگر retry معنی ندارد
+            await _raise_fatal_temp_save_error(bot, user_id, loading_result)
 
         # بررسی session expiry بعد از ثبت
         had_expiry = await check_and_handle_expiry(page, bot, user_id)
@@ -1220,15 +1290,7 @@ async def _click_save_temp_with_retry(page, bot: Bot, user_id: int, max_retries:
             # پایان بدون خطا و بدون کد رهگیری برمی‌گشت. حالا هر پیام خطای
             # غیر از انقضای نشست، بلافاصله قطعی در نظر گرفته می‌شود.
             # ══════════════════════════════════════════════════════════
-            await bot.send_message(
-                user_id,
-                f"⚠️ *خطا در ثبت موقت:*\n\n«{error_text}»\n\n"
-                "فرآیند متوقف شد. اطلاعات را بررسی و مجدداً اقدام نمایید.")
-            await bot.send_message(
-                ADMIN_ID,
-                f"❌ [LAVAYEH] خطای قطعی در ثبت موقت کاربر {user_id}: {error_text}"
-            )
-            raise LavayehFatalError(error_text)
+            await _raise_fatal_temp_save_error(bot, user_id, error_text)
 
         # ══════════════════════════════════════════════════════════
         # اگر نه موفقیت و نه خطا: فقط صبر بیشتر و تلاش مجدد
@@ -1244,15 +1306,7 @@ async def _click_save_temp_with_retry(page, bot: Bot, user_id: int, max_retries:
     # قطعی محسوب می‌شود تا کاربر و مدیر بی‌اطلاع نمانند.
     # ══════════════════════════════════════════════════════════════
     timeout_msg = "سامانه پس از چند تلاش، پاسخ قطعی (موفقیت یا خطا) برای «ثبت موقت» نداد."
-    await bot.send_message(
-        user_id,
-        f"⚠️ *خطا در ثبت موقت:*\n\n«{timeout_msg}»\n\n"
-        "فرآیند متوقف شد. لطفاً کمی بعد دوباره تلاش کنید یا به مدیریت اطلاع دهید.")
-    await bot.send_message(
-        ADMIN_ID,
-        f"❌ [LAVAYEH] عدم پاسخ قطعی در ثبت موقت کاربر {user_id} پس از {max_retries} تلاش."
-    )
-    raise LavayehFatalError(timeout_msg)
+    await _raise_fatal_temp_save_error(bot, user_id, timeout_msg)
 
 
 async def _click_goto_main(page, bot: Bot, user_id: int, max_retries: int = 5):
