@@ -376,10 +376,12 @@ async def check_bulk_file_upload_handler(message: Message, state: FSMContext):
 
         # ارسال به صف پردازش
         user_id = message.from_user.id
-        for item in valid_items:
+        for idx, item in enumerate(valid_items, start=1):
             item["user_id"] = user_id
             item["query_type"] = "دادخواست_چک"
             item["task_type"] = "CHECK_SUBMIT"
+            item["_is_bulk_check"] = True
+            item["_bulk_row_index"] = idx
             await runtime_state.job_queue.put(item)
 
         summary = (

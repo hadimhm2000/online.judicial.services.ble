@@ -15,22 +15,49 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 import runtime_state
 from config import ADMIN_ID
 from sheets import log_event
-try:
-    from admin_db import register_case
-except ImportError:
-    register_case = None
-    logging.warning("[LAVAYEH] ماژول admin_db یافت نشد — register_case در دسترس نخواهد بود")
+from panel_sync import upsert_case_to_panel
+
+# نگاشت event_type های این فایل به status های پنل ادمین
+_EVENT_TYPE_TO_STATUS = {
+    "ثبت موقت": "PROCESSING",
+    "ثبت": "PROCESSING",  # ثبت در سامانه انجام شده، هنوز پرداخت/امضا باقیست
+    "خطای سامانه": "FAILED",
+}
 
 
-async def _safe_register_case(**kwargs):
-    """فراخوانی امن register_case — اگر ماژول موجود نبود، خطا نمی‌دهد."""
-    if register_case is None:
-        logging.warning(f"[LAVAYEH] register_case در دسترس نیست — رد شد: {kwargs.get('event_type', '')}")
-        return
+async def _safe_register_case(
+    event_type: str,
+    full_name: str,
+    user_id: int | str,
+    trackingCode: str = "",
+    documentCategory: str = "",
+    note: str | None = None,
+    errorDetails: str | None = None,
+    errorStep: str | None = None,
+    **_ignored):
+    """
+    ثبت/آپدیت وضعیت پرونده لایحه در پنل ادمین (Next.js) از طریق panel_sync.
+
+    قبلاً این تابع سعی می‌کرد از ماژول admin_db (که در پروژه وجود ندارد) استفاده
+    کند و همیشه بی‌صدا شکست می‌خورد — یعنی هیچ‌کدام از رویدادهای لایحه
+    (ثبت موقت/ثبت نهایی/خطا) هیچ‌وقت در پنل ثبت نمی‌شد. حالا مستقیماً با
+    panel_sync.upsert_case_to_panel به دیتابیس پنل وصل می‌شود.
+    """
+    status = _EVENT_TYPE_TO_STATUS.get(event_type, "PROCESSING")
     try:
-        await register_case(**kwargs)
+        await upsert_case_to_panel(
+            bale_user_id=user_id,
+            full_name=full_name,
+            service_type="LAVAYEH",
+            status=status,
+            tracking_code=trackingCode or None,
+            document_category=documentCategory or None,
+            result_summary=note,
+            error_details=errorDetails,
+            error_step=errorStep,
+        )
     except Exception as e:
-        logging.error(f"[LAVAYEH] خطا در register_case: {e}", exc_info=True)
+        logging.error(f"[LAVAYEH] خطا در ثبت/آپدیت پرونده در پنل: {e}", exc_info=True)
 
 
 from browser_helpers import (
