@@ -663,9 +663,23 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
 
             # ── ۱۳. ارسال نتیجه ──────────────────────────────────────────
             from lavayeh_handlers import send_lavayeh_result, send_bulk_item_result
+            from panel_sync import upsert_case_to_panel
             nat_ids = ", ".join([
                 p.get("national_id", "") for p in declarants if p.get("national_id")
             ])
+
+            try:
+                await upsert_case_to_panel(
+                    bale_user_id=user_id,
+                    full_name=str(user_id),
+                    service_type="EZHHARNAMEH",
+                    status="PROCESSING",
+                    tracking_code=bill_no or None,
+                    document_category=f"اظهارنامه — {subject}",
+                    result_summary="اظهارنامه در سامانه ثبت شد",
+                )
+            except Exception as panel_err:
+                logging.warning(f"[EZHHAR] خطا در ثبت پرونده در پنل: {panel_err}")
 
             if cost_error:
                 # جدول هزینه نمایش داده نشد — ارسال PDF + پیام خطا
@@ -796,6 +810,15 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
                 "خطای سامانه", "اظهارنامه", str(user_id), user_id,
                 doc_name=subject, note=f"خطای قطعی: {str(e)[:200]}"
             )
+            try:
+                await upsert_case_to_panel(
+                    bale_user_id=user_id, full_name=str(user_id),
+                    service_type="EZHHARNAMEH", status="FAILED",
+                    document_category=f"اظهارنامه — {subject}",
+                    error_details=f"خطای قطعی: {str(e)[:200]}", error_step="FATAL_ERROR",
+                )
+            except Exception as panel_err:
+                logging.warning(f"[EZHHAR] خطا در ثبت شکست پرونده در پنل: {panel_err}")
             return
 
         except Exception as e:
@@ -821,6 +844,16 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
                     doc_name=subject,
                     note=f"پس از {max_attempts} تلاش ناموفق: {str(e)[:200]}"
                 )
+                try:
+                    await upsert_case_to_panel(
+                        bale_user_id=user_id, full_name=str(user_id),
+                        service_type="EZHHARNAMEH", status="FAILED",
+                        document_category=f"اظهارنامه — {subject}",
+                        error_details=f"پس از {max_attempts} تلاش ناموفق: {str(e)[:200]}",
+                        error_step="MAX_RETRIES_EXCEEDED",
+                    )
+                except Exception as panel_err:
+                    logging.warning(f"[EZHHAR] خطا در ثبت شکست پرونده در پنل: {panel_err}")
                 # ══════════════════════════════════════════════════════════
                 # مشابه لایحه: اگر این ردیف بخشی از یک بچ دسته‌جمعی بود،
                 # باید mark_bulk_item_done صدا زده شود، وگرنه شمارندهٔ

@@ -502,6 +502,57 @@ async def _click_goto_main(page, bot: Bot, user_id: int):
         await resilient_sleep(page, 3, bot, user_id)
 
 
+async def _print_tajdid_nazar(page, browser_context, bill_no: str, bot: Bot, user_id: int) -> str:
+    """چاپ PDF دادخواست تجدیدنظر/دعاوی اعتراضی.
+
+    ⚠️ نکته برای حاجی: این تابع بر اساس الگوی مشابه در check_scenario.py
+    (_print_check) نوشته شده چون تجدیدنظر تا امروز اصلاً به مرحله چاپ نمی‌رسید
+    و منطق چاپش وجود نداشت. سلکتورها («چاپ»، لینک تب جدید) از همون الگوی
+    مشترک سامانه سنا گرفته شده‌اند اما روی صفحه واقعی تجدیدنظر تست نشده‌اند.
+    اگر روی سرور واقعی کار نکرد، لاگ/اسکرین‌شات صفحه‌ی «آماده‌سازی» تجدیدنظر
+    رو برام بفرست تا سلکتور دقیق رو اصلاح کنم.
+    """
+    import os
+    import time
+    pdf_path = ""
+    try:
+        clicked = await page.evaluate('''() => {
+            const btns = Array.from(document.querySelectorAll('button'));
+            const t = btns.find(b => b.innerText.includes("چاپ"));
+            if (t && !t.disabled) { t.click(); return true; }
+            return false;
+        }''')
+        if not clicked:
+            await safe_click_by_text(page, "چاپ", bot, user_id)
+
+        await asyncio.sleep(3)
+
+        new_page = await browser_context.new_page()
+        try:
+            print_url = await page.evaluate('''() => {
+                const links = Array.from(document.querySelectorAll('a'));
+                const t = links.find(a => a.innerText && a.innerText.includes("چاپ"));
+                return t ? t.href : null;
+            }''')
+            if not print_url:
+                await new_page.close()
+                return ""
+
+            await new_page.goto(print_url, wait_until="networkidle", timeout=30000)
+            await asyncio.sleep(2)
+
+            pdf_path = f"tn_{bill_no}_{int(time.time())}.pdf"
+            await new_page.pdf(path=pdf_path, format="A4", print_background=True)
+        finally:
+            await new_page.close()
+
+    except Exception as e:
+        logging.error(f"[TN] خطا در چاپ PDF: {e}", exc_info=True)
+        return ""
+
+    return pdf_path
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # تابع اصلی پردازش تسک
 # ══════════════════════════════════════════════════════════════════════════════
@@ -849,19 +900,70 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                 await bot.send_message(user_id, "❌ خطا در آماده‌سازی. لطفاً مجدداً تلاش فرمایید.")
                 return
 
+            # استخراج شماره بایگانی/رهگیری (همون الگوی مشترک سامانه سنا)
+            bill_no = await sana_page.evaluate('''() => {
+                const inp = document.querySelector('#txtBillNo');
+                if (inp) return inp.value;
+                const sp = document.querySelector('[ng-model*="BillNo"]');
+                if (sp) return sp.innerText || sp.textContent;
+                return "";
+            }''')
+            if not bill_no:
+                bill_no = f"{file_no}-{judge_no}" if file_no or judge_no else ""
+            logging.info(f"[TN] bill_no={bill_no}")
+
             # ── ۱۳. محاسبه هزینه ────────────────────────────────────
             cost_info = await _calculate_cost(sana_page, bot, user_id)
             total_cost = cost_info.get("total", 0)
 
-            # اطلاع به کاربر
-            total_toman = total_cost // 10
-            await bot.send_message(
-                user_id,
-                f"💰 *هزینه دادرسی: {total_cost:,} ریال*\n"
-                f"معادل *{total_toman:,} تومان*\n\n"
-                f"📥 لطفاً رسید پرداخت را ارسال فرمایید.")
+            # ── ۱۴. چاپ PDF ─────────────────────────────────────────
+            pdf_path = await _print_tajdid_nazar(sana_page, browser_context, bill_no, bot, user_id)
 
-            # ── ۱۴. بازگشت به فهرست ────────────────────────────────
+            # ── ۱۵. ارسال فاکتور و شروع فلوی پرداخت (مثل لایحه) ──────
+            from lavayeh_handlers import send_lavayeh_result
+            appellant_nat_ids = ", ".join([
+                p.get("national_id", "") for p in appellants if p.get("national_id")
+            ])
+
+            if pdf_path:
+                await send_lavayeh_result(
+                    bot, user_id, pdf_path, total_cost,
+                    tracking_code=bill_no,
+                    national_ids=appellant_nat_ids,
+                    lavayeh_title=f"{case_type} — پرونده {file_no}",
+                    lavayeh_province=province,
+                    lavayeh_row_number=1,
+                    lavayeh_persons=appellants,
+                    skip_fee_calc=True,
+                    is_ezhharnameh=False,
+                    service_type="TAJDID_NAZAR")
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"✅ [TN] ثبت {case_type} کاربر {user_id} موفق."
+                    f" کد: {bill_no} — هزینه: {total_cost:,} ریال"
+                )
+            else:
+                # اگر چاپ ناموفق بود، دست‌کم فاکتور رو با اطلاعات موجود بفرست
+                await bot.send_message(
+                    user_id,
+                    f"💰 *هزینه دادرسی: {total_cost:,} ریال*\n\n"
+                    f"⚠️ چاپ نسخه پرونده با خطا مواجه شد؛ لطفاً با پشتیبانی تماس بگیرید."
+                )
+                try:
+                    from panel_sync import upsert_case_to_panel
+                    await upsert_case_to_panel(
+                        bale_user_id=user_id, full_name=str(user_id),
+                        service_type="TAJDID_NAZAR", status="FAILED",
+                        tracking_code=bill_no or None,
+                        document_category=case_type,
+                        fee=total_cost,
+                        error_details="ثبت در سامانه انجام شد اما چاپ PDF ناموفق بود",
+                        error_step="print_pdf",
+                    )
+                except Exception as panel_err:
+                    logging.warning(f"[TN] خطا در ثبت شکست پرونده در پنل: {panel_err}")
+
+            # ── بازگشت به فهرست ────────────────────────────────────
             await _click_goto_main(sana_page, bot, user_id)
 
             # ذخیره لاگ
