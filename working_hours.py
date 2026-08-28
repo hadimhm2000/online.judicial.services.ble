@@ -1,12 +1,12 @@
 """
-بررسی ساعت کاری ربات — بازه ۱۰ الی ۲۲ (ساعت ۱۰ صبح تا ۱۰ شب)
+بررسی ساعت کاری ربات — بازه ۱۴ الی ۲۲ (ساعت ۲ ظهر تا ۱۰ شب)
 تمام روز‌های هفته یکسان.
 """
 import datetime
 
 TEHRAN_TZ = datetime.timezone(datetime.timedelta(hours=3, minutes=30))
 
-START_HOUR = 10
+START_HOUR = 14
 END_HOUR = 22
 
 
