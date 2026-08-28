@@ -76,6 +76,17 @@ main_menu_kb = ReplyKeyboardMarkup(
         [KeyboardButton(text="🔙 بازگشت به منوی اصلی")]
     ], resize_keyboard=True)
 
+# کیبورد منوی «چند مورد همزمان» — دقیقاً مثل main_menu_kb + گزینه‌ی چهارم
+# برای استعلام دسته‌جمعی از طریق فایل اکسل (برای موارد بیش از ۵ مورد)
+cart_main_menu_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="1️⃣ استعلام لوایح، اظهارنامه، دادخواست و ...")],
+        [KeyboardButton(text="2️⃣ استعلام براساس شماره تماس")],
+        [KeyboardButton(text="3️⃣ استعلام براساس کدملی")],
+        [KeyboardButton(text="4️⃣ استعلام دسته‌جمعی (فایل اکسل)")],
+        [KeyboardButton(text="🔙 بازگشت به منوی اصلی")]
+    ], resize_keyboard=True)
+
 doc_category_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="لایحه"), KeyboardButton(text="اظهارنامه")],
@@ -94,6 +105,7 @@ attachments_kb = ReplyKeyboardMarkup(
 cart_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="➕ ثبت استعلام جدید (افزودن به سبد)")],
+        [KeyboardButton(text="📊 استعلام دسته‌جمعی (فایل اکسل)")],
         [KeyboardButton(text="🛒 مشاهده سبد خرید و تسویه حساب")],
         [KeyboardButton(text="🧹 خالی کردن سبد استعلام")]
     ], resize_keyboard=True)
@@ -129,6 +141,7 @@ SUB_MENUS = {
 
 confirm_single_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="✅ تایید و دریافت فاکتور پرداخت"), KeyboardButton(text="❌ انصراف و اصلاح اطلاعات")]], resize_keyboard=True)
 confirm_cart_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="✅ افزودن به سبد خرید"), KeyboardButton(text="❌ انصراف و اصلاح اطلاعات")]], resize_keyboard=True)
+bulk_inquiry_confirm_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="✅ تایید و پرداخت"), KeyboardButton(text="❌ انصراف")]], resize_keyboard=True)
 payment_cancel_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ انصراف")]], resize_keyboard=True)
 admin_login_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="✅ ورودم تکمیل شد")]], resize_keyboard=True)
 
