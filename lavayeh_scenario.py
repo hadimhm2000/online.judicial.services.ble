@@ -221,7 +221,11 @@ async def process_lavayeh_task(data: dict, bot: Bot):
             await _click_menu_item(sana_page, "ارایه و پیگیری لایحه", bot, user_id)
             await resilient_sleep(sana_page, 5, bot, user_id)
 
-            search_kw, row_idx = TITLE_SEARCH_MAP.get(title, ("دفا", 0))
+            # باگ رفع شد: هنگام انتخاب «سایر عناوین» باید مانند «لایحه دفاعیه»
+            # در سامانه جستجو/ثبت شود (system_title)، نه با کلمه «سایر» که در
+            # لیست سامانه ردیف نادرستی را انتخاب می‌کرد. از system_title
+            # استفاده می‌شود، نه از title خام کاربر.
+            search_kw, row_idx = TITLE_SEARCH_MAP.get(system_title, ("دفا", 0))
             await _select_bill_type(sana_page, search_kw, row_idx, bot, user_id)
             await resilient_sleep(sana_page, 3, bot, user_id)
 
@@ -653,13 +657,16 @@ async def process_lavayeh_task(data: dict, bot: Bot):
             from lavayeh_handlers import send_lavayeh_result, send_bulk_item_result
             national_ids = ", ".join([p.get("national_id", "") for p in persons if p.get("national_id")])
             # ── ارسال نتیجه به همراه اطلاعات لازم برای مرحله امضا ──────
-            # نکته مهم: باید فقط «کد رهگیری» خام (tracking_code) به مرحله امضا
-            # برود، نه رشته ترکیبی — چون همین مقدار بعداً عیناً در فیلد
-            # #billNo برای استعلام لایحه تایپ می‌شود. اطلاع از «کد لایحه» فقط
-            # برای مدیر لاگ می‌شود، نه برای مرحله امضا.
+            # باگ رفع شد: قبلاً «شماره پرونده» خام (tracking_code) به مرحله
+            # امضا فرستاده می‌شد و همین مقدار در فیلد #billNo (ناوبری امضا)
+            # تایپ می‌شد؛ اما #billNo باید «کد رهگیری» واقعی‌ای باشد که
+            # سامانه پس از ثبت موفق لایحه تولید می‌کند (lavayeh_bill_no)، نه
+            # شماره پرونده‌ای که کاربر ابتدا وارد کرده بود. اکنون در صورت
+            # وجود lavayeh_bill_no، همان به مرحله امضا فرستاده می‌شود.
             # ── bulk vs single: انتخاب تابع مناسب ارسال نتیجه ──────
             is_bulk = data.get("_is_bulk", False)
             batch_tracking_code = data.get("batch_tracking_code", "")
+            sign_tracking_code = lavayeh_bill_no or tracking_code
 
             if is_bulk and batch_tracking_code:
                 # فلوی دسته‌جمعی: بدون فاکتور، اضافه به signable_items
@@ -674,9 +681,11 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                     lavayeh_bill_no=lavayeh_bill_no or "")
             else:
                 # فلوی تکی: فاکتور + امضای انفرادی
+                # نکته: sign_tracking_code (=lavayeh_bill_no در صورت وجود) به
+                # مرحله امضا می‌رود تا در #billNo مقدار درست تایپ شود.
                 await send_lavayeh_result(
                     bot, user_id, pdf_path, court_total,
-                    tracking_code=tracking_code,
+                    tracking_code=sign_tracking_code,
                     national_ids=national_ids,
                     lavayeh_title=title,
                     lavayeh_province=province,
@@ -1073,7 +1082,12 @@ async def _select_province(page, province: str, bot: Bot, user_id: int):
         try:
             await search_input.wait_for(state="visible", timeout=3000)
             await search_input.fill("")
-            await search_input.type(province.replace("ی", "ی").replace("ک", "ک")[:10], delay=100)
+            # باگ رفع شد: replace قبلی روی حروف یکسان انجام می‌شد (بدون اثر) و
+            # حروف عربی «ي/ك» که ممکن است کاربر تایپ کند به معادل فارسی
+            # «ی/ک» تبدیل نمی‌شدند؛ همین باعث می‌شد جستجوی برخی استان‌ها
+            # (مثلاً «آذربایجان شرقی») در سامانه با شکست مواجه شود.
+            normalized_province = province.replace("ي", "ی").replace("ك", "ک")
+            await search_input.type(normalized_province[:10], delay=100)
             await asyncio.sleep(2)
             await page.evaluate('''(prov) => {
                 const items = Array.from(document.querySelectorAll('.ui-select-choices-row'));

@@ -106,7 +106,9 @@ async def process_lavayeh_task(data: dict, bot: Bot):
             await _click_menu_item(sana_page, "ارایه و پیگیری لایحه", bot, user_id)
             await resilient_sleep(sana_page, 5, bot, user_id)
 
-            search_kw, row_idx = TITLE_SEARCH_MAP.get(title, ("دفا", 0))
+            # باگ رفع شد: استفاده از system_title به‌جای title خام تا انتخاب
+            # «سایر عناوین» مثل «لایحه دفاعیه» در سامانه ثبت شود.
+            search_kw, row_idx = TITLE_SEARCH_MAP.get(system_title, ("دفا", 0))
             await _select_bill_type(sana_page, search_kw, row_idx, bot, user_id)
             await resilient_sleep(sana_page, 3, bot, user_id)
 

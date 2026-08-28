@@ -25,6 +25,7 @@ bulk_inquiry_excel.py
     need_attachments / fee / total_attachments).
 """
 import logging
+import re
 import openpyxl
 
 from config import FEES, get_fee
@@ -99,10 +100,23 @@ def to_en_digits(s) -> str:
     return s.translate(table).replace(" ", "").replace("‌", "").strip()
 
 
+def extract_digits(raw) -> str:
+    """استخراج فقط ارقام از مقدار سلول — هر حرف/خط‌تیره/فاصله (مثل پیشوند
+    اجباری T/M/N که در راهنما خواسته‌ایم) نادیده گرفته می‌شود.
+
+    این تابع دلیل اصلی رفع باگ «کدرهگیری/موبایل به عدد تبدیل و رقم آخر یا
+    صفر ابتدایی گم می‌شود» است: چون کاربر دیگر عدد خالص در سلول تایپ
+    نمی‌کند (بلکه چیزی مثل T1405220948201280 یا M09123456789)، هیچ
+    اپلیکیشن اکسل/گوگل‌شیتی (حتی پیش‌نمایش‌های محدود) این را به‌عنوان عدد
+    تشخیص نمی‌دهد و همیشه دقیقاً همان‌طور که تایپ شده ذخیره می‌ماند."""
+    s = to_en_digits(raw)
+    return re.sub(r"\D", "", s)
+
+
 def _fix_leading_zero(value: str, expected_len: int) -> str:
-    """اگر با وجود فرمت متن، اکسل/گوگل‌شیت عدد را کوتاه‌تر از طول واقعی
-    ذخیره کرده باشد (صفر ابتدایی حذف‌شده)، دوباره با صفر به طول موردنظر
-    می‌رساند. فقط برای موبایل/کدملی — نه کدرهگیری."""
+    """اگر با وجود همه‌ی این تدابیر باز هم صفر ابتدایی افتاده باشد (مثلاً
+    فایل قدیمی بدون پیشوند حرفی)، دوباره با صفر به طول موردنظر می‌رساند.
+    فقط برای موبایل/کدملی — نه کدرهگیری."""
     if value and value.isdigit() and len(value) < expected_len:
         return value.zfill(expected_len)
     return value
@@ -144,11 +158,11 @@ def parse_bulk_inquiry_excel(filepath: str):
             continue
         row = {
             "row_index": r - 1,
-            "tracking_code": to_en_digits(_cell(ws, "A", r)),
+            "tracking_code": extract_digits(_cell(ws, "A", r)),
             "need_attachments_raw": _cell(ws, "B", r),
             "doc_category_selected": _cell(ws, "C", r),
-            "phone": _fix_leading_zero(to_en_digits(_cell(ws, "D", r)), 11),
-            "national_id": _fix_leading_zero(to_en_digits(_cell(ws, "E", r)), 10),
+            "phone": _fix_leading_zero(extract_digits(_cell(ws, "D", r)), 11),
+            "national_id": _fix_leading_zero(extract_digits(_cell(ws, "E", r)), 10),
         }
         rows.append(row)
     return rows
@@ -175,8 +189,8 @@ def build_bulk_inquiry_items(filepath: str):
                     "row_index": row_idx, "field": "کدرهگیری",
                     "error": f"کدرهگیری «{tracking_code}» نامعتبر است "
                              f"(باید دقیقاً {TRACKING_CODE_LENGTH} رقم و در بازه‌ی مجاز باشد؛ "
-                             f"اگر ستون به‌صورت عدد وارد شده، ابتدا فرمت آن را روی «متن/Plain text» "
-                             f"بگذارید و دوباره تایپ کنید)",
+                             f"اگر ستون به‌صورت عدد نمایش داده می‌شود، حتماً قبل از خودِ کد یک حرف "
+                             f"بگذارید، مثلاً T1405220948201280)",
                 })
             else:
                 need_att_raw = (row.get("need_attachments_raw") or "").strip()
