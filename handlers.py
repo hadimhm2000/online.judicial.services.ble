@@ -32,7 +32,8 @@ from api_direct import (
     InvalidTrackingCodeError as FastInvalidTrackingCodeError)
 from keyboards import (
     restart_kb, accept_rules_kb, flow_type_kb, get_flow_type_kb, get_main_menu_kb, main_menu_kb, doc_category_kb,
-    attachments_kb, cart_kb, pay_kb, confirm_single_kb, confirm_cart_kb,
+    attachments_kb, cart_kb, pay_kb, confirm_single_kb, confirm_cart_kb, bulk_inquiry_confirm_kb,
+    cart_main_menu_kb,
     admin_login_kb, SUB_MENUS, create_submenu_kb, back_only_kb, new_lavayeh_request_kb,
     payment_cancel_kb, disrupted_retry_kb, test_mode_doc_type_kb, test_mode_section_kb,
     test_mode_att_title_kb_first, test_mode_att_title_kb, test_mode_att_more_kb,
@@ -873,7 +874,12 @@ async def process_flow_type(message: types.Message, state: FSMContext):
         await state.set_state(Form.main_menu)
     elif "چند مورد همزمان" in message.text or "سبد خرید" in message.text:
         await state.update_data(flow_type="cart", cart=[], full_name=message.from_user.full_name)
-        await message.answer("📦 *حالت استعلام چند موردی فعال شد.*\nلطفاً نوع استعلام اول خود را انتخاب نمایید:", reply_markup=main_menu_kb)
+        await message.answer(
+            "📦 *حالت استعلام چند موردی فعال شد.*\n"
+            "لطفاً نوع استعلام اول خود را انتخاب نمایید:\n\n"
+            "💡 اگر تعداد استعلام‌های شما بیش از ۵ مورد است، به‌جای وارد کردن "
+            "تک‌به‌تک، گزینه‌ی «4️⃣ استعلام دسته‌جمعی (فایل اکسل)» را انتخاب کنید.",
+            reply_markup=cart_main_menu_kb)
         await state.set_state(Form.main_menu)
     elif "ثبت لایحه" in message.text:
         from lavayeh_handlers import lavayeh_entry
@@ -973,6 +979,10 @@ async def process_main_menu(message: types.Message, state: FSMContext):
     elif "🧹 خالی کردن سبد" in message.text:
         await state.update_data(cart=[])
         await message.answer("🧹 سبد استعلام‌های شما خالی شد.", reply_markup=main_menu_kb)
+        return
+        
+    elif "📊 استعلام دسته‌جمعی" in message.text:
+        await _bulk_inquiry_start(message, state)
         return
         
     elif "🛒 مشاهده سبد خرید" in message.text:
@@ -1092,6 +1102,8 @@ async def process_main_menu(message: types.Message, state: FSMContext):
     elif "3️⃣" in message.text:
         await message.answer("👤 لطفاً کد ملی مورد نظر را ارسال فرمایید:\n(یک عدد ۱۰ رقمی)", reply_markup=back_only_kb)
         await state.set_state(Form.waiting_for_national_id)
+    elif "4️⃣" in message.text or "استعلام دسته‌جمعی" in message.text:
+        await _bulk_inquiry_start(message, state)
 
 @router.message(Form.waiting_for_tracking_code)
 async def process_tracking_code(message: types.Message, state: FSMContext):
@@ -1995,3 +2007,235 @@ async def _test_mode_send_attachments_task(message: types.Message, state: FSMCon
 
     await runtime_state.job_queue.put(job_data)
     await state.clear()
+
+
+# ══════════════════════════════════════════════════════════════════
+# بخش استعلام دسته‌جمعی (فایل اکسل)
+# ══════════════════════════════════════════════════════════════════
+
+async def _bulk_inquiry_start(message: types.Message, state: FSMContext):
+    """شروع فرآیند استعلام دسته‌جمعی — ارسال نمونه اکسل."""
+    sample_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "templates", "sample_bulk_inquiry.xlsx"
+    )
+    if os.path.exists(sample_path):
+        try:
+            from bale_file_sender import send_document_direct
+            await send_document_direct(message.chat.id, sample_path)
+        except Exception as e:
+            logger.warning(f"[BULK-INQ] خطا در ارسال فایل نمونه: {e}")
+
+    await message.answer(
+        "📊 *استعلام دسته‌جمعی از طریق فایل اکسل*\n\n"
+        "💡 این گزینه مخصوص زمانی است که *بیش از ۵ استعلام* هم‌زمان دارید.\n\n"
+        "📎 همین الان یک *فایل اکسل نمونه* برای شما ارسال شد.\n\n"
+        "📋 *راهنما:*\n"
+        "۱. همان فایل ارسال‌شده را دانلود و تکمیل کنید (شیت «راهنما» را هم ببینید)\n"
+        "۲. در هر ردیف فقط همان ستونی را که لازم دارید پر کنید:\n"
+        "   • کدرهگیری (۱۶ رقم)\n"
+        "   • شماره موبایل (۱۱ رقم، با 09)\n"
+        "   • کدملی (۱۰ رقم — صفر ابتدایی حفظ می‌شود)\n"
+        "۳. برای کدرهگیری با منضمات، «دریافت پیوست‌ها؟» را بله و «نوع سند» "
+        "را حتماً از لیست کشویی انتخاب کنید (برای محاسبه‌ی دقیق تعداد برگ)\n"
+        "۴. ردیف نمونه‌ی زرد رنگ را حذف کنید\n\n"
+        "✅ سپس همین فایل تکمیل‌شده را اینجا ارسال کنید:",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    await state.set_state(Form.bulk_inquiry_file_upload)
+
+
+@router.message(Form.bulk_inquiry_file_upload)
+async def bulk_inquiry_file_handler(message: types.Message, state: FSMContext, bot: Bot):
+    """دریافت و پردازش فایل اکسل استعلام دسته‌جمعی."""
+    from bulk_inquiry_excel import (
+        build_bulk_inquiry_items, enrich_bulk_inquiry_items, build_invoice_text
+    )
+
+    if message.text and message.text == "🔙 بازگشت":
+        await message.answer("بازگشت به منو.", reply_markup=cart_kb)
+        await state.set_state(Form.main_menu)
+        return
+
+    if not message.document:
+        await message.answer("⚠️ لطفاً فایل اکسل (.xlsx) را ارسال فرمایید.")
+        return
+
+    doc = message.document
+    if not (doc.file_name and doc.file_name.lower().endswith(('.xlsx', '.xls'))):
+        await message.answer("⚠️ لطفاً فقط فایل با پسوند اکسل (.xlsx) ارسال فرمایید.")
+        return
+
+    await message.answer("⏳ در حال خواندن فایل اکسل...", reply_markup=ReplyKeyboardRemove())
+
+    import tempfile
+    tmp_dir = tempfile.mkdtemp()
+    file_path = os.path.join(tmp_dir, doc.file_name or "bulk_inquiry.xlsx")
+    try:
+        file_info = await bot.get_file(doc.file_id)
+        await bot.download_file(file_info.file_path, file_path)
+    except Exception as e:
+        await message.answer(f"⚠️ خطا در دانلود فایل: {e}", reply_markup=cart_kb)
+        await state.set_state(Form.main_menu)
+        return
+
+    try:
+        parsed = build_bulk_inquiry_items(file_path)
+    except Exception as e:
+        logger.error(f"[BULK-INQ] خطا در خواندن فایل اکسل: {e}", exc_info=True)
+        await message.answer(f"⚠️ خطا در خواندن فایل اکسل: {e}", reply_markup=cart_kb)
+        await state.set_state(Form.main_menu)
+        return
+
+    valid_items = parsed["valid_items"]
+    invalid_cells = parsed["invalid_cells"]
+
+    if not valid_items:
+        error_msg = "⚠️ هیچ استعلام معتبری در فایل یافت نشد."
+        if invalid_cells:
+            error_msg += "\n\n📋 *خطاهای یافت‌شده:*\n"
+            for c in invalid_cells[:15]:
+                error_msg += f"  • ردیف {c['row_index']} ({c['field']}): {c['error']}\n"
+        await message.answer(error_msg, reply_markup=cart_kb)
+        await state.set_state(Form.main_menu)
+        return
+
+    # ── استعلام تعداد منضمات (فقط برای مواردی که واقعاً بله زده‌اند) ──
+    n_attachment_checks = sum(
+        1 for it in valid_items if it["kind"] == "tracking" and it["need_attachments"]
+    )
+    if n_attachment_checks:
+        await message.answer(
+            f"⏳ در حال استعلام تعداد منضمات {n_attachment_checks} کدرهگیری از سامانه...\n"
+            f"لطفاً صبور باشید."
+        )
+
+    cart_items, failed_items = await enrich_bulk_inquiry_items(
+        valid_items, user_id=message.from_user.id, bot=bot
+    )
+
+    if not cart_items:
+        await message.answer(
+            "⚠️ هیچ‌کدام از موارد قابل استعلام نبودند. لطفاً فایل را اصلاح و دوباره ارسال کنید.",
+            reply_markup=cart_kb)
+        await state.set_state(Form.main_menu)
+        return
+
+    invoice_text, total_sum = build_invoice_text(cart_items, invalid_cells, failed_items)
+
+    # نکته مهم: کلیدهای این آیتم‌ها (query_type/tracking_code/...) دقیقاً
+    # هم‌ساختار سبد خرید موجود است — successful_payment_handler و
+    # _process_pay_done مستقیماً از همین ساختار می‌خوانند. تغییر نام کلیدها
+    # باعث KeyError در لحظه‌ی پرداخت واقعی می‌شود.
+    await state.update_data(
+        bulk_inquiry_items=cart_items,
+        bulk_inquiry_total=total_sum,
+    )
+
+    await message.answer(invoice_text, reply_markup=bulk_inquiry_confirm_kb)
+    await state.set_state(Form.bulk_inquiry_confirm)
+
+
+@router.message(Form.bulk_inquiry_confirm)
+async def bulk_inquiry_confirm_handler(message: types.Message, state: FSMContext, bot: Bot):
+    """تایید یا انصراف از فاکتور استعلام دسته‌جمعی."""
+    data = await state.get_data()
+    items = data.get("bulk_inquiry_items", [])
+    total_sum = data.get("bulk_inquiry_total", 0)
+
+    if not message.text:
+        return
+
+    if "❌ انصراف" in message.text:
+        await state.update_data(bulk_inquiry_items=None, bulk_inquiry_total=None)
+        await message.answer("❌ انصراف از استعلام دسته‌جمعی.", reply_markup=cart_kb)
+        await state.set_state(Form.main_menu)
+        return
+
+    if "✅ تایید" not in message.text:
+        return
+
+    if not items:
+        await message.answer("⚠️ موردی برای پردازش وجود ندارد.", reply_markup=cart_kb)
+        await state.set_state(Form.main_menu)
+        return
+
+    # ── بررسی معافیت از پرداخت (دقیقاً هم‌ساختار فلوی سبد خرید معمولی) ──
+    if await is_exempt_user(message.from_user.id):
+        queue_position = runtime_state.job_queue.qsize()
+        queue_note = (
+            f"\n📊 موقعیت شما در صف: *{queue_position + 1}*"
+            if queue_position > 0 else "\n▶️ پردازش بلافاصله آغاز می‌شود."
+        )
+        await message.answer(
+            f"✅ *معافیت از پرداخت*\n\n"
+            f"شما در لیست کاربران معاف هستید."
+            f"\nتعداد {len(items)} استعلام در صف پردازش قرار گرفت.{queue_note}",
+            reply_markup=restart_kb)
+        for item in items:
+            await log_event(
+                "پرداخت", item['query_type'], message.from_user.full_name, message.from_user.id,
+                tracking_code=item['tracking_code'],
+                doc_name=(f"{item.get('doc_category')} - {item.get('doc_subcategory')}"
+                          if item.get('doc_subcategory') else item.get('doc_category')),
+                payment_status="معاف از پرداخت")
+            await runtime_state.job_queue.put({
+                'user_id': message.from_user.id,
+                'query_type': item['query_type'],
+                'tracking_code': item['tracking_code'],
+                'doc_category': item.get('doc_category'),
+                'doc_subcategory': item.get('doc_subcategory'),
+                'doc_type': (f"{item.get('doc_category')} - {item.get('doc_subcategory')}"
+                             if item.get('doc_subcategory') else item.get('doc_category')),
+                'need_attachments': item.get('need_attachments', False),
+                'full_name': message.from_user.full_name,
+                'payment_fee': item.get('fee', 0),
+            })
+        await state.clear()
+        return
+
+    # ═══ ارسال فاکتور بله با sendInvoice API — دقیقاً مطابق فلوی سبد خرید ═══
+    total_rial = total_sum * 10
+    try:
+        invoice_payload = _json.dumps({"type": "bulk_inquiry", "uid": message.from_user.id})
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+            invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
+            invoice_data = {
+                "chat_id": message.from_user.id,
+                "title": f"فاکتور استعلام دسته‌جمعی ({len(items)} مورد)",
+                "description": f"مجموع: {total_sum:,} تومان ({total_rial:,} ریال)",
+                "payload": invoice_payload,
+                "provider_token": BALE_WALLET_TOKEN,
+                "currency": "IRR",
+                "prices": [{"label": f"{len(items)} استعلام دسته‌جمعی", "amount": total_rial}],
+            }
+            logging.info(f"[BULK-INQ-PAY] sendInvoice chat_id={message.from_user.id}, amount={total_rial:,}")
+            async with session.post(invoice_url, json=invoice_data) as resp:
+                result = await resp.json()
+                if not result.get("ok"):
+                    raise Exception(result.get("description", "خطا در ارسال فاکتور"))
+    except Exception as e:
+        logging.error(f"[BULK-INQ-PAY] خطا: {e}", exc_info=True)
+        await message.answer("⚠️ خطا در ساخت فاکتور. لطفاً کمی بعد دوباره تلاش کنید.", reply_markup=cart_kb)
+        await state.set_state(Form.main_menu)
+        return
+
+    warning = ""
+    if message.from_user.id == ADMIN_ID:
+        warning = (
+            "\n\n⚠️ _توجه: اگر کیف پول خودتان را شارژ کرده‌اید و اکنون می‌خواهید "
+            "از همان کیف پول پرداخت کنید، پرداخت انجام نخواهد شد._\n\n"
+        )
+    await message.answer(
+        f"⏳ فاکتور ارسال شد."
+        f"{warning}"
+        f"پس از پرداخت موفق، {len(items)} استعلام به‌صورت خودکار پردازش می‌شوند.",
+        reply_markup=pay_kb)
+    await state.set_state(Form.waiting_for_payment_receipt)
+
+    # ذخیره‌ی سبد در همان کلید 'cart' — تا successful_payment_handler
+    # و pay_done بدون هیچ تغییری این آیتم‌ها را پردازش کنند.
+    await state.update_data(
+        cart=items,
+        total_payment_sum=total_sum,
+    )

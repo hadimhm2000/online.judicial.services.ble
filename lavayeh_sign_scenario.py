@@ -81,9 +81,31 @@ async def navigate_to_sign_page(
         await resilient_sleep(sana_page, 5, bot, user_id)
 
         # ── ۳. انتخاب radio #rdbGetPetition (value=2) ───────────────────
+        # نکته (رفع باگ): همان الگوی اثبات‌شده در api_direct.py._do_page_check
+        # برای همین فیلد — قبل از کلیک منتظر می‌مانیم رادیو واقعاً visible
+        # باشد؛ صبر ثابت ۱ ثانیه (روش قبلی) گاهی زودتر از رندر Angular اجرا
+        # می‌شد و همین باعث خالی ماندن #billNo در ادامه بود.
+        try:
+            await sana_page.wait_for_selector(
+                '#rdbGetPetition', state='visible', timeout=10000
+            )
+        except Exception:
+            logging.warning("[SIGN] رادیوباتن #rdbGetPetition ظاهر نشد (timeout ۱۰s)")
+
         await sana_page.evaluate('''() => {
             const radio = document.querySelector('#rdbGetPetition');
-            if (radio) { radio.click(); return true; }
+            if (radio) {
+                radio.checked = true;
+                radio.click();
+                // فعال‌سازی digest AngularJS برای به‌روزرسانی ng-model
+                if (window.angular) {
+                    try {
+                        const scope = angular.element(radio).scope();
+                        if (scope) scope.$apply();
+                    } catch(e) {}
+                }
+                return true;
+            }
             // fallback: radio با value=2
             const radios = Array.from(document.querySelectorAll('input[type="radio"][name*="rdbSelectPetitionType"]'));
             const r = radios.find(r => r.value === "2");
@@ -93,6 +115,13 @@ async def navigate_to_sign_page(
         await asyncio.sleep(1)
 
         # ── ۴. وارد کردن کد رهگیری در #billNo ───────────────────────────
+        # همان‌طور که در api_direct.py._do_page_check انجام می‌شود، قبل از
+        # fill حتماً منتظر ظاهر/visible شدن واقعی فیلد می‌مانیم.
+        try:
+            await sana_page.wait_for_selector('#billNo', state='visible', timeout=15000)
+        except Exception:
+            logging.warning("[SIGN] فیلد #billNo پس از انتخاب رادیو ظاهر نشد (timeout ۱۵s)")
+
         await _fill_input(sana_page, "#billNo", tracking_code)
         await resilient_sleep(sana_page, 1, bot, user_id)
 
@@ -468,15 +497,40 @@ async def submit_sign_code_for_person(
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def _fill_input(page, selector: str, value: str):
-    """پر کردن فیلد ورودی"""
+    """پر کردن فیلد ورودی با پشتیبانی از AngularJS ng-model."""
     try:
-        elem = page.locator(selector).first
-        await elem.click()
-        await elem.fill("")
-        await elem.fill(value)
-        await elem.blur()
+        # timeout کوتاه: اگر فیلد به هر دلیلی actionable نبود (مثلاً هنوز
+        # visible نشده)، سریع به روش JS-force زیر سقوط می‌کنیم به‌جای
+        # صبر تا ۳۰ ثانیه‌ی پیش‌فرض Playwright
+        await page.fill(selector, value, timeout=5000)
     except Exception as e:
-        logging.warning(f"[SIGN] _fill_input({selector}) failed: {e}")
+        logging.info(f"[SIGN] page.fill({selector}) ناموفق ({e}) — استفاده از JS-force fallback")
+    await page.evaluate('''(args) => {
+        const inp = document.querySelector(args.selector);
+        if (!inp) return;
+        inp.value = args.value;
+        inp.focus();
+        inp.dispatchEvent(new Event("input", { bubbles: true }));
+        inp.dispatchEvent(new Event("change", { bubbles: true }));
+        try {
+            if (typeof angular !== "undefined") {
+                const scope = angular.element(inp).scope();
+                if (scope) {
+                    scope.$apply(() => {
+                        const key = inp.getAttribute("ng-model");
+                        if (key) {
+                            const parts = key.split(".");
+                            let obj = scope;
+                            for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
+                            obj[parts[parts.length - 1]] = args.value;
+                        }
+                    });
+                }
+                const ctrl = angular.element(inp).controller("ngModel");
+                if (ctrl) { ctrl.$setViewValue(args.value); ctrl.$render(); }
+            }
+        } catch(e) {}
+    }''', {"selector": selector, "value": value})
 
 
 async def _close_any_popup(page) -> bool:
