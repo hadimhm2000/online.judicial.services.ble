@@ -2573,12 +2573,17 @@ async def bulk_sign_select_callback(callback: CallbackQuery, bot: Bot):
     persons = target_item.get("persons", [])
     national_ids = ", ".join(target_item.get("national_ids", []))
     court_total = target_item.get("court_total", 0)
+    # باگ رفع شد: selected_tc همان «شماره پرونده» است که فقط برای شناسایی
+    # آیتم در لیست استفاده می‌شود؛ برای مرحله ناوبری امضا (#billNo) باید
+    # «کد رهگیری» واقعی سامانه (lavayeh_bill_no) فرستاده شود، در غیر این
+    # صورت به‌عنوان فال‌بک از همان شماره پرونده استفاده می‌شود.
+    sign_tracking_code = target_item.get("lavayeh_bill_no") or selected_tc
     
     try:
         await _go_to_sign_flow_after_prepaid(
             bot, user_id, is_ezhhar,
             title, province, row_number, persons,
-            selected_tc, national_ids, court_total
+            sign_tracking_code, national_ids, court_total
         )
     except Exception as e:
         logging.error(f"[BULK-SIGN] خطا در شروع امضا: {e}", exc_info=True)
