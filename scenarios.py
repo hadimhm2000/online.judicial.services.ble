@@ -714,6 +714,75 @@ async def _process_test_attachments(data: dict, bot: Bot):
                 pass
 
 
+async def _bulk_progress_note_result(bot: Bot, user_id: int, tracking_code: str, doc_name: str, is_invalid: bool) -> bool:
+    """اگر این استعلام بخشی از یک دستهٔ چندموردی (کارت خرید یا فایل اکسل) باشد،
+    نتیجه را در پیشرفت دسته ثبت می‌کند و در صورت اتمام دسته، گزارش نهاییِ
+    کدرهگیری‌های نامعتبر را (در صورت وجود) برای کاربر ارسال می‌کند و فرصت
+    ۳۰ دقیقه‌ای اصلاح رایگان را فعال می‌کند.
+    خروجی True یعنی این آیتم بخشی از یک دسته بود و توسط این تابع مدیریت شد؛
+    در این حالت نباید هیچ پیام تک‌موردی دیگری برای همین خطا فرستاده شود."""
+    progress = runtime_state.bulk_inquiry_progress.get(user_id)
+    if not progress:
+        return False
+    if is_invalid:
+        progress["invalid"].append({"tracking_code": tracking_code, "doc_name": doc_name})
+    progress["remaining"] -= 1
+    if progress["remaining"] <= 0:
+        runtime_state.bulk_inquiry_progress.pop(user_id, None)
+        invalid_list = progress.get("invalid", [])
+        if invalid_list:
+            import datetime as _dt
+            from states import Form
+            lines = "\n".join(f"• `{it['tracking_code']}` ({it['doc_name']})" for it in invalid_list)
+            await bot.send_message(
+                user_id,
+                f"⚠️ *استعلام دسته‌جمعی شما به پایان رسید.*\n\n"
+                f"کدرهگیری‌های زیر نامعتبر بودند:\n{lines}\n\n"
+                f"⏰ شما *{runtime_state.INVALID_TRACKING_RETRY_MINUTES} دقیقه* فرصت دارید تا این موارد را اصلاح "
+                f"و بدون پرداخت هزینه‌ی مجدد دوباره ارسال نمایید.\n\n"
+                f"لطفاً کدرهگیری صحیح را ارسال نمایید:"
+            )
+            runtime_state.invalid_tracking_retry[user_id] = {
+                "expires_at": _dt.datetime.now() + _dt.timedelta(minutes=runtime_state.INVALID_TRACKING_RETRY_MINUTES),
+                "remaining": len(invalid_list),
+                "template_job": progress.get("template_job", {}),
+            }
+            try:
+                user_state = runtime_state.dp.fsm.resolve_context(bot, user_id, user_id)
+                await user_state.set_state(Form.waiting_for_corrected_tracking_code)
+            except Exception as e:
+                logging.error(f"[BULK-INQUIRY] خطا در تنظیم state اصلاح: {e}")
+    return True
+
+
+async def _handle_invalid_tracking_code(bot: Bot, user_id: int, data: dict, tracking_code: str, doc_name: str):
+    """مدیریت خطای «کد رهگیری نامعتبر است» که سامانه نشان می‌دهد —
+    هم برای استعلام تکی و هم برای هر آیتم از استعلام دسته‌جمعی (کارت/اکسل)."""
+    was_batch_item = await _bulk_progress_note_result(bot, user_id, tracking_code, doc_name, is_invalid=True)
+    if was_batch_item:
+        return
+    # ── حالت تک‌موردی: بلافاصله به کاربر اطلاع بده و فرصت رایگان بده ──
+    import datetime as _dt
+    from states import Form
+    await bot.send_message(
+        user_id,
+        f"❌ کدرهگیری‌ای که وارد نموده‌اید اشتباه است.\n\n"
+        f"⏰ شما *{runtime_state.INVALID_TRACKING_RETRY_MINUTES} دقیقه* فرصت دارید تا بدون پرداخت هزینه‌ی مجدد، "
+        f"کدرهگیری صحیح را ارسال و دوباره استعلام بگیرید.\n\n"
+        f"لطفاً کدرهگیری جدید را ارسال نمایید:"
+    )
+    runtime_state.invalid_tracking_retry[user_id] = {
+        "expires_at": _dt.datetime.now() + _dt.timedelta(minutes=runtime_state.INVALID_TRACKING_RETRY_MINUTES),
+        "remaining": 1,
+        "template_job": dict(data),
+    }
+    try:
+        user_state = runtime_state.dp.fsm.resolve_context(bot, user_id, user_id)
+        await user_state.set_state(Form.waiting_for_corrected_tracking_code)
+    except Exception as e:
+        logging.error(f"[INQUIRY] خطا در تنظیم state اصلاح کدرهگیری: {e}")
+
+
 async def process_task(data, bot: Bot):
     sana_page = runtime_state.sana_page
     browser_context = runtime_state.browser_context
@@ -1317,37 +1386,15 @@ async def process_task(data, bot: Bot):
                         await sana_page.locator('.sweet-alert.showSweetAlert button.confirm').click(timeout=5000)
                     except Exception:
                         pass
-                    # ── ثبت تلاش ناموفق و بررسی محدودیت (بدون ایمپورت handlers برای جلوگیری از circular) ──
-                    import datetime as _dt
-                    MAX_INQ = 2
-                    SAMANEH_ERR = "کد دفتر، مبلغ پرونده یا دسترسی تقویم مربوط به این شعبه و قاضی نیست."
-                    _now = _dt.datetime.now().isoformat()
-                    _info = runtime_state.inquiry_attempts.get(user_id, {"count": 0, "last_attempt": _now})
-                    _info["count"] += 1
-                    _info["last_attempt"] = _now
-                    runtime_state.inquiry_attempts[user_id] = _info
-                    attempts = _info["count"]
-                    if attempts >= MAX_INQ:
-                        await bot.send_message(
-                            user_id,
-                            f"❌ {SAMANEH_ERR}\n\n"
-                            f"⚠️ *تعداد دفعات تلاش شما به حداکثر ({MAX_INQ} بار) رسیده است.*\n\n"
-                            f"لطفاً کدرهگیری و نوع سند (لایحه، اظهارنامه، شکواییه و ...) را به‌دقت بررسی فرمایید و مجدداً از منوی اصلی شروع کنید."
-                        )
-                    else:
-                        await bot.send_message(
-                            user_id,
-                            f"❌ کدرهگیری یا نوع خدمت را اشتباه وارد نموده‌اید.\n"
-                            f"(تلاش {attempts} از {MAX_INQ})"
-                        )
                     # اطلاع به مدیر
                     try:
                         await bot.send_message(
                             ADMIN_ID,
-                            f"⚠️ [INQUIRY_FAIL] کاربر {user_id} — تلاش {attempts}/{MAX_INQ} — کد: `{tracking_code}` — نوع: {doc_name}"
+                            f"⚠️ [INQUIRY_FAIL] کاربر {user_id} — کدرهگیری نامعتبر — کد: `{tracking_code}` — نوع: {doc_name}"
                         )
                     except Exception:
                         pass
+                    await _handle_invalid_tracking_code(bot, user_id, data, tracking_code, doc_name)
                     return
 
                 if (
@@ -1381,6 +1428,7 @@ async def process_task(data, bot: Bot):
                     or await sana_page.locator('text="اطلاعاتی یافت نشد"').is_visible()
                 ):
                     await bot.send_message(user_id, f"❌ پرونده‌ای با کد `{tracking_code}` یافت نگردید.")
+                    await _bulk_progress_note_result(bot, user_id, tracking_code, doc_name, is_invalid=False)
                     return
 
                 # ── PRINT ─────────────────────────────────────────────────
@@ -1493,6 +1541,7 @@ async def process_task(data, bot: Bot):
                             except Exception as panel_err:
                                 logger.warning(f"خطا در ثبت استعلام: {panel_err}")
 
+                            await _bulk_progress_note_result(bot, user_id, tracking_code, doc_name, is_invalid=False)
                             return
 
                         await safe_click_by_text(sana_page, "منضمات", bot, user_id)
@@ -1693,6 +1742,7 @@ async def process_task(data, bot: Bot):
                                     except Exception:
                                         pass
                                 raise loop_err
+                    await _bulk_progress_note_result(bot, user_id, tracking_code, doc_name, is_invalid=False)
                     return
 
             break
