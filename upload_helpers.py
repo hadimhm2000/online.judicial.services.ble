@@ -928,10 +928,24 @@ async def click_save_doc_with_retry(
     prefix: str = "UPLOAD") -> bool:
     """کلیک روی «ثبت و ویرایش پیوست» (#btnSaveDoc) با تلاش مجدد."""
     for attempt in range(max_retries):
-        await page.evaluate('''() => {
+        click_info = await page.evaluate('''() => {
             const btn = document.querySelector('#btnSaveDoc');
-            if (btn && !btn.disabled) btn.click();
+            if (!btn) return {found: false};
+            if (btn.disabled) {
+                // تشخیصی: چرا دکمه غیرفعال است؟ فیلدهای invalid/خالی نزدیک فرم را گزارش بده
+                const invalids = Array.from(document.querySelectorAll('.ng-invalid, [required]'))
+                    .filter(el => el.offsetParent !== null)
+                    .map(el => el.id || el.name || el.tagName)
+                    .slice(0, 10);
+                return {found: true, disabled: true, invalids: invalids};
+            }
+            btn.click();
+            return {found: true, disabled: false, clicked: true};
         }''')
+        if not click_info.get("found"):
+            _log(prefix, "دکمه #btnSaveDoc در صفحه یافت نشد", 'warning')
+        elif click_info.get("disabled"):
+            _log(prefix, f"دکمه #btnSaveDoc غیرفعال است (کلیک انجام نشد) — فیلدهای مشکوک: {click_info.get('invalids')}", 'warning')
 
         await wait_for_loading_bar(page, timeout=LOADING_BAR_TIMEOUT, prefix=prefix)
 
@@ -2121,7 +2135,19 @@ async def _default_fill_other_attachment_form(page, doc_title: str, page_count: 
         }''')
         await asyncio.sleep(3)
     else:
-        _log("UPLOAD", f"حالت تک‌برگ ({page_count} فایل) — #txt001 و #incAttach0 اسکیپ شدند")
+        # باگ احتمالی: اگر سامانه فیلد #txt001 را حتی برای تک‌برگ نیز برای
+        # فعال‌شدن دکمه‌ی ذخیره لازم داشته باشد، رها کردن آن خالی باعث
+        # غیرفعال ماندن #btnSaveDoc می‌شود. به‌صورت احتیاطی مقدار «1» را
+        # هم برای تک‌برگ پر می‌کنیم (بدون کلیک #incAttach0 که مخصوص افزودن
+        # ردیف صفحه‌ی اضافه است و برای تک‌برگ لازم نیست).
+        await page.evaluate('''() => {
+            const inp = document.querySelector('#txt001');
+            if (inp) {
+                inp.value = "1";
+                inp.dispatchEvent(new Event("input", { bubbles: true }));
+            }
+        }''')
+        _log("UPLOAD", f"حالت تک‌برگ ({page_count} فایل) — #txt001='1' پر شد، #incAttach0 اسکیپ شد")
 
     return True
 
