@@ -100,6 +100,7 @@ async def process_check_task(data: dict, bot: Bot):
     check_text_html = data.get("check_text_html", "")
     is_bulk_check = data.get("_is_bulk_check", False)
     bulk_row_index = data.get("_bulk_row_index", 0)
+    batch_tracking_code = data.get("batch_tracking_code", "")
     _doc_category_suffix = f" (دسته‌جمعی — ردیف {bulk_row_index})" if is_bulk_check else ""
 
     has_lawyer = any(p.get("person_type") == "وکیل" for p in plaintiffs)
@@ -144,6 +145,11 @@ async def process_check_task(data: dict, bot: Bot):
             if not ok:
                 return
             await human_delay(3.0, 5.0)
+
+            # بررسی اولیهٔ نشست پیش از شروع پر کردن فرم — اگر همین حالا منقضی
+            # یا درگیر ورود همزمان باشد، بهتر است همین ابتدا مدیریت شود تا کل
+            # مراحل بعدی روی صفحهٔ نامعتبر اجرا نشوند.
+            await check_and_handle_expiry(sana_page, bot, user_id)
 
             # ── ۱. انتخاب مسیر بر اساس مبلغ ──────────────────────────────
             if is_high_amount:
@@ -615,6 +621,13 @@ async def process_check_task(data: dict, bot: Bot):
                 await safe_click_by_text(sana_page, "ثبت موقت", bot, user_id)
             await resilient_sleep(sana_page, 8, bot, user_id)
 
+            # بررسی ورود همزمان/انقضای نشست دقیقاً همین‌جا حیاتی است: اگر نشست
+            # درست همین لحظه منقضی شده باشد، bill_no زیر خالی/نامعتبر استخراج
+            # می‌شود و کل پرونده با کد بایگانی اشتباه ادامه پیدا می‌کند.
+            had_expiry_save = await check_and_handle_expiry(sana_page, bot, user_id)
+            if had_expiry_save:
+                await resilient_sleep(sana_page, 8, bot, user_id)
+
             # استخراج شماره بایگانی
             bill_no = await sana_page.evaluate('''() => {
                 const inp = document.querySelector('#txtBillNo');
@@ -688,18 +701,34 @@ async def process_check_task(data: dict, bot: Bot):
                     }''', tracking_no)
                     await asyncio.sleep(1)
 
-                    # کلیک ثبت و ویرایش پیوست
-                    clicked = await sana_page.evaluate('''() => {
-                        const btn = document.querySelector('#btnSaveDoc');
-                        if (btn && !btn.disabled) { btn.click(); return true; }
-                        return false;
-                    }''')
-                    if clicked:
-                        # صبر برای لودینگ و استعلام بانک مرکزی
+                    # کلیک «ثبت و ویرایش پیوست» → این کلیک است که استعلام از
+                    # بانک مرکزی را تریگر می‌کند و پاپ‌آپ موفقیت/خطا نشان می‌دهد.
+                    # ⚠️ اصلاحیه: نسخهٔ قبلی اگر پاپ‌آپ موفقیت‌آمیز نبود (یا اصلاً
+                    # ظاهر نشده بود) هیچ کاری نمی‌کرد — یعنی txtDeductionAmount،
+                    # کلیک نهایی ثبت، و آپلود تصاویر همگی بی‌صدا نادیده گرفته
+                    # می‌شدند و کد طوری ادامه می‌داد که انگار همه‌چیز موفق بوده.
+                    # طبق مشخصات کارفرما: با هر خطایی غیر از «ورود همزمان»، باید
+                    # دوباره استعلام (همین کلیک) تکرار شود.
+                    inquiry_ok = False
+                    for inquiry_attempt in range(4):
+                        clicked = await sana_page.evaluate('''() => {
+                            const btn = document.querySelector('#btnSaveDoc');
+                            if (btn && !btn.disabled) { btn.click(); return true; }
+                            return false;
+                        }''')
+                        if not clicked:
+                            await asyncio.sleep(2)
+                            continue
+
                         await wait_for_horizontal_loading_bar(sana_page, bot, user_id)
                         await resilient_sleep(sana_page, 10, bot, user_id)
 
-                        # بررسی موفقیت استعلام
+                        # اول از همه: آیا این خطای «ورود همزمان/انقضای نشست» است؟
+                        had_expiry = await check_and_handle_expiry(sana_page, bot, user_id)
+                        if had_expiry:
+                            await asyncio.sleep(3)
+                            continue  # بعد از لاگین مجدد، همین حلقه دوباره تلاش می‌کند
+
                         success_popup = await sana_page.evaluate('''() => {
                             const popup = document.querySelector('.sweet-alert.showSweetAlert');
                             if (!popup) return null;
@@ -708,34 +737,62 @@ async def process_check_task(data: dict, bot: Bot):
                         }''')
 
                         if success_popup and "موفق" in success_popup:
-                            logging.info(f"[CHECK] استعلام بانک مرکزی موفق")
+                            logging.info("[CHECK] استعلام بانک مرکزی موفق")
+                            inquiry_ok = True
                             # بستن پاپ‌آپ
                             await sana_page.evaluate('''() => {
                                 const btn = document.querySelector('.sweet-alert .confirm');
                                 if (btn) btn.click();
                             }''')
                             await asyncio.sleep(2)
+                            break
 
-                            # وارد کردن تعداد (عدر ۱) در فیلد Amount
-                            await sana_page.evaluate('''() => {
-                                const inp = document.querySelector('#txtDeductionAmount');
-                                if (inp && !inp.disabled) {
-                                    inp.value = "1";
-                                    inp.dispatchEvent(new Event("input", { bubbles: true }));
-                                    inp.dispatchEvent(new Event("change", { bubbles: true }));
-                                }
-                            }''')
-                            await asyncio.sleep(1)
+                        # پاپ‌آپ دیگری (خطای غیر از ورود همزمان) → طبق مشخصات، دوباره تلاش کن
+                        logging.warning(
+                            f"[CHECK] استعلام بانک مرکزی ناموفق (تلاش {inquiry_attempt+1}/4): {success_popup!r}"
+                        )
+                        # اگر پاپ‌آپ خطای دیگری (نه موفقیت) باز مانده، ببندش تا تلاش بعدی گیر نکند
+                        await sana_page.evaluate('''() => {
+                            const btn = document.querySelector('.sweet-alert .confirm, .sweet-alert .cancel');
+                            if (btn) btn.click();
+                        }''')
+                        await asyncio.sleep(2)
 
-                            # کلیک «ثبت و ویرایش پیوست»
-                            await sana_page.evaluate('''() => {
-                                const btn = document.querySelector('#btnSaveDoc');
-                                if (btn && !btn.disabled) btn.click();
-                            }''')
-                            await resilient_sleep(sana_page, 5, bot, user_id)
+                    if inquiry_ok:
+                        # وارد کردن تعداد (عدد ۱) در فیلد Amount
+                        await sana_page.evaluate('''() => {
+                            const inp = document.querySelector('#txtDeductionAmount');
+                            if (inp && !inp.disabled) {
+                                inp.value = "1";
+                                inp.dispatchEvent(new Event("input", { bubbles: true }));
+                                inp.dispatchEvent(new Event("change", { bubbles: true }));
+                            }
+                        }''')
+                        await asyncio.sleep(1)
 
-                            # آپلود تصاویر
-                            await _upload_check_images(sana_page, image_paths, bot, user_id)
+                        # کلیک «ثبت و ویرایش پیوست» (نهایی، با مقدار Amount پر‌شده)
+                        await sana_page.evaluate('''() => {
+                            const btn = document.querySelector('#btnSaveDoc');
+                            if (btn && !btn.disabled) btn.click();
+                        }''')
+                        await resilient_sleep(sana_page, 5, bot, user_id)
+
+                        # آپلود تصاویر
+                        await _upload_check_images(sana_page, image_paths, bot, user_id)
+                    else:
+                        # پس از ۴ تلاش هم استعلام موفق نشد — این پرونده نباید بی‌صدا
+                        # به‌عنوان موفق تلقی شود؛ مدیر باید مطلع شود و دستی رسیدگی کند.
+                        logging.error(f"[CHECK] استعلام بانک مرکزی پس از ۴ تلاش ناموفق ماند (user={user_id})")
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"❌ [CHECK] استعلام بانک مرکزی برای کاربر {user_id} پس از ۴ تلاش ناموفق ماند. "
+                            f"تصاویر چک آپلود نشدند — این پرونده را دستی بررسی کنید. کد بایگانی: `{bill_no}`"
+                        )
+                        await bot.send_message(
+                            user_id,
+                            "⚠️ استعلام بانک مرکزی برای تصاویر چک با مشکل مواجه شد. "
+                            "پیگیری با پشتیبانی ادامه خواهد یافت؛ لطفاً منتظر بمانید."
+                        )
 
                     # پاکسازی فایل‌های موقت
                     for p in image_paths:
@@ -779,31 +836,86 @@ async def process_check_task(data: dict, bot: Bot):
                 await asyncio.sleep(2)
 
             # کلیک «تایید اطلاعات»
-            clicked = await sana_page.evaluate('''() => {
-                const btn = document.querySelector('#btnCalculateCash') ||
-                              Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes("تایید اطلاعات"));
-                if (btn && !btn.disabled) { btn.click(); return true; }
-                return false;
-            }''')
-            if clicked:
-                await wait_for_horizontal_loading_bar(sana_page, bot, user_id)
-                await resilient_sleep(sana_page, 5, bot, user_id)
-
-                # تایید پاپ‌آپ
-                await sana_page.evaluate('''() => {
-                    const btns = Array.from(document.querySelectorAll('.sweet-alert button.confirm'));
-                    const t = btns.find(b => b.innerText.includes("تایید"));
-                    if (t) t.click();
+            # ⚠️ اصلاحیه: نسخهٔ قبلی بدون چک کردن متن پاپ‌آپ، کور کور دکمهٔ
+            # confirm را می‌زد. اگر همان لحظه پاپ‌آپ «ورود همزمان» یا خطای
+            # دیگری (نه تاییدیهٔ عادی) نمایش داده می‌شد، کد آن را هم به‌عنوان
+            # تایید می‌بست و بدون توجه به خطا به مرحلهٔ هزینه می‌رفت — دقیقاً
+            # طبق مشخصات: «اگر خطای دیگری داد دوباره تایید اطلاعات را انتخاب
+            # کن» و «اگر ورود همزمان بود، مدیر باید لاگین مجدد را انجام دهد».
+            confirm_ok = False
+            for confirm_attempt in range(4):
+                clicked = await sana_page.evaluate('''() => {
+                    const btn = document.querySelector('#btnCalculateCash') ||
+                                  Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes("تایید اطلاعات"));
+                    if (btn && !btn.disabled) { btn.click(); return true; }
+                    return false;
                 }''')
+                if not clicked:
+                    break  # دکمه اصلاً پیدا نشد — یعنی احتمالاً از قبل تایید شده
+
                 await wait_for_horizontal_loading_bar(sana_page, bot, user_id)
                 await resilient_sleep(sana_page, 5, bot, user_id)
 
-                # بستن پاپ‌آپ موفقیت
+                had_expiry = await check_and_handle_expiry(sana_page, bot, user_id)
+                if had_expiry:
+                    await asyncio.sleep(3)
+                    continue
+
+                popup_text = await sana_page.evaluate('''() => {
+                    const popup = document.querySelector('.sweet-alert.showSweetAlert');
+                    if (!popup) return null;
+                    const h2 = popup.querySelector('h2');
+                    const p = popup.querySelector('p');
+                    return ((h2 ? h2.innerText : '') + ' ' + (p ? p.innerText : '')).trim();
+                }''')
+
+                if not popup_text:
+                    # پاپ‌آپی نمایش داده نشد — یعنی مرحله بدون تاییدیهٔ جداگانه رد شده
+                    confirm_ok = True
+                    break
+
+                if "تایید" in popup_text or "تاييد" in popup_text:
+                    # پاپ‌آپ تاییدیهٔ «آیا اطلاعات مورد تایید است؟» → دکمهٔ تایید را بزن
+                    await sana_page.evaluate('''() => {
+                        const btns = Array.from(document.querySelectorAll('.sweet-alert button.confirm'));
+                        const t = btns.find(b => b.innerText.includes("تایید"));
+                        if (t) t.click();
+                    }''')
+                    await wait_for_horizontal_loading_bar(sana_page, bot, user_id)
+                    await resilient_sleep(sana_page, 5, bot, user_id)
+
+                    had_expiry2 = await check_and_handle_expiry(sana_page, bot, user_id)
+                    if had_expiry2:
+                        await asyncio.sleep(3)
+                        continue
+
+                    # بستن پاپ‌آپ موفقیت نهایی
+                    await sana_page.evaluate('''() => {
+                        const btn = document.querySelector('.sweet-alert .confirm');
+                        if (btn) btn.click();
+                    }''')
+                    await asyncio.sleep(2)
+                    confirm_ok = True
+                    break
+
+                # هر پاپ‌آپ دیگری (خطای سامانه غیر از ورود همزمان) → طبق
+                # مشخصات، دوباره «تایید اطلاعات» را انتخاب کن
+                logging.warning(
+                    f"[CHECK] پاپ‌آپ غیرمنتظره در آماده‌سازی (تلاش {confirm_attempt+1}/4): {popup_text!r}"
+                )
                 await sana_page.evaluate('''() => {
-                    const btn = document.querySelector('.sweet-alert .confirm');
+                    const btn = document.querySelector('.sweet-alert .confirm, .sweet-alert .cancel');
                     if (btn) btn.click();
                 }''')
                 await asyncio.sleep(2)
+
+            if not confirm_ok:
+                logging.error(f"[CHECK] تایید اطلاعات آماده‌سازی پس از ۴ تلاش ناموفق ماند (user={user_id})")
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"❌ [CHECK] «تایید اطلاعات» (آماده‌سازی) برای کاربر {user_id} پس از ۴ تلاش ناموفق ماند. "
+                    f"لطفاً این پرونده را دستی بررسی کنید. کد بایگانی: `{bill_no}`"
+                )
 
             # بازگشت به فهرست
             await sana_page.evaluate('''() => {
@@ -829,32 +941,64 @@ async def process_check_task(data: dict, bot: Bot):
             # استخراج هزینه‌ها
             cost_data = await _extract_cost_data(sana_page)
             final_total = cost_data.get("final_total", 0)
+            _matched = cost_data.get("matched_rows_debug", [])
+            logging.info(
+                f"[CHECK] هزینه: costSum={cost_data.get('costSum')} "
+                f"extraSum={cost_data.get('extraSum')} final={final_total} "
+                f"ردیف‌های منطبق‌شده ({len(_matched)}): {_matched}"
+            )
+            if len(_matched) != 5:
+                # اگر تعداد ردیف‌های تطبیق‌یافته ۵ نبود، یعنی یا ساختار جدول عوض
+                # شده یا یکی از عناوین فرق کرده — باید فوراً به مدیر اطلاع داد
+                # چون این دقیقاً همان نقطه‌ای است که قبلاً باعث محاسبهٔ اشتباه
+                # هزینه (اضافه‌دریافت ۱۸۰٬۰۰۰ ریالی) شده بود.
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"⚠️ [CHECK] هشدار محاسبهٔ هزینه: انتظار ۵ ردیف هزینهٔ خاص می‌رفت، "
+                    f"{len(_matched)} ردیف پیدا شد. لطفاً مبلغ نهایی ({final_total:,} ریال) "
+                    f"را دستی با سامانه تطبیق دهید. کاربر: {user_id}"
+                )
 
             # ── ۱۵. چاپ PDF ─────────────────────────────────────────────
             pdf_path = await _print_check(sana_page, browser_context, bill_no, bot, user_id)
 
             # ── ۱۶. ارسال نتیجه ──────────────────────────────────────────
-            from lavayeh_handlers import send_lavayeh_result
+            from lavayeh_handlers import send_lavayeh_result, send_bulk_item_result
             nat_ids = ", ".join([
                 p.get("national_id", "") for p in plaintiffs if p.get("national_id")
             ])
 
             if pdf_path and os.path.exists(pdf_path):
-                await send_lavayeh_result(
-                    bot, user_id, pdf_path, final_total,
-                    tracking_code=bill_no,
-                    national_ids=nat_ids,
-                    lavayeh_title=f"دادخواست چک — {request_title}{_doc_category_suffix}",
-                    lavayeh_province="",
-                    lavayeh_row_number=1,
-                    lavayeh_persons=plaintiffs,
-                    skip_fee_calc=True,
-                    is_ezhharnameh=False,
-                    service_type="CHECK")
+                if is_bulk_check and batch_tracking_code:
+                    # فلوی دسته‌جمعی: بدون فاکتور/امضای انفرادی — فقط اضافه به
+                    # signable_items؛ فاکتور تسویه و منوی امضا در پایان کل بچ
+                    # توسط finalize_bulk_batch یک‌جا انجام می‌شود.
+                    await send_bulk_item_result(
+                        bot, user_id, pdf_path, final_total,
+                        tracking_code=bill_no,
+                        national_ids=nat_ids,
+                        lavayeh_title=f"دادخواست چک — {request_title}",
+                        batch_tracking_code=batch_tracking_code,
+                        row_index=bulk_row_index,
+                        lavayeh_persons=plaintiffs,
+                        service_type="CHECK")
+                else:
+                    await send_lavayeh_result(
+                        bot, user_id, pdf_path, final_total,
+                        tracking_code=bill_no,
+                        national_ids=nat_ids,
+                        lavayeh_title=f"دادخواست چک — {request_title}{_doc_category_suffix}",
+                        lavayeh_province="",
+                        lavayeh_row_number=1,
+                        lavayeh_persons=plaintiffs,
+                        skip_fee_calc=True,
+                        is_ezhharnameh=False,
+                        service_type="CHECK")
                 await bot.send_message(
                     ADMIN_ID,
                     f"✅ [CHECK] ثبت دادخواست چک کاربر {user_id} موفق."
                     f" هزینه: {final_total:,} ریال"
+                    + (f" (دسته‌جمعی — ردیف {bulk_row_index} — بچ {batch_tracking_code})" if is_bulk_check else "")
                 )
             else:
                 await bot.send_message(
@@ -874,6 +1018,23 @@ async def process_check_task(data: dict, bot: Bot):
                     )
                 except Exception as panel_err:
                     logging.warning(f"[CHECK] خطا در ثبت شکست پرونده در پنل: {panel_err}")
+
+                # حتی وقتی چاپ PDF شکست خورد، ردیف دسته‌جمعی باید «تمام‌شده»
+                # علامت بخورد وگرنه finalize_bulk_batch هرگز صدا زده نمی‌شود
+                # (mark_bulk_item_done منتظر تکمیل همهٔ ردیف‌های صف‌شده است).
+                if is_bulk_check and batch_tracking_code:
+                    try:
+                        from bulk_submissions import BULK_TASKS, mark_bulk_item_done
+                        if batch_tracking_code in BULK_TASKS:
+                            BULK_TASKS[batch_tracking_code].setdefault("failures", []).append({
+                                "row_index": bulk_row_index,
+                                "tracking_code": bill_no,
+                                "title": f"دادخواست چک — {request_title}",
+                                "error": "ثبت در سامانه انجام شد اما چاپ PDF ناموفق بود",
+                            })
+                        await mark_bulk_item_done(bot, user_id, batch_tracking_code)
+                    except Exception as log_err:
+                        logging.error(f"[CHECK] خطا در mark_bulk_item_done (شکست چاپ PDF): {log_err}")
 
             return
 
@@ -907,6 +1068,23 @@ async def process_check_task(data: dict, bot: Bot):
                     )
                 except Exception as panel_err:
                     logging.warning(f"[CHECK] خطا در ثبت شکست پرونده در پنل: {panel_err}")
+
+                # این ردیف دسته‌جمعی هم باید «تمام‌شده» علامت بخورد وگرنه
+                # finalize_bulk_batch برای کل بچ هرگز اجرا نمی‌شود، حتی اگر
+                # بقیهٔ ردیف‌ها موفق شده باشند.
+                if is_bulk_check and batch_tracking_code:
+                    try:
+                        from bulk_submissions import BULK_TASKS, mark_bulk_item_done
+                        if batch_tracking_code in BULK_TASKS:
+                            BULK_TASKS[batch_tracking_code].setdefault("failures", []).append({
+                                "row_index": bulk_row_index,
+                                "tracking_code": tracking_no,
+                                "title": f"دادخواست چک — {request_title}",
+                                "error": str(e),
+                            })
+                        await mark_bulk_item_done(bot, user_id, batch_tracking_code)
+                    except Exception as log_err:
+                        logging.error(f"[CHECK] خطا در mark_bulk_item_done (شکست قطعی): {log_err}")
             try:
                 from bug_reporter import report_bug
                 await report_bug(bot, where="process_check_task", error=e,
@@ -1134,35 +1312,67 @@ async def _upload_check_images(page, image_paths: list, bot: Bot, user_id: int):
 
 
 async def _extract_cost_data(page) -> dict:
-    """استخراج اطلاعات هزینه از جدول"""
-    return await page.evaluate('''() => {
-        const rows = Array.from(document.querySelectorAll('table tbody tr'));
-        let costSum = 0;
+    """استخراج اطلاعات هزینه از جدول
+
+    ⚠️ اصلاحیه: نسخهٔ قبلی هر عدد `.color-red` بزرگ‌تر از ۱۰۰۰ در کل صفحه را
+    جمع می‌زد — که چون این مجموعه دقیقاً همان ۸ ردیفی است که costSum
+    (جمع سبزرنگ) از رویشان محاسبه شده، عملاً costSum را یک‌بار اضافه با خودش
+    جمع می‌کرد (extraSum ≈ costSum) و مبلغ نهایی را نزدیک به ۲ برابر واقعی
+    نشان می‌داد (طبق تست با اعداد نمونهٔ خود کارفرما: ۳٬۸۷۰٬۰۰۰ به‌جای
+    ۳٬۶۹۰٬۰۰۰ ریال — یعنی ۱۸۰٬۰۰۰ ریال اضافه‌دریافت در هر پرونده).
+
+    طبق مشخصات دقیق کارفرما، فقط ۵ ردیف مشخص (با همین عناوین) باید به
+    costSum اضافه شوند، نه هر عددی که رنگ قرمز دارد:
+      «بهاي اوراق دادخواست»، «افزودن پيوست در خدمات قضايي»،
+      «هزينه ثبت اطلاعات اشخاص در خدمات قضايي»،
+      «هزينه تنظيم دادخواست/شكواييه در خدمات قضايي»،
+      «هزينه خدمات الكترونيك قضايي»
+    به‌علاوهٔ ۵۵ ریال ثابت، سپس رند به بالا تا ۱۰٬۰۰۰ ریال.
+    """
+    WANTED_LABELS = [
+        "بهاي اوراق دادخواست",
+        "افزودن پيوست در خدمات قضايي",
+        "هزينه ثبت اطلاعات اشخاص در خدمات قضايي",
+        "هزينه تنظيم دادخواست",  # پوشش هر دو حالت «دادخواست/شكواييه» با match جزئی
+        "هزينه خدمات الكترونيك قضايي",
+    ]
+    return await page.evaluate('''(wantedLabels) => {
+        const rows = Array.from(document.querySelectorAll('table.table-bordered.table-striped tbody tr'));
         let extraSum = 0;
+        const matchedLabels = [];
+
+        for (const row of rows) {
+            const cells = row.querySelectorAll('td');
+            if (cells.length < 3) continue;
+            const label = (cells[1].innerText || cells[1].textContent || '').trim();
+            const amountText = (cells[2].innerText || cells[2].textContent || '').trim();
+            const amount = parseInt(amountText.replace(/[^0-9]/g, '')) || 0;
+
+            const isWanted = wantedLabels.some(w => label.includes(w));
+            if (isWanted) {
+                extraSum += amount;
+                matchedLabels.push(label + ':' + amount);
+            }
+        }
+
+        // costSum = جمع کل نمایش‌داده‌شده (سلول سبزرنگ پایین جدول)
+        let costSum = 0;
         const costDiv = document.querySelector('[ng-model="viewModel.costSum"]') ||
                          document.querySelector('.color-green');
         if (costDiv) {
             const text = costDiv.innerText || costDiv.textContent;
             costSum = parseInt(text.replace(/[^0-9]/g, '')) || 0;
         }
-        // جمع ستون‌های خاص
-        const amounts = Array.from(document.querySelectorAll('.color-red'));
-        for (const el of amounts) {
-            const text = el.innerText || el.textContent;
-            const val = parseInt(text.replace(/[^0-9]/g, '')) || 0;
-            if (val > 1000) {  // فیلتر کردن اعداد کوچک
-                extraSum += val;
-            }
-        }
+
         extraSum += 55;
-        // رند بالا تا 10000 ریال
         const rounded = Math.ceil((costSum + extraSum) / 10000) * 10000;
         return {
             costSum: costSum,
             extraSum: extraSum,
-            final_total: rounded
+            final_total: rounded,
+            matched_rows_debug: matchedLabels,  // برای لاگ/دیباگ — تعداد باید همیشه ۵ باشد
         };
-    }''')
+    }''', WANTED_LABELS)
 
 
 async def _print_check(page, browser_context, bill_no: str, bot: Bot, user_id: int) -> str:
