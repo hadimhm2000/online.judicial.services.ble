@@ -886,6 +886,7 @@ def create_tn_appellant_person_type_kb(exclude: list = None):
         if i + 1 < len(available):
             row.append(KeyboardButton(text=available[i + 1]))
         keyboard.append(row)
+    keyboard.append([KeyboardButton(text="🔍 استعلام افراد موجود در پرونده")])
     keyboard.append([KeyboardButton(text="✅ اتمام و ادامه")])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
@@ -900,6 +901,7 @@ def create_tn_appellee_person_type_kb(exclude: list = None, show_finish: bool = 
         if i + 1 < len(available):
             row.append(KeyboardButton(text=available[i + 1]))
         keyboard.append(row)
+    keyboard.append([KeyboardButton(text="🔍 استعلام افراد موجود در پرونده")])
     show_finish = bool(exclude) if show_finish is None else show_finish
     if show_finish:
         keyboard.append([KeyboardButton(text="✅ اتمام و ادامه")])

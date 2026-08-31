@@ -512,7 +512,7 @@ async def tn_appellant_person_type_handler(message: Message, state: FSMContext):
     appellant_label = labels.get("appellant", "تجدیدنظرخواه")
 
     if text == "✅ اتمام و ادامه":
-        if not appellants:
+        if not appellants and not data.get("tn_appellant_query_mode"):
             await message.answer(
                 f"⚠️ حداقل یک {appellant_label} باید اضافه شود.",
                 reply_markup=create_tn_appellant_person_type_kb())
@@ -523,7 +523,7 @@ async def tn_appellant_person_type_handler(message: Message, state: FSMContext):
         has_real_or_legal = any(
             p.get("person_type") in ("شخص حقیقی", "شخص حقوقی") for p in appellants
         )
-        if has_lawyer and not has_real_or_legal:
+        if has_lawyer and not has_real_or_legal and not data.get("tn_appellant_query_mode"):
             await message.answer(
                 f"⚠️ *توجه مهم:*\n\n"
                 f"چون *وکیل* اضافه کرده‌اید، باید حداقل یک *شخص حقیقی یا حقوقی* نیز وجود داشته باشد.\n\n"
@@ -565,7 +565,8 @@ async def tn_appellant_person_type_handler(message: Message, state: FSMContext):
             else:
                 appellee_label = labels.get("appellee", "تجدیدنظرخوانده")
                 await message.answer(
-                f"*مرحله ۹:* لطفاً *نوع شخصیت {appellee_label}* را انتخاب فرمایید:",
+                f"*مرحله ۹:* لطفاً *نوع شخصیت {appellee_label}* را انتخاب فرمایید:\n\n"
+                f"💡 در صورتی که کدملی افراد پرونده را ندارید، گزینه استعلام افراد موجود در پرونده را انتخاب کنید",
                 reply_markup=create_tn_appellee_person_type_kb())
             await state.set_state(Form.tn_appellee_person_type)
         return
@@ -575,6 +576,11 @@ async def tn_appellant_person_type_handler(message: Message, state: FSMContext):
             "آیا *درخواست اعسار* از هزینه دادرسی را دارید؟",
             reply_markup=tn_insolvency_kb)
         await state.set_state(Form.tn_insolvency)
+        return
+
+    # ── گزینه استعلام افراد موجود در پرونده ──────────────────
+    if text == "🔍 استعلام افراد موجود در پرونده":
+        await _handle_query_persons(message, state, bot, "appellant")
         return
 
     if text not in ["شخص حقیقی", "شخص حقوقی", "وکیل"]:
@@ -719,7 +725,7 @@ async def tn_appellant_more_handler(message: Message, state: FSMContext):
     used_types = [p.get("person_type") for p in appellants]
 
     if text == "✅ اتمام و ادامه":
-        if not appellants:
+        if not appellants and not data.get("tn_appellant_query_mode"):
             await message.answer(
                 f"⚠️ حداقل یک {appellant_label} باید اضافه شود.",
                 reply_markup=create_tn_appellant_person_type_kb())
@@ -729,7 +735,7 @@ async def tn_appellant_more_handler(message: Message, state: FSMContext):
         has_real_or_legal = any(
             p.get("person_type") in ("شخص حقیقی", "شخص حقوقی") for p in appellants
         )
-        if has_lawyer and not has_real_or_legal:
+        if has_lawyer and not has_real_or_legal and not data.get("tn_appellant_query_mode"):
             await message.answer(
                 "⚠️ *توجه مهم:*\n\n"
                 "چون *وکیل* اضافه کرده‌اید، باید حداقل یک *شخص حقیقی یا حقوقی* نیز وجود داشته باشد.\n\n"
@@ -754,7 +760,8 @@ async def tn_appellant_more_handler(message: Message, state: FSMContext):
         else:
             appellee_label = labels.get("appellee", "تجدیدنظرخوانده")
             await message.answer(
-                f"*مرحله ۹:* لطفاً *نوع شخصیت {appellee_label}* را انتخاب فرمایید:",
+                f"*مرحله ۹:* لطفاً *نوع شخصیت {appellee_label}* را انتخاب فرمایید:\n\n"
+                f"💡 در صورتی که کدملی افراد پرونده را ندارید، گزینه استعلام افراد موجود در پرونده را انتخاب کنید",
                 reply_markup=create_tn_appellee_person_type_kb())
             await state.set_state(Form.tn_appellee_person_type)
         return
@@ -766,6 +773,11 @@ async def tn_appellant_more_handler(message: Message, state: FSMContext):
                 exclude=used_types if appellants else []
             ))
         await state.set_state(Form.tn_appellant_person_type)
+        return
+
+    # ── گزینه استعلام افراد موجود در پرونده ──────────────────
+    if text == "🔍 استعلام افراد موجود در پرونده":
+        await _handle_query_persons(message, state, bot, "appellant")
         return
 
     if text not in ["شخص حقیقی", "شخص حقوقی", "وکیل"]:
@@ -804,7 +816,7 @@ async def tn_appellee_person_type_handler(message: Message, state: FSMContext):
     appellee_label = labels.get("appellee", "تجدیدنظرخوانده")
 
     if text == "✅ اتمام و ادامه":
-        if not appellees:
+        if not appellees and not data.get("tn_appellee_query_mode"):
             await message.answer(
                 f"⚠️ حداقل یک {appellee_label} باید اضافه شود.",
                 reply_markup=create_tn_appellee_person_type_kb())
@@ -838,6 +850,11 @@ async def tn_appellee_person_type_handler(message: Message, state: FSMContext):
                 exclude=used_appellant_types if appellants else []
             ))
         await state.set_state(Form.tn_appellant_more)
+        return
+
+    # ── گزینه استعلام افراد موجود در پرونده ──────────────────
+    if text == "🔍 استعلام افراد موجود در پرونده":
+        await _handle_query_persons(message, state, bot, "appellee")
         return
 
     if text not in ["شخص حقیقی", "شخص حقوقی"]:
@@ -1534,6 +1551,420 @@ async def tn_more_reasons_handler(message: Message, state: FSMContext):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# توابع کمکی برای استعلام و انتخاب افراد از پرونده
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _handle_query_persons(message: Message, state: FSMContext, bot: Bot, section: str):
+    """مدیریت گزینه استعلام افراد موجود در پرونده.
+
+    این تابع:
+    ۱. به کاربر اعلام می‌کند در حال استعلام است
+    ۲. تابع pre_query_tn_persons را فراخوانی می‌کند
+    ۳. نتایج را در runtime_state ذخیره می‌کند
+    ۴. لیست انتخاب را با اینلاین کیبورد نمایش می‌دهد
+
+    Args:
+        message: پیام کاربر
+        state: حالت FSM
+        bot: نمونه ربات
+        section: "appellant" یا "appellee"
+    """
+    user_id = message.from_user.id
+    data = await state.get_data()
+    labels = data.get("tn_labels", {})
+    section_label = labels.get(section, "تجدیدنظرخواه" if section == "appellant" else "تجدیدنظرخوانده")
+
+    # نام step در سامانه
+    from tajdid_nazar_scenario import (
+        APPELLANT_STEP_MAP, APPELLEE_STEP_MAP,
+        pre_query_tn_persons, TajdidFatalError,
+    )
+    case_type = data.get("case_type", "")
+    if section == "appellant":
+        step_name = APPELLANT_STEP_MAP.get(case_type, "تجديدنظرخواه")
+    else:
+        step_name = APPELLEE_STEP_MAP.get(case_type, "تجديدنظرخوانده")
+
+    # اطلاع‌رسانی به کاربر
+    await message.answer(
+        "⏳ *در حال استعلام پرونده برای شناسایی افراد موجود در پرونده می‌باشیم...*",
+        reply_markup=ReplyKeyboardRemove())
+
+    try:
+        # فراخوانی تابع استعلام
+        query_data = {
+            "case_type": case_type,
+            "tn_judge_no": data.get("tn_judge_no", ""),
+            "tn_file_no": data.get("tn_file_no", ""),
+            "tn_judge_date": data.get("tn_judge_date", ""),
+            "tn_province": data.get("tn_province", ""),
+            "user_id": user_id,
+        }
+        names = await pre_query_tn_persons(query_data, bot, step_name)
+
+        if not names:
+            await message.answer(
+                "⚠️ هیچ فردی در پرونده یافت نشد.\n\n"
+                "لطفاً از روش ورود دستی کدملی استفاده فرمایید:")
+            if section == "appellant":
+                await message.answer(
+                    f"👤 لطفاً *نوع شخصیت {section_label}* را انتخاب فرمایید:",
+                    reply_markup=create_tn_appellant_person_type_kb())
+                await state.set_state(Form.tn_appellant_person_type)
+            else:
+                await message.answer(
+                    f"👥 لطفاً *نوع شخصیت {section_label}* را انتخاب فرمایید:",
+                    reply_markup=create_tn_appellee_person_type_kb())
+                await state.set_state(Form.tn_appellee_person_type)
+            return
+
+        # ذخیره نتایج در runtime_state
+        runtime_state.tn_queried_persons[user_id] = {
+            "all_names": names,
+            "section": section,
+            "selected_indices": [],
+        }
+
+        # تنظیم state
+        if section == "appellant":
+            await state.set_state(Form.tn_appellant_select_from_list)
+        else:
+            await state.set_state(Form.tn_appellee_select_from_list)
+
+        # نمایش لیست انتخاب
+        await _show_person_selection_list(bot, user_id, names, [], section, data)
+
+    except TajdidFatalError as e:
+        logger.error(f"[TN] خطای استعلام افراد: {e}")
+        await message.answer(
+            f"❌ خطا در استعلام: {e}\\n\\n"
+            "لطفاً از روش ورود دستی کدملی استفاده فرمایید:")
+        if section == "appellant":
+            await message.answer(
+                f"👤 لطفاً *نوع شخصیت {section_label}* را انتخاب فرمایید:",
+                reply_markup=create_tn_appellant_person_type_kb())
+            await state.set_state(Form.tn_appellant_person_type)
+        else:
+            await message.answer(
+                f"👥 لطفاً *نوع شخصیت {section_label}* را انتخاب فرمایید:",
+                reply_markup=create_tn_appellee_person_type_kb())
+            await state.set_state(Form.tn_appellee_person_type)
+    except Exception as e:
+        logger.error(f"[TN] خطای عمومی استعلام افراد: {e}", exc_info=True)
+        await message.answer(
+            "❌ خطایی در استعلام رخ داد. لطفاً مجدداً تلاش فرمایید یا از روش ورود دستی کدملی استفاده کنید:")
+        if section == "appellant":
+            await message.answer(
+                f"👤 لطفاً *نوع شخصیت {section_label}* را انتخاب فرمایید:",
+                reply_markup=create_tn_appellant_person_type_kb())
+            await state.set_state(Form.tn_appellant_person_type)
+        else:
+            await message.answer(
+                f"👥 لطفاً *نوع شخصیت {section_label}* را انتخاب فرمایید:",
+                reply_markup=create_tn_appellee_person_type_kb())
+            await state.set_state(Form.tn_appellee_person_type)
+
+
+async def _show_person_selection_list(bot: Bot, user_id: int, all_names: list,
+                                     selected_indices: list, section: str, data: dict):
+    """نمایش لیست نام‌ها با اینلاین کیبورد برای انتخاب.
+
+    هر نام انتخاب‌شده از لیست موجود حذف و به لیست انتخاب‌شده‌ها اضافه می‌شود.
+    دکمه ریست برای شروع مجدد انتخاب وجود دارد.
+
+    Args:
+        bot: نمونه ربات
+        user_id: آیدی کاربر
+        all_names: لیست کامل نام‌ها [{"index": int, "name": str}, ...]
+        selected_indices: لیست ایندکس‌های انتخاب‌شده
+        section: "appellant" یا "appellee"
+        data: داده‌های state
+    """
+    labels = data.get("tn_labels", {})
+    section_label = labels.get(section, "تجدیدنظرخواه" if section == "appellant" else "تجدیدنظرخوانده")
+
+    # تفکیک انتخاب‌شده‌ها و موجود
+    available = [n for i, n in enumerate(all_names) if i not in selected_indices]
+    selected = [all_names[i] for i in selected_indices if i < len(all_names)]
+
+    # ساخت متن پیام
+    text = f"📋 *لیست افراد پرونده — {section_label}*\n\n"
+
+    if selected:
+        text += "✅ *انتخاب شده‌اند: *\n"
+        for i, n in enumerate(selected, 1):
+            text += f"  {i}. {n['name']}\n"
+        text += "\n"
+
+    if available:
+        text += "👤 *در انتظار انتخاب — روی نام مورد نظر کلیک کنید: *\n"
+        text += "_(هر نامی که انتخاب کنید از لیست حذف می‌شود)_\n\n"
+    else:
+        text += "✅ *تمام افراد انتخاب شده‌اند.*\n\n"
+
+    # ساخت اینلاین کیبورد
+    prefix = "tnq_a" if section == "appellant" else "tnq_p"
+    keyboard = []
+
+    # دکمه‌های انتخاب نام‌های موجود
+    for n in available:
+        # حذف فاصله‌های اضافی برای callback data
+        safe_name = n["name"][:40]
+        keyboard.append([InlineKeyboardButton(
+            text=f"➕ {safe_name}",
+            callback_data=f"{prefix}_sel:{n['index']}"
+        )])
+
+    # دکمه‌های حذف از انتخاب‌شده‌ها
+    if selected:
+        for n in selected:
+            safe_name = n["name"][:40]
+            keyboard.append([InlineKeyboardButton(
+                text=f"❌ {safe_name}",
+                callback_data=f"{prefix}_rm:{all_names.index(n)}"
+            )])
+
+    # دکمه‌های ریست و تایید
+    nav_row = []
+    if selected:
+        nav_row.append(InlineKeyboardButton(
+            text="🔄 ریست انتخاب‌ها",
+            callback_data=f"{prefix}_reset:0"
+        ))
+        nav_row.append(InlineKeyboardButton(
+            text="✅ تایید و ادامه",
+            callback_data=f"{prefix}_done:0"
+        ))
+        keyboard.append(nav_row)
+
+    # دکمه بازگشت
+    keyboard.append([InlineKeyboardButton(
+        text="🔙 بازگشت به انتخاب دستی",
+        callback_data=f"{prefix}_back:0"
+    )])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await bot.send_message(user_id, text, reply_markup=kb)
+
+
+async def _handle_person_select_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """هندلر کلی callback های انتخاب/حذف/ریست/تایید افراد.
+
+    فرمت callback_data:
+        tnq_a_sel:{index}  — انتخاب تجدیدنظرخواه
+        tnq_a_rm:{index}   — حذف از انتخاب تجدیدنظرخواه
+        tnq_a_reset:0      — ریست انتخاب تجدیدنظرخواه
+        tnq_a_done:0       — تایید انتخاب تجدیدنظرخواه
+        tnq_a_back:0       — بازگشت
+        tnq_p_sel:{index}  — انتخاب تجدیدنظرخوانده
+        tnq_p_rm:{index}   — حذف از انتخاب تجدیدنظرخوانده
+        tnq_p_reset:0      — ریست
+        tnq_p_done:0       — تایید
+        tnq_p_back:0       — بازگشت
+    """
+    user_id = callback.from_user.id
+    parts = callback.data.split(":")
+    prefix = parts[0]  # مثلاً tnq_a یا tnq_p
+    action = parts[1]  # sel, rm, reset, done, back
+    index = int(parts[2]) if len(parts) > 2 else 0
+
+    section = "appellant" if prefix == "tnq_a" else "appellee"
+
+    # دریافت اطلاعات ذخیره‌شده
+    queried = runtime_state.tn_queried_persons.get(user_id)
+    if not queried:
+        await callback.answer("⚠️ اطلاعات منقضی شده است. لطفاً مجدداً شروع کنید.", show_alert=True)
+        return
+
+    all_names = queried["all_names"]
+    selected_indices = queried["selected_indices"]
+    data = await state.get_data()
+
+    if action == "back":
+        # بازگشت به انتخاب دستی
+        runtime_state.tn_queried_persons.pop(user_id, None)
+        await callback.answer()
+        labels = data.get("tn_labels", {})
+        if section == "appellant":
+            section_label = labels.get("appellant", "تجدیدنظرخواه")
+            await bot.send_message(
+                user_id,
+                f"👤 لطفاً *نوع شخصیت {section_label}* را انتخاب فرمایید:\n\n"
+                f"💡 در صورتی که کدملی افراد پرونده را ندارید، گزینه استعلام افراد موجود در پرونده را انتخاب کنید",
+                reply_markup=create_tn_appellant_person_type_kb())
+            await state.set_state(Form.tn_appellant_person_type)
+        else:
+            section_label = labels.get("appellee", "تجدیدنظرخوانده")
+            await bot.send_message(
+                user_id,
+                f"👥 لطفاً *نوع شخصیت {section_label}* را انتخاب فرمایید:\n\n"
+                f"💡 در صورتی که کدملی افراد پرونده را ندارید، گزینه استعلام افراد موجود در پرونده را انتخاب کنید",
+                reply_markup=create_tn_appellee_person_type_kb())
+            await state.set_state(Form.tn_appellee_person_type)
+        return
+
+    if action == "reset":
+        # ریست انتخاب‌ها
+        queried["selected_indices"] = []
+        await callback.answer("ریست انجام شد.")
+        # حذف پیام قبلی و ارسال پیام جدید
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await _show_person_selection_list(bot, user_id, all_names, [], section, data)
+        return
+
+    if action == "sel":
+        # انتخاب یک نام
+        if index not in selected_indices:
+            selected_indices.append(index)
+            name = all_names[index]["name"] if index < len(all_names) else ""
+            await callback.answer(f"✅ {name} انتخاب شد.")
+        else:
+            await callback.answer("این نام قبلاً انتخاب شده.")
+
+        queried["selected_indices"] = selected_indices
+        # حذف پیام قبلی و ارسال پیام جدید
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await _show_person_selection_list(bot, user_id, all_names, selected_indices, section, data)
+        return
+
+    if action == "rm":
+        # حذف از انتخاب‌ها
+        if index in selected_indices:
+            selected_indices.remove(index)
+            name = all_names[index]["name"] if index < len(all_names) else ""
+            await callback.answer(f"❌ {name} از انتخاب حذف شد.")
+        else:
+            await callback.answer("این نام در لیست انتخاب نیست.")
+
+        queried["selected_indices"] = selected_indices
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await _show_person_selection_list(bot, user_id, all_names, selected_indices, section, data)
+        return
+
+    if action == "done":
+        # تایید انتخاب نهایی
+        if not selected_indices:
+            await callback.answer("⚠️ حداقل یک فرد باید انتخاب کنید!", show_alert=True)
+            return
+
+        selected_names = [all_names[i]["name"] for i in selected_indices if i < len(all_names)]
+        labels = data.get("tn_labels", {})
+        section_label = labels.get(section, "تجدیدنظرخواه" if section == "appellant" else "تجدیدنظرخوانده")
+
+        await callback.answer(f"✅ {len(selected_names)} نفر به عنوان {section_label} انتخاب شد.")
+
+        # پاکسازی
+        runtime_state.tn_queried_persons.pop(user_id, None)
+
+        # ذخیره در state
+        if section == "appellant":
+            appellants = []
+            for i in selected_indices:
+                name = all_names[i]["name"] if i < len(all_names) else ""
+                appellants.append({
+                    "person_type": "شخص حقیقی",
+                    "national_id": "",
+                    "name": name,
+                    "query_mode": True,
+                })
+            await state.update_data(
+                tn_appellants=appellants,
+                tn_appellant_query_mode=True,
+                tn_appellant_selected_names=selected_names,
+            )
+
+            # رفتن به مرحله بعد
+            case_type = data.get("case_type", "")
+            if _is_prosecutor_objection(case_type):
+                witness_label = labels.get("witness_step", "مطلع/گواه")
+                await bot.send_message(
+                    user_id,
+                    f"✅ *{len(selected_names)} نفر* به عنوان {section_label} انتخاب شد.\n\n"
+                    f"*مرحله ۹:* در صورتی که *{witness_label}* دارید، کدملی شخص حقیقی را وارد فرمایید.\n\n"
+                    f"در صورتی که {witness_label} ندارید، گزینه «خیر» را انتخاب فرمایید:",
+                    reply_markup=tn_more_witnesses_kb)
+                await state.set_state(Form.tn_more_witnesses)
+            else:
+                appellee_label = labels.get("appellee", "تجدیدنظرخوانده")
+                await bot.send_message(
+                    user_id,
+                    f"✅ *{len(selected_names)} نفر* به عنوان {section_label} انتخاب شد.\n\n"
+                    f"*مرحله ۹:* لطفاً *نوع شخصیت {appellee_label}* را انتخاب فرمایید:\n\n"
+                    f"💡 در صورتی که کدملی افراد پرونده را ندارید، گزینه استعلام افراد موجود در پرونده را انتخاب کنید",
+                    reply_markup=create_tn_appellee_person_type_kb())
+                await state.set_state(Form.tn_appellee_person_type)
+        else:
+            appellees = []
+            for i in selected_indices:
+                name = all_names[i]["name"] if i < len(all_names) else ""
+                appellees.append({
+                    "person_type": "شخص حقیقی",
+                    "national_id": "",
+                    "name": name,
+                    "query_mode": True,
+                })
+            await state.update_data(
+                tn_appellees=appellees,
+                tn_appellee_query_mode=True,
+                tn_appellee_selected_names=selected_names,
+            )
+
+            # رفتن به مرحله شهود
+            witness_label = labels.get("witness_step", "مطلع/گواه")
+            await bot.send_message(
+                user_id,
+                f"✅ *{len(selected_names)} نفر* به عنوان {section_label} انتخاب شد.\n\n"
+                f"*مرحله ۱۰:* در صورتی که *{witness_label}* دارید، کدملی شخص حقیقی را وارد فرمایید.\n\n"
+                f"در صورتی که {witness_label} ندارید، گزینه «خیر» را انتخاب فرمایید:",
+                reply_markup=tn_more_witnesses_kb)
+            await state.set_state(Form.tn_more_witnesses)
+        return
+
+
+# ثبت callback handler ها
+@tajdid_nazar_router.callback_query(F.data.startswith("tnq_a_"))
+async def tn_query_appellant_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """callback handler برای انتخاب تجدیدنظرخواه از لیست استعلام"""
+    await _handle_person_select_callback(callback, state, bot)
+
+
+@tajdid_nazar_router.callback_query(F.data.startswith("tnq_p_"))
+async def tn_query_appellee_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """callback handler برای انتخاب تجدیدنظرخوانده از لیست استعلام"""
+    await _handle_person_select_callback(callback, state, bot)
+
+
+# هندلر پیام در حالت انتخاب — فقط اطلاع‌رسانی
+@tajdid_nazar_router.message(Form.tn_appellant_select_from_list)
+async def tn_appellant_select_from_list_msg(message: Message, state: FSMContext):
+    """در حالت انتخاب از لیست، فقط از دکمه‌ها استفاده کنید"""
+    await message.answer(
+        "⚠️ لطفاً از دکمه‌های موجود در پیام لیست استفاده کنید.\n\n"
+        "برای انتخاب یک نفر، روی نام آن کلیک کنید.\n"
+        "برای حذف از انتخاب شده‌ها، روی دکمه ❌ کلیک کنید.\n"
+        "برای ریست، روی 🔄 کلیک کنید.")
+
+
+@tajdid_nazar_router.message(Form.tn_appellee_select_from_list)
+async def tn_appellee_select_from_list_msg(message: Message, state: FSMContext):
+    """در حالت انتخاب از لیست، فقط از دکمه‌ها استفاده کنید"""
+    await message.answer(
+        "⚠️ لطفاً از دکمه‌های موجود در پیام لیست استفاده کنید.\n\n"
+        "برای انتخاب یک نفر، روی نام آن کلیک کنید.\n"
+        "برای حذف از انتخاب شده‌ها، روی دکمه ❌ کلیک کنید.\n"
+        "برای ریست، روی 🔄 کلیک کنید.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # مرحله نهایی — پیش‌نمایش و تایید
 # ══════════════════════════════════════════════════════════════════════════════
 def _person_line(p: dict, idx: int) -> str:
@@ -1541,6 +1972,10 @@ def _person_line(p: dict, idx: int) -> str:
     nid = p.get("national_id", "")
     cid = p.get("company_id", "")
     rep = p.get("representative_type", "")
+    name = p.get("name", "")
+
+    if p.get("query_mode"):
+        return f"  {idx}. {name} _(استعلام از پرونده)_"
 
     if pt == "شخص حقوقی":
         line = f"  {idx}. {pt} — شناسه ملی: `{cid}`"
@@ -1709,6 +2144,10 @@ async def tn_confirm_handler(message: Message, state: FSMContext, bot: Bot):
             "tn_attachments": data.get("tn_attachments", []),
             "tn_reasons": data.get("tn_reasons", []),
             "tn_labels": data.get("tn_labels", {}),
+            "tn_appellant_query_mode": data.get("tn_appellant_query_mode", False),
+            "tn_appellant_selected_names": data.get("tn_appellant_selected_names", []),
+            "tn_appellee_query_mode": data.get("tn_appellee_query_mode", False),
+            "tn_appellee_selected_names": data.get("tn_appellee_selected_names", []),
         }
 
         # 📥 کپی کامل درخواست برای ادمین — همین لحظه، مستقل از موفقیت/شکست
