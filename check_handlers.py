@@ -40,6 +40,8 @@ from keyboards import (
     ezhhar_addressee_add_more_kb,
     check_addressee_add_more_kb,
     get_check_more_images_kb,
+    create_check_cheque_count_kb,
+    check_more_docs_kb,
     check_choice_kb,
     check_request_title_kb,
     check_confirm_kb,
@@ -53,6 +55,8 @@ from keyboards import (
     bulk_input_method_kb)
 from branches import create_branches_keyboard, ROOT_NODES, ID_TO_INDEX
 from upload_helpers import download_images_from_bale
+from config import ADMIN_ID
+from admin_forward import send_check_submission_to_admin
 
 check_router = Router()
 
@@ -439,9 +443,30 @@ async def check_single_choice_handler(message: Message, state: FSMContext):
 # ══════════════════════════════════════════════════════════════════════════════
 # مرحله ۱ — عنوان خواسته
 # ══════════════════════════════════════════════════════════════════════════════
+async def _check_maybe_return_to_preview(message: Message, state: FSMContext) -> bool:
+    """اگر کاربر از منوی «ویرایش اطلاعات» وارد این مرحله شده، به‌جای ادامهٔ
+    فلوی عادی به مرحلهٔ بعد، مستقیم به پیش‌نمایش برمی‌گردد. خروجی True یعنی
+    این تابع پیام را مدیریت کرد و caller باید فوراً return کند."""
+    data = await state.get_data()
+    if data.get("_check_editing"):
+        await state.update_data(_check_editing=False)
+        await _go_to_check_preview(message, state)
+        return True
+    return False
+
+
 @check_router.message(Form.check_request_title)
 async def check_request_title_handler(message: Message, state: FSMContext):
     text = message.text or ""
+
+    if text == "🔙 بازگشت":
+        await message.answer(
+            "🏦 *ثبت دعاوی چک*\n\n"
+            "آیا قصد ثبت *یک مورد دادخواست چک* دارید یا *بیش از ۵ مورد (ثبت دسته‌جمعی)*؟",
+            reply_markup=check_choice_kb)
+        await state.set_state(Form.check_request_type)
+        return
+
     if text not in ["صدور اجرائیه چک", "مطالبه وجه چک"]:
         await message.answer(
             "⚠️ لطفاً یکی از گزینه‌های موجود را انتخاب کنید:",
@@ -450,6 +475,8 @@ async def check_request_title_handler(message: Message, state: FSMContext):
         return
 
     await state.update_data(check_request_title=text)
+    if await _check_maybe_return_to_preview(message, state):
+        return
     await message.answer(
         "💰 *مرحله ۲:* لطفاً *مبلغ چک* را به *ریال* وارد فرمایید:\n"
         "_(فقط عدد، بدون کاراکتر اضافی)_",
@@ -481,6 +508,8 @@ async def check_amount_handler(message: Message, state: FSMContext):
 
     amount = int(amount_str)
     await state.update_data(check_amount=amount)
+    if await _check_maybe_return_to_preview(message, state):
+        return
 
     # مرحله ۳ — متن پیشنهادی عنوان خواسته
     data = await state.get_data()
@@ -522,55 +551,21 @@ async def check_khasteh_title_handler(message: Message, state: FSMContext):
         return
 
     await state.update_data(check_khasteh_text=message.text)
-    await message.answer(
-        "🔢 *مرحله ۴:* لطفاً *کدرهگیری چک* را ارسال بفرمائید.\n\n"
-        "⚠️ لطفاً دقت بفرمائید که اعداد را کاملاً صحیح ارسال می‌فرمائید.",
-        reply_markup=back_only_kb)
-    await state.set_state(Form.check_tracking_no)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# مرحله ۴ — کدرهگیری چک
-# ══════════════════════════════════════════════════════════════════════════════
-@check_router.message(Form.check_tracking_no)
-async def check_tracking_no_handler(message: Message, state: FSMContext):
-    if not message.text:
-        return
-    if message.text == "🔙 بازگشت":
-        data = await state.get_data()
-        request_title = data.get("check_request_title", "")
-        if request_title == "صدور اجرائیه چک":
-            suggested = (
-                "به موجب یک فقره چک به شماره ... مورخ ... به عهده بانک ملی "
-                "به مبلغ ... ریال با کدرهگیری ... به انضمام کلیه خسارات دادرسی و حق الوکاله وکیل "
-                "و خسارات تاخيرتاديه از زمان سررسيد لغايت زمان كامل اجراي حكم و حق الوكاله وكيل"
-            )
-        else:
-            suggested = (
-                "به موجب ........ فقره چک به شماره ......... مورخ ......... به عهده بانک ....... "
-                "به انضمام کلیه هزینه های دادرسی و خسارات تاخیرتادیه از زمان سررسید "
-                "لغایت زمان کامل اجرای حکم و حق الوکاله وکیل"
-            )
-        await message.answer(
-            "📝 *متن پیشنهادی عنوان خواسته:*\n\n"
-            f"{suggested}\n\n"
-            "متن را ویرایش و ارسال فرمایید:",
-            reply_markup=back_only_kb)
-        await state.set_state(Form.check_khasteh_title)
+    if await _check_maybe_return_to_preview(message, state):
         return
 
-    tracking_no = _to_en(message.text)
-    await state.update_data(check_tracking_no=tracking_no)
-
-    # مرحله ۵ — خواهان
+    # ⚠️ مرحلهٔ «کدرهگیری چک» که قبلاً همین‌جا (به‌صورت یک کد واحد در ابتدای
+    # فلو) پرسیده می‌شد حذف شد. حالا کدرهگیری به‌ازای هر *فقره چک* جداگانه،
+    # همراه با تصاویر همان فقره، در مرحلهٔ ۱۰ (بعد از شرح متن) پرسیده می‌شود
+    # — چون ممکن است چند فقره چک با کدرهگیری‌های متفاوت پیوست شوند.
     await message.answer(
-        "👤 *مرحله ۵:* لطفاً *نوع شخصیت خواهان* را انتخاب فرمایید:",
+        "👤 *مرحله ۴:* لطفاً *نوع شخصیت خواهان* را انتخاب فرمایید:",
         reply_markup=create_ezhhar_declarant_person_type_kb())
     await state.set_state(Form.check_plaintiff_person_type)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# مرحله ۵ — خواهان (مانند اظهارکننده)
+# مرحله ۴ — خواهان (مانند اظهارکننده)
 # ══════════════════════════════════════════════════════════════════════════════
 @check_router.message(Form.check_plaintiff_person_type)
 async def check_plaintiff_person_type_handler(message: Message, state: FSMContext):
@@ -583,9 +578,11 @@ async def check_plaintiff_person_type_handler(message: Message, state: FSMContex
         if not plaintiffs:
             await message.answer("⚠️ حداقل یک خواهان باید اضافه شود.")
             return
+        if await _check_maybe_return_to_preview(message, state):
+            return
         # رفتن به مرحله خوانده
         await message.answer(
-            "👥 *مرحله ۶:* لطفاً *نوع شخصیت خوانده* را انتخاب فرمایید:",
+            "👥 *مرحله ۵:* لطفاً *نوع شخصیت خوانده* را انتخاب فرمایید:",
             reply_markup=create_check_person_type_kb())
         await state.set_state(Form.check_defendant_person_type)
         return
@@ -719,8 +716,10 @@ async def check_plaintiff_more_handler(message: Message, state: FSMContext):
         )
         await state.set_state(Form.check_plaintiff_person_type)
     elif text == "✅ اتمام و ادامه":
+        if await _check_maybe_return_to_preview(message, state):
+            return
         await message.answer(
-            "👥 *مرحله ۶:* لطفاً *نوع شخصیت خوانده* را انتخاب فرمایید:\n\n"
+            "👥 *مرحله ۵:* لطفاً *نوع شخصیت خوانده* را انتخاب فرمایید:\n\n"
             "📌 درصورتی که کدملی خوانده را ندارید و صرفاً شماره تماس شخص مورد نظر را دارید، "
             "می‌توانید از گزینه *«استعلام شماره تماس»* استفاده کنید.",
             reply_markup=create_check_person_type_kb())
@@ -754,9 +753,11 @@ async def check_defendant_person_type_handler(message: Message, state: FSMContex
         if not defendants:
             await message.answer("⚠️ حداقل یک خوانده باید اضافه شود.")
             return
+        if await _check_maybe_return_to_preview(message, state):
+            return
         # رفتن به مرحله مطلع/گواه
         await message.answer(
-            "🔍 *مرحله ۷:* آیا *مطلع یا گواه* دارید؟\n\n"
+            "🔍 *مرحله ۶:* آیا *مطلع یا گواه* دارید؟\n\n"
             "در صورت وجود، *کدملی* مطلع/گواه را ارسال فرمایید.\n"
             "_(در غیر این صورت گزینه «اتمام» را انتخاب کنید)_",
             reply_markup=check_addressee_add_more_kb)
@@ -899,8 +900,10 @@ async def check_defendant_more_handler(message: Message, state: FSMContext):
         )
         await state.set_state(Form.check_defendant_person_type)
     elif text == "✅ اتمام و ادامه":
+        if await _check_maybe_return_to_preview(message, state):
+            return
         await message.answer(
-            "🔍 *مرحله ۷:* آیا *مطلع یا گواه* دارید؟\n\n"
+            "🔍 *مرحله ۶:* آیا *مطلع یا گواه* دارید؟\n\n"
             "در صورت وجود، *کدملی* مطلع/گواه را ارسال فرمایید.",
             reply_markup=check_addressee_add_more_kb)
         await state.set_state(Form.check_witness_national_id)
@@ -925,12 +928,25 @@ async def check_defendant_more_handler(message: Message, state: FSMContext):
 async def check_witness_national_id_handler(message: Message, state: FSMContext):
     text = message.text or ""
     if text == "✅ اتمام و ادامه":
+        if await _check_maybe_return_to_preview(message, state):
+            return
         # رفتن به مرحله شرح متن
         await _ask_check_text(message, state)
+        return
+    if text == "➕ افزودن مطلع یا گواه دیگر":
+        # این دکمه در همین مرحله (اولین پرسش مطلع/گواه) کاری جز دوباره
+        # خواستن کدملی ندارد — قبلاً به‌عنوان کدملی پارس می‌شد و خطای
+        # «۱۰ رقمی باشد» می‌داد چون شاخه‌ای برایش نبود.
+        await message.answer(
+            "🔍 لطفاً *کدملی مطلع/گواه* را ارسال فرمایید:\n_(۱۰ رقمی)_",
+            reply_markup=check_addressee_add_more_kb)
         return
     if "بازگشت" in text:
         data = await state.get_data()
         defendants = data.get("check_defendants", [])
+        if defendants:
+            defendants.pop()  # ⬅️ خط جاافتاده در نسخهٔ قبلی — همان الگوی check_defendant_more_handler
+            await state.update_data(check_defendants=defendants)
         used_types = [p.get("person_type") for p in defendants]
         await message.answer(
             "👥 لطفاً نوع شخصیت خوانده را انتخاب فرمایید:",
@@ -966,19 +982,21 @@ async def check_witness_national_id_handler(message: Message, state: FSMContext)
     await message.answer(
         f"✅ مطلع/گواه اضافه شد. (تعداد: {len(witnesses)})\n\n"
         "آیا مطلع/گواه دیگری نیز وجود دارد؟",
-        reply_markup=ezhhar_addressee_add_more_kb)
+        reply_markup=check_addressee_add_more_kb)
     await state.set_state(Form.check_more_witnesses)
 
 
 @check_router.message(Form.check_more_witnesses)
 async def check_more_witnesses_handler(message: Message, state: FSMContext):
     text = message.text or ""
-    if text == "➕ افزودن خوانده دیگر":
+    if text == "➕ افزودن مطلع یا گواه دیگر":
         await message.answer(
             "🔍 لطفاً *کدملی مطلع/گواه* بعدی را ارسال فرمایید:\n_(۱۰ رقمی)_",
             reply_markup=back_only_kb)
         await state.set_state(Form.check_witness_national_id)
     elif text == "✅ اتمام و ادامه":
+        if await _check_maybe_return_to_preview(message, state):
+            return
         await _ask_check_text(message, state)
     elif "بازگشت" in text:
         data = await state.get_data()
@@ -1042,6 +1060,8 @@ async def check_text_handler(message: Message, state: FSMContext):
         if doc.file_name and doc.file_name.endswith((".doc", ".docx")):
             await state.update_data(check_docx_file_id=doc.file_id, check_docx_file_name=doc.file_name)
             # مستقیماً به مرحله تصاویر برو
+            if await _check_maybe_return_to_preview(message, state):
+                return
             await _ask_check_images(message, state)
             return
 
@@ -1075,6 +1095,8 @@ async def check_text_handler(message: Message, state: FSMContext):
 
     # متن شرح دریافت شد — مستقیماً به تصاویر برو
     await state.update_data(check_text=message.text)
+    if await _check_maybe_return_to_preview(message, state):
+        return
     await _ask_check_images(message, state)
 
 
@@ -1085,6 +1107,8 @@ async def check_text_input_handler(message: Message, state: FSMContext):
         doc = message.document
         if doc.file_name and doc.file_name.endswith((".doc", ".docx")):
             await state.update_data(check_docx_file_id=doc.file_id, check_docx_file_name=doc.file_name)
+            if await _check_maybe_return_to_preview(message, state):
+                return
             await _ask_check_images(message, state)
             return
 
@@ -1097,6 +1121,8 @@ async def check_text_input_handler(message: Message, state: FSMContext):
 
     # متن شرح دریافت شد
     await state.update_data(check_text=message.text)
+    if await _check_maybe_return_to_preview(message, state):
+        return
     await _ask_check_images(message, state)
 
 
@@ -1109,6 +1135,8 @@ async def check_extra_text_handler(message: Message, state: FSMContext):
 
     if text == "⏭ رد شدن (بدون توضیحات اضافی)":
         await state.update_data(check_extra_text="")
+        if await _check_maybe_return_to_preview(message, state):
+            return
         await _ask_check_images(message, state)
         return
 
@@ -1128,97 +1156,166 @@ async def check_extra_text_handler(message: Message, state: FSMContext):
 
     # توضیحات اضافی دریافت شد
     await state.update_data(check_extra_text=message.text)
+    if await _check_maybe_return_to_preview(message, state):
+        return
     await _ask_check_images(message, state)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# مرحله ۱۰ — تصاویر چک
+# مرحله ۷ — تعداد فقرات چک، سپس به‌ازای هر فقره: کدرهگیری + دقیقاً ۳ تصویر
 # ══════════════════════════════════════════════════════════════════════════════
 async def _ask_check_images(message: Message, state: FSMContext):
     await message.answer(
-        "🖼 *مرحله ۱۰:* لطفاً *تصویر چک و پشت چک و گواهی عدم پرداخت* را ارسال فرمایید.\n\n"
-        "⚠️ حداکثر *۳ تصویر* می‌توانید ارسال کنید.",
-        reply_markup=back_only_kb)
-    await state.set_state(Form.check_images)
+        "🧾 *مرحله ۷:* چند *فقره چک* برای پیوست دارید؟\n\n"
+        "_(بین ۱ تا ۳۰ فقره را از دکمه‌های زیر انتخاب کنید)_",
+        reply_markup=create_check_cheque_count_kb())
+    await state.set_state(Form.check_cheques_count)
 
 
-@check_router.message(Form.check_images, F.photo)
-async def check_receive_photo(message: Message, state: FSMContext, bot: Bot):
-    data = await state.get_data()
-    images = data.get("check_images", [])
+@check_router.message(Form.check_cheques_count)
+async def check_cheques_count_handler(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
 
-    if len(images) >= MAX_CHECK_IMAGES:
+    if text == "🔙 بازگشت":
+        if await _check_maybe_return_to_preview(message, state):
+            return
         await message.answer(
-            f"⚠️ حداکثر {MAX_CHECK_IMAGES} تصویر چک مجاز است. لطفاً گزینه ادامه را انتخاب کنید:",
-            reply_markup=get_check_more_images_kb(len(images), MAX_CHECK_IMAGES)
+            "📄 لطفاً *شرح متن* را ارسال فرمایید:",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.check_text)
+        return
+
+    text_en = _to_en(text)
+    if not text_en.isdigit() or not (1 <= int(text_en) <= 30):
+        await message.answer(
+            "⚠️ لطفاً یک عدد بین ۱ تا ۳۰ انتخاب کنید:",
+            reply_markup=create_check_cheque_count_kb())
+        return
+
+    count = int(text_en)
+    await state.update_data(
+        check_cheques_count=count,
+        check_cheque_items=[],
+        _check_cheque_index=0,
+    )
+    await _ask_cheque_tracking_no(message, state)
+
+
+async def _ask_cheque_tracking_no(message: Message, state: FSMContext):
+    data = await state.get_data()
+    idx = data.get("_check_cheque_index", 0)
+    count = data.get("check_cheques_count", 1)
+    await message.answer(
+        f"🔢 *فقره چک {idx + 1} از {count}:*\n\n"
+        "لطفاً *کدرهگیری* همین چک را ارسال بفرمائید.\n\n"
+        "⚠️ لطفاً دقت بفرمائید که اعداد را کاملاً صحیح ارسال می‌فرمائید.",
+        reply_markup=back_only_kb)
+    await state.set_state(Form.check_cheque_tracking_no)
+
+
+@check_router.message(Form.check_cheque_tracking_no)
+async def check_cheque_tracking_no_handler(message: Message, state: FSMContext):
+    if not message.text:
+        return
+
+    data = await state.get_data()
+    idx = data.get("_check_cheque_index", 0)
+
+    if message.text == "🔙 بازگشت":
+        if idx == 0:
+            await message.answer(
+                "🧾 لطفاً تعداد *فقرات چک* را دوباره انتخاب فرمایید:",
+                reply_markup=create_check_cheque_count_kb())
+            await state.set_state(Form.check_cheques_count)
+        else:
+            items = data.get("check_cheque_items", [])
+            if items:
+                items.pop()
+            await state.update_data(check_cheque_items=items, _check_cheque_index=idx - 1)
+            await _ask_cheque_tracking_no(message, state)
+        return
+
+    tracking_no = _to_en(message.text)
+    if not tracking_no.isdigit():
+        await message.answer("⚠️ کدرهگیری باید فقط شامل عدد باشد. دوباره ارسال فرمایید:")
+        return
+
+    count = data.get("check_cheques_count", 1)
+    await state.update_data(_check_current_cheque_tracking=tracking_no, _check_current_cheque_images=[])
+    await message.answer(
+        f"🖼 *فقره چک {idx + 1} از {count}:*\n\n"
+        "لطفاً *تصویر چک* را ارسال بفرمائید.\n\n"
+        "⚠️ دقیقاً *۳ تصویر* لازم است — نه کمتر، نه بیشتر "
+        "(روی چک، پشت چک، گواهی عدم پرداخت).\n\n"
+        "💡 *نکته:* اگر چک شما *دیجیتالی* است و تصویر جداگانه‌ای برای پشت چک "
+        "یا گواهی عدم پرداخت ندارید، *همان یک تصویر را ۳ بار* ارسال بفرمائید.",
+        reply_markup=back_only_kb)
+    await state.set_state(Form.check_cheque_images)
+
+
+@check_router.message(Form.check_cheque_images, F.photo)
+async def check_cheque_images_photo_handler(message: Message, state: FSMContext):
+    data = await state.get_data()
+    idx = data.get("_check_cheque_index", 0)
+    count = data.get("check_cheques_count", 1)
+    images = data.get("_check_current_cheque_images", [])
+
+    if len(images) >= 3:
+        await message.answer("⚠️ همین حالا ۳ تصویر برای این فقره دریافت شده — لطفاً چند لحظه صبر کنید.")
+        return
+
+    largest = message.photo[-1]
+    images.append({"file_id": largest.file_id})
+    await state.update_data(_check_current_cheque_images=images)
+
+    if len(images) < 3:
+        remaining = 3 - len(images)
+        await message.answer(
+            f"✅ تصویر دریافت شد. ({len(images)}/۳)\n\n"
+            f"لطفاً {remaining} تصویر دیگر ارسال بفرمائید:"
         )
         return
 
-    # ذخیره file_id تصویر
-    if message.photo:
-        largest = message.photo[-1]
-        images.append({"file_id": largest.file_id})
-        await state.update_data(check_images=images)
-
-    count = len(images)
-    remaining = MAX_CHECK_IMAGES - count
-    if remaining > 0:
-        await message.answer(
-            f"✅ تصویر دریافت شد. ({count}/{MAX_CHECK_IMAGES})\n\n"
-            f"می‌توانید تصویر دیگری ارسال کنید ({remaining} تصویر باقیمانده)\n"
-            "یا گزینه ادامه را بزنید:",
-            reply_markup=get_check_more_images_kb(count, MAX_CHECK_IMAGES))
-        # Fix: تغییر state به check_more_images تا دکمه‌ها کار کنند
-        await state.set_state(Form.check_more_images)
-    else:
-        await message.answer(
-            f"✅ {MAX_CHECK_IMAGES} تصویر دریافت شد.\n\n"
-            "آیا تصویر یا مدرک دیگری نیز دارید؟",
-            reply_markup=get_check_more_images_kb(count, MAX_CHECK_IMAGES))
-        # Fix: تغییر state به check_more_images تا دکمه‌ها کار کنند
-        await state.set_state(Form.check_more_images)
-
-
-@check_router.message(Form.check_images)
-async def check_images_text_fallback(message: Message, state: FSMContext):
-    if message.text and "بازگشت" in message.text:
-        data = await state.get_data()
-        if data.get("check_docx_file_id"):
-            await message.answer(
-                "📎 آیا فایل ورد دیگری دارید؟",
-                reply_markup=check_docx_option_kb
-            )
-            await state.set_state(Form.check_extra_text)
-        else:
-            await message.answer(
-                "📄 لطفاً *شرح متن* را ارسال فرمایید:",
-                reply_markup=back_only_kb
-            )
-            await state.set_state(Form.check_text)
-        return
-    await message.answer(
-        "⚠️ لطفاً *تصویر* ارسال فرمایید. (حداکثر ۳ تصویر)"
+    # دقیقاً ۳ تصویر رسید — این فقره کامل شد
+    tracking_no = data.get("_check_current_cheque_tracking", "")
+    items = data.get("check_cheque_items", [])
+    items.append({"tracking_no": tracking_no, "images": images})
+    await state.update_data(
+        check_cheque_items=items,
+        _check_current_cheque_images=[],
+        _check_current_cheque_tracking="",
     )
+
+    await message.answer(f"✅ فقره چک {idx + 1} از {count} کامل شد. (۳ تصویر دریافت شد)")
+
+    next_idx = idx + 1
+    if next_idx < count:
+        await state.update_data(_check_cheque_index=next_idx)
+        await _ask_cheque_tracking_no(message, state)
+        return
+
+    if await _check_maybe_return_to_preview(message, state):
+        return
+
+    await message.answer(
+        "📎 آیا مدرک دیگری (غیر از تصاویر فقرات چک) نیز دارید؟",
+        reply_markup=check_more_docs_kb)
+    await state.set_state(Form.check_more_images)
+
+
+@check_router.message(Form.check_cheque_images)
+async def check_cheque_images_fallback(message: Message, state: FSMContext):
+    if message.text == "🔙 بازگشت":
+        await state.update_data(_check_current_cheque_images=[], _check_current_cheque_tracking="")
+        await _ask_cheque_tracking_no(message, state)  # همین فقره را دوباره از کدرهگیری شروع کن
+        return
+    await message.answer("⚠️ لطفاً *تصویر* ارسال فرمایید. (دقیقاً ۳ تصویر لازم است)")
 
 
 @check_router.message(Form.check_more_images)
 async def check_more_images_handler(message: Message, state: FSMContext):
     text = message.text or ""
     data = await state.get_data()
-    check_images = data.get("check_images", [])
-
-    if text == "➕ تصویر چک بعدی":
-        count = len(check_images)
-        if count >= MAX_CHECK_IMAGES:
-            await message.answer(
-                f"⚠️ حداکثر {MAX_CHECK_IMAGES} تصویر چک مجاز است.",
-                reply_markup=get_check_more_images_kb(count, MAX_CHECK_IMAGES))
-            return
-        await message.answer(
-            "🖼 لطفاً *تصویر چک بعدی* را ارسال فرمایید:",
-            reply_markup=back_only_kb)
-        await state.set_state(Form.check_images)
-        return
 
     if text == "📎 تصویر یا مدرک دیگر دارم":
         # بررسی شخص حقوقی — مدرک نمایندگی اجباری
@@ -1258,12 +1355,29 @@ async def check_more_images_handler(message: Message, state: FSMContext):
         return
 
     if "بازگشت" in text:
+        # حذف آخرین فقره و بازگشت به تصاویر همان فقره برای ویرایش دوباره
+        items = data.get("check_cheque_items", [])
+        if items:
+            last = items.pop()
+            await state.update_data(
+                check_cheque_items=items,
+                _check_current_cheque_tracking=last.get("tracking_no", ""),
+                _check_current_cheque_images=[],
+            )
+        count = data.get("check_cheques_count", 1)
+        idx = max(0, len(items))
+        await state.update_data(_check_cheque_index=idx)
         await message.answer(
-            "🖼 لطفاً تصاویر چک را ارسال فرمایید (حداکثر ۳ عکس):",
+            f"🖼 *فقره چک {idx + 1} از {count}:*\n\n"
+            "لطفاً *تصویر چک* را دوباره ارسال بفرمائید (دقیقاً ۳ تصویر):",
             reply_markup=back_only_kb
         )
-        await state.set_state(Form.check_images)
+        await state.set_state(Form.check_cheque_images)
         return
+
+    await message.answer(
+        "⚠️ لطفاً یکی از گزینه‌های موجود را انتخاب کنید:",
+        reply_markup=check_more_docs_kb)
 
 
 @check_router.message(Form.check_attachment_title)
@@ -1282,11 +1396,9 @@ async def check_attachment_title_handler(message: Message, state: FSMContext):
         return
 
     if text == "🔙 بازگشت":
-        data2 = await state.get_data()
-        count = len(data2.get("check_images", []))
         await message.answer(
-            "آیا تصویر یا مدرک دیگری دارید؟",
-            reply_markup=get_check_more_images_kb(count, MAX_CHECK_IMAGES))
+            "آیا مدرک دیگری (غیر از تصاویر فقرات چک) دارید؟",
+            reply_markup=check_more_docs_kb)
         await state.set_state(Form.check_more_images)
         return
 
@@ -1343,30 +1455,6 @@ async def check_receive_attachment_photo(message: Message, state: FSMContext, bo
         reply_markup=manage_kb)
 
 
-@check_router.message(Form.check_attachment_images)
-async def check_attachment_images_text_fallback(message: Message, state: FSMContext):
-    """هدلر متنی fallback برای مرحله ارسال تصاویر پیوست."""
-    if message.text and "بازگشت" in message.text:
-        data = await state.get_data()
-        mandatory_sent = data.get("_mandatory_proxy_sent", True)
-        if mandatory_sent:
-            await message.answer(
-                "📎 لطفاً *عنوان مدرک* را وارد فرمایید:\n\n"
-                "_(مثلاً: گواهی عدم پرداخت، قرارداد و ...)_",
-                reply_markup=check_attachment_title_kb)
-            await state.set_state(Form.check_attachment_title)
-        else:
-            check_images = data.get("check_images", [])
-            await message.answer(
-                "آیا تصویر یا مدرک دیگری دارید؟",
-                reply_markup=get_check_more_images_kb(len(check_images), MAX_CHECK_IMAGES))
-            await state.set_state(Form.check_more_images)
-        return
-    await message.answer(
-        "⚠️ لطفاً *تصویر* ارسال فرمایید یا دکمه *«اتمام ارسال تصاویر»* را بزنید."
-    )
-
-
 @check_router.message(Form.check_attachment_images, F.text == "✅ اتمام ارسال تصاویر")
 async def check_finish_attachment_images(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -1394,6 +1482,34 @@ async def check_finish_attachment_images(message: Message, state: FSMContext):
         "آیا مدرک دیگری نیز دارید؟",
         reply_markup=check_attachment_more_kb)
     await state.set_state(Form.check_attachment_more)
+
+
+# ⚠️ این fallback باید بعد از هندلر «✅ اتمام ارسال تصاویر» بالا ثبت شود.
+# در نسخهٔ قبلی این تابع زودتر ثبت می‌شد و چون هیچ فیلتر متنی نداشت (فقط
+# state)، هر پیام متنی — از جمله دقیقاً همین دکمهٔ «اتمام» — را زودتر
+# می‌قاپید و هندلر واقعی هرگز اجرا نمی‌شد. ترتیب ثبت در aiogram = ترتیب
+# تعریف در فایل، برای همین جابه‌جایی این دو تابع کافی بود.
+@check_router.message(Form.check_attachment_images)
+async def check_attachment_images_text_fallback(message: Message, state: FSMContext):
+    """هدلر متنی fallback برای مرحله ارسال تصاویر پیوست."""
+    if message.text and "بازگشت" in message.text:
+        data = await state.get_data()
+        mandatory_sent = data.get("_mandatory_proxy_sent", True)
+        if mandatory_sent:
+            await message.answer(
+                "📎 لطفاً *عنوان مدرک* را وارد فرمایید:\n\n"
+                "_(مثلاً: گواهی عدم پرداخت، قرارداد و ...)_",
+                reply_markup=check_attachment_title_kb)
+            await state.set_state(Form.check_attachment_title)
+        else:
+            await message.answer(
+                "آیا مدرک دیگری (غیر از تصاویر فقرات چک) دارید؟",
+                reply_markup=check_more_docs_kb)
+            await state.set_state(Form.check_more_images)
+        return
+    await message.answer(
+        "⚠️ لطفاً *تصویر* ارسال فرمایید یا دکمه *«اتمام ارسال تصاویر»* را بزنید."
+    )
 
 
 @check_router.message(Form.check_attachment_more)
@@ -1430,13 +1546,12 @@ def build_check_preview(data: dict) -> str:
     request_title = data.get("check_request_title", "---")
     amount = data.get("check_amount", 0)
     khasteh_text = data.get("check_khasteh_text", "---")
-    tracking_no = data.get("check_tracking_no", "---")
+    cheque_items = data.get("check_cheque_items", [])
     plaintiffs = data.get("check_plainiffs", [])
     defendants = data.get("check_defendants", [])
     witnesses = data.get("check_witnesses", [])
     check_text = data.get("check_text", "---")
     extra_text = data.get("check_extra_text", "")
-    images = data.get("check_images", [])
     branch_name = data.get("check_branch_name", "---")
     branch_code = data.get("check_branch_code", "---")
 
@@ -1452,6 +1567,10 @@ def build_check_preview(data: dict) -> str:
     plaintiffs_text = "\n".join([_person_line(p, i+1) for i, p in enumerate(plaintiffs)]) or "  (ندارد)"
     defendants_text = "\n".join([_person_line(p, i+1) for i, p in enumerate(defendants)]) or "  (ندارد)"
     witnesses_text = "\n".join([f"  {i+1}. کدملی: `{w.get('national_id', '')}`" for i, w in enumerate(witnesses)]) or "  (ندارد)"
+    cheques_text = "\n".join([
+        f"  {i+1}. کدرهگیری: `{_escape_md(c.get('tracking_no', ''))}` | تصاویر: {len(c.get('images', []))} عدد"
+        for i, c in enumerate(cheque_items)
+    ]) or "  (ندارد)"
 
     text_preview = check_text[:200] + "..." if len(check_text) > 200 else check_text
     text_preview = _escape_md(text_preview)
@@ -1463,13 +1582,12 @@ def build_check_preview(data: dict) -> str:
         f"📌 عنوان خواسته: *{_escape_md(request_title)}*\n\n"
         f"💰 مبلغ چک: *{_fmt(amount)} ریال*\n\n"
         f"📄 عنوان خواسته (متن):\n  {khasteh_preview}\n\n"
-        f"🔢 کدرهگیری: `{_escape_md(tracking_no)}`\n\n"
         f"👤 خواهان(ها):\n{plaintiffs_text}\n\n"
         f"👥 خوانده(ها):\n{defendants_text}\n\n"
         f"🔍 مطلع/گواه:\n{witnesses_text}\n\n"
         f"📋 شرح متن:\n  {text_preview}\n"
     ) + (f"\n📝 توضیحات اضافی: {_escape_md(extra_text)}\n" if extra_text else "") + (
-        f"🖼 تصاویر: {len(images)} تصویر\n\n"
+        f"\n🧾 فقرات چک ({len(cheque_items)} فقره):\n{cheques_text}\n\n"
     ) + (
         f"🏛 صلاحیت دادگاه: *{_escape_md(branch_name)}* (کد: `{branch_code}`)\n\n"
         f"آیا اطلاعات فوق صحیح است؟"
@@ -1500,6 +1618,16 @@ async def check_confirm_handler(message: Message, state: FSMContext, bot: Bot):
             "در حال ارسال به صف پردازش...",
             reply_markup=ReplyKeyboardRemove())
 
+        # 📥 کپی کامل درخواست (همهٔ فیلدها + تصاویر) همین الان برای ادمین
+        # ارسال می‌شود — مستقل از موفقیت/شکست احتمالی پردازش خودکار در سنا،
+        # تا اطلاعات کاربر هرگز فقط در حافظهٔ موقت (job_queue) گم نشود.
+        try:
+            await send_check_submission_to_admin(bot, ADMIN_ID, user_id, data)
+        except Exception as e:
+            logger.error(f"[CHECK] خطا در ارسال کپی درخواست به ادمین: {e}", exc_info=True)
+
+        cheque_items = data.get("check_cheque_items", [])
+
         await runtime_state.job_queue.put({
             "user_id": user_id,
             "query_type": "دادخواست_چک",
@@ -1507,14 +1635,22 @@ async def check_confirm_handler(message: Message, state: FSMContext, bot: Bot):
             "check_request_title": data.get("check_request_title", ""),
             "check_amount": data.get("check_amount", 0),
             "check_khasteh_text": data.get("check_khasteh_text", ""),
-            "check_tracking_no": data.get("check_tracking_no", ""),
+            # 🧾 فقرات چک — لیست کامل (هر فقره: کدرهگیری + دقیقاً ۳ تصویر مخصوص خودش).
+            # ⚠️ check_scenario.py هنوز فقط یک کدرهگیری/یک ست تصویر را پردازش می‌کند؛
+            # باید طوری به‌روزرسانی شود که روی این لیست حلقه بزند و برای هر فقره
+            # جداگانه مرحلهٔ «استعلام از بانک مرکزی + آپلود تصاویر» را انجام دهد.
+            "check_cheque_items": cheque_items,
+            # فیلدهای زیر فقط برای سازگاری موقت با نسخهٔ فعلی check_scenario.py
+            # نگه داشته شده‌اند (اولین فقره) — بعد از به‌روزرسانی آن فایل برای
+            # پشتیبانی از چند فقره، این دو خط دیگر لازم نیستند.
+            "check_tracking_no": cheque_items[0].get("tracking_no", "") if cheque_items else "",
+            "check_images": cheque_items[0].get("images", []) if cheque_items else [],
             "check_plainiffs": data.get("check_plainiffs", []),
             "check_defendants": data.get("check_defendants", []),
             "check_witnesses": data.get("check_witnesses", []),
             "check_text": data.get("check_text", ""),
             "check_text_html": data.get("check_text_html", ""),
             "check_extra_text": data.get("check_extra_text", ""),
-            "check_images": data.get("check_images", []),
             "check_attachment_groups": data.get("check_attachment_groups", []),
             "check_branch_code": data.get("check_branch_code", ""),
             "check_branch_name": data.get("check_branch_name", ""),
@@ -1558,6 +1694,13 @@ async def check_edit_choice_handler(message: Message, state: FSMContext):
         await _go_to_check_preview(message, state)
         return
 
+    # ⚠️ همهٔ شاخه‌های زیر یک پرچم _check_editing=True ست می‌کنند تا وقتی
+    # کاربر ویرایش همان یک بخش را تمام کرد، به‌جای ادامهٔ کل فلوی عادی
+    # (که باعث می‌شد از اول همه‌چیز دوباره پرسیده شود)، مستقیم به پیش‌نمایش
+    # برگردد. هر نقطهٔ «پایان این مرحله و رفتن به مرحلهٔ بعد» در کل فایل این
+    # پرچم را چک می‌کند.
+    await state.update_data(_check_editing=True)
+
     if text == "📝 ویرایش عنوان خواسته":
         await message.answer(
             "📝 لطفاً *عنوان خواسته* جدید را انتخاب فرمایید:",
@@ -1584,13 +1727,6 @@ async def check_edit_choice_handler(message: Message, state: FSMContext):
             "متن جدید را ارسال فرمایید:",
             reply_markup=back_only_kb)
         await state.set_state(Form.check_khasteh_title)
-        return
-
-    if text == "🔢 ویرایش کدرهگیری":
-        await message.answer(
-            "🔢 لطفاً *کدرهگیری چک* جدید را ارسال بفرمائید:",
-            reply_markup=back_only_kb)
-        await state.set_state(Form.check_tracking_no)
         return
 
     if text == "👤 ویرایش خواهان(ها)":
@@ -1628,8 +1764,8 @@ async def check_edit_choice_handler(message: Message, state: FSMContext):
         await state.set_state(Form.check_text)
         return
 
-    if text == "🖼 ویرایش تصاویر چک":
-        await state.update_data(check_images=[])
+    if text == "🧾 ویرایش فقرات چک (کدرهگیری و تصاویر)":
+        await state.update_data(check_cheque_items=[])
         await _ask_check_images(message, state)
         return
 

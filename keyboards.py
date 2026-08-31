@@ -519,7 +519,7 @@ ezhhar_declarant_add_more_kb = ReplyKeyboardMarkup(
 # کیبورد «افزودن شخص دیگر» — نسخه اختصاصی بخش چک (خوانده به جای مخاطب)
 check_addressee_add_more_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="➕ افزودن خوانده دیگر")],
+        [KeyboardButton(text="➕ افزودن مطلع یا گواه دیگر")],
         [KeyboardButton(text="✅ اتمام و ادامه")],
         [KeyboardButton(text="📞 استعلام شماره تماس")],
         [KeyboardButton(text="🔙 بازگشت")]
@@ -1018,10 +1018,11 @@ check_confirm_kb = ReplyKeyboardMarkup(
 check_edit_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📝 ویرایش عنوان خواسته"), KeyboardButton(text="💰 ویرایش مبلغ چک")],
-        [KeyboardButton(text="📄 ویرایش عنوان خواسته (متن)"), KeyboardButton(text="🔢 ویرایش کدرهگیری")],
+        [KeyboardButton(text="📄 ویرایش عنوان خواسته (متن)")],
         [KeyboardButton(text="👤 ویرایش خواهان(ها)"), KeyboardButton(text="👥 ویرایش خوانده(ها)")],
         [KeyboardButton(text="🔍 ویرایش مطلع/گواه"), KeyboardButton(text="📋 ویرایش شرح متن")],
-        [KeyboardButton(text="🖼 ویرایش تصاویر چک"), KeyboardButton(text="🏛 ویرایش صلاحیت دادگاه")],
+        [KeyboardButton(text="🧾 ویرایش فقرات چک (کدرهگیری و تصاویر)")],
+        [KeyboardButton(text="🏛 ویرایش صلاحیت دادگاه")],
         [KeyboardButton(text="🔙 بازگشت به پیش‌نمایش")],
     ],
     resize_keyboard=True
@@ -1052,6 +1053,31 @@ def get_check_more_images_kb(image_count: int, max_images: int = 3) -> ReplyKeyb
     rows.append([KeyboardButton(text="📎 تصویر یا مدرک دیگر دارم")])
     rows.append([KeyboardButton(text="✅ خیر، ادامه به انتخاب دادگاه")])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def create_check_cheque_count_kb() -> ReplyKeyboardMarkup:
+    """کیبورد انتخاب تعداد فقرات چک (۱ تا ۳۰) — گرید ۵ ستونه."""
+    rows = []
+    row = []
+    for n in range(1, 31):
+        row.append(KeyboardButton(text=str(n)))
+        if len(row) == 5:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([KeyboardButton(text="🔙 بازگشت")])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+check_more_docs_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="📎 تصویر یا مدرک دیگر دارم")],
+        [KeyboardButton(text="✅ خیر، ادامه به انتخاب دادگاه")],
+        [KeyboardButton(text="🔙 بازگشت")],
+    ],
+    resize_keyboard=True
+)
 
 check_attachment_title_kb_first = ReplyKeyboardMarkup(
     keyboard=[

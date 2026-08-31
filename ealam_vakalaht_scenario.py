@@ -237,6 +237,24 @@ async def process_ealam_vakalaht_task(data: dict, bot: Bot):
             lavayeh_bill_no = await _extract_bill_no(sana_page)
             logging.info(f"[EALAM] bill_no: {lavayeh_bill_no}")
 
+            # ══════════════════════════════════════════════════════════
+            # اگر «ثبت موقت» موفق بود ولی کد/شماره لایحه از سامانه قابل
+            # استخراج نبود، ادامه‌ی فرایند (منضمات، ثبت وکالت‌نامه، هزینه،
+            # چاپ) کاملاً ناقص و گمراه‌کننده خواهد بود — دقیقاً همان مشکلی
+            # که در lavayeh_scenario.py رفع شد. اینجا هم باید متوقف شویم.
+            # ══════════════════════════════════════════════════════════
+            if not lavayeh_bill_no:
+                err_msg = "ثبت موقت انجام شد ولی شماره/کد لایحه از سامانه قابل استخراج نبود."
+                await bot.send_message(
+                    user_id,
+                    f"⚠️ *خطا در ثبت موقت:*\n\n«{err_msg}»\n\n"
+                    "فرآیند متوقف شد. لطفاً به مدیریت اطلاع دهید.")
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"❌ [EALAM] bill_no استخراج نشد برای کاربر {user_id} — بررسی صفحه لازم است."
+                )
+                raise EalamFatalError(err_msg)
+
             await _click_goto_main(sana_page, bot, user_id)
             await resilient_sleep(sana_page, 4, bot, user_id)
 

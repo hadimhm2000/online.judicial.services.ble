@@ -139,7 +139,8 @@ async def notify_crash_recovery(bot: Bot, submitted_users: list, unsubmitted_use
                 "🤖 *بابت اختلال پیش‌آمده در سامانه صمیمانه پوزش می‌طلبیم.*\n\n"
                 "درخواست شما قبلاً در سامانه ثبت شده و در حال پردازش/ثبت نهایی است.\n"
                 "مطمئن باشید که موارد شما در روند ثبت قرار گرفته است.\n\n"
-                "در صورت نیاز به پیگیری، لطفاً از منوی اصلی اقدام فرمایید.")
+                "در صورتی که تا ۴۵ دقیقه دیگر موارد شما ارسال نشد، لطفاً به شماره "
+                "09306186888 در بله یا واتس‌اپ پیام ارسال فرمایید.")
             runtime_state._crash_recovered_users[uid] = "submitted"
             runtime_state._crash_recovered_submitted.add(uid)
         except Exception as e:

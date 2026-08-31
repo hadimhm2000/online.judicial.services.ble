@@ -172,13 +172,6 @@ class Form(StatesGroup):
     waiting_for_disrupted_retry = State()  # منتظر تصمیم کاربر برای تکرار بدون پرداخت
 
     # =========================================================
-    # State های بخش اصلاح کدرهگیری نامعتبر (فرصت ۳۰ دقیقه‌ای رایگان)
-    # =========================================================
-    waiting_for_corrected_tracking_code = State()   # منتظر کدرهگیری اصلاح‌شده
-    waiting_for_corrected_doc_category = State()    # منتظر نوع سند برای استعلام رایگان
-    waiting_for_corrected_doc_subcategory = State()  # منتظر زیرشاخه‌ی نوع سند
-
-    # =========================================================
     # State های بخش دعاوی اعتراضی
     # =========================================================
     tn_case_type = State()
@@ -255,7 +248,10 @@ class Form(StatesGroup):
     check_request_title = State()         # انتخاب عنوان خواسته (صدور اجرائیه / مطالبه وجه)
     check_amount = State()                # مبلغ چک به ریال
     check_khasteh_title = State()         # عنوان خواسته (ویرایش متن پیشنهادی)
-    check_tracking_no = State()           # کدرهگیری چک
+    check_tracking_no = State()           # (منسوخ - دیگر در ابتدای فلو استفاده نمی‌شود، برای سازگاری نگه داشته شده)
+    check_cheques_count = State()         # تعداد فقرات چک برای پیوست (۱ تا ۳۰)
+    check_cheque_tracking_no = State()    # کدرهگیری فقره چک جاری
+    check_cheque_images = State()         # تصاویر فقره چک جاری (دقیقاً ۳ تصویر)
     check_plaintiff_person_type = State() # نوع شخصیت خواهان
     check_plaintiff_company_id = State()  # شناسه ملی شرکت خواهان
     check_plaintiff_representative_type = State()  # سمت نماینده خواهان

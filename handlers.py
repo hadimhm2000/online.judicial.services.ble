@@ -103,26 +103,6 @@ def _check_inquiry_limit(user_id: int) -> bool:
         pass
     return info["count"] >= MAX_INQUIRY_ATTEMPTS
 
-
-# ───────────────────────────────────────────────────────────────
-# فرصت رایگان اصلاح «کد رهگیری نامعتبر» (تک‌موردی و دسته‌جمعی)
-# ───────────────────────────────────────────────────────────────
-def _init_bulk_progress_if_needed(user_id: int, cart: list):
-    """اگر بیش از یک آیتم «کد رهگیری» در سبد باشد، پیگیری پیشرفت دسته‌جمعی
-    را برای گزارش نهایی کدهای نامعتبر مقداردهی اولیه می‌کند.
-    آیتم‌های تک (یا انواع دیگر استعلام) نیازی به این پیگیری ندارند —
-    خطای آن‌ها بلافاصله (تک‌موردی) اعلام می‌شود."""
-    tracking_items = [i for i in cart if i.get('query_type') == "کد رهگیری"]
-    if len(tracking_items) > 1:
-        runtime_state.bulk_inquiry_progress[user_id] = {
-            "remaining": len(tracking_items),
-            "invalid": [],
-            "template_job": dict(tracking_items[0]),
-        }
-    else:
-        # پاکسازی هر رکورد قدیمی باقی‌مانده تا با این دسته‌ی جدید قاطی نشود
-        runtime_state.bulk_inquiry_progress.pop(user_id, None)
-
 router = Router()
 
 # ── include کردن روترها ───────────────────────────────────────────────────────
@@ -209,7 +189,6 @@ async def successful_payment_handler(message: types.Message, state: FSMContext, 
         total_fee = data.get('total_payment_sum', 0)
         queue_position = runtime_state.job_queue.qsize()
         queue_note = f"\n📊 موقعیت شما در صف: {queue_position + 1}" if queue_position > 0 else "\n▶️ پردازش بلافاصله آغاز می‌شود."
-        _init_bulk_progress_if_needed(user_id, cart)
 
         for item in cart:
             q_type = item['query_type']
@@ -246,10 +225,19 @@ async def successful_payment_handler(message: types.Message, state: FSMContext, 
 
         # اطلاع‌رسانی به ادمین — بدون parse_mode
         try:
+            items_detail = "\n".join(
+                f"  • {it['query_type']} | کد: {it['tracking_code']} | "
+                f"دسته: {it.get('doc_category','-')}" +
+                (f" / {it.get('doc_subcategory')}" if it.get('doc_subcategory') else "") +
+                (" | با پیوست" if it.get('need_attachments') else " | بدون پیوست")
+                for it in cart
+            )
             admin_msg = (
                 f"💰 پرداخت سبد خرید از طریق کیف پول بله:\n"
                 f"👤 کاربر: {full_name} ({user_id})\n"
+                f"(برای پاسخ مستقیم: /send {user_id})\n"
                 f"🛒 تعداد استعلام: {len(cart)} مورد\n"
+                f"{items_detail}\n"
                 f"💵 مجموع فاکتور: {total_fee:,} تومان\n"
                 f"⏱ زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}\n"
                 f"🎫 payment_id: {payment.telegram_payment_charge_id}"
@@ -257,6 +245,76 @@ async def successful_payment_handler(message: types.Message, state: FSMContext, 
             logging.info(f"[PAYMENT] تلاش ارسال پیام به ادمین ADMIN_ID={ADMIN_ID} (نوع: {type(ADMIN_ID).__name__})")
             admin_result = await bot.send_message(ADMIN_ID, admin_msg)
             logging.info(f"[PAYMENT] اطلاع‌رسانی ادمین سبد خرید موفق. result={admin_result}")
+        except Exception as e:
+            logging.error(f"[PAYMENT] خطا در ارسال اطلاع به ادمین (ADMIN_ID={ADMIN_ID}): {e}", exc_info=True)
+
+    elif data.get("bulk_inquiry_items"):
+        # فلوی استعلام دسته‌جمعی (اکسل)
+        # ⚠️ اصلاحیه: قبلاً این حالت اصلاً بررسی نمی‌شد — چون cart خالی بود،
+        # پرداخت موفق استعلام دسته‌جمعی به شاخهٔ «تک‌موردی» زیر می‌افتاد که
+        # query_type/tracking_code را از data می‌خواند (که برای این فلو
+        # اصلاً پر نیستند، چون آیتم‌ها زیر کلید bulk_inquiry_items بودند نه
+        # فیلدهای تخت) — نتیجه: یک job تقریباً خالی به صف اضافه می‌شد و همهٔ
+        # آیتم‌های واقعی استعلام دسته‌جمعی هرگز پردازش نمی‌شدند.
+        bulk_items = data.get("bulk_inquiry_items", [])
+        total_fee = data.get('bulk_inquiry_total', 0)
+        queue_position = runtime_state.job_queue.qsize()
+        queue_note = f"\n📊 موقعیت شما در صف: {queue_position + 1}" if queue_position > 0 else "\n▶️ پردازش بلافاصله آغاز می‌شود."
+
+        for item in bulk_items:
+            q_type = item['query_type']
+            tracking_code = item['tracking_code']
+            doc_category = item.get('doc_category')
+            doc_subcategory = item.get('doc_subcategory')
+            need_attachments = item.get('need_attachments', False)
+            doc_name = f"{doc_category} - {doc_subcategory}" if doc_subcategory else doc_category
+
+            await log_event(
+                "پرداخت", q_type, full_name, user_id,
+                tracking_code=tracking_code, doc_name=doc_name,
+                payment_status="پرداخت شده (کیف پول بله - دسته‌جمعی)"
+            )
+            await runtime_state.job_queue.put({
+                'user_id': user_id,
+                'query_type': q_type,
+                'tracking_code': tracking_code,
+                'doc_category': doc_category,
+                'doc_subcategory': doc_subcategory,
+                'doc_type': doc_name,
+                'need_attachments': need_attachments,
+                'full_name': full_name,
+                'payment_fee': item.get('fee', 0),
+            })
+
+        await message.answer(
+            f"✅ پرداخت شما ثبت شد!\n\n"
+            f"🛒 تعداد: {len(bulk_items)} استعلام دسته‌جمعی"
+            f"{queue_note}\n\n"
+            f"🔔 نتایج استعلام به صورت خودکار پردازش و ارسال می‌گردد.",
+            reply_markup=restart_kb
+        )
+
+        # اطلاع‌رسانی به ادمین — بدون parse_mode
+        try:
+            items_detail = "\n".join(
+                f"  • {it['query_type']} | کد: {it['tracking_code']} | "
+                f"دسته: {it.get('doc_category','-')}" +
+                (f" / {it.get('doc_subcategory')}" if it.get('doc_subcategory') else "") +
+                (" | با پیوست" if it.get('need_attachments') else " | بدون پیوست")
+                for it in bulk_items
+            )
+            admin_msg = (
+                f"💰 پرداخت استعلام دسته‌جمعی (اکسل) از طریق کیف پول بله:\n"
+                f"👤 کاربر: {full_name} ({user_id})\n"
+                f"(برای پاسخ مستقیم: /send {user_id})\n"
+                f"🛒 تعداد استعلام: {len(bulk_items)} مورد\n"
+                f"{items_detail}\n"
+                f"💵 مجموع فاکتور: {total_fee:,} تومان\n"
+                f"⏱ زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}\n"
+                f"🎫 payment_id: {payment.telegram_payment_charge_id}"
+            )
+            admin_result = await bot.send_message(ADMIN_ID, admin_msg)
+            logging.info(f"[PAYMENT] اطلاع‌رسانی ادمین استعلام دسته‌جمعی موفق. result={admin_result}")
         except Exception as e:
             logging.error(f"[PAYMENT] خطا در ارسال اطلاع به ادمین (ADMIN_ID={ADMIN_ID}): {e}", exc_info=True)
 
@@ -301,10 +359,17 @@ async def successful_payment_handler(message: types.Message, state: FSMContext, 
             admin_msg = (
                 f"💰 پرداخت تک‌موردی از طریق کیف پول بله:\n"
                 f"👤 کاربر: {full_name} ({user_id})\n"
+                f"(برای پاسخ مستقیم: /send {user_id})\n"
                 f"🔹 نوع: {query_type}\n"
             )
             if tracking_code:
                 admin_msg += f"📋 کدرهگیری: {tracking_code}\n"
+            if doc_category:
+                admin_msg += f"📂 دسته سند: {doc_category}"
+                if doc_subcategory:
+                    admin_msg += f" / {doc_subcategory}"
+                admin_msg += "\n"
+            admin_msg += f"📎 نیاز به پیوست: {'بله' if need_attachments else 'خیر'}\n"
             admin_msg += (
                 f"💵 مبلغ: {fee:,} تومان\n"
                 f"⏱ زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}\n"
@@ -422,7 +487,6 @@ async def _process_pay_done(user_id, cart, full_name, total_fee, data, message, 
         # فلوی سبد خرید
         queue_position = runtime_state.job_queue.qsize()
         queue_note = f"\n📊 موقعیت شما در صف: {queue_position + 1}" if queue_position > 0 else "\n▶️ پردازش بلافاصله آغاز می‌شود."
-        _init_bulk_progress_if_needed(user_id, cart)
 
         for item in cart:
             q_type = item['query_type']
@@ -459,11 +523,82 @@ async def _process_pay_done(user_id, cart, full_name, total_fee, data, message, 
 
         # اطلاع‌رسانی به ادمین
         try:
+            items_detail = "\n".join(
+                f"  • {it['query_type']} | کد: {it['tracking_code']} | "
+                f"دسته: {it.get('doc_category','-')}" +
+                (f" / {it.get('doc_subcategory')}" if it.get('doc_subcategory') else "") +
+                (" | با پیوست" if it.get('need_attachments') else " | بدون پیوست")
+                for it in cart
+            )
             admin_msg = (
                 f"💰 پرداخت سبد خرید (دکمه تایید کاربر):\n\n"
                 f"👤 کاربر: {full_name} ({user_id})\n"
+                f"(برای پاسخ مستقیم: /send {user_id})\n"
                 f"🛒 تعداد استعلام: {len(cart)}\n"
+                f"{items_detail}\n"
                 f"💵 مجموع فاکتور: {total_fee:,} تومان\n"
+                f"⏱ زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}"
+            )
+            await bot.send_message(ADMIN_ID, admin_msg)
+        except Exception as e:
+            logging.error(f"[PAY-DONE] خطا در ارسال اطلاع به ادمین: {e}", exc_info=True)
+
+    elif data.get("bulk_inquiry_items"):
+        # فلوی استعلام دسته‌جمعی (اکسل) — تایید دستی
+        # ⚠️ همان اصلاحیهٔ successful_payment_handler، اینجا هم لازم بود.
+        bulk_items = data.get("bulk_inquiry_items", [])
+        bulk_total = data.get('bulk_inquiry_total', 0)
+        queue_position = runtime_state.job_queue.qsize()
+        queue_note = f"\n📊 موقعیت شما در صف: {queue_position + 1}" if queue_position > 0 else "\n▶️ پردازش بلافاصله آغاز می‌شود."
+
+        for item in bulk_items:
+            q_type = item['query_type']
+            tracking_code = item['tracking_code']
+            doc_category = item.get('doc_category')
+            doc_subcategory = item.get('doc_subcategory')
+            need_attachments = item.get('need_attachments', False)
+            doc_name = f"{doc_category} - {doc_subcategory}" if doc_subcategory else doc_category
+
+            await log_event(
+                "پرداخت", q_type, full_name, user_id,
+                tracking_code=tracking_code, doc_name=doc_name,
+                payment_status="پرداخت شده (کیف پول بله - دسته‌جمعی - تایید دستی)"
+            )
+            await runtime_state.job_queue.put({
+                'user_id': user_id,
+                'query_type': q_type,
+                'tracking_code': tracking_code,
+                'doc_category': doc_category,
+                'doc_subcategory': doc_subcategory,
+                'doc_type': doc_name,
+                'need_attachments': need_attachments,
+                'full_name': full_name,
+                'payment_fee': item.get('fee', 0),
+            })
+
+        await callback.message.answer(
+            f"✅ پرداخت شما ثبت شد!\n\n"
+            f"🛒 تعداد: {len(bulk_items)} استعلام دسته‌جمعی"
+            f"{queue_note}\n\n"
+            f"🔔 نتایج استعلام به صورت خودکار پردازش و ارسال می‌گردد.",
+            reply_markup=restart_kb
+        )
+
+        try:
+            items_detail = "\n".join(
+                f"  • {it['query_type']} | کد: {it['tracking_code']} | "
+                f"دسته: {it.get('doc_category','-')}" +
+                (f" / {it.get('doc_subcategory')}" if it.get('doc_subcategory') else "") +
+                (" | با پیوست" if it.get('need_attachments') else " | بدون پیوست")
+                for it in bulk_items
+            )
+            admin_msg = (
+                f"💰 پرداخت استعلام دسته‌جمعی (دکمه تایید کاربر):\n\n"
+                f"👤 کاربر: {full_name} ({user_id})\n"
+                f"(برای پاسخ مستقیم: /send {user_id})\n"
+                f"🛒 تعداد استعلام: {len(bulk_items)}\n"
+                f"{items_detail}\n"
+                f"💵 مجموع فاکتور: {bulk_total:,} تومان\n"
                 f"⏱ زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}"
             )
             await bot.send_message(ADMIN_ID, admin_msg)
@@ -511,10 +646,17 @@ async def _process_pay_done(user_id, cart, full_name, total_fee, data, message, 
             admin_msg = (
                 f"💰 پرداخت تک‌موردی (دکمه تایید کاربر):\n"
                 f"👤 کاربر: {full_name} ({user_id})\n"
+                f"(برای پاسخ مستقیم: /send {user_id})\n"
                 f"🔹 نوع: {query_type}\n"
             )
             if tracking_code:
                 admin_msg += f"📋 کدرهگیری: {tracking_code}\n"
+            if doc_category:
+                admin_msg += f"📂 دسته سند: {doc_category}"
+                if doc_subcategory:
+                    admin_msg += f" / {doc_subcategory}"
+                admin_msg += "\n"
+            admin_msg += f"📎 نیاز به پیوست: {'بله' if need_attachments else 'خیر'}\n"
             admin_msg += (
                 f"💵 مبلغ: {fee:,} تومان\n"
                 f"⏱ زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}"
@@ -803,8 +945,9 @@ async def cmd_start(message: types.Message, state: FSMContext):
                 await message.answer(
                     "🤖 *بابت اختلال پیش‌آمده در سامانه صمیمانه پوزش می‌طلبیم.*\n\n"
                     "درخواست شما قبلاً در سامانه ثبت شده و در حال پردازش است.\n"
-                    "مطمئن باشید که موارد شما در روند ثبت قرار گرفته است.\n"
-                    "لطفاً مجدداً از منوی اصلی اقدام فرمایید.")
+                    "مطمئن باشید که موارد شما در روند ثبت قرار گرفته است.\n\n"
+                    "در صورتی که تا ۴۵ دقیقه دیگر موارد شما ارسال نشد، لطفاً به شماره "
+                    "09306186888 در بله یا واتس‌اپ پیام ارسال فرمایید.")
             else:
                 # کاربر هنوز ثبت نکرده — عذرخواهی و درخواست تلاش مجدد
                 await message.answer(
@@ -1185,137 +1328,6 @@ async def process_doc_subcategory(message: types.Message, state: FSMContext):
     await state.update_data(doc_subcategory=message.text)
     await message.answer("📋 آیا نیاز به دریافت فایل‌های پیوست (منضمات) دارید؟", reply_markup=attachments_kb)
     await state.set_state(Form.waiting_for_attachments_opt)
-
-
-# ───────────────────────────────────────────────────────────────
-# فلوی اصلاح «کد رهگیری نامعتبر» — فرصت رایگان ۳۰ دقیقه‌ای
-# ───────────────────────────────────────────────────────────────
-@router.message(Form.waiting_for_corrected_tracking_code)
-async def process_corrected_tracking_code(message: types.Message, state: FSMContext):
-    """کاربر در حال ارسال کدرهگیری اصلاح‌شده (پس از خطای «کدرهگیری نامعتبر») است."""
-    if not message.text:
-        return
-    user_id = message.from_user.id
-    retry_info = runtime_state.invalid_tracking_retry.get(user_id)
-    if not retry_info:
-        await message.answer(
-            "⚠️ فرصت اصلاح رایگان شما یافت نشد یا قبلاً استفاده شده است. لطفاً از منوی اصلی دوباره اقدام کنید:",
-            reply_markup=get_main_menu_kb(user_id))
-        await state.set_state(Form.main_menu)
-        return
-    if datetime.datetime.now() > retry_info["expires_at"]:
-        runtime_state.invalid_tracking_retry.pop(user_id, None)
-        await message.answer(
-            f"⏰ بازه‌ی {runtime_state.INVALID_TRACKING_RETRY_MINUTES} دقیقه‌ای فرصت رایگان شما به پایان رسیده است.\n"
-            f"لطفاً مجدداً از منوی اصلی اقدام کنید:",
-            reply_markup=get_main_menu_kb(user_id))
-        await state.set_state(Form.main_menu)
-        return
-
-    clean_code = message.text.translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')).replace(" ", "").strip()
-    if not re.match(r'^[0-9]+$', clean_code):
-        await message.answer("⚠️ فرمت نامعتبر است. فقط عدد ارسال کنید:")
-        return
-    if not _is_valid_tracking_code(clean_code):
-        await message.answer(
-            "⚠️ کد رهگیری نامعتبر است.\n"
-            "کد رهگیری باید ۱۶ رقم باشد و با یکی از سال‌های ۱۳۹۴ تا ۱۴۰۶ (یعنی اعداد ۱۳۹۴۲۲۰ الی ۱۴۰۶۲۲۰) شروع شود.\n"
-            "لطفاً کد را دوباره بررسی و ارسال فرمایید:"
-        )
-        return
-
-    await state.update_data(corrected_tracking_code=clean_code)
-    await message.answer("مربوط به کدام دسته است؟", reply_markup=doc_category_kb)
-    await state.set_state(Form.waiting_for_corrected_doc_category)
-
-
-@router.message(Form.waiting_for_corrected_doc_category)
-async def process_corrected_doc_category(message: types.Message, state: FSMContext):
-    category = message.text
-    if category == "🔙 بازگشت به منوی قبل" or category == "🔙 بازگشت":
-        await message.answer("کدرهگیری اصلاح‌شده را ارسال کنید:", reply_markup=back_only_kb)
-        await state.set_state(Form.waiting_for_corrected_tracking_code)
-        return
-    await state.update_data(corrected_doc_category=category)
-    if category in SUB_MENUS:
-        await message.answer(f"نوع دقیق «{category}» را مشخص کنید:", reply_markup=create_submenu_kb(category))
-        await state.set_state(Form.waiting_for_corrected_doc_subcategory)
-    else:
-        await _enqueue_corrected_inquiry(message, state, doc_subcategory=None)
-
-
-@router.message(Form.waiting_for_corrected_doc_subcategory)
-async def process_corrected_doc_subcategory(message: types.Message, state: FSMContext):
-    if message.text == "🔙 بازگشت به منوی قبل":
-        await message.answer("دسته‌بندی اصلی را انتخاب کنید:", reply_markup=doc_category_kb)
-        await state.set_state(Form.waiting_for_corrected_doc_category)
-        return
-    await _enqueue_corrected_inquiry(message, state, doc_subcategory=message.text)
-
-
-async def _enqueue_corrected_inquiry(message: types.Message, state: FSMContext, doc_subcategory):
-    """پس از دریافت کدرهگیری اصلاح‌شده و نوع سند، استعلام را به‌صورت رایگان
-    (بدون فاکتور/پرداخت مجدد) در صف قرار می‌دهد و یک واحد از فرصت
-    ۳۰ دقیقه‌ای اصلاح رایگان کسر می‌کند."""
-    user_id = message.from_user.id
-    retry_info = runtime_state.invalid_tracking_retry.get(user_id)
-    if not retry_info or datetime.datetime.now() > retry_info["expires_at"]:
-        runtime_state.invalid_tracking_retry.pop(user_id, None)
-        await message.answer(
-            f"⏰ بازه‌ی {runtime_state.INVALID_TRACKING_RETRY_MINUTES} دقیقه‌ای فرصت رایگان شما به پایان رسیده است.\n"
-            f"لطفاً مجدداً از منوی اصلی اقدام کنید:",
-            reply_markup=get_main_menu_kb(user_id))
-        await state.set_state(Form.main_menu)
-        return
-
-    data = await state.get_data()
-    tracking_code = data.get("corrected_tracking_code", "")
-    doc_category = data.get("corrected_doc_category", "")
-    doc_name = f"{doc_category} - {doc_subcategory}" if doc_subcategory else doc_category
-
-    template_job = retry_info.get("template_job", {}) or {}
-    job_data = dict(template_job)
-    job_data['user_id'] = user_id
-    job_data['query_type'] = "کد رهگیری"
-    job_data['tracking_code'] = tracking_code
-    job_data['doc_category'] = doc_category
-    job_data['doc_subcategory'] = doc_subcategory
-    job_data['doc_type'] = doc_name
-    job_data['full_name'] = job_data.get('full_name') or message.from_user.full_name
-    job_data['payment_fee'] = 0
-    job_data['need_attachments'] = template_job.get('need_attachments', False)
-    job_data.pop('fee', None)
-    job_data.pop('total_attachments', None)
-    job_data.pop('row_index', None)
-
-    await log_event(
-        "ثبت", "کد رهگیری", message.from_user.full_name, user_id,
-        tracking_code=tracking_code, doc_name=doc_name,
-        payment_status="استعلام رایگان (اصلاح کدرهگیری نامعتبر)"
-    )
-
-    queue_position = runtime_state.job_queue.qsize()
-    queue_note = f"\n📊 موقعیت شما در صف: {queue_position + 1}" if queue_position > 0 else "\n▶️ پردازش بلافاصله آغاز می‌شود."
-    await message.answer(
-        f"✅ کدرهگیری اصلاح‌شده ثبت شد؛ این استعلام رایگان است.{queue_note}",
-        reply_markup=restart_kb)
-    await runtime_state.job_queue.put(job_data)
-
-    retry_info["remaining"] -= 1
-    if retry_info["remaining"] <= 0:
-        runtime_state.invalid_tracking_retry.pop(user_id, None)
-
-    await state.clear()
-
-    try:
-        await message.bot.send_message(
-            ADMIN_ID,
-            f"🔄 استعلام رایگان پس از اصلاح کدرهگیری نامعتبر:\n"
-            f"👤 کاربر: {user_id}\n"
-            f"کد رهگیری جدید: {tracking_code}\n"
-            f"نوع: {doc_name}")
-    except Exception:
-        pass
 
 @router.message(Form.waiting_for_attachments_opt)
 async def process_attachments_opt(message: types.Message, state: FSMContext):
@@ -2334,7 +2346,6 @@ async def bulk_inquiry_confirm_handler(message: types.Message, state: FSMContext
             f"شما در لیست کاربران معاف هستید."
             f"\nتعداد {len(items)} استعلام در صف پردازش قرار گرفت.{queue_note}",
             reply_markup=restart_kb)
-        _init_bulk_progress_if_needed(message.from_user.id, items)
         for item in items:
             await log_event(
                 "پرداخت", item['query_type'], message.from_user.full_name, message.from_user.id,
