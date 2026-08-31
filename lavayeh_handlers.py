@@ -24,7 +24,7 @@ from sheets import log_event
 
 from states import Form
 from keyboards import (
-    flow_type_kb, main_menu_kb, restart_kb, back_only_kb,
+    flow_type_kb, main_menu_kb, restart_kb, back_only_kb, text_input_method_kb,
     lavayeh_title_kb, LAVAYEH_TITLES,
     lavayeh_tracking_method_kb,
     lavayeh_branch_input_method_kb,
@@ -1489,9 +1489,9 @@ async def lavayeh_get_person_type(message: Message, state: FSMContext):
         if await _maybe_return_to_preview(data, message, state):
             return
         await message.answer(
-            "📄 *شرح متن لایحه:*\n\nلطفاً متن کامل لایحه خود را ارسال فرمایید.\n\n💡 همچنین می‌توانید فایل .docx را ارسال کنید (با حفظ فرمت بولد و ...).",
-            reply_markup=ReplyKeyboardRemove())
-        await state.set_state(Form.lavayeh_text)
+            "📄 *شرح متن لایحه:*\n\nلطفاً روش ورود متن را انتخاب فرمایید:",
+            reply_markup=text_input_method_kb)
+        await state.set_state(Form.lavayeh_text_choice)
         return
 
     if text not in ["شخص حقیقی", "شخص حقوقی", "وکیل"]:
@@ -1912,10 +1912,34 @@ async def ealam_in_lavayeh_stamp_type(message: Message, state: FSMContext):
 async def _ask_lavayeh_text_ealam(message: Message, state: FSMContext):
     await message.answer(
         "📄 *شرح متن لایحه اعلام وکالت:*\n\n"
-        "لطفاً متن لایحه را ارسال فرمایید.\n"
+        "لطفاً روش ورود متن را انتخاب فرمایید.\n"
         "⚠️ *توجه:* متن پس از ارسال قابل ویرایش نمی‌باشد.",
-        reply_markup=ReplyKeyboardRemove())
-    await state.set_state(Form.ealam_vakalaht_text)
+        reply_markup=text_input_method_kb)
+    await state.set_state(Form.ealam_vakalaht_text_choice)
+
+
+@lavayeh_router.message(Form.ealam_vakalaht_text_choice)
+async def ealam_in_lavayeh_text_choice_handler(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if text == "⌨️ تایپ مستقیم متن":
+        await message.answer(
+            "📝 لطفاً *متن لایحه اعلام وکالت* را ارسال فرمایید:",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.ealam_vakalaht_text)
+        return
+    if text == "📎 ارسال فایل ورد (.docx)":
+        await message.answer(
+            "📎 لطفاً *فایل ورد (.docx)* را ارسال فرمایید:\n\n"
+            "💡 متن داخل فایل عیناً (با حفظ فرمت بولد و ...) در سامانه درج خواهد شد.",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.ealam_vakalaht_text)
+        return
+    if text == "🔙 بازگشت":
+        await _ask_lavayeh_text_ealam(message, state)
+        return
+    await message.answer(
+        "⚠️ لطفاً یکی از گزینه‌های موجود را انتخاب فرمایید:",
+        reply_markup=text_input_method_kb)
 
 
 @lavayeh_router.message(Form.ealam_vakalaht_text)
@@ -1951,6 +1975,9 @@ async def ealam_in_lavayeh_get_text(message: Message, state: FSMContext, bot: Bo
         # باید ابتدا متن لایحه را بپرسیم
         await _ask_lavayeh_text_ealam(message, state)
         return
+    if text.strip() == "🔙 بازگشت":
+        await _ask_lavayeh_text_ealam(message, state)
+        return
     if not text:
         await message.answer("⚠️ لطفاً متن را به صورت متن ارسال فرمایید \nیا فایل .docx ارسال نمایید.")
         return
@@ -1972,6 +1999,36 @@ async def ealam_in_lavayeh_get_text(message: Message, state: FSMContext, bot: Bo
         bot=bot,
         on_complete=_on_ealam_text_complete,
         first_part_reply="⏳ در حال دریافت متن لایحه اعلام وکالت...")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# مرحله ۵ — انتخاب روش ورود شرح متن لایحه (تایپ مستقیم / فایل ورد)
+# ══════════════════════════════════════════════════════════════════════════════
+@lavayeh_router.message(Form.lavayeh_text_choice)
+async def lavayeh_text_choice_handler(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if text == "⌨️ تایپ مستقیم متن":
+        await message.answer(
+            "📝 لطفاً *متن کامل لایحه* خود را ارسال فرمایید:",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.lavayeh_text)
+        return
+    if text == "📎 ارسال فایل ورد (.docx)":
+        await message.answer(
+            "📎 لطفاً *فایل ورد (.docx)* را ارسال فرمایید:\n\n"
+            "💡 متن داخل فایل عیناً (با حفظ فرمت بولد و ...) در سامانه درج خواهد شد.",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.lavayeh_text)
+        return
+    if text == "🔙 بازگشت":
+        await message.answer(
+            "👤 لطفاً مشخص فرمایید ارائه‌دهنده لایحه *جزو کدام دسته* می‌باشد:",
+            reply_markup=create_person_type_kb())
+        await state.set_state(Form.lavayeh_person_type)
+        return
+    await message.answer(
+        "⚠️ لطفاً یکی از گزینه‌های موجود را انتخاب فرمایید:",
+        reply_markup=text_input_method_kb)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2006,6 +2063,13 @@ async def lavayeh_get_text(message: Message, state: FSMContext, bot: Bot):
 
     if not message.text:
         await message.answer("⚠️ لطفاً شرح متن لایحه را به صورت متن ارسال فرمایید \nیا فایل .docx ارسال نمایید.")
+        return
+
+    if message.text.strip() == "🔙 بازگشت":
+        await message.answer(
+            "📄 *شرح متن لایحه:*\n\nلطفاً روش ورود متن را انتخاب فرمایید:",
+            reply_markup=text_input_method_kb)
+        await state.set_state(Form.lavayeh_text_choice)
         return
 
     from text_collector import collect_text_part
@@ -2071,9 +2135,9 @@ async def lavayeh_get_attachment_title(message: Message, state: FSMContext):
     if text == "🔙 بازگشت":
         # بازگشت به مرحله متن لایحه
         await message.answer(
-            "📄 *شرح متن لایحه:*\n\nلطفاً متن کامل لایحه خود را ارسال فرمایید.\n\n💡 همچنین می‌توانید فایل .docx را ارسال کنید (با حفظ فرمت بولد و ...).",
-            reply_markup=ReplyKeyboardRemove())
-        await state.set_state(Form.lavayeh_text)
+            "📄 *شرح متن لایحه:*\n\nلطفاً روش ورود متن را انتخاب فرمایید:",
+            reply_markup=text_input_method_kb)
+        await state.set_state(Form.lavayeh_text_choice)
         return
 
     title = "مستندات" if text == "🔹 عنوان مهم نیست (صرفا درج شود مستندات)" else text

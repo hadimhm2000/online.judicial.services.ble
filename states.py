@@ -36,6 +36,7 @@ class Form(StatesGroup):
     lavayeh_representative_type = State()
     lavayeh_national_id = State()
     lavayeh_more_persons = State()
+    lavayeh_text_choice = State()  # انتخاب روش ورود شرح متن (تایپ مستقیم / فایل ورد)
     lavayeh_text = State()
     lavayeh_attachment_title = State()
     lavayeh_images = State()
@@ -79,6 +80,7 @@ class Form(StatesGroup):
     ealam_vakalaht_claim_type = State()
     ealam_vakalaht_claim_amount = State()
     ealam_vakalaht_stamp_type = State()
+    ealam_vakalaht_text_choice = State()  # انتخاب روش ورود شرح متن (تایپ مستقیم / فایل ورد)
     ealam_vakalaht_text = State()
     ealam_vakalaht_attachment_title = State()
     ealam_vakalaht_images = State()
@@ -116,6 +118,7 @@ class Form(StatesGroup):
     ezhhar_subject = State()
 
     # مرحله ۴: شرح متن
+    ezhhar_text_choice = State()  # انتخاب روش ورود شرح متن (تایپ مستقیم / فایل ورد)
     ezhhar_text = State()
 
     # مرحله ۵: مدارک (پیوست‌ها)

@@ -33,7 +33,7 @@ from exempt_users import is_exempt_user
 from sheets import log_event
 from states import Form
 from keyboards import (
-    main_menu_kb, restart_kb, back_only_kb,
+    main_menu_kb, restart_kb, back_only_kb, text_input_method_kb,
     representative_type_kb,
     lavayeh_attachment_more_kb,
     ezhhar_confirm_kb, ezhhar_edit_kb,
@@ -460,10 +460,42 @@ async def ezhhar_subject_handler(message: Message, state: FSMContext):
 
     await message.answer(
         f"✅ عنوان «*{subject}*» ثبت شد.\n\n"
-        "*مرحله ۴:* لطفاً *شرح متن اظهارنامه* را به صورت کامل و تایپ‌شده ارسال فرمایید:\n\n"
+        "*مرحله ۴:* لطفاً روش ورود *شرح متن اظهارنامه* را انتخاب فرمایید:\n\n"
         "⚠️ *توجه:* متن پس از ارسال قابل ویرایش نمی‌باشد.",
-        reply_markup=ReplyKeyboardRemove())
-    await state.set_state(Form.ezhhar_text)
+        reply_markup=text_input_method_kb)
+    await state.set_state(Form.ezhhar_text_choice)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# مرحله ۴ — انتخاب روش ورود شرح متن اظهارنامه (تایپ مستقیم / فایل ورد)
+# ══════════════════════════════════════════════════════════════════════════════
+@ezhharnameh_router.message(Form.ezhhar_text_choice)
+async def ezhhar_text_choice_handler(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if text == "⌨️ تایپ مستقیم متن":
+        await message.answer(
+            "📝 لطفاً *شرح متن اظهارنامه* را ارسال فرمایید:",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.ezhhar_text)
+        return
+    if text == "📎 ارسال فایل ورد (.docx)":
+        await message.answer(
+            "📎 لطفاً *فایل ورد (.docx)* را ارسال فرمایید:\n\n"
+            "💡 متن داخل فایل عیناً (با حفظ فرمت بولد و ...) در سامانه درج خواهد شد.",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.ezhhar_text)
+        return
+    if text == "🔙 بازگشت":
+        data = await state.get_data()
+        addressees = data.get("ezhhar_addressees", [])
+        await message.answer(
+            "🔹 لطفاً *موضوع اظهارنامه* را انتخاب یا تایپ فرمایید:",
+            reply_markup=ezhhar_subject_kb)
+        await state.set_state(Form.ezhhar_subject)
+        return
+    await message.answer(
+        "⚠️ لطفاً یکی از گزینه‌های موجود را انتخاب فرمایید:",
+        reply_markup=text_input_method_kb)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -516,6 +548,13 @@ async def ezhhar_text_handler(message: Message, state: FSMContext, bot: Bot):
 
     if not message.text:
         await message.answer("⚠️ لطفاً شرح متن را به صورت متن ارسال فرمایید.\nیا فایل .docx ارسال نمایید.")
+        return
+
+    if message.text.strip() == "🔙 بازگشت":
+        await message.answer(
+            "*مرحله ۴:* لطفاً روش ورود *شرح متن اظهارنامه* را انتخاب فرمایید:",
+            reply_markup=text_input_method_kb)
+        await state.set_state(Form.ezhhar_text_choice)
         return
 
     from text_collector import collect_text_part
@@ -594,9 +633,9 @@ async def ezhhar_attachment_title_handler(message: Message, state: FSMContext):
     if text == "🔙 بازگشت":
         # بازگشت به مرحله متن اظهارنامه
         await message.answer(
-            "*مرحله ۴:* لطفاً *شرح متن اظهارنامه* را به صورت کامل ارسال فرمایید:",
-            reply_markup=ReplyKeyboardRemove())
-        await state.set_state(Form.ezhhar_text)
+            "*مرحله ۴:* لطفاً روش ورود *شرح متن اظهارنامه* را انتخاب فرمایید:",
+            reply_markup=text_input_method_kb)
+        await state.set_state(Form.ezhhar_text_choice)
         return
 
     if text == "🔹 عنوان مهم نیست (صرفا درج شود مستندات)":
@@ -1075,8 +1114,10 @@ async def ezhhar_edit_choice_handler(message: Message, state: FSMContext):
         return
 
     if text == "📄 ویرایش شرح متن":
-        await message.answer("📄 لطفاً متن جدید را ارسال فرمایید:", reply_markup=ReplyKeyboardRemove())
-        await state.set_state(Form.ezhhar_text)
+        await message.answer(
+            "📄 لطفاً روش ورود *متن جدید* را انتخاب فرمایید:",
+            reply_markup=text_input_method_kb)
+        await state.set_state(Form.ezhhar_text_choice)
         return
 
     if text == "🖼 ویرایش مدارک":

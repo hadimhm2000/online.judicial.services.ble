@@ -53,7 +53,16 @@ from keyboards import (
     check_attachment_more_kb,
     check_docx_option_kb,
     bulk_input_method_kb)
-from branches import create_branches_keyboard, ROOT_NODES, ID_TO_INDEX
+from check_branches_tree import (
+    create_check_branch_keyboard,
+    ROOT_NODES as CHECK_ROOT_NODES,
+    PATH_TO_INDEX as CHECK_PATH_TO_INDEX,
+    PATH_TO_ROW as CHECK_PATH_TO_ROW,
+    get_children as check_get_children,
+    has_children as check_has_children,
+    load_check_units,
+    INDEX_TO_PATH as CHECK_INDEX_TO_PATH,
+)
 from upload_helpers import download_images_from_bale
 from config import ADMIN_ID
 from admin_forward import send_check_submission_to_admin
@@ -1053,16 +1062,37 @@ async def _ask_check_text(message: Message, state: FSMContext):
 
 
 @check_router.message(Form.check_text)
-async def check_text_handler(message: Message, state: FSMContext):
+async def check_text_handler(message: Message, state: FSMContext, bot: Bot):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
     if message.document:
-        # فایل ورد دریافت شد
+        # فایل ورد دریافت شد — استخراج متن/HTML عیناً مانند خود فایل
         doc = message.document
-        if doc.file_name and doc.file_name.endswith((".doc", ".docx")):
-            await state.update_data(check_docx_file_id=doc.file_id, check_docx_file_name=doc.file_name)
-            # مستقیماً به مرحله تصاویر برو
-            if await _check_maybe_return_to_preview(message, state):
-                return
-            await _ask_check_images(message, state)
+        if doc.file_name and doc.file_name.lower().endswith(".docx"):
+            from text_collector import process_docx_input
+
+            async def _on_check_docx_complete(final_text, final_html, st, b, cid, was_editing, char_count):
+                await b.send_message(cid, f"✅ متن دادخواست از فایل ورد دریافت شد ({char_count} کاراکتر).")
+                if await _check_maybe_return_to_preview(message, st):
+                    return
+                await _ask_check_images(message, st)
+
+            await process_docx_input(
+                message=message,
+                user_id=user_id,
+                chat_id=chat_id,
+                state=state,
+                bot=bot,
+                on_complete=_on_check_docx_complete,
+                text_state_key="check_text",
+                html_state_key="check_text_html",
+                processing_msg="⏳ در حال پردازش فایل ورد...")
+            return
+        if doc.file_name and doc.file_name.lower().endswith(".doc"):
+            await message.answer(
+                "⚠️ فقط فرمت *.docx* پشتیبانی می‌شود (نسخه قدیمی *.doc* پشتیبانی نمی‌شود).\n"
+                "لطفاً فایل را با فرمت .docx ذخیره و مجدداً ارسال فرمایید.")
             return
 
     if not message.text:
@@ -1078,7 +1108,8 @@ async def check_text_handler(message: Message, state: FSMContext):
 
     if text == "📎 ارسال فایل ورد (.docx)":
         await message.answer(
-            "📎 لطفاً *فایل ورد (.docx)* را ارسال فرمایید:",
+            "📎 لطفاً *فایل ورد (.docx)* را ارسال فرمایید:\n\n"
+            "💡 متن داخل فایل عیناً (با حفظ فرمت بولد و ...) در سامانه درج خواهد شد.",
             reply_markup=back_only_kb)
         await state.set_state(Form.check_text_input)
         return
@@ -1094,22 +1125,44 @@ async def check_text_handler(message: Message, state: FSMContext):
         return
 
     # متن شرح دریافت شد — مستقیماً به تصاویر برو
-    await state.update_data(check_text=message.text)
+    await state.update_data(check_text=message.text, check_text_html="")
     if await _check_maybe_return_to_preview(message, state):
         return
     await _ask_check_images(message, state)
 
 
 @check_router.message(Form.check_text_input)
-async def check_text_input_handler(message: Message, state: FSMContext):
+async def check_text_input_handler(message: Message, state: FSMContext, bot: Bot):
     """دریافت متن تایپ‌شده یا فایل ورد برای شرح متن."""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
     if message.document:
         doc = message.document
-        if doc.file_name and doc.file_name.endswith((".doc", ".docx")):
-            await state.update_data(check_docx_file_id=doc.file_id, check_docx_file_name=doc.file_name)
-            if await _check_maybe_return_to_preview(message, state):
-                return
-            await _ask_check_images(message, state)
+        if doc.file_name and doc.file_name.lower().endswith(".docx"):
+            from text_collector import process_docx_input
+
+            async def _on_check_docx_complete(final_text, final_html, st, b, cid, was_editing, char_count):
+                await b.send_message(cid, f"✅ متن دادخواست از فایل ورد دریافت شد ({char_count} کاراکتر).")
+                if await _check_maybe_return_to_preview(message, st):
+                    return
+                await _ask_check_images(message, st)
+
+            await process_docx_input(
+                message=message,
+                user_id=user_id,
+                chat_id=chat_id,
+                state=state,
+                bot=bot,
+                on_complete=_on_check_docx_complete,
+                text_state_key="check_text",
+                html_state_key="check_text_html",
+                processing_msg="⏳ در حال پردازش فایل ورد...")
+            return
+        if doc.file_name and doc.file_name.lower().endswith(".doc"):
+            await message.answer(
+                "⚠️ فقط فرمت *.docx* پشتیبانی می‌شود (نسخه قدیمی *.doc* پشتیبانی نمی‌شود).\n"
+                "لطفاً فایل را با فرمت .docx ذخیره و مجدداً ارسال فرمایید.")
             return
 
     if not message.text:
@@ -1120,7 +1173,7 @@ async def check_text_input_handler(message: Message, state: FSMContext):
         return
 
     # متن شرح دریافت شد
-    await state.update_data(check_text=message.text)
+    await state.update_data(check_text=message.text, check_text_html="")
     if await _check_maybe_return_to_preview(message, state):
         return
     await _ask_check_images(message, state)
@@ -1533,9 +1586,10 @@ async def check_attachment_more_handler(message: Message, state: FSMContext):
 # مرحله ۱۱ — انتخاب صلاحیت دادگاه
 # ══════════════════════════════════════════════════════════════════════════════
 async def _ask_check_branch(message: Message, state: FSMContext):
+    load_check_units()
     await message.answer(
         "🏛 *مرحله ۱۱:* لطفاً از طریق جدول زیر، *صلاحیت دادگاه* خود را انتخاب کنید:",
-        reply_markup=create_branches_keyboard(ROOT_NODES, page=0, parent_id=None))
+        reply_markup=create_check_branch_keyboard(CHECK_ROOT_NODES, page=0, parent_path=None))
     await state.set_state(Form.check_branch_code)
 
 
@@ -1779,81 +1833,80 @@ async def check_edit_choice_handler(message: Message, state: FSMContext):
 # ══════════════════════════════════════════════════════════════════════════════
 # Callback برای انتخاب شعبه (صلاحیت دادگاه)
 # ══════════════════════════════════════════════════════════════════════════════
-@check_router.callback_query(F.data.startswith("br:"))
+@check_router.callback_query(F.data.startswith("cbr:"))
 async def check_branch_callback(callback: CallbackQuery, state: FSMContext):
     current_state = await state.get_state()
     if current_state != Form.check_branch_code:
         return
 
     await callback.answer()
+    load_check_units()
 
     data_parts = callback.data.split(":")
     action = data_parts[1]
 
-    from branches import ID_TO_NODE, get_children, INDEX_TO_ID
-
     if action == "root":
         await callback.message.edit_text(
-            "🏛 *انتخاب صلاحیت دادگاه*\n\n"
-            "لطفاً از لیست زیر انتخاب کنید:",
-            reply_markup=create_branches_keyboard(ROOT_NODES, page=0, parent_id=None))
+            "🏛 *\u0627\u0646\u062a\u062e\u0627\u0628 \u0635\u0644\u0627\u062d\u06cc\u062a \u062f\u0627\u062f\u06af\u0627\u0647*\n\n"
+            "\u0644\u0637\u0641\u0627\u064b \u0627\u0632 \u0644\u06cc\u0633\u062a \u0632\u06cc\u0631 \u0627\u0646\u062a\u062e\u0627\u0628 \u06a9\u0646\u06cc\u062f:",
+            reply_markup=create_check_branch_keyboard(CHECK_ROOT_NODES, page=0, parent_path=None))
         return
 
     idx = int(data_parts[2])
-    node_id = INDEX_TO_ID.get(idx)
+    norm_path = CHECK_INDEX_TO_PATH.get(idx)
 
-    if not node_id or node_id not in ID_TO_NODE:
-        await callback.message.edit_text("❌ خطا: واحد مورد نظر یافت نشد.")
+    if not norm_path or norm_path not in CHECK_PATH_TO_ROW:
+        await callback.message.edit_text("\u274c \u062e\u0637\u0627: \u0648\u0627\u062d\u062f \u0645\u0648\u0631\u062f \u0646\u0638\u0631 \u06cc\u0627\u0641\u062a \u0646\u0634\u062f.")
         return
 
-    node = ID_TO_NODE[node_id]
+    node = CHECK_PATH_TO_ROW[norm_path]
 
     if action == "open":
-        children = get_children(node_id)
+        children = check_get_children(norm_path)
         if not children:
             await callback.message.edit_text(
-                f"ℹ️ واحد «{node.get('UnitName')}» فرزندی ندارد.")
+                f"\u2139\ufe0f \u0648\u0627\u062d\u062f \u00ab{node['name']}\u00bb \u0641\u0631\u0632\u0646\u062f\u06cc \u0646\u062f\u0627\u0631\u062f.")
             return
         page = int(data_parts[3]) if len(data_parts) > 3 else 0
         await callback.message.edit_text(
-            f"📁 *{node.get('UnitName')}*\n\n"
-            "لطفاً یکی از موارد زیر را انتخاب کنید:",
-            reply_markup=create_branches_keyboard(children, page=page, parent_id=node_id))
+            f"\U0001f4c1 *{node['name']}*\n\n"
+            "\u0644\u0637\u0641\u0627\u064b \u06cc\u06a9\u06cc \u0627\u0632 \u0645\u0648\u0627\u0631\u062f \u0632\u06cc\u0631 \u0631\u0627 \u0627\u0646\u062a\u062e\u0627\u0628 \u06a9\u0646\u06cc\u062f:",
+            reply_markup=create_check_branch_keyboard(children, page=page, parent_path=norm_path))
 
     elif action == "page":
         page = int(data_parts[3]) if len(data_parts) > 3 else 0
-        children = get_children(node_id)
+        children = check_get_children(norm_path)
         await callback.message.edit_reply_markup(
-            reply_markup=create_branches_keyboard(children, page=page, parent_id=node_id)
+            reply_markup=create_check_branch_keyboard(children, page=page, parent_path=norm_path)
         )
 
     elif action == "back":
-        parent_id = INDEX_TO_ID.get(idx)
-        if not parent_id or parent_id not in ID_TO_NODE:
+        back_path = CHECK_INDEX_TO_PATH.get(idx)
+        if not back_path or back_path not in CHECK_PATH_TO_ROW:
             await callback.message.edit_text(
-                "🏛 *انتخاب صلاحیت دادگاه*\n\n"
-                "لطفاً از لیست زیر انتخاب کنید:",
-                reply_markup=create_branches_keyboard(ROOT_NODES, page=0, parent_id=None))
+                "\U0001f3db *\u0627\u0646\u062a\u062e\u0627\u0628 \u0635\u0644\u0627\u062d\u06cc\u062a \u062f\u0627\u062f\u06af\u0627\u0647*\n\n"
+                "\u0644\u0637\u0641\u0627\u064b \u0627\u0632 \u0644\u06cc\u0633\u062a \u0632\u06cc\u0631 \u0627\u0646\u062a\u062e\u0627\u0628 \u06a9\u0646\u06cc\u062f:",
+                reply_markup=create_check_branch_keyboard(CHECK_ROOT_NODES, page=0, parent_path=None))
             return
-        parent_node = ID_TO_NODE[parent_id]
-        children = get_children(parent_id)
+        parent_node = CHECK_PATH_TO_ROW[back_path]
+        children = check_get_children(back_path)
         page = int(data_parts[3]) if len(data_parts) > 3 else 0
         await callback.message.edit_text(
-            f"📁 *{parent_node.get('UnitName')}*\n\n"
-            "لطفاً یکی از موارد زیر را انتخاب کنید:",
-            reply_markup=create_branches_keyboard(children, page=page, parent_id=parent_id))
+            f"\U0001f4c1 *{parent_node['name']}*\n\n"
+            "\u0644\u0637\u0641\u0627\u064b \u06cc\u06a9\u06cc \u0627\u0632 \u0645\u0648\u0627\u0631\u062f \u0632\u06cc\u0631 \u0631\u0627 \u0627\u0646\u062a\u062e\u0627\u0628 \u06a9\u0646\u06cc\u062f:",
+            reply_markup=create_check_branch_keyboard(children, page=page, parent_path=back_path))
 
     elif action == "sel":
-        branch_code = node.get("Code", "")
+        branch_code = node.get("code", "")
         if not branch_code:
             await callback.answer(
-                "⚠️ این واحد فاقد کد است و قابل انتخاب نیست.",
+                "\u26a0\ufe0f \u0627\u06cc\u0646 \u0648\u0627\u062d\u062f \u0641\u0627\u0642\u062f \u06a9\u062f \u0627\u0633\u062a \u0648 \u0642\u0627\u0628\u0644 \u0627\u0646\u062a\u062e\u0627\u0628 \u0646\u06cc\u0633\u062a.",
                 show_alert=True
             )
             return
 
-        branch_name = node.get("UnitName", "")
-        branch_path = node.get("Path", "")
+        branch_name = node.get("name", "")
+        branch_path = node.get("path", "")
 
         await state.update_data(
             check_branch_name=branch_name,
@@ -1862,15 +1915,14 @@ async def check_branch_callback(callback: CallbackQuery, state: FSMContext):
         )
 
         await callback.message.answer(
-            f"✅ *دادگاه انتخاب شد:*\n\n"
-            f"📋 نام: *{branch_name}*\n"
-            f"🔢 کد: `{branch_code}`")
+            f"\u2705 *\u062f\u0627\u062f\u06af\u0627\u0647 \u0627\u0646\u062a\u062e\u0627\u0628 \u0634\u062f:*\n\n"
+            f"\U0001f4cb \u0646\u0627\u0645: *{branch_name}*\n"
+            f"\U0001f522 \u06a9\u062f: `{branch_code}`")
 
-        # رفتن به پیش‌نمایش
         await _go_to_check_preview(callback.message, state)
 
     elif action == "info":
         await callback.answer(
-            "⚠️ این واحد فاقد کد است و قابل انتخاب نیست.",
+            "\u26a0\ufe0f \u0627\u06cc\u0646 \u0648\u0627\u062d\u062f \u0641\u0627\u0642\u062f \u06a9\u062f \u0627\u0633\u062a \u0648 \u0642\u0627\u0628\u0644 \u0627\u0646\u062a\u062e\u0627\u0628 \u0646\u06cc\u0633\u062a.",
             show_alert=True
         )
