@@ -772,68 +772,84 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
             await _click_step_label(sana_page, appellant_step, bot, user_id)
             await resilient_sleep(sana_page, 4, bot, user_id)
 
-            for idx, person in enumerate(appellants):
-                ptype = person.get("person_type", "شخص حقیقی")
-                if ptype == "وکیل":
-                    continue  # وکیل در step جداگانه اضافه می‌شود
-
-                await _click_add_btn(sana_page, bot, user_id)
+            if data.get("tn_appellant_query_mode"):
+                # حالت استعلام: حذف افراد انتخاب‌نشده از لیست سامانه
+                selected_app_names = data.get("tn_appellant_selected_names", [])
+                logging.info(f"[TN] حالت استعلام تجدیدنظرخواه — نگه‌داشتن: {selected_app_names}")
+                await _remove_unselected_from_system(sana_page, selected_app_names, bot, user_id)
                 await resilient_sleep(sana_page, 3, bot, user_id)
+            else:
+                # حالت عادی: افزودن اشخاص یکی یکی
+                for idx, person in enumerate(appellants):
+                    ptype = person.get("person_type", "شخص حقیقی")
+                    if ptype == "وکیل":
+                        continue  # وکیل در step جداگانه اضافه می‌شود
 
-                # Fix 4: اطمینان از ریست فرم — انتخاب رادیوی صحیح
-                # FIX: برای اعتراض ثالث، حتماً دیجست آنگولار اجبار شود
-                if ptype == "شخص حقیقی":
-                    await sana_page.evaluate('''() => {
-                        const rdb = document.querySelector('input[value="1"]');
-                        if (rdb) {
-                            rdb.click();
-                            try {
-                                const scope = angular.element(rdb).scope();
-                                if (scope) scope.$apply();
-                            } catch(e) {}
-                        }
-                    }''')
-                    await asyncio.sleep(1)
+                    await _click_add_btn(sana_page, bot, user_id)
+                    await resilient_sleep(sana_page, 3, bot, user_id)
 
-                if ptype == "شخص حقوقی":
-                    await sana_page.evaluate('''() => {
-                        const rdb = document.querySelector('input[value="0"]');
-                        if (rdb) {
-                            rdb.click();
-                            try {
-                                const scope = angular.element(rdb).scope();
-                                if (scope) scope.$apply();
-                            } catch(e) {}
-                        }
-                    }''')
-                    await asyncio.sleep(1)
+                    # Fix 4: اطمینان از ریست فرم — انتخاب رادیوی صحیح
+                    # FIX: برای اعتراض ثالث، حتماً دیجست آنگولار اجبار شود
+                    if ptype == "شخص حقیقی":
+                        await sana_page.evaluate('''() => {
+                            const rdb = document.querySelector('input[value="1"]');
+                            if (rdb) {
+                                rdb.click();
+                                try {
+                                    const scope = angular.element(rdb).scope();
+                                    if (scope) scope.$apply();
+                                } catch(e) {}
+                            }
+                        }''')
+                        await asyncio.sleep(1)
 
-                if ptype == "شخص حقوقی":
-                    await _fill_legal_person(sana_page, person, bot, user_id,
-                                              person_role="appellant", person_index=idx)
-                else:
-                    await _fill_real_person(sana_page, person["national_id"], bot, user_id,
-                                            person_role="appellant", person_index=idx)
-                await resilient_sleep(sana_page, 10, bot, user_id)
+                    if ptype == "شخص حقوقی":
+                        await sana_page.evaluate('''() => {
+                            const rdb = document.querySelector('input[value="0"]');
+                            if (rdb) {
+                                rdb.click();
+                                try {
+                                    const scope = angular.element(rdb).scope();
+                                    if (scope) scope.$apply();
+                                } catch(e) {}
+                            }
+                        }''')
+                        await asyncio.sleep(1)
+
+                    if ptype == "شخص حقوقی":
+                        await _fill_legal_person(sana_page, person, bot, user_id,
+                                                  person_role="appellant", person_index=idx)
+                    else:
+                        await _fill_real_person(sana_page, person["national_id"], bot, user_id,
+                                                person_role="appellant", person_index=idx)
+                    await resilient_sleep(sana_page, 10, bot, user_id)
 
             # ── ۷. مرحله تجدیدنظرخوانده (فقط برای غیر اعتراض به قرار دادسرا)
             if not is_prosecutor:
                 await _click_step_label(sana_page, appellee_step, bot, user_id)
                 await resilient_sleep(sana_page, 4, bot, user_id)
 
-                for idx, person in enumerate(appellees):
-                    ptype = person.get("person_type", "شخص حقیقی")
-
-                    await _click_add_btn(sana_page, bot, user_id)
+                if data.get("tn_appellee_query_mode"):
+                    # حالت استعلام: حذف افراد انتخاب‌نشده از لیست سامانه
+                    selected_apl_names = data.get("tn_appellee_selected_names", [])
+                    logging.info(f"[TN] حالت استعلام تجدیدنظرخوانده — نگه‌داشتن: {selected_apl_names}")
+                    await _remove_unselected_from_system(sana_page, selected_apl_names, bot, user_id)
                     await resilient_sleep(sana_page, 3, bot, user_id)
+                else:
+                    # حالت عادی: افزودن اشخاص یکی یکی
+                    for idx, person in enumerate(appellees):
+                        ptype = person.get("person_type", "شخص حقیقی")
 
-                    if ptype == "شخص حقوقی":
-                        await _fill_legal_person(sana_page, person, bot, user_id,
-                                                  person_role="appellee", person_index=idx)
-                    else:
-                        await _fill_real_person(sana_page, person["national_id"], bot, user_id,
-                                                person_role="appellee", person_index=idx)
-                    await resilient_sleep(sana_page, 10, bot, user_id)
+                        await _click_add_btn(sana_page, bot, user_id)
+                        await resilient_sleep(sana_page, 3, bot, user_id)
+
+                        if ptype == "شخص حقوقی":
+                            await _fill_legal_person(sana_page, person, bot, user_id,
+                                                      person_role="appellee", person_index=idx)
+                        else:
+                            await _fill_real_person(sana_page, person["national_id"], bot, user_id,
+                                                    person_role="appellee", person_index=idx)
+                        await resilient_sleep(sana_page, 10, bot, user_id)
 
             # ── ۸. مرحله شهود/مطلع ────────────────────────────────
             if witnesses:
@@ -1051,3 +1067,230 @@ async def _close_popup_sana(page, bot: Bot, user_id: int):
             await asyncio.sleep(2)
             return
         await asyncio.sleep(2)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# توابع استعلام افراد پرونده و حذف انتخاب‌نشده‌ها
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def pre_query_tn_persons(data: dict, bot: Bot, step_name: str) -> list:
+    """استعلام افراد موجود در پرونده از سامانه.
+
+    این تابع:
+    ۱. به سامانه می‌رود
+    ۲. اطلاعات دادنامه را پر می‌کند (مراحل ۱ تا ۶ سناریو)
+    ۳. وارد مرحله مورد نظر (تجدیدنظرخواه/خوانده) می‌شود
+    ۴. لیست نام‌ها را از jud-nav-list استخراج می‌کند
+    ۵. لیست را برمی‌گرداند
+
+    Args:
+        data: اطلاعات دادنامه شامل case_type, tn_judge_no, tn_file_no,
+              tn_judge_date, tn_province, user_id
+        bot: نمونه ربات
+        step_name: نام step برای کلیک (مثلاً "تجديدنظرخواه")
+
+    Returns:
+        لیست دیکشنری‌ها: [{"index": 0, "name": "..."}, ...]
+    """
+    sana_page = runtime_state.sana_page
+    user_id = data["user_id"]
+
+    if not sana_page:
+        raise TajdidFatalError("صفحه مرورگر در دسترس نیست. لطفاً بعداً تلاش کنید.")
+
+    case_type = data.get("case_type", "")
+    menu_item = CASE_TYPE_MENU_MAP.get(case_type, case_type)
+
+    # ۱. رفتن به سامانه
+    ok = await goto_url_with_retry(
+        sana_page, "https://sakha2.adliran.ir/Offices/Index", bot, user_id
+    )
+    if not ok:
+        raise TajdidFatalError("خطا در اتصال به سامانه.")
+    await human_delay(2.0, 4.0)
+
+    # ۲. کلیک دعاوی اعتراضی
+    await _click_menu_item(sana_page, "دعاوی اعتراضی", bot, user_id)
+    await resilient_sleep(sana_page, 5, bot, user_id)
+
+    # ۳. کلیک نوع دعوی
+    await _click_menu_item(sana_page, menu_item, bot, user_id)
+    await resilient_sleep(sana_page, 5, bot, user_id)
+
+    # ۴. کلیک ثبت و اصلاح دادخواست
+    await _click_step_box(sana_page, "ثبت و اصلاح دادخواست", bot, user_id)
+    await resilient_sleep(sana_page, 5, bot, user_id)
+
+    # ۵. مرحله شروع — انتخاب شخص حقیقی
+    await _click_step_label(sana_page, "شروع", bot, user_id)
+    await resilient_sleep(sana_page, 3, bot, user_id)
+
+    await sana_page.evaluate('''() => {
+        const rdb = document.querySelector('input[value="1"]');
+        if (rdb) {
+            rdb.click();
+            try {
+                const scope = angular.element(rdb).scope();
+                if (scope) scope.$apply();
+            } catch(e) {}
+        }
+    }''')
+    await asyncio.sleep(2)
+
+    # ۶. مرحله اطلاعات دادنامه
+    judge_no = data.get("tn_judge_no", "")
+    file_no = data.get("tn_file_no", "")
+    judge_date = data.get("tn_judge_date", "")
+    province = data.get("tn_province", "")
+
+    await _click_step_label(sana_page, "اطلاعات دادنامه", bot, user_id)
+    await resilient_sleep(sana_page, 4, bot, user_id)
+
+    # شماره دادنامه
+    await sana_page.evaluate(f'''() => {{{{
+        const inp = document.querySelector('#txtJudgeNo');
+        if (inp) {{{{
+            inp.value = "{judge_no}";
+            inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
+            inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
+        }}}}
+    }}}}''')
+    await asyncio.sleep(1)
+
+    # شماره پرونده
+    await sana_page.evaluate(f'''() => {{{{
+        const inp = document.querySelector('#txtReferingCaseNo');
+        if (inp) {{{{
+            inp.value = "{file_no}";
+            inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
+            inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
+        }}}}
+    }}}}''')
+    await asyncio.sleep(1)
+
+    # تاریخ دادنامه
+    await sana_page.evaluate(f'''() => {{{{
+        const inps = document.querySelectorAll('input[persian-datepicker-popup]');
+        if (inps.length > 0) {{{{
+            inps[0].value = "{judge_date}";
+            inps[0].dispatchEvent(new Event("input", {{ bubbles: true }}));
+            inps[0].dispatchEvent(new Event("change", {{ bubbles: true }}));
+        }}}}
+    }}}}''')
+    await asyncio.sleep(1)
+
+    # استان
+    await safe_click_by_text(sana_page, province[:10], bot, user_id)
+    await resilient_sleep(sana_page, 3, bot, user_id)
+
+    # کلیک بازیابی
+    await sana_page.evaluate('''() => {
+        const btn = document.querySelector('#btnGetHst');
+        if (btn) btn.click();
+    }''')
+    await resilient_sleep(sana_page, 8, bot, user_id)
+
+    # پاپ‌آپ ثنا — کلیک خیر
+    await _close_popup_sana(sana_page, bot, user_id)
+
+    # ۷. کلیک روی step مورد نظر (تجدیدنظرخواه یا تجدیدنظرخوانده)
+    await _click_step_label(sana_page, step_name, bot, user_id)
+    await resilient_sleep(sana_page, 5, bot, user_id)
+
+    # ۸. استخراج نام‌ها از jud-nav-list
+    names = await _extract_persons_from_navlist(sana_page)
+
+    logging.info(f"[TN] استعلام افراد پرونده: {len(names)} نفر یافت شد (step={step_name})")
+    return names
+
+
+async def _extract_persons_from_navlist(page) -> list:
+    """استخراج لیست نام‌ها از jud-nav-list سامانه.
+
+    Returns:
+        لیست: [{"index": int, "name": str}, ...]
+    """
+    return await page.evaluate('''() => {
+        const items = document.querySelectorAll('jud-nav-list .nav-list div[ng-repeat]');
+        const names = [];
+        items.forEach((item, idx) => {
+            const infoDiv = item.querySelector('.info');
+            if (infoDiv) {
+                const text = infoDiv.innerText.trim();
+                // حذف شماره ردیف از ابتدا (مثل "1- ")
+                const cleanName = text.replace(/^\\d+\\-\\s*/, '').trim();
+                if (cleanName) {
+                    names.push({index: idx, name: cleanName});
+                }
+            }
+        });
+        return names;
+    }''')
+
+
+async def _remove_unselected_from_system(page, selected_names: list, bot: Bot, user_id: int):
+    """حذف افراد انتخاب‌نشده از لیست سامانه.
+
+    این تابع لیست افراد موجود در سامانه را می‌خواند و هر کس که
+    در لیست selected_names نباشد را با دکمه حذف (btn-danger) حذف می‌کند.
+
+    Args:
+        page: صفحه مرورگر
+        selected_names: لیست نام‌هایی که باید نگه داشته شوند (مثلاً ["علی محمدی", "شرکت فلز"])
+        bot: نمونه ربات
+        user_id: آیدی کاربر
+    """
+    max_removals = 50  # حداکثر تعداد حذف برای جلوگیری از حلقه بی‌نهایت
+
+    for _ in range(max_removals):
+        # گرفتن لیست فعلی نام‌ها در سامانه
+        current_names = await page.evaluate('''() => {
+            const items = document.querySelectorAll('jud-nav-list .nav-list div[ng-repeat]');
+            const names = [];
+            items.forEach((item, idx) => {
+                const infoDiv = item.querySelector('.info');
+                if (infoDiv) {
+                    const text = infoDiv.innerText.trim();
+                    const cleanName = text.replace(/^\\d+\\-\\s*/, '').trim();
+                    names.push({index: idx, name: cleanName});
+                }
+            });
+            return names;
+        }''')
+
+        if not current_names:
+            logging.info("[TN] لیست افراد خالی شد — حذف تمام شد.")
+            break
+
+        # پیدا کردن اولین آیتمی که در لیست انتخاب شده نیست
+        to_remove_idx = None
+        to_remove_name = None
+        for item in current_names:
+            if item["name"] not in selected_names:
+                to_remove_idx = item["index"]
+                to_remove_name = item["name"]
+                break
+
+        if to_remove_idx is None:
+            logging.info(f"[TN] همه افراد انتخاب‌شده باقی ماندند ({len(selected_names)} نفر).")
+            break
+
+        # حذف آیتم با کلیک روی دکمه btn-danger
+        clicked = await page.evaluate(f'''() => {{{{
+            const items = document.querySelectorAll('jud-nav-list .nav-list div[ng-repeat]');
+            if ({to_remove_idx} < items.length) {{{{
+                const item = items[{to_remove_idx}];
+                const deleteBtn = item.querySelector('.btn-danger');
+                if (deleteBtn) {{{{
+                    deleteBtn.click();
+                    return true;
+                }}}}
+            }}}}
+            return false;
+        }}}}''')
+        if clicked:
+            logging.info(f"[TN] حذف '{to_remove_name}' از لیست سامانه.")
+            await asyncio.sleep(1.5)
+        else:
+            logging.warning(f"[TN] دکمه حذف برای '{to_remove_name}' (ایندکس {to_remove_idx}) یافت نشد.")
+            break
