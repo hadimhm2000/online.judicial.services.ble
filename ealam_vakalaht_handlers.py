@@ -25,7 +25,7 @@ from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME
 from sheets import log_event
 from states import Form
 from keyboards import (
-    main_menu_kb, restart_kb,
+    main_menu_kb, restart_kb, back_only_kb, text_input_method_kb,
     ealam_more_lawyers_kb,
     ealam_more_contracts_kb,
     ealam_stamp_amount_kb,
@@ -306,13 +306,51 @@ async def ealam_get_stamp_type(message: Message, state: FSMContext):
 
 
 async def _ask_lavayeh_text(message: Message, state: FSMContext):
-    """پرسیدن متن لایحه"""
+    """پرسیدن روش ورود متن لایحه (تایپ مستقیم / فایل ورد)"""
     await message.answer(
         "📄 *شرح متن لایحه اعلام وکالت:*\n\n"
-        "لطفاً متن لایحه را ارسال فرمایید.\n"
+        "لطفاً روش ورود متن را انتخاب فرمایید.\n"
         "⚠️ *توجه:* متن پس از ارسال قابل ویرایش نمی‌باشد.",
-        reply_markup=ReplyKeyboardRemove())
-    await state.set_state(Form.ealam_vakalaht_text)
+        reply_markup=text_input_method_kb)
+    await state.set_state(Form.ealam_vakalaht_text_choice)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# مرحله ۵ — انتخاب روش ورود متن لایحه (تایپ مستقیم / فایل ورد)
+# ══════════════════════════════════════════════════════════════════════════════
+@ealam_router.message(Form.ealam_vakalaht_text_choice)
+async def ealam_text_choice_handler(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if text == "⌨️ تایپ مستقیم متن":
+        await message.answer(
+            "📝 لطفاً *متن لایحه اعلام وکالت* را ارسال فرمایید:",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.ealam_vakalaht_text)
+        return
+    if text == "📎 ارسال فایل ورد (.docx)":
+        await message.answer(
+            "📎 لطفاً *فایل ورد (.docx)* را ارسال فرمایید:\n\n"
+            "💡 متن داخل فایل عیناً (با حفظ فرمت بولد و ...) در سامانه درج خواهد شد.",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.ealam_vakalaht_text)
+        return
+    if text == "🔙 بازگشت":
+        data = await state.get_data()
+        stamp_type = data.get("ealam_stamp_type", "")
+        if stamp_type == "غیر مالی":
+            await message.answer(
+                "💰 *مبلغ تمبر دعوی غیر مالی:*\n\nبرای ادامه، دکمه زیر را بزنید:",
+                reply_markup=continue_kb)
+            await state.set_state(Form.ealam_vakalaht_text)
+        else:
+            await message.answer(
+                "🏷 لطفاً انتخاب کنید که *کدام نوع تمبر* در پرونده قرار داده شود:",
+                reply_markup=ealam_stamp_type_kb)
+            await state.set_state(Form.ealam_vakalaht_stamp_type)
+        return
+    await message.answer(
+        "⚠️ لطفاً یکی از گزینه‌های موجود را انتخاب فرمایید:",
+        reply_markup=text_input_method_kb)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -350,6 +388,10 @@ async def ealam_get_text(message: Message, state: FSMContext, bot: Bot):
     # دکمه «ادامه مراحل» برای دعوی غیر مالی
     if text == "✅ ادامه مراحل":
         await _ask_attachment(message, state, is_first=True)
+        return
+
+    if text.strip() == "🔙 بازگشت":
+        await _ask_lavayeh_text(message, state)
         return
 
     if not text:
