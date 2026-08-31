@@ -21,7 +21,6 @@ from bug_reporter import init_file_logging, report_bug, upload_logs
 from handlers import router
 from scenarios import browser_worker
 from admin_relay import admin_relay_router
-dp.include_router(admin_relay_router)
 
 # فعال‌سازی لاگ فایل چرخشی در اولین فرصت (قابل آپلود مستمر خطاها)
 init_file_logging()
@@ -33,6 +32,7 @@ from persistence import (
 
 dp = Dispatcher(storage=MemoryStorage())
 dp.include_router(router)
+dp.include_router(admin_relay_router)
 runtime_state.dp = dp
 
 
