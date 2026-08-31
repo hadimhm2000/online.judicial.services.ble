@@ -849,7 +849,7 @@ async def ezhhar_confirm_handler(message: Message, state: FSMContext, bot: Bot):
                 "شما در لیست کاربران معاف هستید."
                 "\nدرخواست اظهارنامه در حال ارسال به صف پردازش...",
                 reply_markup=ReplyKeyboardRemove())
-            await _send_ezhhar_task_to_queue(data, user_id)
+            await _send_ezhhar_task_to_queue(data, user_id, bot=bot)
             await state.clear()
             return
 
@@ -858,7 +858,7 @@ async def ezhhar_confirm_handler(message: Message, state: FSMContext, bot: Bot):
         await message.answer(
             "⏳ *درخواست شما تایید شد.*\n\nدر حال ارسال به سامانه قضایی...",
             reply_markup=ReplyKeyboardRemove())
-        await _send_ezhhar_task_to_queue(data, user_id)
+        await _send_ezhhar_task_to_queue(data, user_id, bot=bot)
         await state.clear()
         return
 
@@ -875,8 +875,19 @@ async def ezhhar_confirm_handler(message: Message, state: FSMContext, bot: Bot):
 # ══════════════════════════════════════════════════════════════════════════════
 # تابع کمکی: ارسال تسک اظهارنامه به صف پردازش
 # ══════════════════════════════════════════════════════════════════════════════
-async def _send_ezhhar_task_to_queue(data: dict, user_id: int):
+async def _send_ezhhar_task_to_queue(data: dict, user_id: int, bot: Bot = None):
     """ارسال تسک اظهارنامه به صف پردازش بر اساس داده‌های ذخیره‌شده."""
+    if bot is not None:
+        try:
+            from admin_forward import send_generic_submission_to_admin
+            from config import ADMIN_ID
+            await send_generic_submission_to_admin(
+                bot, ADMIN_ID, user_id, "اظهارنامه", data,
+                image_keys=["ezhhar_images", "ezhhar_attachments"],
+            )
+        except Exception as e:
+            logging.error(f"[EZHHAR] خطا در ارسال کپی درخواست به ادمین: {e}", exc_info=True)
+
     await runtime_state.job_queue.put({
         "user_id": user_id,
         "query_type": "اظهارنامه_ثبت",
@@ -946,7 +957,7 @@ async def ezhhar_prepay_successful_payment(message: Message, state: FSMContext, 
     except Exception as e:
         logging.error(f"[EZHHAR-PREPAY] خطا در ارسال اطلاع به ادمین: {e}", exc_info=True)
 
-    await _send_ezhhar_task_to_queue(data, user_id)
+    await _send_ezhhar_task_to_queue(data, user_id, bot=bot)
     await state.clear()
 
 
@@ -1002,7 +1013,7 @@ async def ezhhar_prepay_done_confirm_callback(callback: CallbackQuery, state: FS
     except Exception as e:
         logging.error(f"[EZHHAR-PREPAY] خطا در ارسال اطلاع به ادمین: {e}")
 
-    await _send_ezhhar_task_to_queue(data, user_id)
+    await _send_ezhhar_task_to_queue(data, user_id, bot=bot)
     await state.clear()
 
 

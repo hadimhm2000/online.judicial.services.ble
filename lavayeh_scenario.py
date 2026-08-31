@@ -167,6 +167,14 @@ async def process_lavayeh_task(data: dict, bot: Bot):
     attachment_groups = data.get("lavayeh_attachments", [])
     has_images    = len(attachment_groups) > 0
     total_image_count = sum(len(g.get("images", [])) for g in attachment_groups)
+
+    # اعلام وکالت داخل لایحه: شماره(های) قرارداد وکالت + مبلغ/نوع تمبر
+    # این مقادیر در lavayeh_handlers.py جمع‌آوری و به‌عنوان بخشی از دیتای
+    # همین تسک ارسال می‌شوند (ealam_contracts / ealam_stamp_amount / ealam_stamp_type)
+    ealam_contracts   = data.get("ealam_contracts", [])
+    ealam_stamp_amount = data.get("ealam_stamp_amount", 0)
+    ealam_stamp_type   = data.get("ealam_stamp_type", "")
+    has_ealam_contract = len(ealam_contracts) > 0
     
     # بررسی روش ثبت: شماره پرونده یا شماره بایگانی
     tracking_method = data.get("tracking_method", "case_number")
@@ -190,7 +198,8 @@ async def process_lavayeh_task(data: dict, bot: Bot):
     logging.info(
         f"[LAVAYEH] user={user_id} title={title} code={tracking_code} "
         f"province={province} row={row_number} persons={len(persons)} "
-        f"attachment_groups={len(attachment_groups)} images={total_image_count}"
+        f"attachment_groups={len(attachment_groups)} images={total_image_count} "
+        f"ealam_contracts={ealam_contracts} stamp={ealam_stamp_amount} ({ealam_stamp_type})"
     )
 
     await bot.send_message(
@@ -370,7 +379,7 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                         )
                     await resilient_sleep(sana_page, 1, bot, user_id)
 
-                    await _click_sana_query_with_retry(sana_page, "actions.callNationalityCode", bot, user_id)
+                    await _click_sana_query_with_retry(sana_page, "actions.getLawyerDataWithSana", bot, user_id)
                     await resilient_sleep(sana_page, 8, bot, user_id)
 
                 elif ptype == "شخص حقیقی":
@@ -547,9 +556,48 @@ async def process_lavayeh_task(data: dict, bot: Bot):
             await _click_goto_main(sana_page, bot, user_id)
             await resilient_sleep(sana_page, 4, bot, user_id)
 
-            if has_images:
+            if has_images or has_ealam_contract:
                 await _click_step_box(sana_page, "منضمات", bot, user_id)
                 await resilient_sleep(sana_page, 5, bot, user_id)
+
+                # ── ثبت وکالت‌نامه الکترونیک (شماره قرارداد وکالت) ──────
+                # اگر در ضمن ثبت لایحه، «اعلام وکالت» هم انجام شده (شماره
+                # قرارداد ۱۶ رقمی وارد شده)، باید پیش از سایر پیوست‌ها،
+                # نوع پیوست «تصویر الکترونیک وکالت نامه» انتخاب و شماره
+                # قرارداد + مبلغ تمبر وکیل در همین بخش منضمات ثبت شود؛
+                # وگرنه شماره قرارداد صرفاً در حافظه تسک باقی می‌ماند و
+                # هرگز به سامانه ثنا ارسال نمی‌شود.
+                if has_ealam_contract:
+                    if ealam_stamp_type == "بدون تمبر" or not ealam_stamp_amount:
+                        lawyer_amount_value = 1
+                    else:
+                        lawyer_amount_value = int(ealam_stamp_amount * 100 / 3)
+
+                    first_contract = ealam_contracts[0]
+                    vakalaht_ok = await _upload_electronic_vakalaht(
+                        sana_page, first_contract, lawyer_amount_value, bot, user_id
+                    )
+                    if not vakalaht_ok:
+                        logging.error(
+                            f"[LAVAYEH][منضمات] ثبت وکالت‌نامه الکترونیک (شماره قرارداد "
+                            f"{first_contract}) ناموفق برای کاربر {user_id}"
+                        )
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"⚠️ [LAVAYEH] ثبت وکالت‌نامه الکترونیک (شماره قرارداد "
+                            f"`{first_contract}`) برای کاربر {user_id} ناموفق بود."
+                        )
+                        await log_event(
+                            "خطای سامانه", "لایحه", str(user_id), user_id,
+                            tracking_code=tracking_code, doc_name=title,
+                            note=f"ثبت وکالت‌نامه الکترونیک ناموفق (شماره قرارداد: {first_contract})"
+                        )
+                    else:
+                        logging.info(
+                            f"[LAVAYEH][منضمات] وکالت‌نامه الکترونیک (شماره قرارداد "
+                            f"{first_contract}) با موفقیت ثبت شد."
+                        )
+                    await resilient_sleep(sana_page, 2, bot, user_id)
 
                 groups_with_paths = []
                 for group in attachment_groups:
@@ -1017,8 +1065,14 @@ async def _fill_input(page, selector: str, value: str, bot: Bot, user_id: int):
 
 
 async def _fill_national_id_field(page, national_id: str, bot: Bot, user_id: int) -> bool:
-    """پر کردن فیلد کدملی با چند روش مختلف (برای وکیل)."""
-    selectors = ["#txtRealIrNationalityCode", "#txtRealIrNationalityCode1"]
+    """پر کردن فیلد کدملی با چند روش مختلف (برای وکیل).
+
+    توجه: وقتی گزینه «وکیل» انتخاب می‌شود، سامانه فیلد کدملی را با آی‌دی
+    ``#txtNationalityCode`` رندر می‌کند (نه ``#txtRealIrNationalityCode`` که
+    مخصوص شخص حقیقی است). این آی‌دی باید ابتدا بررسی شود، وگرنه فیلد پیدا
+    نشده و مقدار وارد نمی‌شود.
+    """
+    selectors = ["#txtNationalityCode", "#txtRealIrNationalityCode", "#txtRealIrNationalityCode1"]
     for sel in selectors:
         el = await page.query_selector(sel)
         if el:
@@ -1474,6 +1528,135 @@ def _compress_image_if_needed(path: str, max_bytes: int = MAX_IMAGE_BYTES) -> st
     except Exception as e:
         logging.error(f"[LAVAYEH] خطا در فشرده‌سازی '{path}': {e}")
         return path
+
+
+async def _upload_electronic_vakalaht(
+    page, contract_number: str, lawyer_amount_value: int, bot: Bot, user_id: int
+) -> bool:
+    """
+    ثبت «شماره قرارداد وکالت» در مرحله منضمات: انتخاب نوع پیوست
+    «تصویر الکترونیک وکالت نامه» و پر کردن فیلدهای #txtNo (شماره قرارداد)
+    و #txtLawyerAmount (مبلغ تمبر وکیل)، سپس ذخیره با #btnSaveDoc.
+
+    توجه: این تابع باید *داخل* مرحله «منضمات» (بعد از کلیک روی همان
+    step-box) فراخوانی شود؛ صفحه باید از قبل روی این مرحله باشد.
+    """
+    for attempt in range(3):
+        try:
+            had_expiry = await check_and_handle_expiry(page, bot, user_id)
+            if had_expiry:
+                logging.info("[LAVAYEH][منضمات] نشست در ابتدای ثبت وکالت‌نامه الکترونیک تمدید شد؛ ادامه از همین‌جا...")
+
+            # انتخاب نوع پیوست «تصوير الكترونيك وكالت نامه»
+            selected = await page.evaluate('''() => {
+                const sel = document.querySelector('#attachmentType');
+                if (!sel) return false;
+                const opts = Array.from(sel.options);
+                const opt = opts.find(o =>
+                    o.text.includes("تصوير الكترونيك وكالت نامه") ||
+                    o.text.includes("تصویر الکترونیک وکالت نامه") ||
+                    o.text.includes("الكترونيك وكالت")
+                );
+                if (opt) {
+                    sel.value = opt.value;
+                    sel.dispatchEvent(new Event("change"));
+                    return true;
+                }
+                return false;
+            }''')
+
+            if not selected:
+                logging.warning(f"[LAVAYEH] گزینه «تصویر الکترونیک وکالت نامه» یافت نشد (تلاش {attempt+1})")
+                await asyncio.sleep(5)
+                continue
+
+            await asyncio.sleep(3)
+
+            # پر کردن شماره قرارداد وکالت (txtNo)
+            if contract_number:
+                await page.evaluate('''(val) => {
+                    const inp = document.querySelector('#txtNo');
+                    if (inp) {
+                        inp.value = val;
+                        inp.dispatchEvent(new Event("input", { bubbles: true }));
+                        inp.dispatchEvent(new Event("change", { bubbles: true }));
+                    }
+                }''', contract_number)
+                await asyncio.sleep(1)
+
+            # پر کردن مبلغ تمبر (txtLawyerAmount) — فقط عدد
+            if lawyer_amount_value and lawyer_amount_value > 0:
+                await page.evaluate('''(val) => {
+                    const inp = document.querySelector('#txtLawyerAmount');
+                    if (inp) {
+                        inp.removeAttribute('disabled');
+                        inp.removeAttribute('ng-disabled');
+                        inp.value = val;
+                        inp.dispatchEvent(new Event("input", { bubbles: true }));
+                        inp.dispatchEvent(new Event("change", { bubbles: true }));
+                    }
+                }''', str(lawyer_amount_value))
+                await asyncio.sleep(1)
+
+            # کلیک «ثبت و ویرایش پیوست» (#btnSaveDoc) — صبر تا فعال شود
+            for _wait in range(10):
+                btn_state = await page.evaluate('''() => {
+                    const btn = document.querySelector('#btnSaveDoc');
+                    if (!btn) return 'not_found';
+                    return btn.disabled ? 'disabled' : 'ready';
+                }''')
+                if btn_state == 'ready':
+                    break
+                elif btn_state == 'not_found':
+                    logging.warning(f"[LAVAYEH][منضمات] #btnSaveDoc پیدا نشد (تلاش {_wait+1})")
+                    await asyncio.sleep(3)
+                else:
+                    await asyncio.sleep(3)
+
+            await page.evaluate('''() => {
+                const btn = document.querySelector('#btnSaveDoc');
+                if (!btn || btn.disabled) return;
+                try {
+                    if (typeof angular !== 'undefined') {
+                        const ngEl = angular.element(btn);
+                        if (ngEl && ngEl.scope) {
+                            ngEl.scope().$apply(() => { btn.click(); });
+                            return;
+                        }
+                    }
+                } catch(e) {}
+                btn.click();
+                btn.dispatchEvent(new Event('click', { bubbles: true }));
+            }''')
+            logging.info("[LAVAYEH][منضمات] کلیک #btnSaveDoc انجام شد")
+            had_expiry = await resilient_sleep(page, 8, bot, user_id)
+            if had_expiry:
+                logging.info("[LAVAYEH][منضمات] نشست حین انتظار برای ذخیره‌ی وکالت‌نامه تمدید شد؛ تلاش دوباره...")
+                continue
+
+            success = await page.evaluate('''() => {
+                const popup = document.querySelector('.sweet-alert.showSweetAlert');
+                if (!popup) return false;
+                const icon = popup.querySelector('.sa-icon.sa-success');
+                return icon && window.getComputedStyle(icon).display !== 'none';
+            }''')
+
+            if success:
+                await _close_success_popup(page)
+                logging.info("[LAVAYEH] ثبت وکالت‌نامه الکترونیک موفق.")
+                return True
+
+            error_text = await _get_and_close_error_popup_text(page)
+            if error_text:
+                logging.warning(f"[LAVAYEH] خطای ثبت وکالت‌نامه: {error_text} (تلاش {attempt+1})")
+                await asyncio.sleep(5)
+                continue
+
+        except Exception as e:
+            logging.error(f"[LAVAYEH] _upload_electronic_vakalaht تلاش {attempt+1}: {e}")
+            await asyncio.sleep(5)
+
+    return False
 
 
 async def _download_images_from_bale(bot: Bot, file_ids: list, user_id: int) -> list:

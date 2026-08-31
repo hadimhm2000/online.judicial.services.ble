@@ -573,6 +573,18 @@ async def ealam_confirm_handler(message: Message, state: FSMContext, bot: Bot):
             "⏳ *درخواست اعلام وکالت تایید شد.*\n\nدر حال ارسال به صف پردازش...",
             reply_markup=ReplyKeyboardRemove())
 
+        # 📥 کپی کامل درخواست برای ادمین — همین لحظه، مستقل از موفقیت/شکست
+        # پردازش خودکار بعدی در سنا.
+        try:
+            from admin_forward import send_generic_submission_to_admin
+            from config import ADMIN_ID
+            await send_generic_submission_to_admin(
+                bot, ADMIN_ID, user_id, "اعلام وکالت", data,
+                image_keys=["ealam_attachments"],
+            )
+        except Exception as e:
+            logging.error(f"[EALAM] خطا در ارسال کپی درخواست به ادمین: {e}", exc_info=True)
+
         await runtime_state.job_queue.put({
             "user_id": user_id,
             "query_type": "اعلام_وکالت",

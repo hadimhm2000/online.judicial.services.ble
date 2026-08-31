@@ -2264,7 +2264,7 @@ async def lavayeh_confirm_handler(message: Message, state: FSMContext, bot: Bot)
                 "\nدرخواست لایحه در حال ارسال به صف پردازش...",
                 reply_markup=ReplyKeyboardRemove())
             # ارسال مستقیم به صف بدون پرداخت
-            await _send_lavayeh_task_to_queue(data, user_id, title)
+            await _send_lavayeh_task_to_queue(data, user_id, title, bot=bot)
             await state.clear()
             return
 
@@ -2277,7 +2277,7 @@ async def lavayeh_confirm_handler(message: Message, state: FSMContext, bot: Bot)
         await message.answer(
             "⏳ *درخواست شما تایید شد.*\n\nدر حال ارسال به سامانه قضایی...",
             reply_markup=ReplyKeyboardRemove())
-        await _send_lavayeh_task_to_queue(data, user_id, title)
+        await _send_lavayeh_task_to_queue(data, user_id, title, bot=bot)
         await state.clear()
         return
 
@@ -2294,8 +2294,22 @@ async def lavayeh_confirm_handler(message: Message, state: FSMContext, bot: Bot)
 # ══════════════════════════════════════════════════════════════════════════════
 # تابع کمکی: ارسال تسک لایحه به صف پردازش
 # ══════════════════════════════════════════════════════════════════════════════
-async def _send_lavayeh_task_to_queue(data: dict, user_id: int, title: str):
+async def _send_lavayeh_task_to_queue(data: dict, user_id: int, title: str, bot: Bot = None):
     """ارسال تسک لایحه به صف پردازش بر اساس داده‌های ذخیره‌شده."""
+    # 📥 کپی کامل درخواست برای ادمین — همین لحظه، مستقل از موفقیت/شکست
+    # پردازش خودکار بعدی در سنا.
+    if bot is not None:
+        try:
+            from admin_forward import send_generic_submission_to_admin
+            from config import ADMIN_ID
+            service_label = "اعلام وکالت" if title == "اعلام وکالت" else f"لایحه ({title})"
+            await send_generic_submission_to_admin(
+                bot, ADMIN_ID, user_id, service_label, data,
+                image_keys=["lavayeh_images", "lavayeh_attachments"],
+            )
+        except Exception as e:
+            logging.error(f"[LAVAYEH] خطا در ارسال کپی درخواست به ادمین: {e}", exc_info=True)
+
     if title == "اعلام وکالت":
         await runtime_state.job_queue.put({
             "user_id": user_id,
@@ -2402,7 +2416,7 @@ async def lavayeh_prepay_successful_payment(message: Message, state: FSMContext,
     if not hasattr(runtime_state, "active_lavayeh_users"):
         runtime_state.active_lavayeh_users = set()
     runtime_state.active_lavayeh_users.add(user_id)
-    await _send_lavayeh_task_to_queue(data, user_id, title)
+    await _send_lavayeh_task_to_queue(data, user_id, title, bot=bot)
     await state.clear()
 
 
@@ -2674,7 +2688,7 @@ async def lavayeh_prepay_done_confirm_callback(callback: CallbackQuery, state: F
     if not hasattr(runtime_state, "active_lavayeh_users"):
         runtime_state.active_lavayeh_users = set()
     runtime_state.active_lavayeh_users.add(user_id)
-    await _send_lavayeh_task_to_queue(data, user_id, title)
+    await _send_lavayeh_task_to_queue(data, user_id, title, bot=bot)
     await state.clear()
 
 

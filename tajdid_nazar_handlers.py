@@ -1711,6 +1711,18 @@ async def tn_confirm_handler(message: Message, state: FSMContext, bot: Bot):
             "tn_labels": data.get("tn_labels", {}),
         }
 
+        # 📥 کپی کامل درخواست برای ادمین — همین لحظه، مستقل از موفقیت/شکست
+        # پردازش خودکار بعدی در سنا.
+        try:
+            from admin_forward import send_generic_submission_to_admin
+            from config import ADMIN_ID
+            await send_generic_submission_to_admin(
+                bot, ADMIN_ID, user_id, f"دعاوی اعتراضی ({case_type})", job_data,
+                image_keys=["tn_attachments"],
+            )
+        except Exception as e:
+            logging.error(f"[TN] خطا در ارسال کپی درخواست به ادمین: {e}", exc_info=True)
+
         await runtime_state.job_queue.put(job_data)
 
         try:
