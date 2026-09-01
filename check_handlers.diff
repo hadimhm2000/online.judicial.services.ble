@@ -1,0 +1,23 @@
+--- orig_extract2/check_handlers.py	2026-08-31 20:25:36.000000000 +0000
++++ /home/claude/patch/check_handlers.py	2026-09-01 04:22:47.692364788 +0000
+@@ -1852,6 +1852,20 @@
+             reply_markup=create_check_branch_keyboard(CHECK_ROOT_NODES, page=0, parent_path=None))
+         return
+ 
++    # ⚠️ اصلاحیه: صفحه‌بندی سطح ریشه (لیست استان‌ها) از شناسهٔ متنی "root"
++    # استفاده می‌کند (نه idx عددی) چون سطح ریشه هیچ ردیف مشخصی در CSV ندارد.
++    # نسخهٔ قبلی این حالت را با idx=0 (یعنی اولین ردیف واقعی CSV) اشتباه
++    # می‌گرفت — یعنی کلیک «بعدی ▶️» در صفحهٔ اول لیست استان‌ها به‌جای رفتن
++    # به صفحهٔ بعدِ لیست استان‌ها، وارد زیرشاخه‌های همان اولین استان می‌شد.
++    # نتیجه: استان‌های بعد از صفحهٔ اول (چند استان) عملاً از طریق منو
++    # غیرقابل‌دسترس بودند — دقیقاً همان چیزی که گزارش شده بود.
++    if action == "page" and data_parts[2] == "root":
++        page = int(data_parts[3]) if len(data_parts) > 3 else 0
++        await callback.message.edit_reply_markup(
++            reply_markup=create_check_branch_keyboard(CHECK_ROOT_NODES, page=page, parent_path=None)
++        )
++        return
++
+     idx = int(data_parts[2])
+     norm_path = CHECK_INDEX_TO_PATH.get(idx)
+ 

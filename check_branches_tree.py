@@ -151,15 +151,22 @@ def create_check_branch_keyboard(
 
     nav_buttons = []
     total_pages = (len(nodes) + page_size - 1) // page_size
-    parent_idx = PATH_TO_INDEX.get(_normalize(parent_path), 0) if parent_path else 0
+    # ⚠️ اصلاحیه: سطح ریشه (لیست استان‌ها) هیچ ردیف/گرهٔ متناظری در CSV ندارد
+    # که idx عددی داشته باشد. قبلاً برای parent_path=None مقدار 0 به‌عنوان
+    # placeholder فرستاده می‌شد که با idx واقعی ردیف صفر CSV اشتباه گرفته
+    # می‌شد و صفحه‌بندی ریشه را می‌شکست (کلیک «بعدی» به‌جای صفحهٔ بعدِ لیست
+    # استان‌ها، وارد زیرشاخه‌های همان استانِ ردیف صفر می‌شد). این‌جا به‌جای
+    # آن، شناسهٔ متنی "root" فرستاده می‌شود که در check_handlers.py جداگانه
+    # تشخیص داده می‌شود.
+    parent_idx_str = str(PATH_TO_INDEX.get(_normalize(parent_path), 0)) if parent_path else "root"
 
     if page > 0:
         nav_buttons.append(
-            InlineKeyboardButton(text="◀️ قبلی", callback_data=f"cbr:page:{parent_idx}:{page-1}")
+            InlineKeyboardButton(text="◀️ قبلی", callback_data=f"cbr:page:{parent_idx_str}:{page-1}")
         )
     if page < total_pages - 1:
         nav_buttons.append(
-            InlineKeyboardButton(text="بعدی ▶️", callback_data=f"cbr:page:{parent_idx}:{page+1}")
+            InlineKeyboardButton(text="بعدی ▶️", callback_data=f"cbr:page:{parent_idx_str}:{page+1}")
         )
     if nav_buttons:
         buttons.append(nav_buttons)
