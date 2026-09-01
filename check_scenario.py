@@ -247,23 +247,24 @@ async def process_check_task(data: dict, bot: Bot):
                 await safe_click_by_text(sana_page, "خواسته", bot, user_id)
             await resilient_sleep(sana_page, 4, bot, user_id)
 
-            # ۴.۱ انتخاب «موضوع پرونده» → دعاوي عمومي حقوقي
+            # ۴.۱ انتخاب «موضوع پرونده»
+            # ⚠️ اصلاحیه: قبلاً داخل این دراپ‌داون متن "دعاوي عمومي حقوقي" تایپ
+            # و جستجو می‌شد. طبق اصلاحیهٔ کارفرما، در این فیلد نباید هیچ‌چیزی
+            # تایپ شود — چه در دادگاه صلح چه حقوقی، صرفاً باید گزینهٔ اول لیست
+            # (بدون تایپ) انتخاب شود.
             await sana_page.evaluate('''() => {
                 const btn = document.querySelector('.ui-select-toggle');
                 if (btn) btn.click();
             }''')
             await asyncio.sleep(2)
 
-            # جستجو و انتخاب «دعاوي عمومي حقوقي»
-            search_input = sana_page.locator('.ui-select-search').first
             try:
-                await search_input.wait_for(state="visible", timeout=5000)
-                await search_input.fill("")
-                await search_input.type("دعاوي عمومي حقوقي", delay=100)
-                await asyncio.sleep(3)
-
+                await sana_page.wait_for_selector(
+                    '.ui-select-choices-row, [ng-bind-html*="typeaheadHighlight"]',
+                    timeout=5000
+                )
                 await sana_page.evaluate('''() => {
-                    const items = Array.from(document.querySelectorAll('[ng-bind-html*="typeaheadHighlight"]'));
+                    const items = Array.from(document.querySelectorAll('.ui-select-choices-row, [ng-bind-html*="typeaheadHighlight"]'));
                     const visible = items.filter(el => {
                         const r = el.getBoundingClientRect();
                         return r.width > 0 && r.height > 0;
@@ -300,7 +301,7 @@ async def process_check_task(data: dict, bot: Bot):
                     await search2.wait_for(state="visible", timeout=5000)
                     await search2.fill("")
                     await search2.type("چک", delay=100)
-                    await asyncio.sleep(10)  # ۱۰ ثانیه صبر
+                    await asyncio.sleep(5)  # ⚠️ اصلاحیه: طبق مشخصات باید ۵ ثانیه صبر شود (قبلاً ۱۰ ثانیه بود)
 
                     await sana_page.evaluate('''() => {
                         const items = Array.from(document.querySelectorAll('[ng-bind-html*="typeaheadHighlight"]'));
@@ -327,7 +328,7 @@ async def process_check_task(data: dict, bot: Bot):
                     await search2.wait_for(state="visible", timeout=5000)
                     await search2.fill("")
                     await search2.type("چک", delay=100)
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(5)  # ⚠️ اصلاحیه: طبق مشخصات باید ۵ ثانیه صبر شود (قبلاً ۳ ثانیه بود)
 
                     await sana_page.evaluate('''() => {
                         const items = Array.from(document.querySelectorAll('[ng-bind-html*="typeaheadHighlight"]'));
@@ -674,125 +675,224 @@ async def process_check_task(data: dict, bot: Bot):
                 image_paths = await _download_check_images(bot, check_images, user_id)
 
                 if image_paths:
-                    # انتخاب «تصوير چك و گواهينامه عدم پرداخت» از dropdown
-                    await sana_page.evaluate('''() => {
+                    # ⚠️ اصلاحیه: نوع پیوست بسته به عنوان خواسته فرق می‌کند —
+                    # اجرائیه چک → «تصوير چك و گواهينامه عدم پرداخت» (نیازمند
+                    # کدرهگیری + استعلام بانک مرکزی)، مطالبه وجه چک → صرفاً
+                    # «تصوير چك» (بدون کدرهگیری/استعلام). نسخهٔ قبلی همیشه
+                    # حالت اول را انتخاب می‌کرد، حتی برای مطالبه وجه.
+                    attachment_label = (
+                        "تصوير چك و گواهينامه عدم پرداخت"
+                        if request_title == "صدور اجرائیه چک"
+                        else "تصوير چك"
+                    )
+                    await sana_page.evaluate('''(label) => {
                         const sel = document.querySelector('#attachmentType');
                         if (sel) {
-                            // value="object:1912" = تصوير چك و گواهينامه عدم پرداخت
                             const opts = Array.from(sel.options);
-                            const target = opts.find(o => o.innerText.includes("تصوير چك و گواهينامه عدم پرداخت"));
+                            // تطبیق دقیق برچسب تا «تصوير چك» با «تصوير چك و
+                            // گواهينامه عدم پرداخت» اشتباه گرفته نشود
+                            const target = opts.find(o => o.innerText.trim() === label)
+                                          || opts.find(o => o.innerText.includes(label));
                             if (target) {
                                 sel.value = target.value;
                                 sel.dispatchEvent(new Event("input", { bubbles: true }));
                                 sel.dispatchEvent(new Event("change", { bubbles: true }));
                             }
                         }
-                    }''')
+                    }''', attachment_label)
                     await asyncio.sleep(2)
 
-                    # وارد کردن کدرهگیری
-                    await sana_page.evaluate('''(val) => {
-                        const inp = document.querySelector('#txtInqueryNo');
-                        if (inp) {
-                            inp.value = val;
-                            inp.dispatchEvent(new Event("input", { bubbles: true }));
-                            inp.dispatchEvent(new Event("change", { bubbles: true }));
-                        }
-                    }''', tracking_no)
-                    await asyncio.sleep(1)
-
-                    # کلیک «ثبت و ویرایش پیوست» → این کلیک است که استعلام از
-                    # بانک مرکزی را تریگر می‌کند و پاپ‌آپ موفقیت/خطا نشان می‌دهد.
-                    # ⚠️ اصلاحیه: نسخهٔ قبلی اگر پاپ‌آپ موفقیت‌آمیز نبود (یا اصلاً
-                    # ظاهر نشده بود) هیچ کاری نمی‌کرد — یعنی txtDeductionAmount،
-                    # کلیک نهایی ثبت، و آپلود تصاویر همگی بی‌صدا نادیده گرفته
-                    # می‌شدند و کد طوری ادامه می‌داد که انگار همه‌چیز موفق بوده.
-                    # طبق مشخصات کارفرما: با هر خطایی غیر از «ورود همزمان»، باید
-                    # دوباره استعلام (همین کلیک) تکرار شود.
-                    inquiry_ok = False
-                    for inquiry_attempt in range(4):
-                        clicked = await sana_page.evaluate('''() => {
-                            const btn = document.querySelector('#btnSaveDoc');
-                            if (btn && !btn.disabled) { btn.click(); return true; }
-                            return false;
-                        }''')
-                        if not clicked:
-                            await asyncio.sleep(2)
-                            continue
-
-                        await wait_for_horizontal_loading_bar(sana_page, bot, user_id)
-                        await resilient_sleep(sana_page, 10, bot, user_id)
-
-                        # اول از همه: آیا این خطای «ورود همزمان/انقضای نشست» است؟
-                        had_expiry = await check_and_handle_expiry(sana_page, bot, user_id)
-                        if had_expiry:
-                            await asyncio.sleep(3)
-                            continue  # بعد از لاگین مجدد، همین حلقه دوباره تلاش می‌کند
-
-                        success_popup = await sana_page.evaluate('''() => {
-                            const popup = document.querySelector('.sweet-alert.showSweetAlert');
-                            if (!popup) return null;
-                            const h2 = popup.querySelector('h2');
-                            return h2 ? h2.innerText : null;
-                        }''')
-
-                        if success_popup and "موفق" in success_popup:
-                            logging.info("[CHECK] استعلام بانک مرکزی موفق")
-                            inquiry_ok = True
-                            # بستن پاپ‌آپ
-                            await sana_page.evaluate('''() => {
-                                const btn = document.querySelector('.sweet-alert .confirm');
-                                if (btn) btn.click();
-                            }''')
-                            await asyncio.sleep(2)
-                            break
-
-                        # پاپ‌آپ دیگری (خطای غیر از ورود همزمان) → طبق مشخصات، دوباره تلاش کن
-                        logging.warning(
-                            f"[CHECK] استعلام بانک مرکزی ناموفق (تلاش {inquiry_attempt+1}/4): {success_popup!r}"
-                        )
-                        # اگر پاپ‌آپ خطای دیگری (نه موفقیت) باز مانده، ببندش تا تلاش بعدی گیر نکند
-                        await sana_page.evaluate('''() => {
-                            const btn = document.querySelector('.sweet-alert .confirm, .sweet-alert .cancel');
-                            if (btn) btn.click();
-                        }''')
-                        await asyncio.sleep(2)
-
-                    if inquiry_ok:
-                        # وارد کردن تعداد (عدد ۱) در فیلد Amount
-                        await sana_page.evaluate('''() => {
-                            const inp = document.querySelector('#txtDeductionAmount');
-                            if (inp && !inp.disabled) {
-                                inp.value = "1";
+                    if request_title == "صدور اجرائیه چک":
+                        # وارد کردن کدرهگیری
+                        await sana_page.evaluate('''(val) => {
+                            const inp = document.querySelector('#txtInqueryNo');
+                            if (inp) {
+                                inp.value = val;
                                 inp.dispatchEvent(new Event("input", { bubbles: true }));
                                 inp.dispatchEvent(new Event("change", { bubbles: true }));
                             }
-                        }''')
+                        }''', tracking_no)
                         await asyncio.sleep(1)
 
-                        # کلیک «ثبت و ویرایش پیوست» (نهایی، با مقدار Amount پر‌شده)
+                        # ⚠️ اصلاحیه: دکمهٔ استعلام از بانک مرکزی، #inqueryNo0
+                        # است — نه #btnSaveDoc. #btnSaveDoc دکمهٔ «ثبت و ویرایش
+                        # پیوست» نهایی است که فقط بعد از پر شدن فیلدهای اضافی
+                        # (Amount/Exporter/Holder/RejectReason/ReasonForIssuance)
+                        # باید زده شود. نسخهٔ قبلی این دو دکمه را با هم اشتباه
+                        # گرفته بود.
+                        inquiry_ok = False
+                        wrong_tracking_code = False
+                        for inquiry_attempt in range(3):  # طبق مشخصات: حداکثر ۳ بار تلاش
+                            clicked = await sana_page.evaluate('''() => {
+                                const btn = document.querySelector('#inqueryNo0');
+                                if (btn && !btn.disabled) { btn.click(); return true; }
+                                return false;
+                            }''')
+                            if not clicked:
+                                await asyncio.sleep(2)
+                                continue
+
+                            await wait_for_horizontal_loading_bar(sana_page, bot, user_id)
+                            await resilient_sleep(sana_page, 15, bot, user_id)  # طبق مشخصات: ۱۵ ثانیه صبر
+
+                            # آیا خطای «ورود همزمان/انقضای نشست» است؟
+                            had_expiry = await check_and_handle_expiry(sana_page, bot, user_id)
+                            if had_expiry:
+                                await asyncio.sleep(3)
+                                continue  # بعد از لاگین مجدد، همین حلقه دوباره تلاش می‌کند
+
+                            popup_text = await sana_page.evaluate('''() => {
+                                const popup = document.querySelector('.sweet-alert.showSweetAlert');
+                                if (!popup) return null;
+                                const h2 = popup.querySelector('h2');
+                                const p = popup.querySelector('p');
+                                return ((h2 ? h2.innerText : '') + ' ' + (p ? p.innerText : '')).trim();
+                            }''')
+
+                            if popup_text and "موفق" in popup_text:
+                                logging.info("[CHECK] استعلام بانک مرکزی موفق")
+                                inquiry_ok = True
+                                await sana_page.evaluate('''() => {
+                                    const btn = document.querySelector('.sweet-alert .confirm');
+                                    if (btn) btn.click();
+                                }''')
+                                await asyncio.sleep(2)
+                                break
+
+                            # ⚠️ نکته: متن دقیق پیام خطای «کدرهگیری اشتباه» در
+                            # مشخصات دریافتی نبود؛ فعلاً با کلیدواژه‌های محتمل
+                            # تشخیص داده می‌شود — در صورت نیاز پس از تست واقعی
+                            # اصلاح شود.
+                            if popup_text and ("رهگیری" in popup_text and ("اشتباه" in popup_text or "نامعتبر" in popup_text or "صحیح" in popup_text)):
+                                wrong_tracking_code = True
+                                logging.warning(f"[CHECK] کدرهگیری اشتباه: {popup_text!r}")
+                                await sana_page.evaluate('''() => {
+                                    const btn = document.querySelector('.sweet-alert .confirm, .sweet-alert .cancel');
+                                    if (btn) btn.click();
+                                }''')
+                                break
+
+                            logging.warning(
+                                f"[CHECK] استعلام بانک مرکزی ناموفق (تلاش {inquiry_attempt+1}/3): {popup_text!r}"
+                            )
+                            await sana_page.evaluate('''() => {
+                                const btn = document.querySelector('.sweet-alert .confirm, .sweet-alert .cancel');
+                                if (btn) btn.click();
+                            }''')
+                            await asyncio.sleep(2)
+
+                        if wrong_tracking_code:
+                            await bot.send_message(
+                                user_id,
+                                "⚠️ کدرهگیری چک اشتباه است.\n"
+                                f"🔢 کد بایگانی دادخواست ثبت‌شدهٔ شما: `{bill_no}`\n"
+                                "جهت ادامه تکمیل ثبت دادخواست به شماره 09306186888 "
+                                "در بله یا واتس‌اپ پیام دهید."
+                            )
+                        elif inquiry_ok:
+                            # وارد کردن تعداد (عدد ۱) در فیلد Amount
+                            await sana_page.evaluate('''() => {
+                                const inp = document.querySelector('#txtDeductionAmount');
+                                if (inp && !inp.disabled) {
+                                    inp.value = "1";
+                                    inp.dispatchEvent(new Event("input", { bubbles: true }));
+                                    inp.dispatchEvent(new Event("change", { bubbles: true }));
+                                }
+                            }''')
+                            await asyncio.sleep(1)
+
+                            # ⚠️ اصلاحیه: این ۴ فیلد قبلاً اصلاً پر نمی‌شدند.
+                            # txtExporter → گزینهٔ آخر («هيچكدام»)
+                            await sana_page.evaluate('''() => {
+                                const sel = document.querySelector('#txtExporter');
+                                if (sel && !sel.disabled) {
+                                    const opts = Array.from(sel.options).filter(o => o.value !== "");
+                                    if (opts.length > 0) {
+                                        const last = opts[opts.length - 1];
+                                        sel.value = last.value;
+                                        sel.dispatchEvent(new Event("input", { bubbles: true }));
+                                        sel.dispatchEvent(new Event("change", { bubbles: true }));
+                                    }
+                                }
+                            }''')
+                            await asyncio.sleep(1)
+
+                            # txtHolder → گزینهٔ اول واقعی («بله»)
+                            await sana_page.evaluate('''() => {
+                                const sel = document.querySelector('#txtHolder');
+                                if (sel && !sel.disabled) {
+                                    const opts = Array.from(sel.options).filter(o => o.value !== "" && o.value !== "? string:0 ?");
+                                    if (opts.length > 0) {
+                                        sel.value = opts[0].value;
+                                        sel.dispatchEvent(new Event("input", { bubbles: true }));
+                                        sel.dispatchEvent(new Event("change", { bubbles: true }));
+                                    }
+                                }
+                            }''')
+                            await asyncio.sleep(1)
+
+                            # txtRejectReason → گزینهٔ اول واقعی («كسرموجودي»)
+                            await sana_page.evaluate('''() => {
+                                const sel = document.querySelector('#txtRejectReason');
+                                if (sel && !sel.disabled) {
+                                    const opts = Array.from(sel.options).filter(o => o.value !== "0" && o.value !== "");
+                                    if (opts.length > 0) {
+                                        sel.value = opts[0].value;
+                                        sel.dispatchEvent(new Event("input", { bubbles: true }));
+                                        sel.dispatchEvent(new Event("change", { bubbles: true }));
+                                    }
+                                }
+                            }''')
+                            await asyncio.sleep(1)
+
+                            # txtReasonForIssuance → گزینهٔ آخر («بابت پرداخت بدهي»)
+                            await sana_page.evaluate('''() => {
+                                const sel = document.querySelector('#txtReasonForIssuance');
+                                if (sel && !sel.disabled) {
+                                    const opts = Array.from(sel.options).filter(o => o.value !== "0" && o.value !== "");
+                                    if (opts.length > 0) {
+                                        const last = opts[opts.length - 1];
+                                        sel.value = last.value;
+                                        sel.dispatchEvent(new Event("input", { bubbles: true }));
+                                        sel.dispatchEvent(new Event("change", { bubbles: true }));
+                                    }
+                                }
+                            }''')
+                            await asyncio.sleep(1)
+
+                            # حالا کلیک «ثبت و ویرایش پیوست» نهایی
+                            await sana_page.evaluate('''() => {
+                                const btn = document.querySelector('#btnSaveDoc');
+                                if (btn && !btn.disabled) btn.click();
+                            }''')
+                            await resilient_sleep(sana_page, 5, bot, user_id)
+
+                            # آپلود تصاویر
+                            await _upload_check_images(sana_page, image_paths, bot, user_id)
+                        else:
+                            # پس از ۳ تلاش هم استعلام موفق نشد (و خطای کدرهگیری
+                            # هم نبود) — طبق مشخصات: کد بایگانی برای کاربر
+                            # ارسال شود و بگوییم بخش منضمات سامانه قطع است.
+                            logging.error(f"[CHECK] استعلام بانک مرکزی پس از ۳ تلاش ناموفق ماند (user={user_id})")
+                            await bot.send_message(
+                                ADMIN_ID,
+                                f"❌ [CHECK] استعلام بانک مرکزی برای کاربر {user_id} پس از ۳ تلاش ناموفق ماند. "
+                                f"تصاویر چک آپلود نشدند — این پرونده را دستی بررسی کنید. کد بایگانی: `{bill_no}`"
+                            )
+                            await bot.send_message(
+                                user_id,
+                                f"⚠️ در بخش منضمات سامانه قطع می‌باشد.\n"
+                                f"🔢 کد بایگانی دادخواست ثبت‌شدهٔ شما: `{bill_no}`\n"
+                                "به شماره 09306186888 در واتس‌اپ یا بله پیام دهید."
+                            )
+                    else:
+                        # مطالبه وجه چک: بدون کدرهگیری/استعلام — صرفاً ثبت و آپلود
                         await sana_page.evaluate('''() => {
                             const btn = document.querySelector('#btnSaveDoc');
                             if (btn && !btn.disabled) btn.click();
                         }''')
                         await resilient_sleep(sana_page, 5, bot, user_id)
-
-                        # آپلود تصاویر
                         await _upload_check_images(sana_page, image_paths, bot, user_id)
-                    else:
-                        # پس از ۴ تلاش هم استعلام موفق نشد — این پرونده نباید بی‌صدا
-                        # به‌عنوان موفق تلقی شود؛ مدیر باید مطلع شود و دستی رسیدگی کند.
-                        logging.error(f"[CHECK] استعلام بانک مرکزی پس از ۴ تلاش ناموفق ماند (user={user_id})")
-                        await bot.send_message(
-                            ADMIN_ID,
-                            f"❌ [CHECK] استعلام بانک مرکزی برای کاربر {user_id} پس از ۴ تلاش ناموفق ماند. "
-                            f"تصاویر چک آپلود نشدند — این پرونده را دستی بررسی کنید. کد بایگانی: `{bill_no}`"
-                        )
-                        await bot.send_message(
-                            user_id,
-                            "⚠️ استعلام بانک مرکزی برای تصاویر چک با مشکل مواجه شد. "
-                            "پیگیری با پشتیبانی ادامه خواهد یافت؛ لطفاً منتظر بمانید."
-                        )
 
                     # پاکسازی فایل‌های موقت
                     for p in image_paths:
@@ -973,6 +1073,11 @@ async def process_check_task(data: dict, bot: Bot):
                     # فلوی دسته‌جمعی: بدون فاکتور/امضای انفرادی — فقط اضافه به
                     # signable_items؛ فاکتور تسویه و منوی امضا در پایان کل بچ
                     # توسط finalize_bulk_batch یک‌جا انجام می‌شود.
+                    bulk_check_sign_menu_path = (
+                        ["ارایه و پیگیری دادخواست", "دادخواست بدوی"]
+                        if is_high_amount
+                        else ["دعاوی دادگاههای صلح", "دعاوی حقوقی"]
+                    )
                     await send_bulk_item_result(
                         bot, user_id, pdf_path, final_total,
                         tracking_code=bill_no,
@@ -981,8 +1086,19 @@ async def process_check_task(data: dict, bot: Bot):
                         batch_tracking_code=batch_tracking_code,
                         row_index=bulk_row_index,
                         lavayeh_persons=plaintiffs,
-                        service_type="CHECK")
+                        service_type="CHECK",
+                        sign_menu_path=bulk_check_sign_menu_path)
                 else:
+                    # ⚠️ مسیر منوی اخذ امضا برای پیگیریِ بعدی با کد رهگیری —
+                    # باید دقیقاً همان مسیر منویی باشد که در ابتدای این
+                    # سناریو (بخش «۱. انتخاب مسیر بر اساس مبلغ») برای شروع
+                    # ثبت دادخواست کلیک شده بود؛ طبق تأیید کارفرما این دو
+                    # (ثبت و پیگیری/امضا) از همان مسیر منو استفاده می‌کنند.
+                    check_sign_menu_path = (
+                        ["ارایه و پیگیری دادخواست", "دادخواست بدوی"]
+                        if is_high_amount
+                        else ["دعاوی دادگاههای صلح", "دعاوی حقوقی"]
+                    )
                     await send_lavayeh_result(
                         bot, user_id, pdf_path, final_total,
                         tracking_code=bill_no,
@@ -993,7 +1109,8 @@ async def process_check_task(data: dict, bot: Bot):
                         lavayeh_persons=plaintiffs,
                         skip_fee_calc=True,
                         is_ezhharnameh=False,
-                        service_type="CHECK")
+                        service_type="CHECK",
+                        sign_menu_path=check_sign_menu_path)
                 await bot.send_message(
                     ADMIN_ID,
                     f"✅ [CHECK] ثبت دادخواست چک کاربر {user_id} موفق."

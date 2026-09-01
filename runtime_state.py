@@ -109,6 +109,43 @@ pending_ezhhar_sana_fix: dict = {}
 pending_tn_sana_fix: dict = {}
 
 # =========================================================
+# فاکتورهای دعوی اعتراضی در انتظار پرداخت — مستقل از لایحه
+# =========================================================
+# کلید: user_id (int)
+# مقدار: {
+#   "invoice_time": datetime,
+#   "final_fee": int,
+#   "court_total": int,
+#   "tracking_code": str,
+#   "national_ids": str,
+#   "case_type": str,
+#   "tn_persons": list,
+#   "reminder_sent": bool,
+#   "blocked": bool,
+# }
+pending_tn_payments: dict = {}
+
+# =========================================================
+# اطلاعات فرآیند اخذ امضای الکترونیک دعاوی اعتراضی — مستقل از لایحه
+# =========================================================
+# کلید: user_id (int)
+# مقدار: {
+#   "tracking_code": str,
+#   "case_type": str,              — نوع دعوی (برای menu_path ناوبری امضا)
+#   "persons": list,
+#   "sign_persons": list,
+#   "persons_awaiting_sign": list,
+#   "current_person_idx": int,
+#   "sign_codes_received": dict,
+#   "sign_sent_time": datetime,
+#   "wrong_code_time": datetime,
+#   "code_sent_announce_time": datetime,
+#   "resend_notified": bool,
+#   "total_no_action_start": datetime,
+# }
+pending_tn_sign: dict = {}
+
+# =========================================================
 # نتایج استعلام افراد پرونده (برای انتخاب تجدیدنظرخواه/خوانده)
 # =========================================================
 # کلید: user_id (int)

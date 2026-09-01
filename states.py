@@ -222,6 +222,9 @@ class Form(StatesGroup):
     check_plaintiff_vakalat_no = State() # شماره قرارداد وکالت خواهان چک
     check_defendant_vakalat_no = State() # شماره قرارداد وکالت خوانده چک
 
+    # State پرداخت دعاوی اعتراضی — مستقل از لایحه (طبق درخواست کارفرما)
+    waiting_for_tn_payment_receipt = State()
+
     # State های بخش اخذ امضای الکترونیک دعاوی اعتراضی
     tn_sign_ready = State()
     tn_sign_person_select = State()

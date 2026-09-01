@@ -935,24 +935,24 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
             # ── ۱۴. چاپ PDF ─────────────────────────────────────────
             pdf_path = await _print_tajdid_nazar(sana_page, browser_context, bill_no, bot, user_id)
 
-            # ── ۱۵. ارسال فاکتور و شروع فلوی پرداخت (مثل لایحه) ──────
-            from lavayeh_handlers import send_lavayeh_result
+            # ── ۱۵. ارسال فاکتور و شروع فلوی پرداخت (مستقل از لایحه) ────
+            # ⚠️ طبق درخواست کارفرما: به‌جای send_lavayeh_result (فایل
+            # لایحه)، از پیاده‌سازی مستقل خودِ دعاوی اعتراضی استفاده
+            # می‌شود — پرداخت (Form.waiting_for_tn_payment_receipt) و امضا
+            # (Form.tn_sign_ready و بعدی‌ها) کاملاً جدا از لایحه/اظهارنامه‌اند.
+            from tajdid_nazar_handlers import send_tajdid_nazar_result
             appellant_nat_ids = ", ".join([
                 p.get("national_id", "") for p in appellants if p.get("national_id")
             ])
 
             if pdf_path:
-                await send_lavayeh_result(
+                await send_tajdid_nazar_result(
                     bot, user_id, pdf_path, total_cost,
                     tracking_code=bill_no,
                     national_ids=appellant_nat_ids,
-                    lavayeh_title=f"{case_type} — پرونده {file_no}",
-                    lavayeh_province=province,
-                    lavayeh_row_number=1,
-                    lavayeh_persons=appellants,
-                    skip_fee_calc=True,
-                    is_ezhharnameh=False,
-                    service_type="TAJDID_NAZAR")
+                    case_type=case_type,
+                    file_no=file_no,
+                    tn_persons=appellants)
                 await bot.send_message(
                     ADMIN_ID,
                     f"✅ [TN] ثبت {case_type} کاربر {user_id} موفق."
