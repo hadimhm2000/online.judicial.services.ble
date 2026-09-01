@@ -22,16 +22,28 @@
 """
 
 import asyncio
+import datetime
 import logging
+import os
 import re
+
+import aiohttp
+import json as _json
 
 from aiogram import Bot, F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, ReplyKeyboardRemove, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    Message, ReplyKeyboardRemove, ReplyKeyboardMarkup, KeyboardButton,
+    CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton)
 
 import runtime_state
 from states import Form
+from bale_file_sender import send_document_direct
+from config import ADMIN_ID, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE
+from exempt_users import is_exempt_user
+from panel_sync import upsert_case_to_panel, mark_case_ready_to_send_by_tracking
+from sheets import log_event
 from keyboards import (
     back_only_kb, restart_kb,
     representative_type_kb,
@@ -1717,11 +1729,13 @@ async def _show_person_selection_list(bot: Bot, user_id: int, all_names: list,
 
     # دکمه‌های حذف از انتخاب‌شده‌ها
     if selected:
-        for n in selected:
-            safe_name = n["name"][:40]
+        for sel_idx in selected_indices:
+            if sel_idx >= len(all_names):
+                continue
+            safe_name = all_names[sel_idx]["name"][:40]
             keyboard.append([InlineKeyboardButton(
                 text=f"❌ {safe_name}",
-                callback_data=f"{prefix}_rm:{all_names.index(n)}"
+                callback_data=f"{prefix}_rm:{sel_idx}"
             )])
 
     # دکمه‌های ریست و تایید
@@ -2434,3 +2448,772 @@ async def tn_sana_error_new_national_id_handler(message: Message, state: FSMCont
 
     await runtime_state.job_queue.put(task_data)
     await state.clear()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# ارسال نتیجه ثبت + فلوی پرداخت + اخذ امضای الکترونیک — مستقل از لایحه
+# ══════════════════════════════════════════════════════════════════════════════
+# ⚠️ این بخش عمداً به‌جای استفاده از send_lavayeh_result (در
+# lavayeh_handlers.py) به‌صورت مستقل بازنویسی شده — طبق درخواست کارفرما،
+# چون بخش لایحه/اظهارنامه از قبل درست کار می‌کند و نباید تغییر کند. مسیر
+# پرداخت هم مستقل است (Form.waiting_for_tn_payment_receipt،
+# runtime_state.pending_tn_payments) تا هیچ وابستگی‌ای به فایل لایحه نداشته
+# باشد. تایید خودکار فاکتور (pre_checkout_query) نیازی به هندلر جدا ندارد،
+# چون در lavayeh_handlers.py یک هندلر عمومی و بدون فیلتر state برای همهٔ
+# فاکتورهای بله وجود دارد که همیشه ok=True برمی‌گرداند.
+#
+# مسیر ناوبری امضا (menu_path) برای دعاوی اعتراضی طبق تأیید کارفرما همان
+# نام دقیق نوع دعوی (case_type) است — تک‌کلیک، مثلاً «تجدیدنظرخواهی».
+# ══════════════════════════════════════════════════════════════════════════════
+
+TN_SIGN_CODE_TIMEOUT = 6 * 60       # ۶ دقیقه مهلت ارسال کد
+TN_SIGN_WRONG_CODE_WAIT = 20 * 60   # ۲۰ دقیقه صبر بعد از کد اشتباه
+TN_SIGN_NO_ACTION_TIMEOUT = 60 * 60  # ۶۰ دقیقه بدون اقدام
+TN_SUPPORT_NUMBER = "09306186888"
+
+
+def _filter_tn_signable_persons(persons: list) -> list:
+    """
+    فیلتر اشخاص قابل امضا (همان قانون لایحه/اظهارنامه):
+      - اگر وکیل وجود داشت → فقط وکیل
+      - اگر نماینده/مدیرعامل داشت → همه آن‌ها
+      - در غیر این صورت → همه اشخاص قابل ارسال
+    """
+    has_lawyer = any(p.get("personType") == "وکیل" for p in persons)
+    if has_lawyer:
+        return [p for p in persons if p.get("personType") == "وکیل"]
+
+    reps = [p for p in persons if p.get("personType") in ("نماینده", "مدیرعامل")]
+    if reps:
+        return reps
+
+    return persons
+
+
+def _tn_person_select_kb(all_persons: list, waiting_idx: list) -> ReplyKeyboardMarkup:
+    buttons = []
+    for idx in waiting_idx:
+        person = next((p for p in all_persons if p["idx"] == idx), None)
+        if person:
+            name = person.get("name", f"شخص {idx + 1}")
+            buttons.append([KeyboardButton(text=f"ارسال کد برای {name}")])
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+
+
+async def send_tajdid_nazar_result(
+    bot: Bot,
+    user_id: int,
+    pdf_path: str,
+    court_total: int,
+    tracking_code: str = "",
+    national_ids: str = "",
+    case_type: str = "",
+    file_no: str = "",
+    tn_persons: list = None,
+):
+    """نتیجه ثبت دعوی اعتراضی را ارسال و فلوی پرداخت/امضا را شروع می‌کند."""
+    if tn_persons is None:
+        tn_persons = []
+
+    doc_title = f"{case_type} — پرونده {file_no}" if file_no else case_type
+
+    if pdf_path and os.path.exists(pdf_path):
+        await send_document_direct(
+            user_id, pdf_path,
+            caption="📄 *نسخه ثبت‌شده دعوی اعتراضی شما در سامانه قضایی*")
+        try:
+            os.remove(pdf_path)
+        except Exception:
+            pass
+
+    final_fee = court_total
+    await bot.send_message(user_id, f"💳 *مبلغ نهایی قابل پرداخت: {final_fee:,} ریال*")
+
+    # ── بررسی معافیت از پرداخت ──────────────────────────────────────────
+    if await is_exempt_user(user_id):
+        await log_event(
+            "ثبت", "دعوی اعتراضی", str(user_id), user_id,
+            tracking_code=tracking_code, national_id=national_ids,
+            doc_name=case_type, payment_status="معاف از پرداخت",
+            note=f"مبلغ فاکتور: {final_fee:,} ریال (معاف)"
+        )
+        runtime_state.pending_tn_payments[user_id] = {
+            "invoice_time": datetime.datetime.now(),
+            "final_fee": 0,
+            "court_total": court_total,
+            "tracking_code": tracking_code,
+            "national_ids": national_ids,
+            "case_type": case_type,
+            "reminder_sent": False,
+            "blocked": False,
+        }
+        await bot.send_message(
+            user_id,
+            "✅ *معافیت از پرداخت*\n\n"
+            "شما در لیست کاربران معاف هستید."
+            "\nثبت دعوی اعتراضی بدون نیاز به پرداخت انجام شد.")
+        try:
+            await upsert_case_to_panel(
+                bale_user_id=user_id, full_name=str(user_id),
+                service_type="TAJDID_NAZAR", status="PROCESSING",
+                tracking_code=tracking_code or None,
+                document_category=doc_title, fee=0,
+                fee_status="MANUAL_APPROVED",
+                result_summary="معاف از پرداخت؛ در انتظار امضای الکترونیک",
+            )
+        except Exception as panel_err:
+            logging.warning(f"[TN-PAYMENT] خطا در آپدیت پرونده معاف در پنل: {panel_err}")
+        await _tn_start_sign_flow(bot, user_id, tracking_code, case_type, tn_persons)
+        return
+
+    # ── ارسال فاکتور بله (sendInvoice) ──────────────────────────────────
+    try:
+        invoice_payload = _json.dumps({"type": "tajdid_nazar", "uid": user_id})
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+            invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
+            invoice_data = {
+                "chat_id": user_id,
+                "title": "فاکتور دعوی اعتراضی",
+                "description": f"هزینه خدمات دعوی اعتراضی ({case_type})\nمبلغ: {final_fee // 10:,} تومان ({final_fee:,} ریال)",
+                "payload": invoice_payload,
+                "provider_token": BALE_WALLET_TOKEN,
+                "currency": "IRR",
+                "prices": [{"label": "دعوی اعتراضی", "amount": final_fee}],
+            }
+            async with session.post(invoice_url, json=invoice_data) as resp:
+                result = await resp.json()
+                if not result.get("ok"):
+                    logging.error(f"[TN-PAYMENT] خطای sendInvoice: {result}")
+                    raise Exception(result.get("description", "خطا در ارسال فاکتور"))
+    except Exception as e:
+        logging.error(f"[TN-PAYMENT] خطا در ارسال فاکتور بله: {e}", exc_info=True)
+        await bot.send_message(user_id, "⚠️ خطا در ساخت فاکتور پرداخت. لطفاً کمی بعد دوباره تلاش کنید.")
+        return
+
+    await bot.send_message(
+        user_id,
+        "⏳ فاکتور پرداخت ارسال شد.\n\n"
+        "پس از پرداخت موفق، ربات به‌صورت خودکار متوجه شده و مراحل بعدی را آغاز می‌کند.",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+    await log_event(
+        "ثبت", "دعوی اعتراضی", str(user_id), user_id,
+        tracking_code=tracking_code, national_id=national_ids,
+        doc_name=case_type, payment_status="در انتظار پرداخت",
+        note=f"مبلغ فاکتور: {final_fee:,} ریال"
+    )
+
+    runtime_state.pending_tn_payments[user_id] = {
+        "invoice_time": datetime.datetime.now(),
+        "final_fee": final_fee,
+        "court_total": court_total,
+        "tracking_code": tracking_code,
+        "national_ids": national_ids,
+        "case_type": case_type,
+        "tn_persons": tn_persons,
+        "reminder_sent": False,
+        "blocked": False,
+    }
+
+    try:
+        await upsert_case_to_panel(
+            bale_user_id=user_id, full_name=str(user_id),
+            service_type="TAJDID_NAZAR", status="PENDING_PAYMENT",
+            tracking_code=tracking_code or None,
+            document_category=doc_title, fee=final_fee,
+            fee_status="UNPAID",
+            result_summary="فاکتور ارسال شد؛ در انتظار پرداخت کاربر",
+        )
+    except Exception as panel_err:
+        logging.warning(f"[TN-PAYMENT] خطا در ثبت پرونده (در انتظار پرداخت) در پنل: {panel_err}")
+
+    user_state = runtime_state.dp.fsm.resolve_context(bot, user_id, user_id)
+    await user_state.set_state(Form.waiting_for_tn_payment_receipt)
+
+
+@tajdid_nazar_router.message(Form.waiting_for_tn_payment_receipt, F.successful_payment)
+async def tn_successful_payment(message: Message, state: FSMContext, bot: Bot):
+    """پرداخت موفق دعوی اعتراضی از طریق فاکتور بله — بدون نیاز به فیش"""
+    user_id = message.from_user.id
+    pending = runtime_state.pending_tn_payments.get(user_id)
+    if not pending:
+        await message.answer("⚠️ فاکتور فعالی برای شما ثبت نشده است.")
+        await state.clear()
+        return
+
+    payment = message.successful_payment
+    final_fee_toman = pending["final_fee"] // 10
+    case_type = pending.get("case_type", "")
+
+    await message.answer(
+        f"✅ *پرداخت شما ثبت شد!*\n\n"
+        f"📄 نوع: *دعوی اعتراضی ({case_type})*\n"
+        f"💰 مبلغ: *{final_fee_toman:,} تومان*\n\n"
+        f"🔔 مراحل بعدی به زودی ارسال می‌شود.",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+    await log_event(
+        "پرداخت", "دعوی اعتراضی", message.from_user.full_name, user_id,
+        tracking_code=pending.get("tracking_code", ""), national_id=pending.get("national_ids", ""),
+        doc_name=case_type, payment_status="پرداخت شده (کیف پول بله)",
+        note=f"مبلغ: {pending['final_fee']:,} ریال | Bale payment_id: {payment.telegram_payment_charge_id}"
+    )
+
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"💰 پرداخت دعوی اعتراضی ({case_type}) از طریق کیف پول بله:\n\n"
+            f"👤 کاربر: {message.from_user.full_name} ({user_id})\n"
+            f"💰 مبلغ: {final_fee_toman:,} تومان\n"
+            f"🎫 payment_id: {payment.telegram_payment_charge_id}"
+        )
+    except Exception as e:
+        logging.error(f"[TN-PAYMENT] خطا در ارسال اطلاع به ادمین: {e}")
+
+    try:
+        await upsert_case_to_panel(
+            bale_user_id=user_id, full_name=message.from_user.full_name,
+            service_type="TAJDID_NAZAR", status="PROCESSING",
+            tracking_code=pending.get("tracking_code", "") or None,
+            fee=pending["final_fee"], fee_status="PAID",
+            result_summary="پرداخت انجام شد؛ در انتظار امضای الکترونیک",
+        )
+    except Exception as panel_err:
+        logging.warning(f"[TN-PAYMENT] خطا در آپدیت پرونده در پنل: {panel_err}")
+
+    tracking_code = pending.get("tracking_code", "")
+    tn_persons = pending.get("tn_persons", [])
+    runtime_state.pending_tn_payments.pop(user_id, None)
+
+    await _tn_start_sign_flow(bot, user_id, tracking_code, case_type, tn_persons)
+
+
+async def _tn_start_sign_flow(bot: Bot, user_id: int, tracking_code: str, case_type: str, tn_persons: list):
+    """انتقال به مرحله آمادگی برای اخذ امضای الکترونیک."""
+    user_state = runtime_state.dp.fsm.resolve_context(bot, user_id, user_id)
+    runtime_state.pending_tn_sign[user_id] = {
+        "tracking_code": tracking_code,
+        "case_type": case_type,
+        "persons": tn_persons,
+        "sign_persons": [],
+        "persons_awaiting_sign": [],
+        "current_person_idx": None,
+        "sign_sent_time": None,
+        "sign_codes_received": {},
+        "wrong_code_time": None,
+        "code_sent_announce_time": None,
+        "resend_notified": False,
+        "total_no_action_start": None,
+    }
+    await bot.send_message(
+        user_id,
+        "🖊 *مرحله اخذ امضای الکترونیک:*\n\n"
+        "هر موقع آمادگی دارید که کد امضا ارسال شود، گزینه زیر را انتخاب کنید:",
+        reply_markup=tn_sign_ready_kb)
+    await user_state.set_state(Form.tn_sign_ready)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# مرحله ۱ — آمادگی کاربر برای ارسال کد
+# ══════════════════════════════════════════════════════════════════════════════
+
+@tajdid_nazar_router.message(Form.tn_sign_ready, F.text == "✅ آماده‌ام، کد امضا ارسال شود")
+async def tn_sign_ready_handler(message: Message, state: FSMContext, bot: Bot):
+    """کاربر آمادگی خود را اعلام کرد — ناوبری به صفحه امضا و نمایش لیست اشخاص"""
+    user_id = message.from_user.id
+
+    sign_info = runtime_state.pending_tn_sign.get(user_id)
+    if not sign_info:
+        await message.answer(
+            "⚠️ اطلاعات دعوی اعتراضی برای ارسال کد امضا یافت نشد. لطفاً مجدداً شروع کنید.",
+            reply_markup=restart_kb
+        )
+        await state.clear()
+        return
+
+    await message.answer("⏳ *در حال اتصال به سامانه...*", reply_markup=ReplyKeyboardRemove())
+
+    sign_info["total_no_action_start"] = datetime.datetime.now()
+    runtime_state.pending_tn_sign[user_id] = sign_info
+
+    # ⚠️ menu_path: طبق تأیید کارفرما، برای دعاوی اعتراضی صرفاً همان نام
+    # دقیق نوع دعوی (case_type) کلیک می‌شود — مثلاً «تجدیدنظرخواهی».
+    await runtime_state.job_queue.put({
+        "user_id": user_id,
+        "task_type": "TN_SEND_SIGN_CODE",
+        "tracking_code": sign_info["tracking_code"],
+        "sign_menu_path": [sign_info.get("case_type", "")],
+        "phase": "navigate",
+    })
+
+    asyncio.create_task(_tn_no_action_60min_watcher(bot, user_id, state))
+
+
+@tajdid_nazar_router.message(Form.tn_sign_ready)
+async def tn_sign_ready_invalid(message: Message):
+    await message.answer("لطفاً از دکمه زیر استفاده کنید:", reply_markup=tn_sign_ready_kb)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# مرحله ۲ — انتخاب شخص جهت ارسال کد
+# ══════════════════════════════════════════════════════════════════════════════
+
+@tajdid_nazar_router.message(Form.tn_sign_person_select)
+async def tn_sign_person_select_handler(message: Message, state: FSMContext, bot: Bot):
+    """کاربر شخصی را برای ارسال کد انتخاب کرد"""
+    user_id = message.from_user.id
+    text = (message.text or "").strip()
+
+    sign_info = runtime_state.pending_tn_sign.get(user_id)
+    if not sign_info:
+        await message.answer("⚠️ اطلاعات یافت نشد.", reply_markup=restart_kb)
+        await state.clear()
+        return
+
+    all_persons = sign_info.get("sign_persons", [])
+    persons_awaiting = sign_info.get("persons_awaiting_sign", [])
+
+    selected_idx = None
+    for idx in persons_awaiting:
+        person = next((p for p in all_persons if p["idx"] == idx), None)
+        if person:
+            name = person.get("name", "")
+            expected = f"ارسال کد برای {name}"
+            if text == expected or name in text:
+                selected_idx = idx
+                break
+
+    if selected_idx is None:
+        await message.answer("⚠️ لطفاً یکی از اشخاص لیست‌شده را انتخاب کنید.")
+        return
+
+    await message.answer(
+        "⏳ *در حال ارسال رمز موقت امضا...*\n\n"
+        "کد تا دقایق دیگر ارسال می‌گردد.\n"
+        "⚠️ توجه داشته باشید مهلت کد کلاً *۶ دقیقه* می‌باشد.",
+        reply_markup=ReplyKeyboardRemove())
+
+    sign_info["current_person_idx"] = selected_idx
+    sign_info["sign_sent_time"] = datetime.datetime.now()
+    sign_info["code_sent_announce_time"] = datetime.datetime.now()
+    runtime_state.pending_tn_sign[user_id] = sign_info
+
+    await runtime_state.job_queue.put({
+        "user_id": user_id,
+        "task_type": "TN_SEND_SIGN_CODE",
+        "tracking_code": sign_info["tracking_code"],
+        "sign_menu_path": [sign_info.get("case_type", "")],
+        "phase": "send_code",
+        "target_row_indices": [selected_idx],
+    })
+
+    await state.set_state(Form.tn_sign_code_input)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# مرحله ۳ — دریافت کد امضا از کاربر
+# ══════════════════════════════════════════════════════════════════════════════
+
+@tajdid_nazar_router.message(Form.tn_sign_code_input)
+async def tn_sign_code_input_handler(message: Message, state: FSMContext, bot: Bot):
+    """دریافت کد امضا از کاربر"""
+    user_id = message.from_user.id
+    text = (message.text or "").strip()
+
+    sign_info = runtime_state.pending_tn_sign.get(user_id)
+    if not sign_info:
+        await message.answer("⚠️ اطلاعات دعوی اعتراضی یافت نشد.", reply_markup=restart_kb)
+        await state.clear()
+        return
+
+    code = text.translate(_FA_AR).replace(" ", "").strip()
+    if not code.isdigit() or not (3 <= len(code) <= 6):
+        await message.answer(
+            "⚠️ لطفاً *کد امضای دریافتی* را ارسال فرمایید:\n"
+            "_(کد معمولاً ۵ رقمی است)_")
+        return
+
+    current_idx = sign_info.get("current_person_idx", 0)
+    await message.answer(
+        f"✅ کد `{code}` دریافت شد.\n⏳ در حال ثبت امضا در سامانه...",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+    await runtime_state.job_queue.put({
+        "user_id": user_id,
+        "task_type": "TN_SUBMIT_SIGN",
+        "tracking_code": sign_info["tracking_code"],
+        "row_idx": current_idx,
+        "code": code,
+    })
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# کال‌بک‌های موفقیت/خطا از سمت scenarios.py برای دعاوی اعتراضی
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def on_tn_sign_persons_loaded(bot: Bot, user_id: int, persons: list, state: FSMContext):
+    sign_info = runtime_state.pending_tn_sign.get(user_id, {})
+
+    sendable = [p for p in persons if p.get("divVisible")]
+    sendable = _filter_tn_signable_persons(sendable)
+    sign_info["sign_persons"] = sendable
+    sign_info["persons_awaiting_sign"] = [p["idx"] for p in sendable]
+    runtime_state.pending_tn_sign[user_id] = sign_info
+
+    if not sendable:
+        await bot.send_message(
+            user_id,
+            "⚠️ *در جدول امضا، شخصی برای ارسال کد موقت یافت نشد.*\n\n"
+            "احتمالاً همه اشخاص قبلاً امضا کرده‌اند یا نوع امضا متفاوت است.\n"
+            f"📲 چاپ دعوی اعتراضی خود را جهت ادامه تکمیل نمودن به واتساپ به شماره "
+            f"*{TN_SUPPORT_NUMBER}* ارسال فرمائید.",
+            reply_markup=restart_kb
+        )
+        runtime_state.pending_tn_sign.pop(user_id, None)
+        await state.clear()
+        return
+
+    if len(sendable) == 1:
+        person = sendable[0]
+        sign_info["current_person_idx"] = person["idx"]
+        sign_info["sign_sent_time"] = datetime.datetime.now()
+        sign_info["code_sent_announce_time"] = datetime.datetime.now()
+        runtime_state.pending_tn_sign[user_id] = sign_info
+
+        await bot.send_message(
+            user_id,
+            "⏳ *در حال ارسال رمز موقت امضا...*\n\n"
+            "کد تا دقایق دیگر ارسال می‌گردد.\n"
+            "⚠️ توجه داشته باشید مهلت کد کلاً *۶ دقیقه* می‌باشد.",
+            reply_markup=ReplyKeyboardRemove())
+
+        await runtime_state.job_queue.put({
+            "user_id": user_id,
+            "task_type": "TN_SEND_SIGN_CODE",
+            "tracking_code": sign_info["tracking_code"],
+            "sign_menu_path": [sign_info.get("case_type", "")],
+            "phase": "send_code",
+            "target_row_indices": [person["idx"]],
+        })
+
+        await state.set_state(Form.tn_sign_code_input)
+        asyncio.create_task(_tn_code_entry_timeout_watcher(bot, user_id, state))
+    else:
+        names_text = "\n".join([f"• {p.get('name', 'نامشخص')}" for p in sendable])
+        await bot.send_message(
+            user_id,
+            f"📝 *انتخاب شخص جهت ارسال کد امضا:*\n\n"
+            f"اشخاص قابل امضا:\n{names_text}\n\n"
+            "لطفاً شخصی که در دسترس است و آماده دریافت کد می‌باشد را انتخاب کنید:\n"
+            "_(فقط یک نفر انتخاب کنید)_",
+            reply_markup=_tn_person_select_kb(sendable, sign_info["persons_awaiting_sign"]))
+        await state.set_state(Form.tn_sign_person_select)
+
+
+async def on_tn_sign_code_sent_success(bot: Bot, user_id: int, persons: list, state: FSMContext):
+    sign_info = runtime_state.pending_tn_sign.get(user_id, {})
+    for person in persons:
+        await bot.send_message(
+            user_id,
+            "✅ *رمز موقت امضا ارسال شد.*\n\n"
+            "⏰ مهلت استفاده از این کد *۶ دقیقه* می‌باشد.\n"
+            "لطفاً کد دریافتی را هرچه سریع‌تر ارسال کنید.")
+
+    sign_info["sign_sent_time"] = datetime.datetime.now()
+    sign_info["code_sent_announce_time"] = datetime.datetime.now()
+    runtime_state.pending_tn_sign[user_id] = sign_info
+    asyncio.create_task(_tn_code_entry_timeout_watcher(bot, user_id, state))
+
+
+async def on_tn_sign_code_sent_failure(bot: Bot, user_id: int, state: FSMContext):
+    await bot.send_message(
+        user_id,
+        "⚠️ *سامانه در ارسال کد موقت با مشکل مواجه شد.*\n\n"
+        f"📲 لطفاً جهت ثبت امضا به شماره *{TN_SUPPORT_NUMBER}* در واتساپ پیام دهید.",
+        reply_markup=restart_kb
+    )
+    runtime_state.pending_tn_sign.pop(user_id, None)
+    await state.clear()
+
+
+async def on_tn_sign_submit_success(bot: Bot, user_id: int, row_idx: int, state: FSMContext):
+    sign_info = runtime_state.pending_tn_sign.get(user_id)
+    if not sign_info:
+        return
+
+    persons_awaiting = sign_info.get("persons_awaiting_sign", [])
+    if row_idx in persons_awaiting:
+        persons_awaiting.remove(row_idx)
+    sign_info["persons_awaiting_sign"] = persons_awaiting
+    runtime_state.pending_tn_sign[user_id] = sign_info
+
+    await bot.send_message(
+        user_id,
+        "✅ *امضای الکترونیک با موفقیت درج شد و مورد شما ارسال گردید.*\n\n"
+        "باتشکر از همراهی شما 🙏")
+
+    if not persons_awaiting:
+        runtime_state.pending_tn_sign.pop(user_id, None)
+        await bot.send_message(ADMIN_ID, f"✅ [TN-SIGN] امضای دعوی اعتراضی کاربر {user_id} کامل شد.")
+        try:
+            tracking_code = sign_info.get("tracking_code", "")
+            if tracking_code:
+                await mark_case_ready_to_send_by_tracking(user_id, "TAJDID_NAZAR", tracking_code)
+        except Exception as panel_err:
+            logging.warning(f"[TN-SIGN] خطا در انتقال پرونده به آماده‌ارسال: {panel_err}")
+        await state.clear()
+    else:
+        all_persons = sign_info.get("sign_persons", [])
+        remaining_names = [
+            next((p for p in all_persons if p["idx"] == idx), {}).get("name", f"شخص {idx + 1}")
+            for idx in persons_awaiting
+        ]
+        remaining_text = "\n".join([f"• {n}" for n in remaining_names])
+        await bot.send_message(
+            user_id,
+            f"افراد باقی‌مانده جهت امضا:\n{remaining_text}\n\n"
+            "لطفاً شخص بعدی که در دسترس است را انتخاب کنید:",
+            reply_markup=_tn_person_select_kb(all_persons, persons_awaiting))
+        await state.set_state(Form.tn_sign_person_select)
+
+
+async def on_tn_sign_wrong_code(bot: Bot, user_id: int, row_idx: int, state: FSMContext):
+    """رمز موقت اشتباه بود — ۲۰ دقیقه صبر و سپس امکان ارسال مجدد"""
+    sign_info = runtime_state.pending_tn_sign.get(user_id)
+    if not sign_info:
+        return
+
+    sign_info["wrong_code_time"] = datetime.datetime.now()
+    runtime_state.pending_tn_sign[user_id] = sign_info
+
+    await bot.send_message(
+        user_id,
+        "⚠️ *رمز موقت اشتباه است.*\n\n"
+        "لطفاً *۲۰ دقیقه* دیگر امتحان کنید.\n"
+        "بعد از ۲۰ دقیقه می‌توانید درخواست کد جدید بدهید.",
+        reply_markup=ReplyKeyboardRemove())
+
+    await state.set_state(Form.tn_sign_wrong_code_wait)
+    asyncio.create_task(_tn_wrong_code_waiter(bot, user_id, state))
+
+
+async def on_tn_sign_sana_not_registered(bot: Bot, user_id: int, error_text: str, state: FSMContext):
+    await bot.send_message(
+        user_id,
+        f"⚠️ *خطا در ثبت امضا:*\n\n"
+        f"{error_text}\n\n"
+        "امضا در سامانه ثنا ثبت نیست، ابتدا به یکی از دفاتر خدمات قضائی مراجعه کنند و پس از تایید امضا "
+        f"با شماره *{TN_SUPPORT_NUMBER}* در واتساپ هماهنگ کنید، جهت ارسال کد مجدد.\n"
+        "باتشکر",
+        reply_markup=restart_kb
+    )
+    runtime_state.pending_tn_sign.pop(user_id, None)
+    await state.clear()
+
+
+async def on_tn_sign_submit_failure(bot: Bot, user_id: int, state: FSMContext):
+    """امضا ناموفق بود — پیشنهاد تلاش مجدد (تک‌دکمه‌ای، طبق tn_sign_try_again_kb)"""
+    await bot.send_message(
+        user_id,
+        "⚠️ *خطا در ثبت امضا.*\n\n"
+        "برای ارسال دوباره کد، دکمه زیر را بزنید:",
+        reply_markup=tn_sign_try_again_kb)
+    await state.set_state(Form.tn_sign_resend_prompt)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# هندلرهای تایم‌اوت و ارسال مجدد
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _tn_code_entry_timeout_watcher(bot: Bot, user_id: int, state: FSMContext):
+    """۶ دقیقه از زمان ارسال کد موقت — اگر کاربر کد نفرست، سوال ادامه/انصراف"""
+    await asyncio.sleep(TN_SIGN_CODE_TIMEOUT)
+
+    sign_info = runtime_state.pending_tn_sign.get(user_id)
+    if not sign_info:
+        return
+
+    current_state = await state.get_state()
+    if current_state not in (Form.tn_sign_person_select, Form.tn_sign_code_input):
+        return
+
+    try:
+        await bot.send_message(
+            user_id,
+            "⏰ *مهلت رمز موقت به پایان رسیده است.*\n\n"
+            "می‌خواهید کد جدید ارسال شود؟",
+            reply_markup=tn_sign_resend_kb)
+        await state.set_state(Form.tn_sign_resend_prompt)
+    except Exception as e:
+        logging.error(f"[TN-SIGN] خطا در code_entry_timeout_watcher: {e}")
+
+
+async def _tn_wrong_code_waiter(bot: Bot, user_id: int, state: FSMContext):
+    """۲۰ دقیقه صبر بعد از کد اشتباه — سپس اجازه ارسال مجدد"""
+    await asyncio.sleep(TN_SIGN_WRONG_CODE_WAIT)
+
+    sign_info = runtime_state.pending_tn_sign.get(user_id)
+    if not sign_info:
+        return
+
+    current_state = await state.get_state()
+    if current_state != Form.tn_sign_wrong_code_wait:
+        return
+
+    try:
+        all_persons = sign_info.get("sign_persons", [])
+        persons_awaiting = sign_info.get("persons_awaiting_sign", [])
+        current_idx = sign_info.get("current_person_idx")
+
+        if current_idx in persons_awaiting:
+            await bot.send_message(
+                user_id,
+                "⏰ *۲۰ دقیقه گذشت.*\n\n"
+                "اگر در دسترس می‌باشید، لطفاً گزینه زیر را مجدداً انتخاب کنید تا کد جدید ارسال شود:",
+                reply_markup=_tn_person_select_kb(all_persons, persons_awaiting))
+            await state.set_state(Form.tn_sign_person_select)
+        else:
+            await bot.send_message(
+                user_id,
+                "⏰ *۲۰ دقیقه گذشت.*\n\n"
+                "لطفاً مجدداً آمادگی خود را اعلام فرمایید.",
+                reply_markup=tn_sign_ready_kb)
+            await state.set_state(Form.tn_sign_ready)
+
+    except Exception as e:
+        logging.error(f"[TN-SIGN] خطا در wrong_code_waiter: {e}")
+
+
+async def _tn_no_action_60min_watcher(bot: Bot, user_id: int, state: FSMContext):
+    """۶۰ دقیقه بدون هیچ اقدامی — ارسال پیام واتساپ"""
+    await asyncio.sleep(TN_SIGN_NO_ACTION_TIMEOUT)
+
+    sign_info = runtime_state.pending_tn_sign.get(user_id)
+    if not sign_info:
+        return
+
+    try:
+        await bot.send_message(
+            user_id,
+            "⏰ *مهلت امضا به پایان رسید.*\n\n"
+            f"لطفاً جهت ثبت امضا به شماره *{TN_SUPPORT_NUMBER}* در واتساپ "
+            "پیام دهید تا امور شما تکمیل گردد.",
+            reply_markup=restart_kb)
+        await bot.send_message(ADMIN_ID, f"⏰ [TN-SIGN] کاربر {user_id} پس از ۶۰ دقیقه اقدامی نکرد.")
+    except Exception as e:
+        logging.error(f"[TN-SIGN] خطا در 60min watcher: {e}")
+
+    runtime_state.pending_tn_sign.pop(user_id, None)
+    try:
+        await state.clear()
+    except Exception:
+        pass
+
+
+# ── مرحله resend_prompt: نتیجهٔ تایم‌اوت ۶ دقیقه (دو دکمه: tn_sign_resend_kb) ──
+
+@tajdid_nazar_router.message(Form.tn_sign_resend_prompt, F.text == "🔄 ارسال مجدد کد")
+async def tn_sign_resend_yes(message: Message, state: FSMContext):
+    """کاربر خواست کد جدید ارسال شود — بازگشت به انتخاب شخص"""
+    user_id = message.from_user.id
+    sign_info = runtime_state.pending_tn_sign.get(user_id)
+    if not sign_info:
+        await message.answer("⚠️ اطلاعات یافت نشد.", reply_markup=restart_kb)
+        await state.clear()
+        return
+
+    all_persons = sign_info.get("sign_persons", [])
+    persons_awaiting = sign_info.get("persons_awaiting_sign", [])
+
+    await message.answer(
+        "📝 *انتخاب شخص جهت ارسال کد جدید:*\n\n"
+        "لطفاً شخصی که در دسترس است را انتخاب کنید:",
+        reply_markup=_tn_person_select_kb(all_persons, persons_awaiting))
+    await state.set_state(Form.tn_sign_person_select)
+
+
+@tajdid_nazar_router.message(Form.tn_sign_resend_prompt, F.text == "⏳ فعلاً امضا نمی‌کنم")
+async def tn_sign_resend_no(message: Message, state: FSMContext):
+    """کاربر فعلاً نمی‌خواهد ادامه دهد — سوال اقدام بعدی"""
+    await message.answer("چطور ادامه می‌دهید؟", reply_markup=tn_sign_later_kb)
+    await state.set_state(Form.tn_sign_later_prompt)
+
+
+# ── مرحله resend_prompt: نتیجهٔ خطای ثبت امضا (تک‌دکمه: tn_sign_try_again_kb) ──
+
+@tajdid_nazar_router.message(Form.tn_sign_resend_prompt, F.text == "🔄 تلاش مجدد")
+async def tn_sign_try_again(message: Message, state: FSMContext):
+    """کاربر خواست دوباره تلاش کند — بازگشت به انتخاب شخص"""
+    user_id = message.from_user.id
+    sign_info = runtime_state.pending_tn_sign.get(user_id)
+    if not sign_info:
+        await message.answer("⚠️ اطلاعات یافت نشد.", reply_markup=restart_kb)
+        await state.clear()
+        return
+
+    all_persons = sign_info.get("sign_persons", [])
+    persons_awaiting = sign_info.get("persons_awaiting_sign", [])
+
+    await message.answer(
+        "📝 *انتخاب شخص جهت ارسال کد جدید:*\n\n"
+        "لطفاً شخصی که در دسترس است را انتخاب کنید:",
+        reply_markup=_tn_person_select_kb(all_persons, persons_awaiting))
+    await state.set_state(Form.tn_sign_person_select)
+
+
+@tajdid_nazar_router.message(Form.tn_sign_resend_prompt)
+async def tn_sign_resend_invalid(message: Message, state: FSMContext):
+    """پیام نامعتبر در resend_prompt — کیبورد مناسب را دوباره نشان بده"""
+    user_id = message.from_user.id
+    sign_info = runtime_state.pending_tn_sign.get(user_id)
+    persons_awaiting = sign_info.get("persons_awaiting_sign", []) if sign_info else []
+    if persons_awaiting:
+        await message.answer("لطفاً از دکمه‌های زیر استفاده کنید:", reply_markup=tn_sign_resend_kb)
+    else:
+        await message.answer("لطفاً از دکمه زیر استفاده کنید:", reply_markup=tn_sign_try_again_kb)
+
+
+@tajdid_nazar_router.message(Form.tn_sign_later_prompt, F.text == "🔄 ثبت امضا در حال حاضر")
+async def tn_sign_later_yes(message: Message, state: FSMContext):
+    """کاربر نظرش عوض شد و می‌خواهد همین حالا امضا کند"""
+    user_id = message.from_user.id
+    sign_info = runtime_state.pending_tn_sign.get(user_id)
+    if not sign_info:
+        await message.answer("⚠️ اطلاعات یافت نشد.", reply_markup=restart_kb)
+        await state.clear()
+        return
+
+    all_persons = sign_info.get("sign_persons", [])
+    persons_awaiting = sign_info.get("persons_awaiting_sign", [])
+
+    await message.answer(
+        "📝 *انتخاب شخص جهت ارسال کد جدید:*\n\n"
+        "لطفاً شخصی که در دسترس است را انتخاب کنید:",
+        reply_markup=_tn_person_select_kb(all_persons, persons_awaiting))
+    await state.set_state(Form.tn_sign_person_select)
+
+
+@tajdid_nazar_router.message(Form.tn_sign_later_prompt, F.text == "❌ انصراف و ادامه بدون امضا")
+async def tn_sign_later_no(message: Message, state: FSMContext):
+    await message.answer(
+        "✅ *دعوی اعتراضی ثبتی تا ۲۴ ساعت آینده قابلیت تکمیل شدن را دارد.*\n\n"
+        f"📲 لطفاً جهت ثبت امضا به شماره *{TN_SUPPORT_NUMBER}* در واتساپ پیام دهید.",
+        reply_markup=restart_kb)
+    runtime_state.pending_tn_sign.pop(message.from_user.id, None)
+    await state.clear()
+
+
+@tajdid_nazar_router.message(Form.tn_sign_later_prompt)
+async def tn_sign_later_invalid(message: Message):
+    await message.answer("لطفاً از دکمه‌های زیر استفاده کنید:", reply_markup=tn_sign_later_kb)
+
+
+@tajdid_nazar_router.message(Form.tn_sign_wrong_code_wait)
+async def tn_sign_wrong_code_wait_invalid(message: Message):
+    await message.answer(
+        "⏳ لطفاً ۲۰ دقیقه صبر کنید — پس از آن امکان ارسال کد جدید فراهم می‌شود.",
+        reply_markup=ReplyKeyboardRemove())

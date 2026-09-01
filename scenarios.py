@@ -875,6 +875,16 @@ async def process_task(data, bot: Bot):
         await _process_lavayeh_submit_sign(data, bot)
         return
 
+    # ── سناریوی ارسال کد امضا دعوی اعتراضی — مستقل از لایحه ─────────────────
+    if task_type == "TN_SEND_SIGN_CODE":
+        await _process_tn_send_sign_code(data, bot)
+        return
+
+    # ── سناریوی ثبت کد امضا دعوی اعتراضی — مستقل از لایحه ────────────────────
+    if task_type == "TN_SUBMIT_SIGN":
+        await _process_tn_submit_sign(data, bot)
+        return
+
     # ── سناریوی ارسال کد امضا اظهارنامه ────────────────────────────────────
     if task_type == "EZHHARNAMEH_SEND_SIGN_CODE":
         await _process_ezhharnameh_send_sign_code(data, bot)
@@ -1817,6 +1827,7 @@ async def _process_lavayeh_send_sign_code(data: dict, bot: Bot):
     user_id = data["user_id"]
     tracking_code = data.get("tracking_code", "")
     phase = data.get("phase", "navigate")
+    sign_menu_path = data.get("sign_menu_path")
 
     from lavayeh_sign_handlers import (
         on_lavayeh_sign_persons_loaded,
@@ -1834,7 +1845,7 @@ async def _process_lavayeh_send_sign_code(data: dict, bot: Bot):
         if phase == "navigate":
             # فاز ۱: ناوبری به صفحه امضا و دریافت لیست اشخاص
             await bot.send_message(ADMIN_ID, f"🔄 [SIGN] ناوبری به صفحه امضا برای کاربر {user_id}")
-            nav_ok = await navigate_to_sign_page(bot, user_id, tracking_code)
+            nav_ok = await navigate_to_sign_page(bot, user_id, tracking_code, menu_path=sign_menu_path)
 
             if not nav_ok:
                 await on_lavayeh_sign_code_sent_failure(bot, user_id, user_state)
@@ -1936,6 +1947,128 @@ async def _process_lavayeh_submit_sign(data: dict, bot: Bot):
         except Exception:
             pass
         await on_lavayeh_sign_submit_failure(bot, user_id, user_state)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# پردازش امضای دعوی اعتراضی — مستقل از لایحه
+# ══════════════════════════════════════════════════════════════════════════════
+async def _process_tn_send_sign_code(data: dict, bot: Bot):
+    user_id = data["user_id"]
+    tracking_code = data.get("tracking_code", "")
+    sign_menu_path = data.get("sign_menu_path")
+    phase = data.get("phase", "navigate")
+
+    from tajdid_nazar_handlers import (
+        on_tn_sign_persons_loaded,
+        on_tn_sign_code_sent_success,
+        on_tn_sign_code_sent_failure)
+
+    user_state = runtime_state.dp.fsm.resolve_context(bot, user_id, user_id)
+
+    try:
+        from lavayeh_sign_scenario import (
+            navigate_to_sign_page,
+            get_signable_persons,
+            send_sign_code_for_person)
+
+        if phase == "navigate":
+            await bot.send_message(ADMIN_ID, f"🔄 [TN-SIGN] ناوبری به صفحه امضا برای کاربر {user_id}")
+            nav_ok = await navigate_to_sign_page(bot, user_id, tracking_code, menu_path=sign_menu_path)
+
+            if not nav_ok:
+                await on_tn_sign_code_sent_failure(bot, user_id, user_state)
+                await bot.send_message(ADMIN_ID, f"❌ [TN-SIGN] ناوبری ناموفق برای کاربر {user_id}")
+                return
+
+            persons = await get_signable_persons(bot, user_id)
+            await on_tn_sign_persons_loaded(bot, user_id, persons, user_state)
+
+        elif phase == "send_code":
+            target_row_indices = data.get("target_row_indices", [])
+            await bot.send_message(ADMIN_ID, f"🔄 [TN-SIGN] ارسال کد امضا برای کاربر {user_id}")
+
+            sign_info = runtime_state.pending_tn_sign.get(user_id, {})
+            all_persons = sign_info.get("sign_persons", [])
+
+            results = []
+            for row_idx in target_row_indices:
+                person = next((p for p in all_persons if p["idx"] == row_idx), None)
+                person_name = person.get("name", f"شخص {row_idx + 1}") if person else f"شخص {row_idx + 1}"
+                success = await send_sign_code_for_person(bot, user_id, row_idx, person_name, tracking_code)
+                results.append({
+                    "idx": row_idx,
+                    "name": person_name,
+                    "person_type": person.get("personType", "") if person else "",
+                    "sent": success,
+                })
+                if row_idx != target_row_indices[-1]:
+                    await asyncio.sleep(30)
+
+            any_sent = any(r["sent"] for r in results)
+            if any_sent:
+                await on_tn_sign_code_sent_success(bot, user_id, results, user_state)
+                await bot.send_message(ADMIN_ID, f"✅ [TN-SIGN] کد امضا برای کاربر {user_id} ارسال شد.")
+            else:
+                await on_tn_sign_code_sent_failure(bot, user_id, user_state)
+                await bot.send_message(ADMIN_ID, f"❌ [TN-SIGN] ارسال کد امضا برای کاربر {user_id} ناموفق.")
+
+    except Exception as e:
+        logging.error(f"[TN-SIGN] خطا در _process_tn_send_sign_code: {e}")
+        try:
+            from bug_reporter import report_bug
+            await report_bug(bot, where="_process_tn_send_sign_code", error=e,
+                             user_id=user_id, bill_no=tracking_code,
+                             page=getattr(runtime_state, "sana_page", None))
+        except Exception:
+            pass
+        await on_tn_sign_code_sent_failure(bot, user_id, user_state)
+
+
+async def _process_tn_submit_sign(data: dict, bot: Bot):
+    user_id = data["user_id"]
+    tracking_code = data.get("tracking_code", "")
+    row_idx = data.get("row_idx", 0)
+    code = data.get("code", "")
+
+    from tajdid_nazar_handlers import (
+        on_tn_sign_submit_success,
+        on_tn_sign_submit_failure,
+        on_tn_sign_wrong_code,
+        on_tn_sign_sana_not_registered)
+
+    user_state = runtime_state.dp.fsm.resolve_context(bot, user_id, user_id)
+
+    try:
+        from lavayeh_sign_scenario import submit_sign_code_for_person
+
+        await bot.send_message(ADMIN_ID, f"🔄 [TN-SIGN] ثبت امضا برای کاربر {user_id}")
+        result = await submit_sign_code_for_person(
+            bot, user_id, row_idx, code
+        )
+
+        if result["success"]:
+            await on_tn_sign_submit_success(bot, user_id, row_idx, user_state)
+            await bot.send_message(ADMIN_ID, f"✅ [TN-SIGN] امضای دعوی اعتراضی کاربر {user_id} موفق (ردیف {row_idx}).")
+        else:
+            error = result.get("error", "")
+            if "wrong_code" in error:
+                await on_tn_sign_wrong_code(bot, user_id, row_idx, user_state)
+            elif "sana_not_registered" in error:
+                await on_tn_sign_sana_not_registered(bot, user_id, "امضای شخص در سامانه ثنا درج نشده است", user_state)
+                await bot.send_message(ADMIN_ID, f"❌ [TN-SIGN] امضا در ثنا ثبت نیست — کاربر {user_id}.")
+            else:
+                await on_tn_sign_submit_failure(bot, user_id, user_state)
+
+    except Exception as e:
+        logging.error(f"[TN-SIGN] خطا در _process_tn_submit_sign: {e}")
+        try:
+            from bug_reporter import report_bug
+            await report_bug(bot, where="_process_tn_submit_sign", error=e,
+                             user_id=user_id, bill_no=tracking_code,
+                             page=getattr(runtime_state, "sana_page", None))
+        except Exception:
+            pass
+        await on_tn_sign_submit_failure(bot, user_id, user_state)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
