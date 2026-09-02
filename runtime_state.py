@@ -26,10 +26,20 @@ login_event: asyncio.Event = asyncio.Event()
 # در لاگ دیدیم و باعث می‌شد شمارش منضمات و دکمه‌های تایید/رد ادمین کار نکنند.
 dp = None
 
-# این دو مقدار در ابتدای اجرا None هستن و فقط داخل browser_worker
-# (در scenarios.py) یک‌بار مقداردهی می‌شن.
+# این مقادیر در ابتدای اجرا None هستن و فقط داخل browser_worker
+# (در scenarios.py) مقداردهی می‌شن. playwright_instance و browser جدید
+# اضافه شدن تا بتوان بدون ری‌استارت کل ربات (پروسه‌ی پایتون)، فقط
+# مرورگر/کانتکست/صفحه را وقتی کرش کرد یا بسته شد، از نو ساخت — چون
+# async_playwright() خودش (نمونه‌ی p) باید زنده بماند تا بشود دوباره
+# chromium.launch() صدا زد.
+playwright_instance = None
+browser = None
 browser_context = None
 sana_page = None
+
+# قفل برای جلوگیری از تلاش‌های هم‌زمان چندگانه برای بازسازی مرورگر
+# (مثلاً وقتی هم واچ‌داگ پس‌زمینه و هم حلقه‌ی اصلی هم‌زمان کرش را تشخیص می‌دهند)
+browser_relaunch_lock: asyncio.Lock = asyncio.Lock()
 
 # مجموعه‌ی کاربرانی که یک درخواست لایحه فعال دارند.
 active_lavayeh_users: set = set()

@@ -484,16 +484,23 @@ async def resilient_sleep(page, seconds, bot: Bot, user_id: int):
         await asyncio.sleep(1)
     return False
 
-async def wait_for_horizontal_loading_bar(page, bot: Bot, user_id: int, timeout: int = 60) -> bool:
+async def wait_for_horizontal_loading_bar(page, bot: Bot, user_id: int, timeout: int = 60):
     """
     منتظر ماندن تا نوار لودینگ افقی بالای صفحه ناپدید شود.
     این تابع پس از هر عملیات استعلام/ثبت موقت/جستجو فراخوانی شود.
 
-    اگر خطای سامانه بعد از لودینگ ظاهر شود → True برمی‌گرداند (فراخوان‌کننده باید retry کند).
-    اگر session منقضی شده باشد → handle می‌شود و True برمی‌گرداند.
-    اگر بدون خطا تمام شود → False برمی‌گرداند.
+    مقدار بازگشتی (نکته‌ی مهم: قبلاً این تابع فقط True/False برمی‌گرداند و
+    متن واقعی خطای سامانه برای همیشه گم می‌شد — کد فراخوان‌کننده در
+    lavayeh_scenario.py انتظار متن واقعی خطا یا رشته‌ی "SESSION_EXPIRED" را
+    دارد، نه یک بولین؛ اگر بولین True برگردد، پیام ««True»» به کاربر نشان
+    داده می‌شود که کاملاً بی‌معنی است):
+      - اگر session منقضی شده باشد → رشته‌ی "SESSION_EXPIRED" را برمی‌گرداند.
+      - اگر خطای واقعی سامانه (پاپ‌آپ/متن صفحه) ظاهر شود → متن دقیق خطا را
+        به‌صورت رشته برمی‌گرداند.
+      - اگر بدون خطا تمام شود → False برمی‌گرداند.
     """
     had_error = False
+    error_text_result = None
     try:
         await page.evaluate('''(timeout) => {
             return new Promise((resolve) => {
@@ -568,10 +575,15 @@ async def wait_for_horizontal_loading_bar(page, bot: Bot, user_id: int, timeout:
                 }
             }
 
-            // 2. sweet-alert session expiry
+            // 2. sweet-alert error/session popup — متن تمیز را فقط از h2+p
+            // می‌سازیم (نه کل innerText که شامل متن دکمه «بستن» هم می‌شود)
             const popup = document.querySelector('.sweet-alert.showSweetAlert');
             if (popup) {
-                const popupText = popup.innerText || "";
+                const h2 = popup.querySelector('h2');
+                const p = popup.querySelector('p');
+                const cleanMsg = [h2 ? h2.innerText.trim() : '', p ? p.innerText.trim() : '']
+                    .filter(Boolean).join(' - ').trim();
+                const popupText = cleanMsg || (popup.innerText || "").trim();
                 if (popupText.includes("منقضی") || popupText.includes("منقضی") ||
                     popupText.includes("رایانه ای دیگر") || popupText.includes("رایانه ای دیگر") ||
                     popupText.includes("اعتبار ورود") || popupText.includes("ورود قبلی") ||
@@ -580,7 +592,7 @@ async def wait_for_horizontal_loading_bar(page, bot: Bot, user_id: int, timeout:
                 }
                 const errorIcon = popup.querySelector('.sa-icon.sa-error');
                 if (errorIcon && window.getComputedStyle(errorIcon).display !== 'none') {
-                    return popupText || "popup_error";
+                    return popupText || "خطای نامشخص در سامانه";
                 }
             }
 
@@ -605,6 +617,7 @@ async def wait_for_horizontal_loading_bar(page, bot: Bot, user_id: int, timeout:
             await asyncio.sleep(1)
             await handle_session_expired(bot, user_id, page=page)
             had_error = True
+            error_text_result = "SESSION_EXPIRED"
         elif page_error:
             logging.warning(f"wait_for_horizontal_loading_bar: page error after loading: {page_error}")
             # بستن پاپ‌آپ خطا
@@ -617,8 +630,11 @@ async def wait_for_horizontal_loading_bar(page, bot: Bot, user_id: int, timeout:
             }''')
             await asyncio.sleep(1)
             had_error = True
+            error_text_result = page_error
 
-    return had_error
+    if had_error:
+        return error_text_result
+    return False
 
 
 async def goto_url_with_retry(page, url, bot: Bot, user_id: int, timeout=30000):

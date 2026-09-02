@@ -141,16 +141,6 @@ class LavayehFatalError(Exception):
 # تابع اصلی پردازش لایحه
 # ══════════════════════════════════════════════════════════════════════
 
-# ── مجموعه رهگیری ثبت‌های موفق (برای جلوگیری از تکرار) ──
-_processed_lavayeh_keys = set()
-_MAX_PROCESSED_CACHE = 500
-
-
-def _make_lavayeh_key(user_id, tracking_code, tracking_method, row_number):
-    """ساخت کلید یکتا برای هر لایحه جهت جلوگیری از ثبت تکراری."""
-    return f"{user_id}:{tracking_method}:{tracking_code}:{row_number}"
-
-
 async def process_lavayeh_task(data: dict, bot: Bot):
     sana_page       = runtime_state.sana_page
     browser_context = runtime_state.browser_context
@@ -181,19 +171,6 @@ async def process_lavayeh_task(data: dict, bot: Bot):
     archive_number = data.get("lavayeh_archive_number", "")
     branch_name = data.get("lavayeh_branch_name", "")
     branch_code = data.get("lavayeh_branch_code", "")
-
-    # ══════════════════════════════════════════════════════════════
-    # جلوگیری از ثبت تکراری: اگر این لایحه قبلاً ثبت شده، رد شود
-    # ══════════════════════════════════════════════════════════════
-    task_key = _make_lavayeh_key(user_id, tracking_code, tracking_method, row_number)
-    if task_key in _processed_lavayeh_keys:
-        logging.warning(f"[LAVAYEH] ⚠️ ثبت تکراری رد شد: {task_key}")
-        await bot.send_message(
-            ADMIN_ID,
-            f"⚠️ [LAVAYEH] ثبت تکراری رد شد برای کاربر {user_id}\n"
-            f"کد: {tracking_code} | روش: {tracking_method} | ردیف: {row_number}"
-        )
-        return
 
     logging.info(
         f"[LAVAYEH] user={user_id} title={title} code={tracking_code} "
@@ -318,7 +295,28 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                 await _fill_input(sana_page, "#txtSubNo", str(row_number), bot, user_id)
                 await resilient_sleep(sana_page, 1, bot, user_id)
 
-                await _select_province(sana_page, province, bot, user_id)
+                province_selected = await _select_province(sana_page, province, bot, user_id)
+                if not province_selected:
+                    await bot.send_message(
+                        user_id,
+                        "⚠️ *خطا در انتخاب استان:*\n\n"
+                        f"استان «{province}» در لیست سامانه پیدا نشد.\n\n"
+                        "فرآیند متوقف شد. لطفاً نام استان انتخابی را بررسی و مجدداً اقدام نمایید.")
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"❌ [LAVAYEH] انتخاب استان '{province}' برای کاربر {user_id} ناموفق (کد: {tracking_code})."
+                    )
+                    runtime_state.active_lavayeh_users.discard(user_id)
+                    await log_event(
+                        "خطای سامانه", "لایحه", str(user_id), user_id,
+                        tracking_code=tracking_code, doc_name=title,
+                        note=f"انتخاب استان '{province}' ناموفق"
+                    )
+                    await _safe_register_case(
+                        event_type="خطای سامانه", full_name=str(user_id), user_id=user_id,
+                        trackingCode=tracking_code or "", documentCategory=title,
+                        errorDetails=f"انتخاب استان '{province}' ناموفق", errorStep="SELECT_PROVINCE")
+                    return
                 await resilient_sleep(sana_page, 2, bot, user_id)
 
                 await _click_validate_with_retry(sana_page, bot, user_id)
@@ -525,17 +523,6 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                     f"❌ [LAVAYEH] bill_no استخراج نشد برای کاربر {user_id} — بررسی صفحه لازم است."
                 )
                 raise LavayehFatalError(err_msg)
-
-            # ── ثبت کلید در مجموعه جلوگیری از تکرار ──
-            # بعد از ثبت موقت موفق، کلید را ثبت می‌کنیم تا اگر retry شد،
-            # لایحه دوباره ثبت موقت نشود
-            _processed_lavayeh_keys.add(task_key)
-            if len(_processed_lavayeh_keys) > _MAX_PROCESSED_CACHE:
-                # پاکسازی قدیمی‌ها
-                to_remove = list(_processed_lavayeh_keys)[:100]
-                for k in to_remove:
-                    _processed_lavayeh_keys.discard(k)
-            logging.info(f"[LAVAYEH] کلید ضدتکرار ثبت شد: {task_key} (تعداد کل: {len(_processed_lavayeh_keys)})")
 
             # ذخیره کدرهگیری در گوگل شیت + اطلاع به مدیر
             if lavayeh_bill_no:
@@ -1081,79 +1068,95 @@ async def _fill_national_id_field(page, national_id: str, bot: Bot, user_id: int
     return False
 
 
-async def _select_province(page, province: str, bot: Bot, user_id: int):
+async def _select_province(page, province: str, bot: Bot, user_id: int, max_retries: int = 4):
+    """
+    انتخاب استان صرفاً با کلیک روی گزینه‌ی درست در دراپ‌داون — هرگز با
+    تایپ‌کردن نام استان در فیلد جستجوی سامانه. طبق تصمیم صریح، تایپ نام
+    استان در فیلد ورودی (حتی به‌عنوان فال‌بک برای فیلتر کردن لیست) ممنوع
+    است، چون گاهی متن ناقص/نادرست در فیلد باقی می‌ماند و باعث خطای سامانه
+    می‌شود. در عوض، اگر کلیک مستقیم با یک تلاش موفق نشد، دراپ‌داون دوباره
+    باز می‌شود و با چند استراتژی تطبیق (دقیق → بدون فاصله/نیم‌فاصله →
+    شامل‌شدن جزئی) امتحان می‌شود، تا وقتی گزینه پیدا و کلیک شود.
+    """
     is_tehran_excl = ("واحدهای قضایی مستقر در استان تهران به جز" in province or
                       "به جز شهر تهران" in province)
     is_tehran_city = ("شهر تهران" in province and "استان تهران" not in province) or \
                      "واحدهای قضایی مستقر در شهر تهران" in province
 
-    await page.evaluate('''() => {
-        const btn = document.querySelector('.ui-select-toggle');
-        if (btn) btn.click();
-    }''')
-    await asyncio.sleep(1.5)
+    for attempt in range(max_retries):
+        # ── باز کردن دراپ‌داون (اگر از تلاش قبلی هنوز بازه، دوباره تلاش بی‌ضرر است) ──
+        await page.evaluate('''() => {
+            const btn = document.querySelector('.ui-select-toggle');
+            if (btn) btn.click();
+        }''')
+        await asyncio.sleep(1.5 + attempt * 0.5)
 
-    clicked = await page.evaluate('''(args) => {
-        const { province, isTehranExcl, isTehranCityOnly } = args;
+        clicked = await page.evaluate(r'''(args) => {
+            const { province, isTehranExcl, isTehranCityOnly } = args;
 
-        const normalize = (s) => (s || '')
-            .replace(/\u064A/g, '\u06CC')
-            .replace(/\u0643/g, '\u06A9')
-            .replace(/\u200c/g, ' ')
-            .trim();
+            const normalize = (s) => (s || '')
+                .replace(/\u064A/g, '\u06CC')
+                .replace(/\u0643/g, '\u06A9')
+                .replace(/\u200c/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
 
-        const normProvince = normalize(province);
-        const items = Array.from(document.querySelectorAll('.ui-select-choices-row'));
+            const normProvince = normalize(province);
+            const items = Array.from(document.querySelectorAll('.ui-select-choices-row'));
+            if (items.length === 0) return false;
 
-        if (isTehranExcl) {
-            const target = items.find(el => {
-                const t = normalize(el.innerText);
-                return t && t.includes("تهران") && t.includes("به جز");
-            });
+            if (isTehranExcl) {
+                const target = items.find(el => {
+                    const t = normalize(el.innerText);
+                    return t && t.includes("تهران") && t.includes("به جز");
+                });
+                if (target) { target.click(); return true; }
+                return false;
+            }
+            if (isTehranCityOnly) {
+                const target = items.find(el => {
+                    const t = normalize(el.innerText);
+                    return t && t.includes("شهر تهران") && !t.includes("استان تهران");
+                });
+                if (target) { target.click(); return true; }
+                return false;
+            }
+
+            // ۱) تطبیق دقیق پس از نرمال‌سازی
+            let target = items.find(el => normalize(el.innerText) === normProvince);
+            // ۲) تطبیق بدون فاصله (فاصله‌ها حذف شوند) — رفع تفاوت‌های نیم‌فاصله
+            if (!target) {
+                const flat = (s) => normalize(s).replace(/\s+/g, '');
+                const flatProvince = flat(province);
+                target = items.find(el => flat(el.innerText) === flatProvince);
+            }
+            // ۳) تطبیق جزئی (شامل‌شدن دوطرفه) به‌عنوان آخرین راه، بدون تایپ
+            if (!target) {
+                target = items.find(el => {
+                    const t = normalize(el.innerText);
+                    return t && (t.includes(normProvince) || normProvince.includes(t));
+                });
+            }
             if (target) { target.click(); return true; }
-        } else if (isTehranCityOnly) {
-            const target = items.find(el => {
-                const t = normalize(el.innerText);
-                return t && t.includes("شهر تهران") && !t.includes("استان تهران");
-            });
-            if (target) { target.click(); return true; }
-        } else {
-            const target = items.find(el => {
-                const t = normalize(el.innerText);
-                return t && t === normProvince;
-            });
-            if (target) { target.click(); return true; }
-        }
-        return false;
-    }''', {
-        "province": province,
-        "isTehranExcl": is_tehran_excl,
-        "isTehranCityOnly": is_tehran_city,
-    })
+            return false;
+        }''', {
+            "province": province,
+            "isTehranExcl": is_tehran_excl,
+            "isTehranCityOnly": is_tehran_city,
+        })
 
-    if not clicked:
-        search_input = page.locator('.ui-select-search').first
-        try:
-            await search_input.wait_for(state="visible", timeout=3000)
-            await search_input.fill("")
-            # باگ رفع شد: replace قبلی روی حروف یکسان انجام می‌شد (بدون اثر) و
-            # حروف عربی «ي/ك» که ممکن است کاربر تایپ کند به معادل فارسی
-            # «ی/ک» تبدیل نمی‌شدند؛ همین باعث می‌شد جستجوی برخی استان‌ها
-            # (مثلاً «آذربایجان شرقی») در سامانه با شکست مواجه شود.
-            normalized_province = province.replace("ي", "ی").replace("ك", "ک")
-            await search_input.type(normalized_province[:10], delay=100)
+        if clicked:
             await asyncio.sleep(2)
-            await page.evaluate('''(prov) => {
-                const items = Array.from(document.querySelectorAll('.ui-select-choices-row'));
-                const normalize = (s) => (s || '').replace(/\u064A/g, '\u06CC').replace(/\u0643/g, '\u06A9').trim();
-                const norm = normalize(prov);
-                const target = items.find(el => normalize(el.innerText) === norm);
-                if (target) target.click();
-            }''', province)
-        except Exception:
-            pass
+            return True
 
-    await asyncio.sleep(2)
+        logging.warning(
+            f"[LAVAYEH] انتخاب استان '{province}' با کلیک در تلاش {attempt + 1} ناموفق بود؛ "
+            f"دوباره تلاش می‌شود (بدون تایپ در فیلد)."
+        )
+        await asyncio.sleep(1.5)
+
+    logging.error(f"[LAVAYEH] انتخاب استان '{province}' پس از {max_retries} تلاش با کلیک ناموفق ماند.")
+    return False
 
 
 async def _click_validate_with_retry(page, bot: Bot, user_id: int, max_retries: int = 5):
