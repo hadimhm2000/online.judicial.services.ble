@@ -188,11 +188,13 @@ export default function BotMessageSender({ open, onClose, onRefresh }: Props) {
           fetchMessages();
           onRefresh?.();
         } else {
-          toast.error('خطا در ارسال پیام');
+          const errData = await sendRes.json().catch(() => null);
+          toast.error(errData?.error || 'خطا در ارسال پیام');
           fetchMessages();
         }
       } else {
-        toast.error('خطا در ثبت پیام');
+        const errData = await res.json().catch(() => null);
+        toast.error(errData?.error || 'خطا در ثبت پیام');
       }
     } catch {
       toast.error('خطا در ارتباط با سرور');
@@ -207,7 +209,8 @@ export default function BotMessageSender({ open, onClose, onRefresh }: Props) {
         toast.success('پیام مجدداً ارسال شد');
         fetchMessages();
       } else {
-        toast.error('خطا در ارسال');
+        const errData = await res.json().catch(() => null);
+        toast.error(errData?.error || 'خطا در ارسال');
       }
     } catch {
       toast.error('خطا در ارتباط با سرور');

@@ -5,6 +5,39 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const baleUserId = searchParams.get('baleUserId');
+    const search = searchParams.get('search');
+
+    // حالت جستجو/پیشنهاد کاربر (برای مثال در ارسال پیام از پنل ادمین):
+    // با نام یا شناسهٔ بله جستجو می‌کند و لیست کاربران یکتا برمی‌گرداند.
+    if (search) {
+      const query = search.trim();
+      if (query.length < 2) {
+        return NextResponse.json({ users: [] });
+      }
+
+      const cases = await db.case.findMany({
+        where: {
+          OR: [
+            { fullName: { contains: query } },
+            { baleUserId: { contains: query } },
+          ],
+        },
+        select: { baleUserId: true, fullName: true },
+        orderBy: { createdAt: 'desc' },
+        take: 200,
+      });
+
+      const seen = new Set<string>();
+      const users: { baleUserId: string; fullName: string }[] = [];
+      for (const c of cases) {
+        if (seen.has(c.baleUserId)) continue;
+        seen.add(c.baleUserId);
+        users.push({ baleUserId: c.baleUserId, fullName: c.fullName || c.baleUserId });
+        if (users.length >= 10) break;
+      }
+
+      return NextResponse.json({ users });
+    }
 
     if (!baleUserId) {
       return NextResponse.json({ error: 'baleUserId is required' }, { status: 400 });

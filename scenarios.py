@@ -2198,38 +2198,194 @@ async def _process_ezhharnameh_submit_sign(data: dict, bot: Bot):
         await on_ezhhar_sign_submit_failure(bot, user_id, user_state)
 
 
-async def browser_worker(bot: Bot):
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=False,
-            args=["--disable-blink-features=AutomationControlled"]
+async def _attach_debug_listeners(sana_page):
+    if DEBUG_LOG_REQUESTS:
+        sana_page.on(
+            "request",
+            lambda req: logging.info(f"[DEBUG-REQ] {req.method} {req.url}")
+            if "GetLegalPersonType" in req.url else None
         )
-        runtime_state.browser_context = await browser.new_context(
-            viewport={'width': 1366, 'height': 768}
+        sana_page.on(
+            "framenavigated",
+            lambda frame: logging.info(f"[DEBUG-NAV] {frame.url}")
+            if frame == sana_page.main_frame else None
         )
-        runtime_state.sana_page = await runtime_state.browser_context.new_page()
-        browser_context = runtime_state.browser_context
-        sana_page = runtime_state.sana_page
 
-        if DEBUG_LOG_REQUESTS:
-            sana_page.on(
-                "request",
-                lambda req: logging.info(f"[DEBUG-REQ] {req.method} {req.url}")
-                if "GetLegalPersonType" in req.url else None
-            )
-            sana_page.on(
-                "framenavigated",
-                lambda frame: logging.info(f"[DEBUG-NAV] {frame.url}")
-                if frame == sana_page.main_frame else None
-            )
 
+async def _launch_fresh_browser(bot: Bot, wait_login: bool = True):
+    """
+    ساخت یک browser + context + page کاملاً تازه با استفاده از
+    runtime_state.playwright_instance (که خودش فقط یک‌بار در ابتدای اجرای
+    browser_worker ساخته می‌شود و زنده می‌ماند). این تابع هم در استارت اولیه
+    و هم در بازیابی بعد از کرش/بسته‌شدن مرورگر استفاده می‌شود — بدون نیاز
+    به ری‌استارت کل پروسه‌ی ربات.
+    """
+    browser = await runtime_state.playwright_instance.chromium.launch(
+        headless=False,
+        args=["--disable-blink-features=AutomationControlled"]
+    )
+    runtime_state.browser = browser
+    runtime_state.browser_context = await browser.new_context(
+        viewport={'width': 1366, 'height': 768}
+    )
+    runtime_state.sana_page = await runtime_state.browser_context.new_page()
+    await _attach_debug_listeners(runtime_state.sana_page)
+
+    if wait_login:
         await wait_for_manual_login(bot)
+
+
+def _is_browser_dead() -> bool:
+    """بررسی سریع (بدون I/O) اینکه آیا صفحه/مرورگر فعلی از بین رفته است."""
+    page = runtime_state.sana_page
+    if page is None:
+        return True
+    try:
+        if page.is_closed():
+            return True
+    except Exception:
+        return True
+    browser = runtime_state.browser
+    if browser is not None:
+        try:
+            if not browser.is_connected():
+                return True
+        except Exception:
+            return True
+    return False
+
+
+_BROWSER_CLOSED_ERROR_HINTS = (
+    "target page, context or browser has been closed",
+    "target closed",
+    "browser has been closed",
+    "has been closed",
+    "connection closed",
+    "context or browser has been closed",
+)
+
+
+def _looks_like_browser_closed_error(err: Exception) -> bool:
+    msg = str(err).lower()
+    return any(hint in msg for hint in _BROWSER_CLOSED_ERROR_HINTS)
+
+
+async def ensure_browser_alive(bot: Bot, notify_admin: bool = True) -> bool:
+    """
+    اگر مرورگر/صفحه‌ی فعلی بسته یا قطع شده باشد، بدون ری‌استارت ربات یک
+    مرورگر تازه می‌سازد و منتظر لاگین دستی ادمین می‌ماند. اگر مرورگر سالم
+    باشد، کاری انجام نمی‌دهد. برمی‌گرداند: True اگر مرورگر (چه از قبل، چه
+    بعد از بازسازی) سالم و آماده باشد.
+    """
+    async with runtime_state.browser_relaunch_lock:
+        if not _is_browser_dead():
+            return True
+
+        logging.warning("[WORKER] مرورگر بسته/قطع شده — تلاش برای بازسازی بدون ری‌استارت ربات...")
+        if notify_admin:
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    "⚠️ *مرورگر پلی‌رایت بسته شده بود.*\n"
+                    "در حال باز کردن مرورگر جدید — لطفاً منتظر درخواست لاگین بمانید."
+                )
+            except Exception:
+                pass
+
+        # ── بستن ایمن باقیمانده‌ی مرورگر قبلی (اگر چیزی مانده باشد) ──
+        try:
+            old_browser = runtime_state.browser
+            if old_browser is not None:
+                try:
+                    if old_browser.is_connected():
+                        await old_browser.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        runtime_state.sana_page = None
+        runtime_state.browser_context = None
+        runtime_state.browser = None
+
+        try:
+            await _launch_fresh_browser(bot, wait_login=True)
+        except Exception as relaunch_err:
+            logging.critical(f"[WORKER] بازسازی مرورگر ناموفق: {relaunch_err}", exc_info=True)
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"🚨 بازسازی مرورگر ناموفق بود: {str(relaunch_err)[:300]}\n"
+                    "لطفاً وضعیت VPS/پروکسی را بررسی کنید."
+                )
+            except Exception:
+                pass
+            return False
+
+        logging.info("[WORKER] مرورگر با موفقیت بازسازی شد و آماده‌ی پردازش است.")
+        if notify_admin:
+            try:
+                await bot.send_message(ADMIN_ID, "✅ مرورگر با موفقیت بازسازی شد. صف کارها ادامه می‌یابد.")
+            except Exception:
+                pass
+        return True
+
+
+async def _browser_watchdog(bot: Bot, interval_seconds: int = 20):
+    """
+    تسک پس‌زمینه‌ای که هر چند ثانیه یک‌بار بررسی می‌کند مرورگر زنده است یا
+    نه — حتی وقتی صف کارها خالی است و هیچ تسکی در حال پردازش نیست. این‌طور
+    اگر مرورگر بین دو تسک بسته شود، به‌محض رسیدن تسک بعدی معطل باز شدن
+    دوباره‌ی مرورگر نمی‌ماند (چون از قبل بازسازی شده).
+    """
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            if _is_browser_dead():
+                await ensure_browser_alive(bot)
+        except Exception as e:
+            logging.error(f"[WATCHDOG] خطا در بررسی سلامت مرورگر: {e}")
+
+
+async def browser_worker(bot: Bot):
+    runtime_state.playwright_instance = await async_playwright().start()
+    try:
+        await _launch_fresh_browser(bot, wait_login=True)
+
+        # ── واچ‌داگ پس‌زمینه برای تشخیص/ترمیم خودکار بسته‌شدن مرورگر ──
+        asyncio.create_task(_browser_watchdog(bot))
 
         # ── حلقه‌ی اصلی با حفاظت در برابر کرش ──
         while True:
+            data = None
             try:
                 data = await runtime_state.job_queue.get()
-                await process_task(data, bot)
+
+                # بررسی سلامت مرورگر قبل از پردازش؛ اگر بسته بود، بدون
+                # ری‌استارت ربات دوباره بازش کن و بعد همین تسک را پردازش کن
+                if not await ensure_browser_alive(bot):
+                    # بازسازی ناموفق بود؛ تسک را به انتهای صف برگردان تا از
+                    # بین نرود و بعداً (وقتی مرورگر درست شد) دوباره تلاش شود
+                    await runtime_state.job_queue.put(data)
+                    runtime_state.job_queue.task_done()
+                    await asyncio.sleep(10)
+                    continue
+
+                try:
+                    await process_task(data, bot)
+                except Exception as task_err:
+                    if _looks_like_browser_closed_error(task_err):
+                        logging.warning(
+                            f"[WORKER] مرورگر حین پردازش تسک بسته شد؛ بازسازی و تلاش مجدد: {task_err}"
+                        )
+                        if await ensure_browser_alive(bot):
+                            # یک بار دیگر همین تسک را با مرورگر تازه امتحان کن
+                            await process_task(data, bot)
+                        else:
+                            raise
+                    else:
+                        raise
+
                 runtime_state.job_queue.task_done()
             except KeyboardInterrupt:
                 logging.warning("[WORKER] KeyboardIntercept دریافت شد — خروج.")
@@ -2239,7 +2395,7 @@ async def browser_worker(bot: Bot):
                 # ── گزارش کامل باگ (traceback + اسکرین‌شات + زمینه) به مدیر ──
                 try:
                     from bug_reporter import report_bug
-                    _d = locals().get("data") or {}
+                    _d = data or {}
                     await report_bug(
                         bot,
                         where="browser_worker (حلقه‌ی اصلی)",
@@ -2261,4 +2417,16 @@ async def browser_worker(bot: Bot):
                     save_runtime_state()
                 except Exception:
                     pass
-                runtime_state.job_queue.task_done()
+                try:
+                    runtime_state.job_queue.task_done()
+                except ValueError:
+                    pass
+    finally:
+        # این finally عملاً هرگز در حالت عادی اجرا نمی‌شود (حلقه‌ی بالا
+        # فقط با KeyboardInterrupt می‌شکند)، ولی برای پاکسازی درست در
+        # صورت خروج کامل پروسه، playwright را می‌بندیم.
+        try:
+            if runtime_state.playwright_instance is not None:
+                await runtime_state.playwright_instance.stop()
+        except Exception:
+            pass
