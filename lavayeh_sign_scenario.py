@@ -39,17 +39,26 @@ from config import ADMIN_ID
 async def navigate_to_sign_page(
     bot: Bot,
     user_id: int,
-    tracking_code: str) -> bool:
+    tracking_code: str,
+    menu_path: list | None = None) -> bool:
     """
-    ناوبری به صفحه اخذ امضای لایحه.
+    ناوبری به صفحه اخذ امضا.
     مسیر:
       ۱. رفتن به صفحه اصلی سامانه
-      ۲. کلیک «ارایه و پیگیری لایحه»
+      ۲. کلیک روی مسیر منوی مربوط به نوع سند (menu_path)
       ۳. انتخاب radio #rdbGetPetition (value=2)
       ۴. وارد کردن کد رهگیری در #billNo
       ۵. کلیک جستجو #btnGetJSSBill
       ۶. صبر ۳۰ ثانیه
       ۷. کلیک «اخذ امضای الکترونیک»
+
+    ⚠️ اصلاحیه: قبلاً همیشه فقط «ارایه و پیگیری لایحه» کلیک می‌شد — چه سند
+    اصلی لایحه بود، چه چک، چه دعوی اعتراضی (تجدیدنظر/واخواهی/...). طبق
+    تأیید کارفرما، فقط مرحله ۲ (کلیک اولیه/مسیر منو) بین انواع سند فرق
+    می‌کند؛ بقیهٔ مراحل (رادیو، billNo، جستجو، اخذ امضا) مشترک است. حالا
+    این مسیر از پارامتر menu_path (لیستی از متن‌های منو که به‌ترتیب کلیک
+    می‌شوند) گرفته می‌شود؛ اگر داده نشود، برای سازگاری با نسخهٔ قبلی
+    («لایحه») همان تک‌کلیک «ارایه و پیگیری لایحه» انجام می‌شود.
 
     Returns True اگر صفحه جدول امضا ظاهر شد.
     """
@@ -57,6 +66,9 @@ async def navigate_to_sign_page(
     if sana_page is None:
         logging.error("[SIGN] sana_page is None")
         return False
+
+    if not menu_path:
+        menu_path = ["ارایه و پیگیری لایحه"]
 
     try:
         # ── ۱. رفتن به صفحه اصلی ────────────────────────────────────────
@@ -67,18 +79,32 @@ async def navigate_to_sign_page(
             return False
         await human_delay(3.0, 5.0)
 
-        # ── ۲. کلیک روی «ارایه و پیگیری لایحه» ─────────────────────────
+        # ── ۲. کلیک روی مسیر منوی مربوط به نوع سند (menu_path) ──────────
         # نکته مهم: «اظهارنامه» عمداً exclude شده تا با آیتم منوی اظهارنامه
         # تداخل نکند. از click_sana_main_menu استفاده می‌شود که فقط داخل
         # a.list-group-item جستجو می‌کند و هرگز به div/span/li عمومی‌تر
         # escalate نمی‌شود (که می‌توانست باعث کلیک روی آیتم اشتباه شود).
+        first_menu_text = menu_path[0]
         clicked = await click_sana_main_menu(
-            sana_page, "ارایه و پیگیری لایحه", exclude_texts=["اظهارنامه"],
-            timeout_sec=15, prefix="LAVAYEH_SIGN")
+            sana_page, first_menu_text, exclude_texts=["اظهارنامه"],
+            timeout_sec=15, prefix="SIGN")
         if not clicked:
-            logging.error("[SIGN] منوی «ارایه و پیگیری لایحه» پیدا نشد")
+            logging.error(f"[SIGN] منوی «{first_menu_text}» پیدا نشد")
             return False
         await resilient_sleep(sana_page, 5, bot, user_id)
+
+        # کلیک‌های بعدیِ مسیر منو (در صورت وجود بیش از یک آیتم؛ مثلاً چک
+        # بدوی: «ارایه و پیگیری دادخواست» → «دادخواست بدوی»)
+        for sub_menu_text in menu_path[1:]:
+            clicked = await sana_page.evaluate('''(text) => {
+                const items = Array.from(document.querySelectorAll('li.list-group-item'));
+                const t = items.find(el => el.innerText && el.innerText.includes(text));
+                if (t) { t.click(); return true; }
+                return false;
+            }''', sub_menu_text)
+            if not clicked:
+                await safe_click_by_text(sana_page, sub_menu_text, bot, user_id)
+            await resilient_sleep(sana_page, 5, bot, user_id)
 
         # ── ۳. انتخاب radio #rdbGetPetition (value=2) ───────────────────
         # نکته (رفع باگ): همان الگوی اثبات‌شده در api_direct.py._do_page_check
