@@ -906,6 +906,25 @@ async def admin_resume_task(message: types.Message, bot: Bot):
     await runtime_state.job_queue.put(("resume", resume_data))
     logging.info(f"[ADMIN] مدیر ادامه تسک {task_key} را از مرحله {info['next_step']} شروع کرد.")
 
+@router.message(StateFilter("*"), Command("fixbrowser"), F.from_user.id == ADMIN_ID)
+async def cmd_fix_browser(message: types.Message, state: FSMContext):
+    """
+    دستور دستی ادمین برای بازسازی فوری مرورگر پلی‌رایت — بدون ری‌استارت
+    کل ربات. معمولاً نیازی به این دستور نیست چون واچ‌داگ پس‌زمینه خودش
+    خودکار تشخیص می‌دهد و بازسازی می‌کند؛ این فقط برای اطمینان/دستی است.
+    """
+    from scenarios import ensure_browser_alive, _is_browser_dead
+    if not _is_browser_dead():
+        await message.reply("✅ مرورگر سالم است؛ نیازی به بازسازی نیست.")
+        return
+    await message.reply("🔄 در حال بازسازی مرورگر... لطفاً منتظر درخواست لاگین بمانید.")
+    ok = await ensure_browser_alive(message.bot, notify_admin=False)
+    if ok:
+        await message.reply("✅ مرورگر با موفقیت بازسازی شد.")
+    else:
+        await message.reply("❌ بازسازی مرورگر ناموفق بود؛ جزئیات در لاگ ثبت شد.")
+
+
 @router.message(StateFilter("*"), F.from_user.id == ADMIN_ID, F.text == "✅ ورودم تکمیل شد")
 async def confirm_login_from_admin_global(message: types.Message, state: FSMContext):
     if not runtime_state.login_event.is_set():
