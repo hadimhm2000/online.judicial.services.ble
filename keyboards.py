@@ -1004,6 +1004,16 @@ check_choice_kb = ReplyKeyboardMarkup(
 check_request_title_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="صدور اجرائیه چک"), KeyboardButton(text="مطالبه وجه چک")],
+        [KeyboardButton(text="مطالبه وجه بابت...")],
+        [KeyboardButton(text="🔙 بازگشت")],
+    ],
+    resize_keyboard=True
+)
+
+# کیبورد بله/خیر — سوال‌های تامین خواسته و اعسار از هزینه دادرسی
+check_yes_no_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="✅ بله"), KeyboardButton(text="❌ خیر")],
         [KeyboardButton(text="🔙 بازگشت")],
     ],
     resize_keyboard=True

@@ -140,12 +140,28 @@ async def send_check_submission_to_admin(bot: Bot, admin_id: int, user_id: int, 
     defendants_text = "\n".join(_person_line(p, i + 1) for i, p in enumerate(defendants)) or "  -"
     witnesses_text = "\n".join(f"  {i+1}. {w.get('national_id','')}" for i, w in enumerate(witnesses)) or "  -"
 
+    # ⭐ درخواست‌های تامین خواسته / اعسار (عناوین مطالبه وجه)
+    tamin_line = "⚖️ تامین خواسته و توقیف اموال خوانده: " + (
+        "بله" if data.get("check_tamin_khasteh") else "خیر")
+    aasar_line = "📋 اعسار از هزینه دادرسی: " + (
+        "بله" if data.get("check_aasar") else "خیر")
+
+    # استشهادیه (پیوست الزامی اعسار)
+    estesh_count = 0
+    for group in data.get("check_attachment_groups", []):
+        if group.get("is_esteshahadieh") or "استشهاد" in (group.get("title", "") or ""):
+            estesh_count += len(group.get("images", []))
+    estesh_line = (
+        f"📋 استشهادیه محلی: {estesh_count} تصویر" if estesh_count else "")
+
     body = (
         f"🆔 آیدی کاربر: {user_id}\n"
         f"(برای پاسخ مستقیم به همین کاربر: /send {user_id})\n\n"
         f"📌 عنوان خواسته: {data.get('check_request_title','')}\n"
         f"💰 مبلغ: {amount:,} ریال\n"
-        f"📄 عنوان خواسته (متن): {data.get('check_khasteh_text','')}\n\n"
+        f"{tamin_line}\n{aasar_line}\n"
+        + (f"{estesh_line}\n" if estesh_line else "") +
+        f"\n📄 عنوان خواسته (متن): {data.get('check_khasteh_text','')}\n\n"
         f"👤 خواهان(ها):\n{plaintiffs_text}\n\n"
         f"👥 خوانده(ها):\n{defendants_text}\n\n"
         f"🔍 مطلع/گواه:\n{witnesses_text}\n\n"
