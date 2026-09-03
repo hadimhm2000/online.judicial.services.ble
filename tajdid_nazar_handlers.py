@@ -2275,9 +2275,12 @@ async def tn_edit_choice_handler(message: Message, state: FSMContext):
         return
 
     if text == "📄 ویرایش شرح متن":
+        # ⚠️ اصلاحیه: اعلام گزینهٔ فایل ورد — هندلر tn_text از قبل .docx را
+        # می‌پذیرد ولی کاربر خبر نداشت.
         await message.answer(
-            "📄 لطفاً متن جدید را ارسال فرمایید:",
-            reply_markup=ReplyKeyboardRemove())
+            "📄 لطفاً *متن جدید* را ارسال فرمایید:\n\n"
+            "💡 می‌توانید متن را *تایپ* کنید یا *فایل ورد (.docx)* ارسال نمایید.",
+            reply_markup=back_only_kb)
         await state.set_state(Form.tn_text)
         return
 
