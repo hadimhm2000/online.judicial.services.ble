@@ -99,6 +99,67 @@ def _title_log(prefix, action, title):
 
 
 # =========================================================
+# ۱-ب. نرمال‌سازی نویسه‌های عربی/فارسی برای تطبیق عناوین
+# =========================================================
+# ⭐ ریشه‌ی اصلی باگ «ردیف در جدول ظاهر نشد» همین‌جاست:
+# سامانه ثنا (sakha/adliran) عنوان مدرک را گاهی با نویسه‌های عربی
+# ذخیره/نمایش می‌دهد (ي به‌جای ی، ك به‌جای ک، رأی به‌جای رای، ة به‌جای ه).
+# جست‌وجوی دقیقِ cell.includes(title) وقتی عنوان کاربر فارسی است شکست
+# می‌خورد — در حالی که عنوان‌های بدون ی/ک (مثل «مستندات» در فلوی تست)
+# همیشه کار می‌کنند. برای همین هر دو سمت (متن سلول جدول و عنوان جست‌وجو)
+# قبل از مقایسه نرمال می‌شوند.
+
+def _normalize_fa_text(s: str) -> str:
+    """نرمال‌سازی متن فارسی/عربی برای مقایسه (سمت پایتون)."""
+    if not s:
+        return ""
+    table = str.maketrans({
+        "\u064A": "\u06CC",  # ي (عربی) → ی (فارسی)
+        "\u0649": "\u06CC",  # ى (الف مقصوره) → ی
+        "\u0643": "\u06A9",  # ك (عربی) → ک (فارسی)
+        "\u0623": "\u0627",  # أ → ا
+        "\u0625": "\u0627",  # إ → ا
+        "\u0622": "\u0627",  # آ → ا
+        "\u0629": "\u0647",  # ة → ه
+        "\u200C": " ",       # نیم‌فاصله → فاصله
+    })
+    s = s.translate(table)
+    import re as _re
+    return _re.sub(r"\s+", " ", s).strip()
+
+
+# تابع نرمال‌سازی مشابه داخل مرورگر (سمت JS) — به‌صورت رشته تزریق می‌شود
+JS_NORMALIZE_FN = """
+    const _normFa = (s) => {
+        if (!s) return '';
+        return String(s)
+            .replace(/\\u064A/g, '\\u06CC')
+            .replace(/\\u0649/g, '\\u06CC')
+            .replace(/\\u0643/g, '\\u06A9')
+            .replace(/\\u0623/g, '\\u0627')
+            .replace(/\\u0625/g, '\\u0627')
+            .replace(/\\u0622/g, '\\u0627')
+            .replace(/\\u0629/g, '\\u0647')
+            .replace(/\\u200C/g, ' ')
+            .replace(/\\s+/g, ' ')
+            .trim();
+    };
+"""
+
+
+async def _get_table_rows_text(page, max_rows: int = 8) -> list:
+    """گرفتن متن ردیف‌های جدول برای دیاگنوستیک وقتی ردیف پیدا نمی‌شود."""
+    try:
+        rows = await page.evaluate('''() => {
+            const rows = Array.from(document.querySelectorAll('table tbody tr'));
+            return rows.map(r => (r.innerText || '').replace(/\\s+/g, ' ').trim()).filter(Boolean);
+        }''')
+        return rows[:max_rows] if rows else []
+    except Exception:
+        return []
+
+
+# =========================================================
 # ۱. اعتبارسنجی و آماده‌سازی فایل
 # =========================================================
 
@@ -606,16 +667,29 @@ async def click_edit_document_for_title(
     user_id: int = None,
     prefix: str = "UPLOAD",
     table_wait_timeout: int = 15,
-    uploader_wait_timeout: int = 15) -> bool:
-    """کلیک روی دکمه editDocument ردیف مربوط به title."""
+    uploader_wait_timeout: int = 15,
+    pre_save_row_count: int = None) -> bool:
+    """کلیک روی دکمه editDocument ردیف مربوط به title.
+
+    ⭐ تفاوت با نسخه قبلی:
+      ۱. متن سلول‌ها و عنوان جست‌وجو هر دو نرمال‌سازی فارسی/عربی می‌شوند
+         (ي/ی، ك/ک، أ/آ، ة/ه، نیم‌فاصله) — ریشه باگ «ردیف در جدول ظاهر نشد».
+      ۲. اگر عنوان پیدا نشد ولی pre_save_row_count داده شده بود و تعداد ردیف‌ها
+         نسبت به قبل از ذخیره دقیقاً افزایش یافته، ردیف تازه‌اضافه‌شده (آخرین ردیف
+         دارای دکمه ویرایش فعال) به‌عنوان فال‌بک کلیک می‌شود.
+      ۳. در صورت شکست، متن واقعی ردیف‌های جدول برای دیاگنوستیک لاگ می‌شود.
+    """
+    # نرمال‌سازی همه واریانت‌ها (هم فارسی هم عربی هر دو شکل را پوشش می‌دهد)
     title_variants = [title]
     if 'نمایندگی' in title:
         title_variants.extend(['مدرک نمايندگي', 'مدرک نمایندگی', 'تصوير مدرک نمايندگي', 'تصویر مدرک نمایندگی'])
     if 'ضمایم' in title or 'ضمائم' in title:
         title_variants.extend(['ساير ضمائم', 'سایر ضمائم'])
-    title_variants = list(dict.fromkeys(title_variants))
+    title_variants = list(dict.fromkeys(
+        _normalize_fa_text(v) for v in title_variants if v))
 
     found_btn = False
+    used_fallback = False
     for i in range(table_wait_timeout * 2):
         if i % 10 == 0 and bot and user_id:
             had_expiry = await check_and_handle_expiry(page, bot, user_id)
@@ -624,19 +698,20 @@ async def click_edit_document_for_title(
                 await asyncio.sleep(2)
 
         result = await page.evaluate('''(variants) => {
+            ''' + JS_NORMALIZE_FN + '''
             const rows = document.querySelectorAll('table tbody tr');
             for (const row of rows) {
                 const cells = row.querySelectorAll('td');
                 for (const cell of cells) {
-                    const text = (cell.innerText || '').trim();
+                    const text = _normFa(cell.innerText || '');
                     for (const v of variants) {
                         if (text.includes(v)) {
                             const editBtn = row.querySelector('button[ng-click*="editDocument"]');
                             if (editBtn && !editBtn.disabled) {
                                 editBtn.setAttribute('data-target-edit', '1');
-                                return { found: true, rowCount: rows.length };
+                                return { found: true, rowCount: rows.length, cellText: text };
                             }
-                            return { found: false, reason: 'no_button', rowCount: rows.length };
+                            return { found: false, reason: 'no_button', rowCount: rows.length, cellText: text };
                         }
                     }
                 }
@@ -653,9 +728,49 @@ async def click_edit_document_for_title(
             return False
         await asyncio.sleep(0.5)
 
+    # ── فال‌بک: ردیف تازه‌اضافه‌شده (بر اساس افزایش تعداد ردیف) ──
+    if not found_btn and pre_save_row_count is not None:
+        fb = await page.evaluate('''(preCount) => {
+            ''' + JS_NORMALIZE_FN + '''
+            const rows = Array.from(document.querySelectorAll('table tbody tr'));
+            if (rows.length <= preCount) return null;
+            // از انتها به ابتدا — ردیف جدید معمولاً آخر اضافه می‌شود
+            for (let i = rows.length - 1; i >= 0; i--) {
+                const editBtn = rows[i].querySelector('button[ng-click*="editDocument"]');
+                if (editBtn && !editBtn.disabled) {
+                    editBtn.setAttribute('data-target-edit', '1');
+                    return {
+                        rowCount: rows.length,
+                        rowText: _normFa(rows[i].innerText || '').slice(0, 120)
+                    };
+                }
+            }
+            return null;
+        }''', int(pre_save_row_count))
+        if fb:
+            found_btn = True
+            used_fallback = True
+            _log(prefix,
+                 f"⭐ فال‌بک: عنوان [{title}] در جدول مطابقت نداشت ولی ردیف جدید "
+                 f"شناسایی شد (ردیف‌ها: {pre_save_row_count}→{fb['rowCount']}) — "
+                 f"متن ردیف: «{fb['rowText']}»")
+
     if not found_btn:
         _log(prefix, f"ردیف [{title}] در جدول ظاهر نشد", 'warning')
+        # دیاگنوستیک: محتوای واقعی جدول برای عیب‌یابی
+        try:
+            rows_text = await _get_table_rows_text(page)
+            if rows_text:
+                preview = " | ".join(r[:80] for r in rows_text[:6])
+                _log(prefix, f"دیاگنوستیک جدول ({len(rows_text)} ردیف): {preview}", 'warning')
+            else:
+                _log(prefix, "دیاگنوستیک جدول: هیچ ردیفی در جدول یافت نشد (tbody tr خالی)", 'warning')
+        except Exception:
+            pass
         return False
+
+    if used_fallback:
+        _log(prefix, f"ادامه با ردیف فال‌بک برای [{title}] (متن ردیف با سامانه نرمال‌سازی شده است)")
 
     try:
         target = page.locator('button[data-target-edit="1"]')
@@ -775,16 +890,24 @@ async def delete_all_files_in_row(page, bot: Bot = None, user_id: int = None, pr
 
 
 async def delete_document_row_by_title(page, title: str, prefix: str = "UPLOAD") -> bool:
-    """حذف یک ردیف پیوست از فهرست (سطل زباله removeDocument)."""
-    escaped = title.replace("`", "'").replace("\\", "").replace('"', '\\"')
+    """حذف یک ردیف پیوست از فهرست (سطل زباله removeDocument).
 
-    result = await page.evaluate(f'''() => {{
+    ⭐ تطبیق عنوان با نرمال‌سازی فارسی/عربی انجام می‌شود تا ردیف‌های ذخیره‌شده
+    با نویسه‌های عربی (ي/ك) هم پیدا شوند — قبلاً فقط آخرین ردیف کورکورانه
+    حذف می‌شد که خطر حذف ردیف اشتباه را داشت.
+    """
+    escaped = _normalize_fa_text(title).replace("`", "'").replace("\\", "").replace('"', '\\"')
+
+    result = await page.evaluate(
+        f'''() => {{
+        ''' + JS_NORMALIZE_FN + f'''
+        const normTitle = _normFa("{escaped}");
         const rows = Array.from(document.querySelectorAll('table tbody tr, .table tbody tr'));
         let targetRow = null;
         for (const row of rows) {{
             const cells = row.querySelectorAll('td');
             for (const cell of cells) {{
-                if (cell.innerText && cell.innerText.includes("{escaped}")) {{
+                if (_normFa(cell.innerText || '').includes(normTitle)) {{
                     targetRow = row;
                     break;
                 }}
@@ -863,13 +986,16 @@ async def full_delete_attachment_row(
     _log(prefix, f"شروع حذف کامل ردیف [{title}]...")
 
     try:
-        escaped = title.replace("`", "'").replace("\\", "").replace('"', '\\"')
-        edit_clicked = await page.evaluate(f'''() => {{
+        escaped = _normalize_fa_text(title).replace("`", "'").replace("\\", "").replace('"', '\\"')
+        edit_clicked = await page.evaluate(
+            f'''() => {{
+            ''' + JS_NORMALIZE_FN + f'''
+            const normTitle = _normFa("{escaped}");
             const rows = Array.from(document.querySelectorAll('table tbody tr, .table tbody tr'));
             for (const row of rows) {{
                 const cells = row.querySelectorAll('td');
                 for (const cell of cells) {{
-                    if (cell.innerText && cell.innerText.includes("{escaped}")) {{
+                    if (_normFa(cell.innerText || '').includes(normTitle)) {{
                         let editBtn = row.querySelector('button[ng-click*="editDocument"]');
                         if (!editBtn) {{
                             const nextRow = row.nextElementSibling;
@@ -1887,6 +2013,14 @@ async def resilient_upload_attachment(
                 _log(prefix, f"نشست قبل از آپلود [{doc_title}] تمدید شد")
                 await asyncio.sleep(2)
 
+            # ─── شمارش ردیف‌های فعلی جدول (برای فال‌بک تشخیص ردیف جدید) ───
+            try:
+                pre_save_row_count = await page.evaluate(
+                    '''() => document.querySelectorAll('table tbody tr').length''')
+                pre_save_row_count = int(pre_save_row_count or 0)
+            except Exception:
+                pre_save_row_count = None
+
             # ─── مرحله ۱: پر کردن فرم ───
             if form_fill_fn:
                 form_ok = await form_fill_fn(page, doc_title, prepared_paths)
@@ -1942,8 +2076,12 @@ async def resilient_upload_attachment(
             await asyncio.sleep(INTER_STEP_DELAY)
 
             # ─── مرحله ۳: کلیک editDocument روی ردیف + انتظار آپلودر ───
+            # ⭐ pre_save_row_count پاس داده می‌شود تا اگر عنوان با جدول مطابقت
+            # نداشت (مثلاً سامانه عنوان را با نویسه عربی ذخیره کرده)، ردیف
+            # تازه‌اضافه‌شده از روی افزایش تعداد ردیف‌ها شناسایی و کلیک شود.
             edit_ok = await click_edit_document_for_title(
-                page, doc_title, bot, user_id, prefix=prefix)
+                page, doc_title, bot, user_id, prefix=prefix,
+                pre_save_row_count=pre_save_row_count)
             if not edit_ok:
                 _log(prefix, f"editDocument یا آپلودر برای [{doc_title}] ناموفق", 'warning')
                 await full_delete_attachment_row(page, doc_title, bot, user_id, prefix)
@@ -2085,6 +2223,12 @@ async def _default_fill_other_attachment_form(page, doc_title: str, page_count: 
     پر کردن فرم پیش‌فرض «سایر ضمائم».
 
     اگر page_count == 1 (تک‌برگ)، فیلد #txt001 و دکمه #incAttach0 اسکیپ می‌شوند.
+
+    ⭐ تمام فیلدها با روش «مقاوم AngularJS» پر می‌شوند:
+    مقدار + رویداد input/change + $setViewValue/$render روی ngModelCtrl
+    + $apply — دقیقاً همان الگوی _fill_input که برای بقیه فیلدهای سامانه
+    (مثل #txtCourtCode) جواب می‌دهد. پر کردن خامِ فقط .value گاهی توسط
+    ng-model سامانه ثنا نادیده گرفته می‌شود و عنوان خالی ذخیره می‌شود.
     """
     # مرحله ۱: انتخاب «سایر ضمائم»
     await page.evaluate('''() => {
@@ -2095,6 +2239,15 @@ async def _default_fill_other_attachment_form(page, doc_title: str, page_count: 
             if (opt) {
                 sel.value = opt.value;
                 sel.dispatchEvent(new Event("change"));
+                try {
+                    if (typeof angular !== 'undefined') {
+                        const el = angular.element(sel);
+                        const ctrl = el.controller('ngModel');
+                        if (ctrl) { ctrl.$setViewValue(opt.value); ctrl.$render(); }
+                        const scope = el.scope();
+                        if (scope) scope.$apply();
+                    }
+                } catch (e) {}
             }
         }
     }''')
@@ -2104,30 +2257,63 @@ async def _default_fill_other_attachment_form(page, doc_title: str, page_count: 
     await page.evaluate('''() => {
         const inputs = Array.from(document.querySelectorAll('input#txtNo'));
         if (inputs.length > 0) {
-            inputs[0].value = "0";
-            inputs[0].dispatchEvent(new Event("input", { bubbles: true }));
+            const inp = inputs[0];
+            inp.value = "0";
+            inp.dispatchEvent(new Event("input", { bubbles: true }));
+            inp.dispatchEvent(new Event("change", { bubbles: true }));
+            try {
+                if (typeof angular !== 'undefined') {
+                    const el = angular.element(inp);
+                    const ctrl = el.controller('ngModel');
+                    if (ctrl) { ctrl.$setViewValue("0"); ctrl.$render(); }
+                    const scope = el.scope();
+                    if (scope) scope.$apply();
+                }
+            } catch (e) {}
         }
     }''')
 
-    # مرحله ۳: عنوان مدرک
-    escaped_title = doc_title.replace("`", "'").replace("\\", "").replace('"', '\\"')
-    await page.evaluate(f'''() => {{
+    # مرحله ۳: عنوان مدرک — مقدار به‌صورت آرگومان Playwright پاس می‌شود
+    # (بدون تزریق در رشته JS) تا کاراکترهای خاص عنوان مشکلی ایجاد نکنند.
+    await page.evaluate(f'''(val) => {{
         const inputs = Array.from(document.querySelectorAll('input#txtName'));
         if (inputs.length > 0) {{
-            inputs[0].value = "{escaped_title}";
-            inputs[0].dispatchEvent(new Event("input", {{ bubbles: true }}));
+            const inp = inputs[0];
+            inp.focus();
+            inp.value = val;
+            inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
+            inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
+            try {{
+                if (typeof angular !== 'undefined') {{
+                    const el = angular.element(inp);
+                    const ctrl = el.controller('ngModel');
+                    if (ctrl) {{ ctrl.$setViewValue(val); ctrl.$render(); }}
+                    const scope = el.scope();
+                    if (scope) scope.$apply();
+                }}
+            }} catch (e) {{}}
         }}
-    }}''')
+    }}''', doc_title)
 
     # مرحله ۴: تعداد صفحات و افزودن پیوست
     if page_count > 1:
-        await page.evaluate(f'''() => {{
+        await page.evaluate('''(val) => {
             const inp = document.querySelector('#txt001');
-            if (inp) {{
-                inp.value = "{page_count}";
-                inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
-            }}
-        }}''')
+            if (inp) {
+                inp.value = String(val);
+                inp.dispatchEvent(new Event("input", { bubbles: true }));
+                inp.dispatchEvent(new Event("change", { bubbles: true }));
+                try {
+                    if (typeof angular !== 'undefined') {
+                        const el = angular.element(inp);
+                        const ctrl = el.controller('ngModel');
+                        if (ctrl) { ctrl.$setViewValue(String(val)); ctrl.$render(); }
+                        const scope = el.scope();
+                        if (scope) scope.$apply();
+                    }
+                } catch (e) {}
+            }
+        }''', page_count)
 
         await page.evaluate('''() => {
             const btn = document.querySelector('#incAttach0');
@@ -2145,6 +2331,16 @@ async def _default_fill_other_attachment_form(page, doc_title: str, page_count: 
             if (inp) {
                 inp.value = "1";
                 inp.dispatchEvent(new Event("input", { bubbles: true }));
+                inp.dispatchEvent(new Event("change", { bubbles: true }));
+                try {
+                    if (typeof angular !== 'undefined') {
+                        const el = angular.element(inp);
+                        const ctrl = el.controller('ngModel');
+                        if (ctrl) { ctrl.$setViewValue("1"); ctrl.$render(); }
+                        const scope = el.scope();
+                        if (scope) scope.$apply();
+                    }
+                } catch (e) {}
             }
         }''')
         _log("UPLOAD", f"حالت تک‌برگ ({page_count} فایل) — #txt001='1' پر شد، #incAttach0 اسکیپ شد")

@@ -127,7 +127,8 @@ from upload_helpers import (
     get_and_close_error_popup_text as _uh_error_popup_text,
     download_images_from_bale,
     resilient_upload_attachment,
-    _default_fill_other_attachment_form)
+    _default_fill_other_attachment_form,
+    JS_NORMALIZE_FN)
 
 
 logger = logging.getLogger(__name__)
@@ -2062,6 +2063,8 @@ async def _click_edit_document_last_row(page, doc_title: str, bot: Bot, user_id:
                 return False
 
         marked = await page.evaluate('''(label) => {
+            ''' + JS_NORMALIZE_FN + '''
+            const normLabel = _normFa(label);
             // پاک‌سازی علامت قبلی
             document.querySelectorAll('button[data-check-edit]').forEach(
                 b => b.removeAttribute('data-check-edit'));
@@ -2070,8 +2073,8 @@ async def _click_edit_document_last_row(page, doc_title: str, bot: Bot, user_id:
             for (const row of rows) {
                 const cells = row.querySelectorAll('td');
                 for (const cell of cells) {
-                    const text = (cell.innerText || '').trim();
-                    if (text.includes(label)) {
+                    const text = _normFa(cell.innerText || '');
+                    if (text.includes(normLabel)) {
                         const editBtn = row.querySelector('button[ng-click*="editDocument"]');
                         if (editBtn && !editBtn.disabled) target = editBtn;
                     }

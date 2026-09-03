@@ -1000,60 +1000,24 @@ async def ezhhar_prepay_successful_payment(message: Message, state: FSMContext, 
     await state.clear()
 
 
-# هندلر دکمه «پرداخت انجام شد» — فال‌بک
-@ezhharnameh_router.callback_query(F.data == "ezhhar_prepay_done", Form.waiting_for_ezhhar_prepay)
-async def ezhhar_prepay_done_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    """کاربر دکمه تایید پرداخت را زده — تایید مجدد"""
-    await callback.answer()
-    user_id = callback.from_user.id
-
-    confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ بله، پرداخت موفق بود", callback_data="ezhhar_prepay_done_confirm")],
-        [InlineKeyboardButton(text="❌ خیر، انصراف", callback_data="ezhhar_prepay_cancel")],
-    ])
-    await callback.message.answer(
-        "❓ آیا مطمئن هستید که پرداخت با موفقیت انجام شد؟\n\n"
-        "اگر پیام «پرداخت با موفقیت انجام شد» را در کیف پول بله دیده‌اید، «بله» را بزنید.",
-        reply_markup=confirm_kb
+# ================= دکمه «پرداخت انجام شد» — حذف کامل =================
+# ⛔ هندلرهای ezhhar_prepay_done / ezhhar_prepay_done_confirm حذف شدند.
+# تایید پرداخت فقط از طریق پیام successful_payment خود بله انجام می‌شود
+# (هندلر ezhhar_prepay_successful_payment بالا). اگر callback قدیمی از
+# پیام‌های پیشین برسد، فقط راهنما نمایش داده می‌شود — بدون هیچ پردازشی.
+@ezhharnameh_router.callback_query(F.data.startswith("ezhhar_prepay_done"))
+async def ezhhar_prepay_done_legacy_reject(callback: CallbackQuery):
+    logging.warning(
+        f"[EZHHAR-PREPAY] کاربر {callback.from_user.id} دکمه حذف‌شده "
+        f"'{callback.data}' را زد — پردازشی انجام نشد (پرداخت فقط توسط بله تایید می‌شود)"
     )
-
-
-@ezhharnameh_router.callback_query(F.data == "ezhhar_prepay_done_confirm", Form.waiting_for_ezhhar_prepay)
-async def ezhhar_prepay_done_confirm_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    """تایید نهایی — ارسال به صف پردازش"""
-    await callback.answer()
-    user_id = callback.from_user.id
-    data = await state.get_data()
-    fee = EZHHARNAMEH_SERVICE_FEE
-
-    logging.info(f"[EZHHAR-PREPAY] تایید نهایی پرداخت برای کاربر {user_id}")
-
-    await callback.message.answer(
-        f"✅ *پرداخت تایید شد!*\n\n"
-        f"💰 مبلغ: {fee:,} تومان\n\n"
-        f"⏳ درخواست شما در حال ارسال به سامانه قضایی است...",
-        reply_markup=ReplyKeyboardRemove()
-    )
-
-    await log_event(
-        "پرداخت", "اظهارنامه", callback.from_user.full_name, user_id,
-        doc_name="خدمات ثبت اظهارنامه", payment_status="پرداخت شده (تایید دستی کاربر - پیش‌ثبت)",
-        note=f"مبلغ: {fee:,} تومان"
-    )
-
+    await callback.answer(
+        "⛔ این دکمه حذف شده است.\nپرداخت فقط از طریق فاکتور کیف پول بله انجام و "
+        "به‌صورت خودکار توسط بله تایید می‌شود.", show_alert=True)
     try:
-        admin_msg = (
-            f"💰 پرداخت خدمات ثبت اظهارنامه (تایید دستی):\n\n"
-            f"👤 کاربر: {callback.from_user.full_name} ({user_id})\n"
-            f"💰 مبلغ: {fee:,} تومان\n"
-            f"⏱ زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}"
-        )
-        await bot.send_message(ADMIN_ID, admin_msg)
-    except Exception as e:
-        logging.error(f"[EZHHAR-PREPAY] خطا در ارسال اطلاع به ادمین: {e}")
-
-    await _send_ezhhar_task_to_queue(data, user_id, bot=bot)
-    await state.clear()
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
 
 
 @ezhharnameh_router.callback_query(F.data == "ezhhar_prepay_cancel", Form.waiting_for_ezhhar_prepay)
