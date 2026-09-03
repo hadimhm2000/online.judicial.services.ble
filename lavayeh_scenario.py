@@ -149,7 +149,10 @@ async def process_lavayeh_task(data: dict, bot: Bot):
 
     title        = data.get("lavayeh_title", "لایحه دفاعیه")
     system_title = data.get("lavayeh_system_title", "لایحه دفاعیه")
-    tracking_code = data.get("lavayeh_tracking_code", "")
+    # ⭐ رفع باگ lavayeh_None.pdf: اگر کلید در دیتای تسک موجود باشد ولی مقدارش
+    # None باشد (مثل فلوی «شماره بایگانی» که tracking_code نداریم)،
+    # data.get(key, "") همان None را برمی‌گرداند — پس with or "" امن شد.
+    tracking_code = data.get("lavayeh_tracking_code") or ""
     province      = data.get("lavayeh_province", "")
     row_number    = data.get("lavayeh_row_number", 1)
     persons       = data.get("lavayeh_persons", [])
@@ -2136,47 +2139,104 @@ async def _calculate_cost_with_retry(page, bot: Bot, user_id: int, max_retries: 
     return 0
 
 
-async def _print_lavayeh(page, browser_context, tracking_code: str, bot: Bot, user_id: int):
-    pdf_path = f"lavayeh_{tracking_code}.pdf"
+def _is_valid_pdf_file(pdf_path: str, min_size: int = 1024) -> bool:
+    """بررسی اینکه فایل واقعاً یک PDF معتبر است (وجود، حداقل حجم، امضای %PDF).
 
+    قبلاً اگر چاپ شکست می‌خورد یا صفحه خالی بود، فایل خالی/خراب ساخته شده و
+    بی‌سروصدا برای کاربر ارسال می‌شد (یا اصلاً ارسال نمی‌شد)."""
     try:
-        async def click_print():
-            await page.evaluate('''() => {
-                const heads = Array.from(document.querySelectorAll('.box h5'));
-                const target = heads.find(el => el.innerText && (
-                    el.innerText.includes("چاپ اوليه") || el.innerText.includes("چاپ اولیه")
-                ));
-                if (target) {
-                    const box = target.closest('.box');
-                    if (box) box.click();
-                }
-            }''')
+        if not pdf_path or not os.path.exists(pdf_path):
+            return False
+        if os.path.getsize(pdf_path) < min_size:
+            return False
+        with open(pdf_path, "rb") as f:
+            header = f.read(5)
+        return header == b"%PDF-"
+    except Exception:
+        return False
 
-        async with browser_context.expect_page(timeout=20000) as new_page_info:
-            await click_print()
 
-        print_page = await new_page_info.value
-        await print_page.wait_for_load_state("load", timeout=30000)
-        await asyncio.sleep(8)
+async def _print_lavayeh(page, browser_context, tracking_code, bot: Bot, user_id: int):
+    # ⭐ رفع باگ lavayeh_None.pdf: اگر tracking_code خالی/None باشد نام فایل
+    # امن جایگزین می‌شود و هرگز «lavayeh_None.pdf» ساخته نمی‌شود.
+    _code = str(tracking_code or "").strip()
+    if not _code or _code.lower() == "none":
+        _code = f"u{user_id}-{int(time.time())}"
+    pdf_path = f"lavayeh_{_code}.pdf"
 
-        await check_and_handle_expiry(print_page, bot, user_id)
-        await print_page.pdf(path=pdf_path, format="A4")
-        await print_page.close()
+    async def click_print():
+        await page.evaluate('''() => {
+            const heads = Array.from(document.querySelectorAll('.box h5'));
+            const target = heads.find(el => el.innerText && (
+                el.innerText.includes("چاپ اوليه") || el.innerText.includes("چاپ اولیه")
+            ));
+            if (target) {
+                const box = target.closest('.box');
+                if (box) box.click();
+            }
+        }''')
 
+    # ── تلاش ۱ و ۲: باز کردن صفحه چاپ و PDF گرفتن از آن ──
+    for attempt in range(1, 3):
+        print_page = None
+        try:
+            async with browser_context.expect_page(timeout=20000) as new_page_info:
+                await click_print()
+
+            print_page = await new_page_info.value
+            await print_page.wait_for_load_state("load", timeout=30000)
+            await asyncio.sleep(8)
+
+            await check_and_handle_expiry(print_page, bot, user_id)
+            await print_page.pdf(path=pdf_path, format="A4")
+        except Exception as e:
+            logging.error(f"[LAVAYEH] خطا در چاپ (تلاش {attempt}/2): {e}")
+            try:
+                from bug_reporter import report_bug
+                await report_bug(bot, where="click_print", error=e,
+                                 user_id=user_id,
+                                 page=getattr(runtime_state, "sana_page", None))
+            except Exception:
+                pass
+        finally:
+            if print_page is not None:
+                try:
+                    await print_page.close()
+                except Exception:
+                    pass
+
+        if _is_valid_pdf_file(pdf_path):
+            try:
+                _sz = os.path.getsize(pdf_path)
+            except Exception:
+                _sz = -1
+            logging.info(f"[LAVAYEH] چاپ موفق: {pdf_path} ({_sz} bytes، تلاش {attempt}/2)")
+            return pdf_path
+
+        logging.warning(
+            f"[LAVAYEH] PDF نامعتبر/خالی بعد از تلاش {attempt}/2 — تلاش مجدد... (user={user_id})")
+        await asyncio.sleep(3)
+
+    # ── فال‌بک نهایی: PDF از خود صفحه سنا (ممکن است کامل نباشد) ──
+    try:
+        await page.pdf(path=pdf_path, format="A4")
+        if _is_valid_pdf_file(pdf_path):
+            logging.warning(f"[LAVAYEH] چاپ صفحه اصلی به‌عنوان فال‌بک انجام شد: {pdf_path}")
+            return pdf_path
     except Exception as e:
-        logging.error(f"[LAVAYEH] خطا در چاپ: {e}")
+        logging.error(f"[LAVAYEH] فال‌بک PDF از صفحه سنا هم ناموفق بود: {e}")
 
-        try:
-            from bug_reporter import report_bug
-            await report_bug(bot, where="click_print", error=e,
-                             user_id=user_id,
-                             page=getattr(runtime_state, "sana_page", None))
-        except Exception:
-            pass
-        try:
-            await page.pdf(path=pdf_path, format="A4")
-        except Exception:
-            pass
+    # ── اطلاع شفاف به ادمین: PDF آماده نشده (به‌جای شکست بی‌صدا) ──
+    logging.error(f"[LAVAYEH] تولید PDF لایحه کاملاً ناموفق بود (user={user_id})")
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"⚠️ [LAVAYEH] تولید PDF لایحه برای کاربر {user_id} ناموفق بود.\n"
+            f"ثبت/هزینه سالم است؛ فقط نسخه چاپی ارسال نمی‌شود.\n"
+            f"برای ارسال دستی فایل + فاکتور: /case {user_id}"
+        )
+    except Exception:
+        pass
 
     return pdf_path
 

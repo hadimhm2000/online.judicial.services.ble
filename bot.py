@@ -267,6 +267,11 @@ async def main():
     from subscription_handlers import subscription_expiry_checker
     asyncio.create_task(subscription_expiry_checker(bot))
 
+    # ⭐ گرم کردن پنل ادمین — جلوگیری از Timeout اولین sync پس از استارت
+    # (در حالت dev پنل، اولین درخواست هر مسیر باعث کامپایل ۱۰-۳۰ ثانیه‌ای می‌شود)
+    from panel_sync import warmup_panel
+    asyncio.create_task(warmup_panel())
+
     # ── تسک ذخیره‌سازی دوره‌ی ──
     persister_task = asyncio.create_task(state_persister(bot))
 

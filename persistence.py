@@ -198,6 +198,12 @@ def save_runtime_state():
         sub_payments[str(uid)] = info
     data["pending_subscription_payments"] = sub_payments
 
+    # 9-ب. ⭐ فاکتورهای «هزینه دستی مدیر» (/fee) در انتظار پرداخت
+    admin_fee_payments = {}
+    for uid, info in runtime_state.pending_admin_fee_payments.items():
+        admin_fee_payments[str(uid)] = info
+    data["pending_admin_fee_payments"] = admin_fee_payments
+
     # 10. اطلاعات FSM کاربران فعال (برای بازیابی پس از کرش)
     # ── بهبود: تفکیک کاربرانی که ثبت شده‌اند از کسانی که هنوز ثبت نشده‌اند ──
     user_sessions = {}
@@ -308,6 +314,14 @@ def load_into_runtime_state():
         uid = int(uid_str)
         info = _deserialize_all_datetimes(info, ["created_at"])
         runtime_state.pending_subscription_payments[uid] = info
+
+    # 9-ب. ⭐ pending_admin_fee_payments — فاکتورهای هزینه دستی مدیر (/fee)
+    for uid_str, info in data.get("pending_admin_fee_payments", {}).items():
+        uid = int(uid_str)
+        info = _deserialize_all_datetimes(info, ["invoice_time"])
+        runtime_state.pending_admin_fee_payments[uid] = info
+        # کاربر در انتظار پرداخت فاکتور مدیر است → ثبت‌نشده (نیاز به اقدام مجدد)
+        active_unsubmitted.append(uid)
 
     # 10. user_sessions — بازسازی active_lavayeh_users
     for uid_str, info in data.get("user_sessions", {}).items():

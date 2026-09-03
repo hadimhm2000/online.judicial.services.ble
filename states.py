@@ -225,6 +225,11 @@ class Form(StatesGroup):
     # State پرداخت دعاوی اعتراضی — مستقل از لایحه (طبق درخواست کارفرما)
     waiting_for_tn_payment_receipt = State()
 
+    # ⭐ State پرداخت فاکتور دستی مدیر (/fee) — مدیر مبلغ را وارد می‌کند،
+    # فاکتور بله برای کاربر ارسال می‌شود و پس از پرداخت خودکار:
+    # به‌جز استعلام (که امضا ندارد) ناوبری امضا برای کاربر آغاز می‌شود.
+    admin_fee_waiting_payment = State()
+
     # State های بخش اخذ امضای الکترونیک دعاوی اعتراضی
     tn_sign_ready = State()
     tn_sign_person_select = State()
