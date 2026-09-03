@@ -687,6 +687,16 @@ async def process_lavayeh_task(data: dict, bot: Bot):
             court_total = await _calculate_cost_with_retry(sana_page, bot, user_id)
             logging.info(f"[LAVAYEH] court_total: {court_total}")
 
+            # ── گرفتن شناسه پرداخت از بخش هزینه (فقط ذخیره در شیت + پیام به مدیر) ──
+            from payment_id_capture import capture_and_report_payment_ids
+            await capture_and_report_payment_ids(
+                sana_page, bot, user_id,
+                service_name="لایحه",
+                tracking_code=lavayeh_bill_no or tracking_code,
+                amount=court_total,
+                exclude_values=[tracking_code, lavayeh_bill_no],
+                log_prefix="LAVAYEH")
+
             await _click_goto_main(sana_page, bot, user_id)
             await resilient_sleep(sana_page, 4, bot, user_id)
 

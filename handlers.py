@@ -255,7 +255,7 @@ async def successful_payment_handler(message: types.Message, state: FSMContext, 
             )
             logging.info(f"[PAYMENT] تلاش ارسال پیام به ادمین ADMIN_ID={ADMIN_ID} (نوع: {type(ADMIN_ID).__name__})")
             admin_result = await bot.send_message(ADMIN_ID, admin_msg)
-            logging.info(f"[PAYMENT] اطلاع‌رسانی ادمین سبد خرید موفق. result={admin_result}")
+            logging.info(f"[PAYMENT] اطلاع‌رسانی ادمین سبد خرید موفق. message_id={getattr(admin_result, 'message_id', '?')}")
         except Exception as e:
             logging.error(f"[PAYMENT] خطا در ارسال اطلاع به ادمین (ADMIN_ID={ADMIN_ID}): {e}", exc_info=True)
 
@@ -325,7 +325,7 @@ async def successful_payment_handler(message: types.Message, state: FSMContext, 
                 f"🎫 payment_id: {payment.telegram_payment_charge_id}"
             )
             admin_result = await bot.send_message(ADMIN_ID, admin_msg)
-            logging.info(f"[PAYMENT] اطلاع‌رسانی ادمین استعلام دسته‌جمعی موفق. result={admin_result}")
+            logging.info(f"[PAYMENT] اطلاع‌رسانی ادمین استعلام دسته‌جمعی موفق. message_id={getattr(admin_result, 'message_id', '?')}")
         except Exception as e:
             logging.error(f"[PAYMENT] خطا در ارسال اطلاع به ادمین (ADMIN_ID={ADMIN_ID}): {e}", exc_info=True)
 
@@ -388,7 +388,7 @@ async def successful_payment_handler(message: types.Message, state: FSMContext, 
             )
             logging.info(f"[PAYMENT] تلاش ارسال پیام به ادمین ADMIN_ID={ADMIN_ID} (نوع: {type(ADMIN_ID).__name__})")
             admin_result = await bot.send_message(ADMIN_ID, admin_msg)
-            logging.info(f"[PAYMENT] اطلاع‌رسانی ادمین تک‌موردی موفق. result={admin_result}")
+            logging.info(f"[PAYMENT] اطلاع‌رسانی ادمین تک‌موردی موفق. message_id={getattr(admin_result, 'message_id', '?')}")
         except Exception as e:
             logging.error(f"[PAYMENT] خطا در ارسال اطلاع به ادمین (ADMIN_ID={ADMIN_ID}): {e}", exc_info=True)
 

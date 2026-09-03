@@ -655,6 +655,16 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
             cost_error = cost_info.get("cost_error", False)
             logging.info(f"[EZHHAR] cost_info={cost_info}, final_total={final_total}, cost_error={cost_error}")
 
+            # ── گرفتن شناسه پرداخت از بخش هزینه (فقط ذخیره در شیت + پیام به مدیر) ──
+            from payment_id_capture import capture_and_report_payment_ids
+            await capture_and_report_payment_ids(
+                sana_page, bot, user_id,
+                service_name="اظهارنامه",
+                tracking_code=bill_no,
+                amount=cost_info.get("final_total", 0) or cost_info.get("cost_sum", 0),
+                exclude_values=[bill_no],
+                log_prefix="EZHHAR")
+
             await _click_goto_main(sana_page, bot, user_id)
             await resilient_sleep(sana_page, 4, bot, user_id)
 

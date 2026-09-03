@@ -3387,7 +3387,9 @@ async def lavayeh_successful_payment(message: Message, state: FSMContext, bot: B
         )
         logging.info(f"[LAVAYEH-PAYMENT] تلاش ارسال پیام به ادمین ADMIN_ID={ADMIN_ID} (نوع: {type(ADMIN_ID).__name__})")
         admin_result = await bot.send_message(ADMIN_ID, admin_msg)
-        logging.info(f"[LAVAYEH-PAYMENT] اطلاع‌رسانی به ادمین موفق. result={admin_result}")
+        # ⚠️ فقط message_id لاگ شود — لاگ کل آبجکت Message لاگ‌ها را با
+        # هزاران فیلد بی‌مصرف (entities=None, ...) آلوده می‌کرد
+        logging.info(f"[LAVAYEH-PAYMENT] اطلاع‌رسانی به ادمین موفق. message_id={getattr(admin_result, 'message_id', '?')}")
     except Exception as e:
         logging.error(f"[LAVAYEH-PAYMENT] خطا در ارسال اطلاع به ادمین (ADMIN_ID={ADMIN_ID}): {e}", exc_info=True)
 

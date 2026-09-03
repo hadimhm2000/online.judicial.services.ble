@@ -933,6 +933,16 @@ async def process_check_task(data: dict, bot: Bot):
                     f"لطفاً مبلغ نهایی ({final_total:,} ریال) را دستی با سامانه تطبیق دهید. کاربر: {user_id}"
                 )
 
+            # ── گرفتن شناسه پرداخت از بخش هزینه (فقط ذخیره در شیت + پیام به مدیر) ──
+            from payment_id_capture import capture_and_report_payment_ids
+            await capture_and_report_payment_ids(
+                sana_page, bot, user_id,
+                service_name="دادخواست چک",
+                tracking_code=bill_no,
+                amount=final_total,
+                exclude_values=[bill_no],
+                log_prefix="CHECK")
+
             # ── ۱۵. چاپ PDF ─────────────────────────────────────────────
             # ⭐ طبق مشخصات: چاپ از باکس «چاپ اوليه» انجام می‌شود، صفحهٔ جدید
             # باز می‌شود و PDF آن برای کاربر ارسال می‌گردد (الگوی اظهارنامه).
