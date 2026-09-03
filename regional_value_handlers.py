@@ -209,6 +209,8 @@ async def process_land_use(message: Message, state: FSMContext, bot: Bot):
     await state.update_data(rv_land_use=land_use)
 
     # ── ثبت پرونده در پنل ادمین (از همون ابتدا، قبل از پرداخت) ──
+    # wait=True: به case_id برگشتی برای آپدیت‌های بعدی نیاز داریم —
+    # (این تنها نقطه‌ای است که منتظر پنل می‌مانیم؛ بقیه عملیات پنل پس‌زمینه است)
     data_so_far = await state.get_data()
     try:
         case = await register_case_to_panel(
@@ -220,6 +222,7 @@ async def process_land_use(message: Message, state: FSMContext, bot: Bot):
             province=data_so_far.get("rv_province", ""),
             fee=REGIONAL_VALUE_FEE,
             fee_status="UNPAID",
+            wait=True,
         )
         panel_case_id = case.get("id") if case else None
         if panel_case_id:
