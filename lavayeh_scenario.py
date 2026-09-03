@@ -1663,23 +1663,17 @@ async def _upload_electronic_vakalaht(
 
 
 async def _download_images_from_bale(bot: Bot, file_ids: list, user_id: int) -> list:
-    paths = []
-    for i, file_id in enumerate(file_ids):
-        try:
-            file_info = await bot.get_file(file_id)
-            ext = "jpg"
-            if file_info.file_path:
-                ext = file_info.file_path.split(".")[-1].lower()
-                if ext not in ("jpg", "jpeg", "png"):
-                    ext = "jpg"
+    """دانلود تصاویر از بله — دقیقاً همان تابع مشترک فلوی تست منضمات.
 
-            path = f"lavayeh_img_{user_id}_{i}.{ext}"
-            await bot.download_file(file_info.file_path, path)
-            path = _compress_image_if_needed(path)
-            paths.append(path)
-        except Exception as e:
-            logging.error(f"[LAVAYEH] خطا در دانلود تصویر {i} برای user {user_id}: {e}")
-    return paths
+    ⭐ قبلاً اینجا یک نسخه محلی جدا بود (lavayeh_img_*) که با فلوی تست
+    (scenarios._process_test_attachments → upload_helpers.download_images_from_bale)
+    یکسان نبود: نام‌فایل بدون timestamp (خطر تداخل/بازنویسی)، فشرده‌سازی
+    با نسخه محلی، و بدون لاگ ساختاریافته. برای «تطبیق» کامل رفتار فلوی
+    واقعی کاربر با فلوی تست، حالا مستقیماً به تابع مشترک upload_helpers
+    (attach_img_* + فشرده‌سازی استاندارد) واگذار می‌شود.
+    """
+    from upload_helpers import download_images_from_bale
+    return await download_images_from_bale(bot, file_ids, user_id, prefix="LAVAYEH")
 
 
 # ── آپلود منضمات (نسخه مقاوم — upload_helpers) ──────────────────
