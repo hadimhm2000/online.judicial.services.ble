@@ -2656,12 +2656,15 @@ async def bulk_sign_select_callback(callback: CallbackQuery, bot: Bot):
     # «کد رهگیری» واقعی سامانه (lavayeh_bill_no) فرستاده شود، در غیر این
     # صورت به‌عنوان فال‌بک از همان شماره پرونده استفاده می‌شود.
     sign_tracking_code = target_item.get("lavayeh_bill_no") or selected_tc
-    
+    # مسیر منوی امضای همین سند (برای چک متفاوت از لایحه است)
+    item_sign_menu_path = target_item.get("sign_menu_path")
+
     try:
         await _go_to_sign_flow_after_prepaid(
             bot, user_id, is_ezhhar,
             title, province, row_number, persons,
-            sign_tracking_code, national_ids, court_total
+            sign_tracking_code, national_ids, court_total,
+            sign_menu_path=item_sign_menu_path
         )
     except Exception as e:
         logging.error(f"[BULK-SIGN] خطا در شروع امضا: {e}", exc_info=True)
@@ -2861,11 +2864,18 @@ async def _go_to_sign_flow_after_prepaid(
     national_ids: str,
     court_total: int,
     service_type: str | None = None,
+    sign_menu_path: list | None = None,
 ):
     """انتقال مستقیم به فلوی امضای الکترونیک بدون نیاز به پرداخت.
 
     پس از اینکه کاربر قبلاً هزینه خدمات را پرداخت کرده و سند با موفقیت
     در سامانه ثبت شده، این تابع فلوی امضا را آغاز می‌کند.
+
+    ⭐ sign_menu_path: مسیر منوی سامانه برای ناوبری به صفحهٔ امضا — برای
+    اسناد «چک» لازم است (مسیر ثبتشده با خود سند فرق دارد: «ارایه و
+    پیگیری دادخواست/دادخواست بدوی» یا «دعاوی دادگاههای صلح/دعاوی حقوقی»).
+    این مسیر در pending_lavayeh_sign ذخیره و هنگام ارسال کد امضا به
+    navigate_to_sign_page پاس می‌شود.
     """
     user_state = runtime_state.dp.fsm.resolve_context(bot, user_id, user_id)
     if service_type is None:
@@ -2909,6 +2919,7 @@ async def _go_to_sign_flow_after_prepaid(
             "row_number": lavayeh_row_number,
             "persons": lavayeh_persons,
             "service_type": service_type,
+            "sign_menu_path": sign_menu_path,
             "sign_persons": [],
             "persons_awaiting_sign": [],
             "current_person_idx": None,
@@ -2941,17 +2952,23 @@ async def send_bulk_item_result(
     lavayeh_persons: list = None,
     lavayeh_bill_no: str = "",
     service_type: str | None = None,
+    sign_menu_path: list = None,
 ):
     """نتیجه ثبت یک ردیف دسته‌جمعی — بدون فاکتور و بدون امضا.
-    
+
     فقط پیام ثبت+هزینه ارسال می‌کند و آیتم را به لیست signable_items اضافه می‌کند.
+
+    ⭐ sign_menu_path: مسیر منوی سامانه برای ناوبری امضای همین سند (برای چک
+    لازم است) — داخل signable_items ذخیره و هنگام انتخاب کد رهگیری از
+    منوی امضای دسته‌جمعی استفاده می‌شود.
     """
     if lavayeh_persons is None:
         lavayeh_persons = []
     if service_type is None:
         service_type = "EZHHARNAMEH" if is_ezhharnameh else "LAVAYEH"
 
-    service_label = "اظهارنامه" if is_ezhharnameh else "لایحه"
+    _SERVICE_LABELS = {"LAVAYEH": "لایحه", "EZHHARNAMEH": "اظهارنامه", "CHECK": "چک", "TAJDID_NAZAR": "تجدیدنظر"}
+    service_label = _SERVICE_LABELS.get(service_type, "اظهارنامه" if is_ezhharnameh else "لایحه")
 
     try:
         await upsert_case_to_panel(
@@ -3003,6 +3020,7 @@ async def send_bulk_item_result(
             "row_index": row_index,
             "status": "awaiting_sign",
             "disabled_until": None,
+            "sign_menu_path": sign_menu_path,
         })
         logging.info(f"[BULK-ITEM] ردیف {row_index} اضافه به signable_items: {tracking_code} (بچ: {batch_tracking_code})")
     else:
@@ -3038,7 +3056,18 @@ async def send_lavayeh_result(
     skip_fee_calc: bool = False,
     is_ezhharnameh: bool = False,
     prepaid: bool = False,
-    service_type: str | None = None):
+    service_type: str | None = None,
+    sign_menu_path: list = None):
+    """ارسال نتیجهٔ ثبت به کاربر + فاکتور پرداخت (درگاه) + شروع فلوی امضا.
+
+    ⭐ sign_menu_path: مسیر منوی سامانه برای ناوبری به صفحهٔ امضا — برای
+    اسناد «چک» لازم است (مثلاً ["ارایه و پیگیری دادخواست", "دادخواست بدوی"]).
+    این مسیر در pending_lavayeh_payments ذخیره می‌شود و پس از پرداخت
+    موفق، به pending_lavayeh_sign (و سپس به navigate_to_sign_page) پاس
+    می‌شود. قبلاً این پارامتر وجود نداشت و check_scenario با TypeError
+    شکست می‌خورد (send_lavayeh_result() got an unexpected keyword
+    argument 'sign_menu_path').
+    """
     if lavayeh_persons is None:
         lavayeh_persons = []
     if service_type is None:
@@ -3093,6 +3122,7 @@ async def send_lavayeh_result(
             "lavayeh_persons": lavayeh_persons,
             "is_ezhharnameh": is_ezhharnameh,
             "service_type": service_type,
+            "sign_menu_path": sign_menu_path,
         }
         await bot.send_message(
             user_id,
@@ -3117,7 +3147,8 @@ async def send_lavayeh_result(
         await _go_to_sign_flow_after_prepaid(
             bot, user_id, is_ezhharnameh, lavayeh_title,
             lavayeh_province, lavayeh_row_number, lavayeh_persons,
-            tracking_code, national_ids, court_total, service_type=service_type
+            tracking_code, national_ids, court_total, service_type=service_type,
+            sign_menu_path=sign_menu_path
         )
         return
 
@@ -3148,7 +3179,8 @@ async def send_lavayeh_result(
         await _go_to_sign_flow_after_prepaid(
             bot, user_id, is_ezhharnameh, lavayeh_title,
             lavayeh_province, lavayeh_row_number, lavayeh_persons,
-            tracking_code, national_ids, court_total, service_type=service_type
+            tracking_code, national_ids, court_total, service_type=service_type,
+            sign_menu_path=sign_menu_path
         )
         return
 
@@ -3211,6 +3243,7 @@ async def send_lavayeh_result(
         "lavayeh_persons": lavayeh_persons,
         "is_ezhharnameh": is_ezhharnameh,
         "service_type": service_type,
+        "sign_menu_path": sign_menu_path,
     }
 
     try:
@@ -3389,6 +3422,7 @@ async def lavayeh_successful_payment(message: Message, state: FSMContext, bot: B
             "row_number": pending.get("lavayeh_row_number", 1),
             "persons": pending.get("lavayeh_persons", []),
             "service_type": svc_type,
+            "sign_menu_path": pending.get("sign_menu_path"),
             "sign_persons": [],
             "persons_awaiting_sign": [],
             "current_person_idx": None,
