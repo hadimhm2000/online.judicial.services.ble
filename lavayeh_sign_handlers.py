@@ -71,11 +71,14 @@ async def sign_ready_handler(message: Message, state: FSMContext, bot: Bot):
     runtime_state.pending_lavayeh_sign[user_id] = sign_info
 
     # ارسال تسک ناوبری به صفحه امضا
+    # ⭐ sign_menu_path (مسیر منوی سامانه برای همین سند — برای چک متفاوت از
+    # لایحه است) پاس می‌شود تا navigate_to_sign_page از مسیر درست برود.
     await runtime_state.job_queue.put({
         "user_id": user_id,
         "task_type": "LAVAYEH_SEND_SIGN_CODE",
         "tracking_code": sign_info["tracking_code"],
         "phase": "navigate",  # فقط ناوبری و دریافت لیست اشخاص
+        "sign_menu_path": sign_info.get("sign_menu_path"),
     })
 
     # شروع تایمر ۶۰ دقیقه بدون اقدام

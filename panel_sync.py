@@ -101,7 +101,9 @@ async def register_case_to_panel(
                     )
                     return None
     except Exception as e:
-        logger.warning(f"[PANEL_SYNC] خطا در ارتباط با پنل ادمین: {e}")
+        # ⭐ repr به‌جای str — برای TimeoutError که str خالی دارد و پیام لاگ
+        # خالی می‌ماند («خطا در ارتباط با پنل ادمین:»)
+        logger.warning(f"[PANEL_SYNC] خطا در ارتباط با پنل ادمین: {e!r}")
         return None
 
 
@@ -165,7 +167,7 @@ async def update_case_in_panel(case_id: str, **fields):
                     )
                     return None
     except Exception as e:
-        logger.warning(f"[PANEL_SYNC] خطا در ارتباط با پنل ادمین (آپدیت {case_id}): {e}")
+        logger.warning(f"[PANEL_SYNC] خطا در ارتباط با پنل ادمین (آپدیت {case_id}): {e!r}")
         return None
 
 
@@ -203,7 +205,7 @@ async def mark_case_ready_to_send(case_id: str):
                     )
                     return None
     except Exception as e:
-        logger.warning(f"[PANEL_SYNC] خطا در ارتباط با پنل ادمین (ready {case_id}): {e}")
+        logger.warning(f"[PANEL_SYNC] خطا در ارتباط با پنل ادمین (ready {case_id}): {e!r}")
         return None
 
 
@@ -229,7 +231,7 @@ async def find_case_in_panel(bale_user_id: int | str, service_type: str, trackin
                         return c
                 return None
     except Exception as e:
-        logger.warning(f"[PANEL_SYNC] خطا در جستجوی پرونده موجود: {e}")
+        logger.warning(f"[PANEL_SYNC] خطا در جستجوی پرونده مووجود: {e!r}")
         return None
 
 
