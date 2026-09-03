@@ -180,6 +180,9 @@ async def process_check_task(data: dict, bot: Bot):
     request_title = data.get("check_request_title", "")
     amount = data.get("check_amount", 0)
     khasteh_text = data.get("check_khasteh_text", "")
+    # ⭐ درخواست‌های تامین خواسته و اعسار از هزینه دادرسی (بله/خیر از کاربر)
+    tamin_khasteh = bool(data.get("check_tamin_khasteh", False))
+    aasar = bool(data.get("check_aasar", False))
     tracking_no = data.get("check_tracking_no", "")
     plaintiffs = data.get("check_plainiffs", [])
     defendants = data.get("check_defendants", [])
@@ -220,6 +223,7 @@ async def process_check_task(data: dict, bot: Bot):
         f"[CHECK] user={user_id} title={request_title} amount={amount} "
         f"plaintiffs={len(plaintiffs)} defendants={len(defendants)} "
         f"cheques={len(cheque_items)} extra_attachments={len(attachment_groups)} "
+        f"tamin_khasteh={tamin_khasteh} aasar={aasar} "
         f"is_high_amount={is_high_amount} branch={branch_code}"
     )
 
@@ -244,7 +248,9 @@ async def process_check_task(data: dict, bot: Bot):
         ADMIN_ID,
         f"🔄 [CHECK] شروع ثبت دادخواست چک برای کاربر {user_id}\n"
         f"نوع: {request_title} | مبلغ: {amount:,} | خواهان: {len(plaintiffs)} | "
-        f"خوانده: {len(defendants)} | فقرات چک: {len(cheque_items)}"
+        f"خوانده: {len(defendants)} | فقرات چک: {len(cheque_items)}\n"
+        f"تامین خواسته: {'بله' if tamin_khasteh else 'خیر'} | "
+        f"اعسار: {'بله' if aasar else 'خیر'}"
     )
 
     # bill_no قبل از حلقهٔ تلاش مقداردهی می‌شود تا در هندلر CheckAbortError
@@ -457,6 +463,34 @@ async def process_check_task(data: dict, bot: Bot):
                     if (rdbDelay && !rdbDelay.checked && !rdbDelay.disabled) rdbDelay.click();
                 }''')
                 await asyncio.sleep(1)
+            # ۴.۸ ⭐ خواستهٔ فرعی «تامین خواسته» — طبق دستور کارفرما:
+            # بعد از خواستهٔ اصلی، دکمهٔ «افزودن» → فیلد «خواسته» → تایپ «تامین»
+            # → انتخاب گزینهٔ اول → ادامهٔ مراحل
+            if tamin_khasteh:
+                tamin_ok = await _add_secondary_khasteh(
+                    sana_page, bot, user_id,
+                    search_term="تامین", pick_first=True, label="تامین خواسته")
+                if not tamin_ok:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"⚠️ [CHECK] خواستهٔ فرعی «تامین خواسته» برای کاربر {user_id} "
+                        "ثبت نشد — لطفاً در سامانه به‌صورت دستی بررسی/افزودن کنید.")
+
+            # ۴.۹ ⭐ خواستهٔ فرعی «اعسار از پرداخت هزینه دادرسی» — طبق دستور
+            # کارفرما: «افزودن» → فیلد «خواسته» → تایپ «اعسار» → گزینهٔ
+            # «اعسار از پرداخت هزینه دادرسی»
+            if aasar:
+                aasar_ok = await _add_secondary_khasteh(
+                    sana_page, bot, user_id,
+                    search_term="اعسار",
+                    target_texts=["اعسار از پرداخت هزینه دادرسی"],
+                    fallback_texts=["اعسار"],
+                    label="اعسار از هزینه دادرسی")
+                if not aasar_ok:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"⚠️ [CHECK] خواستهٔ فرعی «اعسار از هزینه دادرسی» برای کاربر {user_id} "
+                        "ثبت نشد — لطفاً در سامانه به‌صورت دستی بررسی/افزودن کنید.")
 
             # ── ۵. مرحله «خواهان» ──────────────────────────────────────
             clicked = await sana_page.evaluate('''() => {
@@ -1204,15 +1238,30 @@ async def _click_step_box(page, step_name: str, bot: Bot, user_id: int,
     return False
 
 
-async def _select_khasteh_option(page, request_title: str, bot: Bot, user_id: int) -> bool:
-    """باز کردن دراپ‌داون «خواسته»، تایپ «چک»، ۵ ثانیه صبر و انتخاب گزینهٔ درست.
+async def _select_khasteh_option(page, request_title: str, bot: Bot, user_id: int,
+                                   search_term: str = None,
+                                   target_texts: list = None,
+                                   fallback_texts: list = None,
+                                   pick_first: bool = False,
+                                   last_row: bool = False) -> bool:
+    """باز کردن دراپ‌داون «خواسته»، تایپ عبارت جستجو، ۵ ثانیه صبر و انتخاب گزینهٔ درست.
 
     طبق مشخصات کارفرما:
       - کلیک روی دراپ‌داون خواسته (div.ui-select-match با placeholder="خواسته")
-        و تایپ «چک»
+        و تایپ عبارت جستجو
       - ۵ ثانیه صبر
-      - اجرائیه چک → کلیک «درخواست صدور اجرائیه نسبت به چک بلامحل»
-      - مطالبه وجه چک → کلیک «مطالبه وجه چک»
+      - اجرائیه چک → تایپ «چک» → کلیک «درخواست صدور اجرائیه نسبت به چک بلامحل»
+      - مطالبه وجه چک → تایپ «چک» → کلیک «مطالبه وجه چک»
+      - مطالبه وجه بابت... → تایپ «وجه» → کلیک «مطالبه وجه بابت ...»
+      - خواستهٔ فرعی تامین → تایپ «تامین» → کلیک گزینهٔ اول
+      - خواستهٔ فرعی اعسار → تایپ «اعسار» → کلیک «اعسار از پرداخت هزینه دادرسی»
+
+    پارامترها:
+      search_term    عبارت تایپ‌شده در جستجو (پیش‌فرض از request_title)
+      target_texts   متن‌های هدف دقیق (به‌ترتیب اولویت)
+      fallback_texts متن‌های جایگزین
+      pick_first     True → اولین گزینهٔ لیست انتخاب شود (فرمان تامین)
+      last_row       True → ردیف «خواسته» *آخر* (خواستهٔ فرعیِ تازه‌افزوده) باز شود
 
     ⚠️ باگ قبلی: querySelector('.ui-select-toggle.btn-info') اولین toggle
     صفحه (دراپ‌داون «موضوع پرونده») را برمی‌گرداند نه دراپ‌داون «خواسته»؛
@@ -1221,21 +1270,46 @@ async def _select_khasteh_option(page, request_title: str, bot: Bot, user_id: in
     و خواسته هرگز انتخاب نمی‌شد.
     """
     is_ejra = (request_title == "صدور اجرائیه چک")
-    target_texts = (["درخواست صدور اجرائیه نسبت به چک بلامحل"] if is_ejra
-                     else ["مطالبه وجه چک"])
-    fallback_texts = (["صدور اجرائیه"] if is_ejra else ["مطالبه وجه"])
+    is_badane = (request_title == "مطالبه وجه بابت...")
+
+    if search_term is None:
+        # ⭐ طبق دستور کارفرما: برای «مطالبه وجه بابت...» عبارت «وجه» تایپ می‌شود
+        search_term = "وجه" if is_badane else "چک"
+    if target_texts is None:
+        if is_badane:
+            target_texts = ["مطالبه وجه بابت"]
+        elif is_ejra:
+            target_texts = ["درخواست صدور اجرائیه نسبت به چک بلامحل"]
+        else:
+            target_texts = ["مطالبه وجه چک"]
+    if fallback_texts is None:
+        if is_badane:
+            fallback_texts = ["وجه بابت"]
+        elif is_ejra:
+            fallback_texts = ["صدور اجرائیه"]
+        else:
+            fallback_texts = ["مطالبه وجه"]
 
     for attempt in range(3):
         await wait_for_angular_idle(page)
 
         # ۱) کلیک روی toggle دراپ‌داون «خواسته» — بر اساس placeholder
-        clicked = await page.evaluate('''() => {
+        #    (last_row=True → آخرین ردیف خواسته، برای خواسته‌های فرعی)
+        clicked = await page.evaluate('''(lastRow) => {
             let btn = null;
-            const match = document.querySelector('.ui-select-match[placeholder="خواسته"]');
+            const matches = Array.from(
+                document.querySelectorAll('.ui-select-match[placeholder="خواسته"]')
+            ).filter(m => m.offsetParent !== null);
+            const match = matches.length > 0
+                ? (lastRow ? matches[matches.length - 1] : matches[0])
+                : null;
             if (match) btn = match.querySelector('button.ui-select-toggle');
             if (!btn) {
-                const spans = Array.from(document.querySelectorAll('.ui-select-placeholder'));
-                const sp = spans.find(s => (s.innerText || '').trim() === 'خواسته');
+                const spans = Array.from(document.querySelectorAll('.ui-select-placeholder'))
+                    .filter(s => (s.innerText || '').trim() === 'خواسته');
+                const sp = spans.length > 0
+                    ? (lastRow ? spans[spans.length - 1] : spans[0])
+                    : null;
                 if (sp) btn = sp.closest('button');
             }
             if (!btn) {
@@ -1246,7 +1320,7 @@ async def _select_khasteh_option(page, request_title: str, bot: Bot, user_id: in
             }
             if (btn && !btn.disabled) { btn.click(); return true; }
             return false;
-        }''')
+        }''', last_row)
         if not clicked:
             logging.warning(f"[CHECK] toggle دراپ‌داون «خواسته» کلیک نشد (تلاش {attempt+1}/3)")
             await asyncio.sleep(2)
@@ -1254,18 +1328,18 @@ async def _select_khasteh_option(page, request_title: str, bot: Bot, user_id: in
 
         await asyncio.sleep(1.5)
 
-        # ۲) تایپ «چک» در فیلد جستجوی دراپ‌داونِ باز (فقط input قابل‌مشاهده)
+        # ۲) تایپ عبارت جستجو در فیلد دراپ‌داونِ باز (فقط input قابل‌مشاهده)
         try:
             search = page.locator('.ui-select-search:visible').first
             await search.wait_for(state="visible", timeout=6000)
             await search.fill("")
-            await search.type("چک", delay=120)
+            await search.type(search_term, delay=120)
         except PlaywrightTimeoutError:
             logging.warning(f"[CHECK] فیلد جستجوی «خواسته» ظاهر نشد (تلاش {attempt+1}/3)")
             await asyncio.sleep(2)
             continue
         except Exception as e:
-            logging.warning(f"[CHECK] خطا در تایپ «چک» در جستجوی خواسته: {e}")
+            logging.warning(f"[CHECK] خطا در تایپ «{search_term}» در جستجوی خواسته: {e}")
             await asyncio.sleep(2)
             continue
 
@@ -1273,16 +1347,22 @@ async def _select_khasteh_option(page, request_title: str, bot: Bot, user_id: in
         await asyncio.sleep(5)
 
         # ۴) انتخاب گزینهٔ دقیق از لیست گزینه‌های قابل‌مشاهده
-        picked = await page.evaluate('''(targets, fallbacks) => {
+        picked = await page.evaluate('''(targets, fallbacks, pickFirst, searchTerm) => {
             const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
             const items = Array.from(document.querySelectorAll('[ng-bind-html*="typeaheadHighlight"]'))
                 .filter(el => {
                     const r = el.getBoundingClientRect();
                     return r.width > 0 && r.height > 0;
                 });
-            let target = items.find(el => targets.some(t => norm(el.innerText).includes(t)));
-            if (!target) {
-                target = items.find(el => fallbacks.some(t => norm(el.innerText).includes(t)));
+            let target = null;
+            if (pickFirst) {
+                // گزینهٔ اول — ترجیحاً منطبق با عبارت جستجو
+                target = items.find(el => norm(el.innerText).includes(searchTerm)) || items[0] || null;
+            } else {
+                target = items.find(el => targets.some(t => norm(el.innerText).includes(t)));
+                if (!target) {
+                    target = items.find(el => fallbacks.some(t => norm(el.innerText).includes(t)));
+                }
             }
             if (target) {
                 const row = target.closest('a, .ui-select-choices-row, li') || target;
@@ -1290,7 +1370,7 @@ async def _select_khasteh_option(page, request_title: str, bot: Bot, user_id: in
                 return norm(target.innerText);
             }
             return null;
-        }''', target_texts, fallback_texts)
+        }''', target_texts, fallback_texts, pick_first, search_term)
 
         if picked:
             logging.info(f"[CHECK] گزینهٔ خواسته انتخاب شد: {picked}")
@@ -1301,6 +1381,44 @@ async def _select_khasteh_option(page, request_title: str, bot: Bot, user_id: in
         await asyncio.sleep(2)
 
     return False
+
+
+async def _add_secondary_khasteh(page, bot: Bot, user_id: int, search_term: str,
+                                 pick_first: bool = False, target_texts: list = None,
+                                 fallback_texts: list = None, label: str = "") -> bool:
+    """افزودن خواستهٔ فرعی (تامین خواسته / اعسار از هزینه دادرسی).
+
+    طبق دستور کارفرما (عیناً):
+      «بعد از اینکه خواسته اصلی را وارد کردی، گزینهٔ [btnAddSection افزودن]
+       را انتخاب کن، سپس فیلد [خواسته] را انتخاب کن و تایپ کن ...»
+      - تامین: تایپ «تامین» و گزینهٔ اول
+      - اعسار: تایپ «اعسار» و گزینهٔ «اعسار از پرداخت هزینه دادرسی»
+    """
+    # ۱) کلیک «افزودن» (#btnAddSection)
+    clicked = await page.evaluate('''() => {
+        const btn = document.querySelector('#btnAddSection');
+        if (btn && !btn.disabled) { btn.click(); return true; }
+        return false;
+    }''')
+    if not clicked:
+        logging.warning(f"[CHECK] دکمهٔ «افزودن» برای خواستهٔ فرعی [{label}] کلیک نشد")
+        return False
+    await asyncio.sleep(3)
+    await wait_for_angular_idle(page)
+    await asyncio.sleep(1)
+
+    # ۲) باز کردن دراپ‌داون «خواسته» ردیف جدید (آخرین ردیف) + تایپ + انتخاب
+    ok = await _select_khasteh_option(
+        page, request_title="", bot=bot, user_id=user_id,
+        search_term=search_term, target_texts=target_texts,
+        fallback_texts=fallback_texts, pick_first=pick_first, last_row=True)
+    if ok:
+        logging.info(f"[CHECK] خواستهٔ فرعی [{label}] با موفقیت اضافه شد")
+    else:
+        logging.warning(f"[CHECK] خواستهٔ فرعی [{label}] انتخاب نشد")
+    return ok
+
+
 
 
 async def _click_sana_inquiry_button(page, bot: Bot, user_id: int, role: str = "") -> bool:
@@ -2184,6 +2302,103 @@ async def _fill_extra_attachment_form(page, doc_title: str, prepared_paths: list
     return await _default_fill_other_attachment_form(page, doc_title, page_count)
 
 
+
+
+# شناسهٔ فیلدهای فرم «استشهاديه محلي» — طبق دستور کارفرما در همهٔ این فیلدها
+# عدد ۱ قرار می‌گیرد:
+#   txtName, txtNationalityCode, txtFatherName, txtHomeAddress (شخص اول)
+#   txtName2, txtFatherName2, txtNationalityCode2, txtHomeAddress2 (شخص دوم)
+ESTESHADIEH_FIELD_IDS = [
+    "txtName", "txtNationalityCode", "txtFatherName", "txtHomeAddress",
+    "txtName2", "txtFatherName2", "txtNationalityCode2", "txtHomeAddress2",
+]
+
+
+async def _fill_esteshahadieh_fields(page) -> None:
+    """تکمیل فرم استشهادیه محلی — در تمام فیلدهای زیر عدد ۱ قرار می‌گیرد:
+
+    txtName, txtNationalityCode, txtFatherName, txtHomeAddress,
+    txtName2, txtFatherName2, txtNationalityCode2, txtHomeAddress2
+    """
+    for field_id in ESTESHADIEH_FIELD_IDS:
+        ok = await page.evaluate('''(fid) => {
+            const inp = document.querySelector('#' + fid);
+            if (inp && !inp.disabled) {
+                inp.focus();
+                inp.value = "";
+                inp.value = "1";
+                inp.dispatchEvent(new Event("input", { bubbles: true }));
+                inp.dispatchEvent(new Event("change", { bubbles: true }));
+                return true;
+            }
+            return false;
+        }''', field_id)
+        if ok:
+            logging.info(f"[CHECK][استشهادیه] فیلد #{field_id} = ۱")
+        else:
+            logging.warning(f"[CHECK][استشهادیه] فیلد #{field_id} پیدا نشد — رد شد")
+        await asyncio.sleep(0.7)
+
+
+async def _upload_esteshahadieh_attachment(page, image_paths: list, bot: Bot,
+                                           user_id: int, bill_no: str) -> bool:
+    """ثبت پیوست «استشهاديه محلي» — طبق دستور کارفرما (عیناً):
+
+      ۱. در قسمت منضمات، نوع پیوست «استشهاديه محلي» انتخاب شود
+      ۲. در تمام فیلدهای txtName / txtNationalityCode / txtFatherName /
+         txtHomeAddress / txtName2 / txtFatherName2 / txtNationalityCode2 /
+         txtHomeAddress2 عدد ۱ قرار بگیرد
+      ۳. «ثبت و ویرایش پیوست» (#btnSaveDoc)
+      ۴. آپلود تصاویر استشهادیه (همان الگوی فقرات چک)
+    """
+    # ۱) انتخاب نوع پیوست «استشهاديه محلي»
+    if not await _select_attachment_type(page, "استشهاديه محلي"):
+        await bot.send_message(
+            ADMIN_ID,
+            f"❌ [CHECK] نوع پیوست «استشهاديه محلي» در لیست پیدا نشد — کاربر {user_id} | "
+            f"کد: {bill_no}")
+        return False
+
+    # ۲) درج عدد ۱ در تمام فیلدهای استشهادیه
+    await _fill_esteshahadieh_fields(page)
+
+    # ۳) «ثبت و ویرایش پیوست»
+    save_ok = await click_save_doc_with_retry(page, bot, user_id, prefix="CHECK")
+    if not save_ok:
+        error_text = await _uh_error_popup_text(page)
+        logging.error(f"[CHECK][استشهادیه] ذخیرهٔ پیوست ناموفق: {error_text!r}")
+        await bot.send_message(
+            ADMIN_ID,
+            f"❌ [CHECK] ذخیرهٔ پیوست استشهادیه ناموفق — کاربر {user_id} | کد: {bill_no} | "
+            f"خطا: {(error_text or 'نامشخص')[:200]}")
+        await bot.send_message(
+            user_id,
+            "⚠️ ثبت پیوست استشهادیه در بخش منضمات با خطا مواجه شد.\n"
+            f"🔢 کد بایگانی: `{bill_no}`\n"
+            f"لطفاً به شماره {SUPPORT_PHONE} در واتساپ یا بله پیام دهید.")
+        return False
+
+    await resilient_sleep(page, 5, bot, user_id)
+
+    # ۴) آپلود تصاویر استشهادیه
+    upload_result = await _upload_check_files(
+        page, "استشهاديه محلي", image_paths, bot, user_id, bill_no)
+    if not upload_result.get("success"):
+        logging.error(f"[CHECK][استشهادیه] آپلود ناموفق: {upload_result.get('error')}")
+        await bot.send_message(
+            ADMIN_ID,
+            f"❌ [CHECK] آپلود تصاویر استشهادیه ناموفق — کاربر {user_id} | کد: {bill_no} | "
+            f"خطا: {(upload_result.get('error') or 'نامشخص')[:200]}")
+        await bot.send_message(
+            user_id,
+            "⚠️ آپلود تصاویر استشهادیه در بخش منضمات ناموفق بود.\n"
+            f"🔢 کد بایگانی: `{bill_no}`\n"
+            f"لطفاً به شماره {SUPPORT_PHONE} در واتساپ یا بله پیام دهید.")
+        return False
+
+    return True
+
+
 async def _process_check_attachments(
     page,
     request_title: str,
@@ -2361,20 +2576,31 @@ async def _process_check_attachments(
             logging.warning(f"[CHECK][منضمات] تصویری برای پیوست «{group_title}» دانلود نشد")
             continue
 
-        # آپلود با resilient_upload_attachment (فرم سفارشی: نمایندگی/سایر ضمائم)
-        upload_result = await resilient_upload_attachment(
-            page, group_title, group_paths, bot, user_id,
-            prefix="CHECK", form_fill_fn=_fill_extra_attachment_form)
-        if not upload_result.get("success"):
-            logging.error(
-                f"[CHECK][منضمات] آپلود پیوست اضافی [{group_title}] ناموفق: "
-                f"{upload_result.get('error')}")
-            await bot.send_message(
-                ADMIN_ID,
-                f"❌ [CHECK] آپلود پیوست [{group_title}] ناموفق — کاربر {user_id} | "
-                f"کد: {bill_no} | خطا: {(upload_result.get('error') or 'نامشخص')[:200]}")
+        # ⭐ استشهادیه محلی — فقط وقتی کاربر درخواست اعسار داده است؛
+        # طبق دستور کارفرما: نوع پیوست «استشهاديه محلي» + تمام فیلدها = ۱
+        is_estesh = bool(group.get("is_esteshahadieh")) or ("استشهاد" in group_title)
+        if is_estesh:
+            estesh_ok = await _upload_esteshahadieh_attachment(
+                page, group_paths, bot, user_id, bill_no)
+            if not estesh_ok:
+                logging.error("[CHECK][استشهادیه] ثبت/آپلود استشهادیه ناموفق بود")
+            else:
+                logging.info("[CHECK][استشهادیه] پیوست «استشهاديه محلي» ثبت و آپلود شد")
         else:
-            logging.info(f"[CHECK][منضمات] پیوست اضافی [{group_title}] آپلود شد")
+            # آپلود با resilient_upload_attachment (فرم سفارشی: نمایندگی/سایر ضمائم)
+            upload_result = await resilient_upload_attachment(
+                page, group_title, group_paths, bot, user_id,
+                prefix="CHECK", form_fill_fn=_fill_extra_attachment_form)
+            if not upload_result.get("success"):
+                logging.error(
+                    f"[CHECK][منضمات] آپلود پیوست اضافی [{group_title}] ناموفق: "
+                    f"{upload_result.get('error')}")
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"❌ [CHECK] آپلود پیوست [{group_title}] ناموفق — کاربر {user_id} | "
+                    f"کد: {bill_no} | خطا: {(upload_result.get('error') or 'نامشخص')[:200]}")
+            else:
+                logging.info(f"[CHECK][منضمات] پیوست اضافی [{group_title}] آپلود شد")
 
         # پاکسازی فایل‌های موقت
         for p in group_paths:

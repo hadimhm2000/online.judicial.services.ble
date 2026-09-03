@@ -253,10 +253,13 @@ class Form(StatesGroup):
     check_request_type = State()          # انتخاب تکی یا دسته‌جمعی
     check_bulk_input_method = State()     # انتخاب نوع فایل (اکسل)
     check_bulk_file_upload = State()      # دریافت فایل اکسل
-    check_request_title = State()         # انتخاب عنوان خواسته (صدور اجرائیه / مطالبه وجه)
+    check_request_title = State()         # انتخاب عنوان خواسته (صدور اجرائیه / مطالبه وجه / مطالبه وجه بابت...)
     check_amount = State()                # مبلغ چک به ریال
+    check_tamin_khasteh = State()         # سوال تامین خواسته و توقیف اموال خوانده (بله/خیر)
+    check_aasar = State()                 # سوال اعسار از هزینه دادرسی (بله/خیر)
     check_khasteh_title = State()         # عنوان خواسته (ویرایش متن پیشنهادی)
     check_tracking_no = State()           # (منسوخ - دیگر در ابتدای فلو استفاده نمی‌شود، برای سازگاری نگه داشته شده)
+    check_esteshahadieh_images = State()  # تصاویر استشهادیه (الزامی در صورت درخواست اعسار)
     check_cheques_count = State()         # تعداد فقرات چک برای پیوست (۱ تا ۳۰)
     check_cheque_tracking_no = State()    # کدرهگیری فقره چک جاری
     check_cheque_images = State()         # تصاویر فقره چک جاری (دقیقاً ۳ تصویر)

@@ -1607,11 +1607,16 @@ async def lavayeh_more_persons(message: Message, state: FSMContext):
     if text == "✅ اتمام و ادامه":
         if await _maybe_return_to_preview(data, message, state):
             return
+        # ⚠️ اصلاحیه: قبلاً مستقیماً Form.lavayeh_text با ReplyKeyboardRemove
+        # ست می‌شد و گزینهٔ «ارسال فایل ورد» به کاربر نمایش داده نمی‌شد.
+        # حالا مثل بقیهٔ مسیرها، اول انتخاب روش ورود متن (تایپ / فایل ورد)
+        # نمایش داده می‌شود.
         await message.answer(
-            "📄 *شرح متن لایحه:*\n\nلطفاً متن کامل لایحه خود را ارسال فرمایید.\n\n"
-            "⚠️ *توجه مهم:* متن پس از ارسال *قابل ویرایش نمی‌باشد*.",
-            reply_markup=ReplyKeyboardRemove())
-        await state.set_state(Form.lavayeh_text)
+            "📄 *شرح متن لایحه:*\n\n"
+            "لطفاً روش ورود متن را انتخاب فرمایید.\n"
+            "⚠️ *توجه:* متن پس از ارسال *قابل ویرایش نمی‌باشد*.",
+            reply_markup=text_input_method_kb)
+        await state.set_state(Form.lavayeh_text_choice)
         return
 
     if text == "🔙 بازگشت":
@@ -2836,7 +2841,12 @@ async def lavayeh_edit_choice_handler(message: Message, state: FSMContext):
 
     if text == "📄 ویرایش شرح متن لایحه":
         await state.update_data(_is_editing=True)
-        await message.answer("📄 لطفاً متن جدید لایحه را ارسال فرمایید:", reply_markup=ReplyKeyboardRemove())
+        # ⚠️ اصلاحیه: قبلاً ReplyKeyboardRemove بود و کاربر نمی‌دانست می‌تواند
+        # فایل ورد هم بفرستد — هندلر lavayeh_get_text از قبل .docx را می‌پذیرد.
+        await message.answer(
+            "📄 لطفاً *متن جدید لایحه* را ارسال فرمایید:\n\n"
+            "💡 می‌توانید متن را *تایپ* کنید یا *فایل ورد (.docx)* ارسال نمایید.",
+            reply_markup=back_only_kb)
         await state.set_state(Form.lavayeh_text)
         return
 

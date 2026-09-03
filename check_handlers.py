@@ -3,18 +3,23 @@
 
 جریان:
   ۱. ورود به بخش دعاوی چک (تکی یا دسته‌جمعی)
-  ۲. انتخاب عنوان خواسته (صدور اجرائیه / مطالبه وجه)
+  ۲. انتخاب عنوان خواسته (صدور اجرائیه / مطالبه وجه / مطالبه وجه بابت...)
   ۳. دریافت مبلغ چک
-  ۴. دریافت/ویرایش عنوان خواسته (متن پیشنهادی)
-  ۵. کدرهگیری چک
-  ۶. اطلاعات خواهان (مانند اظهارکننده)
-  ۷. اطلاعات خوانده (مانند مخاطب)
-  ۸. مطلع/گواه
-  ۹. شرح متن (متن پیشنهادی + امکان ارسال فایل ورد)
- ۱۰. توضیحات اضافی
-  ۱۱. تصاویر چک (حداکثر ۳ + ادامه مدارک)
-  ۱۲. انتخاب صلاحیت دادگاه
-  ۱۳. پیش‌نمایش و تایید
+  ۳.۵ سوال تامین خواسته و توقیف اموال خوانده (بله/خیر) — فقط برای
+      «مطالبه وجه چک» و «مطالبه وجه بابت...»
+  ۳.۶ سوال اعسار از هزینه دادرسی (بله/خیر) — فقط برای همان دو عنوان؛
+      اگر بله: استشهادیه در پیوست + کدملی دو شخص حقیقی در مطلع/گواه الزامی
+  ۴. دریافت/ویرایش عنوان خواسته (متن پیشنهادی — بدون متن نمونه برای «مطالبه وجه بابت...»)
+  ۵. اطلاعات خواهان (مانند اظهارکننده)
+  ۶. اطلاعات خوانده (مانند مخاطب)
+  ۷. مطلع/گواه (در صورت اعسار: حداقل دو شخص حقیقی الزامی)
+  ۸. شرح متن (متن پیشنهادی + امکان ارسال فایل ورد — بدون متن نمونه برای «مطالبه وجه بابت...»)
+  ۸.۵ تصاویر استشهادیه (فقط در صورت اعسار — الزامی)
+  ۹. توضیحات اضافی
+ ۱۰. تصاویر چک (حداکثر ۳ + ادامه مدارک — فقط برای عناوین چک؛
+      «مطالبه وجه بابت...» بدون فقرات چک، کدرهگیری و تصویر چک است)
+ ۱۱. انتخاب صلاحیت دادگاه
+ ۱۲. پیش‌نمایش و تایید
 """
 
 import asyncio
@@ -46,6 +51,7 @@ from keyboards import (
     check_request_title_kb,
     check_confirm_kb,
     check_edit_kb,
+    check_yes_no_kb,
     check_extra_text_kb,
     check_more_images_kb,  # fallback ثابت
     check_attachment_title_kb_first,
@@ -101,6 +107,8 @@ async def check_entry(message: Message, state: FSMContext):
     await state.update_data(
         check_request_title="",
         check_amount=0,
+        check_tamin_khasteh=False,
+        check_aasar=False,
         check_khasteh_text="",
         check_tracking_no="",
         check_plainiffs=[],
@@ -476,7 +484,7 @@ async def check_request_title_handler(message: Message, state: FSMContext):
         await state.set_state(Form.check_request_type)
         return
 
-    if text not in ["صدور اجرائیه چک", "مطالبه وجه چک"]:
+    if text not in ["صدور اجرائیه چک", "مطالبه وجه چک", "مطالبه وجه بابت..."]:
         await message.answer(
             "⚠️ لطفاً یکی از گزینه‌های موجود را انتخاب کنید:",
             reply_markup=check_request_title_kb
@@ -484,6 +492,11 @@ async def check_request_title_handler(message: Message, state: FSMContext):
         return
 
     await state.update_data(check_request_title=text)
+    # ⭐ تامین خواسته/اعسار فقط برای عناوین «مطالبه وجه» پرسیده می‌شود؛
+    # اگر عنوان (در ویرایش) به «صدور اجرائیه چک» تغییر کند، پرچم‌های قبلی
+    # ریست می‌شوند تا خواستهٔ فرعی اشتباهی ثبت نشود.
+    if text not in ("مطالبه وجه چک", "مطالبه وجه بابت..."):
+        await state.update_data(check_tamin_khasteh=False, check_aasar=False)
     if await _check_maybe_return_to_preview(message, state):
         return
     await message.answer(
@@ -517,13 +530,23 @@ async def check_amount_handler(message: Message, state: FSMContext):
 
     amount = int(amount_str)
     await state.update_data(check_amount=amount)
-    if await _check_maybe_return_to_preview(message, state):
-        return
 
-    # مرحله ۳ — متن پیشنهادی عنوان خواسته
+    # ⭐ مرحله ۲.۵ — سوال تامین خواسته و توقیف اموال خوانده (بله/خیر)
+    # فقط برای «مطالبه وجه چک» و «مطالبه وجه بابت...» (طبق دستور کارفرما)
     data = await state.get_data()
     request_title = data.get("check_request_title", "")
 
+    if request_title in ("مطالبه وجه چک", "مطالبه وجه بابت..."):
+        await message.answer(
+            "⚖️ آیا درخواست *تامین خواسته و توقیف اموال خوانده* را دارید؟",
+            reply_markup=check_yes_no_kb)
+        await state.set_state(Form.check_tamin_khasteh)
+        return
+
+    if await _check_maybe_return_to_preview(message, state):
+        return
+
+    # مرحله ۳ — متن پیشنهادی عنوان خواسته (روال سابق — صدور اجرائیه چک)
     if request_title == "صدور اجرائیه چک":
         suggested = (
             "به موجب یک فقره چک به شماره ... مورخ ... به عهده بانک ملی "
@@ -535,6 +558,97 @@ async def check_amount_handler(message: Message, state: FSMContext):
             "به موجب ........ فقره چک به شماره ......... مورخ ......... به عهده بانک ....... "
             "به انضمام کلیه هزینه های دادرسی و خسارات تاخیرتادیه از زمان سررسید "
             "لغایت زمان کامل اجرای حکم و حق الوکاله وکیل"
+        )
+
+    await message.answer(
+        "📄 *مرحله ۳:* عنوان خواسته\n\n"
+        f"📝 *متن پیشنهادی:*\n\n{suggested}\n\n"
+        "💡 می‌توانید متن فوق را *ویرایش* و ارسال فرمایید یا اگر متنی دارید، مستقیماً وارد کنید:",
+        reply_markup=back_only_kb)
+    await state.set_state(Form.check_khasteh_title)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# مرحله ۲.۵ — سوال تامین خواسته و توقیف اموال خوانده (بله/خیر)
+# ══════════════════════════════════════════════════════════════════════════════
+@check_router.message(Form.check_tamin_khasteh)
+async def check_tamin_khasteh_handler(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+
+    if text == "🔙 بازگشت":
+        await message.answer(
+            "💰 لطفاً *مبلغ چک* را به *ریال* وارد فرمایید:\n"
+            "_(فقط عدد، بدون کاراکتر اضافی)_",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.check_amount)
+        return
+
+    if text not in ("✅ بله", "❌ خیر"):
+        await message.answer(
+            "⚠️ لطفاً یکی از گزینه‌های *بله* یا *خیر* را انتخاب فرمایید:",
+            reply_markup=check_yes_no_kb)
+        return
+
+    await state.update_data(check_tamin_khasteh=(text == "✅ بله"))
+
+    # ⭐ مرحله ۲.۶ — سوال اعسار از هزینه دادرسی (بله/خیر)
+    await message.answer(
+        "📋 آیا درخواست *اعسار از هزینه دادرسی* را دارید؟",
+        reply_markup=check_yes_no_kb)
+    await state.set_state(Form.check_aasar)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# مرحله ۲.۶ — سوال اعسار از هزینه دادرسی (بله/خیر)
+# ══════════════════════════════════════════════════════════════════════════════
+@check_router.message(Form.check_aasar)
+async def check_aasar_handler(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+
+    if text == "🔙 بازگشت":
+        await message.answer(
+            "⚖️ آیا درخواست *تامین خواسته و توقیف اموال خوانده* را دارید؟",
+            reply_markup=check_yes_no_kb)
+        await state.set_state(Form.check_tamin_khasteh)
+        return
+
+    if text not in ("✅ بله", "❌ خیر"):
+        await message.answer(
+            "⚠️ لطفاً یکی از گزینه‌های *بله* یا *خیر* را انتخاب فرمایید:",
+            reply_markup=check_yes_no_kb)
+        return
+
+    aasar = (text == "✅ بله")
+    await state.update_data(check_aasar=aasar)
+
+    if await _check_maybe_return_to_preview(message, state):
+        return
+
+    # مرحله ۳ — عنوان خواسته (متن)
+    data = await state.get_data()
+    request_title = data.get("check_request_title", "")
+
+    if request_title == "مطالبه وجه بابت...":
+        # ⚠️ طبق دستور کارفرما: برای «مطالبه وجه بابت...» هیچ متن نمونه‌ای
+        # نمایش داده نمی‌شود — کاربر متن خواسته خودش را وارد می‌کند.
+        await message.answer(
+            "📄 *مرحله ۳:* عنوان خواسته\n\n"
+            "لطفاً *متن خواسته* خود را وارد فرمایید:",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.check_khasteh_title)
+        return
+
+    if request_title == "مطالبه وجه چک":
+        suggested = (
+            "به موجب ........ فقره چک به شماره ......... مورخ ......... به عهده بانک ....... "
+            "به انضمام کلیه هزینه های دادرسی و خسارات تاخیرتادیه از زمان سررسید "
+            "لغایت زمان کامل اجرای حکم و حق الوکاله وکیل"
+        )
+    else:
+        suggested = (
+            "به موجب یک فقره چک به شماره ... مورخ ... به عهده بانک ملی "
+            "به مبلغ ... ریال با کدرهگیری ... به انضمام کلیه خسارات دادرسی و حق الوکاله وکیل "
+            "و خسارات تاخيرتاديه از زمان سررسيد لغايت زمان كامل اجراي حكم و حق الوكاله وكيل"
         )
 
     await message.answer(
@@ -911,9 +1025,16 @@ async def check_defendant_more_handler(message: Message, state: FSMContext):
     elif text == "✅ اتمام و ادامه":
         if await _check_maybe_return_to_preview(message, state):
             return
+        data = await state.get_data()
+        aasar_note = ""
+        if data.get("check_aasar", False):
+            # ⭐ طبق دستور کارفرما: در صورت اعسار، کدملی دو شخص حقیقی الزامی است
+            aasar_note = (
+                "\n\n⚠️ چون درخواست *اعسار* دارید، وارد کردن *کدملی دو شخص حقیقی* "
+                "در این بخش الزامی است.")
         await message.answer(
             "🔍 *مرحله ۶:* آیا *مطلع یا گواه* دارید؟\n\n"
-            "در صورت وجود، *کدملی* مطلع/گواه را ارسال فرمایید.",
+            "در صورت وجود، *کدملی* مطلع/گواه را ارسال فرمایید." + aasar_note,
             reply_markup=check_addressee_add_more_kb)
         await state.set_state(Form.check_witness_national_id)
     elif "بازگشت" in text:
@@ -1004,6 +1125,18 @@ async def check_more_witnesses_handler(message: Message, state: FSMContext):
             reply_markup=back_only_kb)
         await state.set_state(Form.check_witness_national_id)
     elif text == "✅ اتمام و ادامه":
+        data = await state.get_data()
+        witnesses = data.get("check_witnesses", [])
+        # ⭐ طبق دستور کارفرما: در صورت اعسار، کدملی دو شخص حقیقی در مطلع/گواه
+        # الزامی است — تا زمانی که ۲ نفر وارد نشده اجازهٔ ادامه داده نمی‌شود.
+        if data.get("check_aasar", False) and len(witnesses) < 2:
+            await message.answer(
+                "⚠️ چون درخواست *اعسار از هزینه دادرسی* دارید، باید *کدملی دو شخص حقیقی* "
+                f"به‌عنوان مطلع/گواه وارد شود. (تاکنون: {len(witnesses)} از ۲)\n\n"
+                "لطفاً کدملی مطلع/گواه بعدی را ارسال فرمایید:",
+                reply_markup=back_only_kb)
+            await state.set_state(Form.check_witness_national_id)
+            return
         if await _check_maybe_return_to_preview(message, state):
             return
         await _ask_check_text(message, state)
@@ -1027,6 +1160,16 @@ async def _ask_check_text(message: Message, state: FSMContext):
     data = await state.get_data()
     request_title = data.get("check_request_title", "")
 
+    if request_title == "مطالبه وجه بابت...":
+        # ⚠️ طبق دستور کارفرما: برای «مطالبه وجه بابت...» هیچ متن نمونه‌ای برای
+        # خواسته و شرح متن نمایش داده نمی‌شود — کاربر متن خودش را می‌فرستد.
+        await message.answer(
+            "📄 *مرحله ۸:* شرح متن دادخواست\n\n"
+            "لطفاً *شرح متن* دادخواست خود را ارسال فرمایید:",
+            reply_markup=check_docx_option_kb)
+        await state.set_state(Form.check_text)
+        return
+
     if request_title == "صدور اجرائیه چک":
         suggested = (
             "ریاست محترم دادگاه عمومی حقوقی شهرستان یزد \n"
@@ -1038,19 +1181,22 @@ async def _ask_check_text(message: Message, state: FSMContext):
             "با تشكر و تجديد احترام"
         )
     else:
+        # ⭐ قالب جدید طبق دستور کارفرما (متن دقیق ارسالی):
         suggested = (
-            "رياست محترم ..................\n"
+            "رياست محترم ..........................\n"
             "باسلام\n"
             "احتراما به وکالت از خواهان به استحضار می رساند :\n"
-            "به موجب كپي مصدق ............................. موكل اينجانب "
-            "مبلغ ............... ريال از خوانده/خواندگان طلبكار است كه "
+            "به موجب كپي مصدق ............................. موکل اينجانب "
+            "مبلغ ...............  ريال از خوانده/خواندگان طلبكار است كه "
             "نامبرده /نامبردگان با وصف مراجعات مكرر و حلول اجل وسر رسيد از تاديه "
-            "و پرداخت آن خودداري مي كنند فلها مستندا به مواد ۱۹۸ قانون آئين دادرسي "
-            "دادگاههاي عمومي وانقلاب در امور مدني و ۳۱۰ قانون تجارت رسيدگي و "
+            "و پرداخت آن خودداري مي كنند فلذا مستندا به مواد 198 قانون آئين دادرسي "
+            "دادگاههاي عمومي وانقلاب در امور مدني و 310 قانون تجارت رسيدگي و "
             "صدور حكم محكوميت خوانده /خواندگان به پرداخت مبلغ خواسته به ميزان "
-            "............ ريال به انضمام کلیه هزینه های دادرسی و خسارات تاخیرتادیه "
+            "............  ريال  به انضمام کلیه هزینه های دادرسی و خسارات تاخیرتادیه "
             "از زمان سررسید لغایت زمان کامل اجرای حکم و حق الوکاله وکیل در حق "
-            "موكل اينجانب مورد استدعاست.\nباتشکر"
+            "موکل اينجانب مورد استدعاست.\n"
+            "باتشکر\n"
+            "..................."
         )
 
     await message.answer(
@@ -1059,6 +1205,115 @@ async def _ask_check_text(message: Message, state: FSMContext):
         "💡 می‌توانید متن فوق را *ویرایش* و ارسال فرمایید یا اگر متنی دارید، مستقیماً وارد کنید:",
         reply_markup=check_docx_option_kb)
     await state.set_state(Form.check_text)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# مرحله ۸.۵ — تصاویر استشهادیه (الزامی در صورت درخواست اعسار از هزینه دادرسی)
+# ══════════════════════════════════════════════════════════════════════════════
+def _esteshahadieh_manage_kb():
+    from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="✅ اتمام ارسال تصاویر")],
+            [KeyboardButton(text="🔙 بازگشت")],
+        ], resize_keyboard=True)
+
+
+async def _after_check_text(message: Message, state: FSMContext):
+    """بعد از شرح متن: در صورت اعسار، ابتدا تصویر استشهادیه گرفته می‌شود
+    (طبق دستور کارفرما: «در قسمت پیوست ربات حتما باید بگویی که تصویر
+    استشهادیه را نیز ارسال کند»)؛ سپس فقرات چک (فقط عناوین چک) یا مدارک اضافی."""
+    data = await state.get_data()
+    aasar = data.get("check_aasar", False)
+
+    if aasar:
+        await message.answer(
+            "📋 *مدارک اعسار از هزینه دادرسی:\n\n"
+            "چون درخواست *اعسار* دارید، ارسال *تصویر استشهادیه* الزامی است.\n\n"
+            "🖼 لطفاً *تصویر استشهادیه* را به صورت *عکس (Photo)* ارسال فرمایید.\n"
+            "⚠️ فقط فرمت *JPG / JPEG* قابل قبول است.\n\n"
+            "پس از ارسال همهٔ صفحات، دکمه *«اتمام ارسال تصاویر»* را بفشارید.\n"
+            f"(حداکثر {MAX_ATTACHMENT_IMAGES} تصویر)",
+            reply_markup=_esteshahadieh_manage_kb())
+        await state.update_data(_esteshahadieh_images=[])
+        await state.set_state(Form.check_esteshahadieh_images)
+        return
+
+    await _ask_check_next_after_text(message, state)
+
+
+async def _ask_check_next_after_text(message: Message, state: FSMContext):
+    """ادامهٔ فلوی بعد از شرح متن/استشهادیه — «مطالبه وجه بابت...» هیچ فقره چک،
+    کدرهگیری و تصویر چکی ندارد؛ مستقیم به سوال مدارک اضافی می‌رود."""
+    data = await state.get_data()
+    request_title = data.get("check_request_title", "")
+
+    if request_title == "مطالبه وجه بابت...":
+        await message.answer(
+            "📎 آیا *مدرکی برای پیوست* دارید؟",
+            reply_markup=check_more_docs_kb)
+        await state.set_state(Form.check_more_images)
+        return
+
+    await _ask_check_images(message, state)
+
+
+@check_router.message(Form.check_esteshahadieh_images, F.photo)
+async def check_esteshahadieh_photo_handler(message: Message, state: FSMContext):
+    data = await state.get_data()
+    images = data.get("_esteshahadieh_images", [])
+
+    if len(images) >= MAX_ATTACHMENT_IMAGES:
+        await message.answer(
+            f"⛔ حداکثر *{MAX_ATTACHMENT_IMAGES} تصویر* مجاز است.\n\n"
+            "لطفاً دکمه *«اتمام ارسال تصاویر»* را بفشارید.")
+        return
+
+    file_id = message.photo[-1].file_id
+    images.append(file_id)
+    await state.update_data(_esteshahadieh_images=images)
+    await message.answer(
+        f"✅ تصویر استشهادیه شماره *{len(images)}* دریافت شد.\n\n"
+        "در صورت اتمام، دکمه *«اتمام ارسال تصاویر»* را بفشارید.",
+        reply_markup=_esteshahadieh_manage_kb())
+
+
+@check_router.message(Form.check_esteshahadieh_images, F.text == "✅ اتمام ارسال تصاویر")
+async def check_esteshahadieh_finish_handler(message: Message, state: FSMContext):
+    data = await state.get_data()
+    images = data.get("_esteshahadieh_images", [])
+
+    if not images:
+        await message.answer(
+            "⚠️ ارسال *تصویر استشهادیه* برای درخواست اعسار الزامی است.\n"
+            "لطفاً حداقل یک تصویر ارسال فرمایید.",
+            reply_markup=_esteshahadieh_manage_kb())
+        return
+
+    groups = data.get("check_attachment_groups", [])
+    groups.append({
+        "title": "استشهادیه محلی",
+        "images": list(images),
+        "is_esteshahadieh": True})
+    await state.update_data(check_attachment_groups=groups, _esteshahadieh_images=[])
+
+    await message.answer(
+        f"✅ *استشهادیه محلی* با *{len(images)} تصویر* ثبت شد.")
+
+    if await _check_maybe_return_to_preview(message, state):
+        return
+    await _ask_check_next_after_text(message, state)
+
+
+# ⚠️ این fallback باید بعد از هندلر «✅ اتمام ارسال تصاویر» ثبت شود (ترتیب aiogram)
+@check_router.message(Form.check_esteshahadieh_images)
+async def check_esteshahadieh_fallback_handler(message: Message, state: FSMContext):
+    if message.text and "بازگشت" in message.text:
+        await _ask_check_text(message, state)
+        return
+    await message.answer(
+        "⚠️ لطفاً *تصویر* استشهادیه ارسال فرمایید یا دکمه *«اتمام ارسال تصاویر»* را بفشارید.",
+        reply_markup=_esteshahadieh_manage_kb())
 
 
 @check_router.message(Form.check_text)
@@ -1076,7 +1331,7 @@ async def check_text_handler(message: Message, state: FSMContext, bot: Bot):
                 await b.send_message(cid, f"✅ متن دادخواست از فایل ورد دریافت شد ({char_count} کاراکتر).")
                 if await _check_maybe_return_to_preview(message, st):
                     return
-                await _ask_check_images(message, st)
+                await _after_check_text(message, st)
 
             await process_docx_input(
                 message=message,
@@ -1124,11 +1379,11 @@ async def check_text_handler(message: Message, state: FSMContext, bot: Bot):
         await state.set_state(Form.check_witness_national_id)
         return
 
-    # متن شرح دریافت شد — مستقیماً به تصاویر برو
+    # متن شرح دریافت شد — (در صورت اعسار ابتدا استشهادیه) سپس تصاویر/مدارک
     await state.update_data(check_text=message.text, check_text_html="")
     if await _check_maybe_return_to_preview(message, state):
         return
-    await _ask_check_images(message, state)
+    await _after_check_text(message, state)
 
 
 @check_router.message(Form.check_text_input)
@@ -1146,7 +1401,7 @@ async def check_text_input_handler(message: Message, state: FSMContext, bot: Bot
                 await b.send_message(cid, f"✅ متن دادخواست از فایل ورد دریافت شد ({char_count} کاراکتر).")
                 if await _check_maybe_return_to_preview(message, st):
                     return
-                await _ask_check_images(message, st)
+                await _after_check_text(message, st)
 
             await process_docx_input(
                 message=message,
@@ -1176,7 +1431,7 @@ async def check_text_input_handler(message: Message, state: FSMContext, bot: Bot
     await state.update_data(check_text=message.text, check_text_html="")
     if await _check_maybe_return_to_preview(message, state):
         return
-    await _ask_check_images(message, state)
+    await _after_check_text(message, state)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1190,7 +1445,7 @@ async def check_extra_text_handler(message: Message, state: FSMContext):
         await state.update_data(check_extra_text="")
         if await _check_maybe_return_to_preview(message, state):
             return
-        await _ask_check_images(message, state)
+        await _after_check_text(message, state)
         return
 
     if text == "🔙 بازگشت":
@@ -1211,7 +1466,7 @@ async def check_extra_text_handler(message: Message, state: FSMContext):
     await state.update_data(check_extra_text=message.text)
     if await _check_maybe_return_to_preview(message, state):
         return
-    await _ask_check_images(message, state)
+    await _after_check_text(message, state)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1408,6 +1663,10 @@ async def check_more_images_handler(message: Message, state: FSMContext):
         return
 
     if "بازگشت" in text:
+        # «مطالبه وجه بابت...» فقره چک ندارد — بازگشت به شرح متن
+        if data.get("check_request_title", "") == "مطالبه وجه بابت...":
+            await _ask_check_text(message, state)
+            return
         # حذف آخرین فقره و بازگشت به تصاویر همان فقره برای ویرایش دوباره
         items = data.get("check_cheque_items", [])
         if items:
@@ -1631,19 +1890,46 @@ def build_check_preview(data: dict) -> str:
     khasteh_preview = khasteh_text[:150] + "..." if len(khasteh_text) > 150 else khasteh_text
     khasteh_preview = _escape_md(khasteh_preview)
 
-    return (
+    # ⭐ نمایش درخواست‌های تامین خواسته / اعسار (برای عناوین مطالبه وجه)
+    extra_flags = ""
+    if data.get("check_tamin_khasteh"):
+        extra_flags += "\n⚖️ تامین خواسته و توقیف اموال خوانده: *بله*"
+    if data.get("check_aasar"):
+        extra_flags += "\n📋 اعسار از هزینه دادرسی: *بله*"
+
+    # استشهادیه و سایر پیوست‌ها
+    attachment_groups = data.get("check_attachment_groups", [])
+    estesh_count = 0
+    other_attach = []
+    for g in attachment_groups:
+        if g.get("is_esteshahadieh") or "استشهادیه" in (g.get("title", "") or ""):
+            estesh_count += len(g.get("images", []))
+        else:
+            other_attach.append(f"  • {_escape_md(g.get('title', ''))} ({len(g.get('images', []))} تصویر)")
+    attachments_text = ""
+    if estesh_count:
+        attachments_text += f"\n📋 استشهادیه محلی: {estesh_count} تصویر"
+    if other_attach:
+        attachments_text += "\n📎 سایر مدارک:\n" + "\n".join(other_attach)
+
+    base = (
         f"🏦 *پیش‌نمایش دادخواست چک:*\n\n"
         f"📌 عنوان خواسته: *{_escape_md(request_title)}*\n\n"
-        f"💰 مبلغ چک: *{_fmt(amount)} ریال*\n\n"
+        f"💰 مبلغ چک: *{_fmt(amount)} ریال*\n"
+        f"{extra_flags}\n\n"
         f"📄 عنوان خواسته (متن):\n  {khasteh_preview}\n\n"
         f"👤 خواهان(ها):\n{plaintiffs_text}\n\n"
         f"👥 خوانده(ها):\n{defendants_text}\n\n"
         f"🔍 مطلع/گواه:\n{witnesses_text}\n\n"
         f"📋 شرح متن:\n  {text_preview}\n"
-    ) + (f"\n📝 توضیحات اضافی: {_escape_md(extra_text)}\n" if extra_text else "") + (
-        f"\n🧾 فقرات چک ({len(cheque_items)} فقره):\n{cheques_text}\n\n"
-    ) + (
-        f"🏛 صلاحیت دادگاه: *{_escape_md(branch_name)}* (کد: `{branch_code}`)\n\n"
+    ) + (f"\n📝 توضیحات اضافی: {_escape_md(extra_text)}\n" if extra_text else "")
+
+    cheques_block = ""
+    if cheque_items:
+        cheques_block = f"\n🧾 فقرات چک ({len(cheque_items)} فقره):\n{cheques_text}\n"
+
+    return base + cheques_block + attachments_text + (
+        f"\n\n🏛 صلاحیت دادگاه: *{_escape_md(branch_name)}* (کد: `{branch_code}`)\n\n"
         f"آیا اطلاعات فوق صحیح است؟"
     )
 
@@ -1688,6 +1974,8 @@ async def check_confirm_handler(message: Message, state: FSMContext, bot: Bot):
             "task_type": "CHECK_SUBMIT",
             "check_request_title": data.get("check_request_title", ""),
             "check_amount": data.get("check_amount", 0),
+            "check_tamin_khasteh": bool(data.get("check_tamin_khasteh", False)),
+            "check_aasar": bool(data.get("check_aasar", False)),
             "check_khasteh_text": data.get("check_khasteh_text", ""),
             # 🧾 فقرات چک — لیست کامل (هر فقره: کدرهگیری + دقیقاً ۳ تصویر مخصوص خودش).
             # ⚠️ check_scenario.py هنوز فقط یک کدرهگیری/یک ست تصویر را پردازش می‌کند؛
