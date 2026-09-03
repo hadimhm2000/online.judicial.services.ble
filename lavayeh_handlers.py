@@ -2703,65 +2703,24 @@ async def bulk_sign_disabled_callback(callback: CallbackQuery):
     await callback.answer("⏳ این مورد فعلاً در دسترس نیست.", show_alert=False)
 
 
-# هندلر دکمه «پرداخت انجام شد» — فال‌بک
-@lavayeh_router.callback_query(F.data == "lavayeh_prepay_done", Form.waiting_for_lavayeh_prepay)
-async def lavayeh_prepay_done_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    """کاربر دکمه تایید پرداخت را زده — تایید مجدد"""
-    await callback.answer()
-    user_id = callback.from_user.id
-
-    confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ بله، پرداخت موفق بود", callback_data="lavayeh_prepay_done_confirm")],
-        [InlineKeyboardButton(text="❌ خیر، انصراف", callback_data="lavayeh_prepay_cancel")],
-    ])
-    await callback.message.answer(
-        "❓ آیا مطمئن هستید که پرداخت با موفقیت انجام شد؟\n\n"
-        "اگر پیام «پرداخت با موفقیت انجام شد» را در کیف پول بله دیده‌اید، «بله» را بزنید.",
-        reply_markup=confirm_kb
+# ================= دکمه «پرداخت انجام شد» — حذف کامل =================
+# ⛔ هندلرهای lavayeh_prepay_done / lavayeh_prepay_done_confirm حذف شدند.
+# تایید پرداخت فقط از طریق پیام successful_payment خود بله انجام می‌شود
+# (هندلر lavayeh_prepay_successful_payment بالا). اگر callback قدیمی از
+# پیام‌های پیشین برسد، فقط راهنما نمایش داده می‌شود — بدون هیچ پردازشی.
+@lavayeh_router.callback_query(F.data.startswith("lavayeh_prepay_done"))
+async def lavayeh_prepay_done_legacy_reject(callback: CallbackQuery):
+    logging.warning(
+        f"[LAVAYEH-PREPAY] کاربر {callback.from_user.id} دکمه حذف‌شده "
+        f"'{callback.data}' را زد — پردازشی انجام نشد (پرداخت فقط توسط بله تایید می‌شود)"
     )
-
-
-@lavayeh_router.callback_query(F.data == "lavayeh_prepay_done_confirm", Form.waiting_for_lavayeh_prepay)
-async def lavayeh_prepay_done_confirm_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    """تایید نهایی — ارسال به صف پردازش"""
-    await callback.answer()
-    user_id = callback.from_user.id
-    data = await state.get_data()
-    title = data.get("lavayeh_title", "لایحه")
-    fee = LAVAYEH_SERVICE_FEE
-
-    logging.info(f"[LAVAYEH-PREPAY] تایید نهایی پرداخت برای کاربر {user_id}")
-
-    await callback.message.answer(
-        f"✅ *پرداخت تایید شد!*\n\n"
-        f"💰 مبلغ: {fee:,} تومان\n\n"
-        f"⏳ درخواست شما در حال ارسال به سامانه قضایی است...",
-        reply_markup=ReplyKeyboardRemove()
-    )
-
-    await log_event(
-        "پرداخت", title, callback.from_user.full_name, user_id,
-        doc_name=f"خدمات ثبت {title}", payment_status="پرداخت شده (تایید دستی کاربر - پیش‌ثبت)",
-        note=f"مبلغ: {fee:,} تومان"
-    )
-
+    await callback.answer(
+        "⛔ این دکمه حذف شده است.\nپرداخت فقط از طریق فاکتور کیف پول بله انجام و "
+        "به‌صورت خودکار توسط بله تایید می‌شود.", show_alert=True)
     try:
-        admin_msg = (
-            f"💰 پرداخت خدمات ثبت لایحه (تایید دستی):\n\n"
-            f"👤 کاربر: {callback.from_user.full_name} ({user_id})\n"
-            f"📄 عنوان: {title}\n"
-            f"💰 مبلغ: {fee:,} تومان\n"
-            f"⏱ زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}"
-        )
-        await bot.send_message(ADMIN_ID, admin_msg)
-    except Exception as e:
-        logging.error(f"[LAVAYEH-PREPAY] خطا در ارسال اطلاع به ادمین: {e}")
-
-    if not hasattr(runtime_state, "active_lavayeh_users"):
-        runtime_state.active_lavayeh_users = set()
-    runtime_state.active_lavayeh_users.add(user_id)
-    await _send_lavayeh_task_to_queue(data, user_id, title, bot=bot)
-    await state.clear()
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
 
 
 @lavayeh_router.callback_query(F.data == "lavayeh_prepay_cancel", Form.waiting_for_lavayeh_prepay)

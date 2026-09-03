@@ -2296,28 +2296,15 @@ async def _get_error_text(page):
 
 
 async def _download_images(bot: Bot, file_ids: list, user_id: int) -> list:
-    paths = []
-    for i, file_id in enumerate(file_ids):
-        try:
-            file_info = await bot.get_file(file_id)
-            ext = "jpg"
-            if file_info.file_path:
-                ext = file_info.file_path.split(".")[-1].lower()
-                if ext not in ("jpg", "jpeg", "png"):
-                    ext = "jpg"
-            path = f"ezhhar_img_{user_id}_{i}.{ext}"
-            await bot.download_file(file_info.file_path, path)
-            paths.append(path)
-        except Exception as e:
-            logging.error(f"[EZHHAR] خطا در دانلود تصویر {i}: {e}")
-            try:
-                from bug_reporter import report_bug
-                await report_bug(bot, where="_download_images", error=e,
-                                 user_id=user_id,
-                                 page=getattr(runtime_state, "sana_page", None))
-            except Exception:
-                pass
-    return paths
+    """دانلود تصاویر از بله — دقیقاً همان تابع مشترک فلوی تست منضمات.
+
+    ⭐ قبلاً نسخه محلی (ezhhar_img_*) بدون هیچ فشرده‌سازی‌ای بود؛ برای
+    «تطبیق» کامل با فلوی تست (و بقیه سناریوها) به تابع مشترک
+    upload_helpers.download_images_from_bale واگذار می‌شود: نام‌فایل یکتا
+    با timestamp + فشرده‌سازی استاندارد + لاگ ساختاریافته.
+    """
+    from upload_helpers import download_images_from_bale
+    return await download_images_from_bale(bot, file_ids, user_id, prefix="EZHHAR")
 
 
 async def _auto_delete_pending_ezhhar(bot: Bot, user_id: int, timeout_seconds: int = 3600):

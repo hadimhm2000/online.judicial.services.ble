@@ -374,17 +374,16 @@ async def _fill_text_editor(page, html_content: str, bot: Bot, user_id: int):
 
 
 async def _download_images(bot: Bot, file_ids: list, user_id: int) -> list:
-    """دانلود تصاویر از بله و برگرداندن مسیر فایل‌ها."""
-    from upload_helpers import download_and_save_file
-    paths = []
-    for fid in file_ids:
-        try:
-            path = await download_and_save_file(bot, user_id, fid)
-            if path:
-                paths.append(path)
-        except Exception as e:
-            logging.error(f"[TN] خطا در دانلود تصویر {fid}: {e}")
-    return paths
+    """دانلود تصاویر از بله و برگرداندن مسیر فایل‌ها.
+
+    ⭐ اصلاح باگ: قبلاً از upload_helpers.download_and_save_file ایمپورت
+    می‌شد که اصلاً وجود نداشت → ImportError در زمان اجرا و شکست دانلود
+    تصاویر پیوست دعوی اعتراضی. حالا همان تابع مشترک استاندارد
+    download_images_from_bale (استفاده‌شده در فلوی تست و بقیه سناریوها)
+    به کار می‌رود: نام‌فایل یکتا + فشرده‌سازی.
+    """
+    from upload_helpers import download_images_from_bale
+    return await download_images_from_bale(bot, file_ids, user_id, prefix="TN")
 
 
 async def _upload_attachment(page, title: str, image_paths: list, bot: Bot, user_id: int):
@@ -402,15 +401,25 @@ async def _upload_attachment(page, title: str, image_paths: list, bot: Bot, user
     if clicked:
         await resilient_sleep(page, 3, bot, user_id)
 
-    # پر کردن عنوان
-    await page.evaluate(f'''() => {{
+    # پر کردن عنوان — مقدار به‌صورت آرگومان پاس می‌شود (ایمن برای هر عنوانی)
+    # + روش مقاوم AngularJS مثل بقیه سناریوها
+    await page.evaluate('''(val) => {
         const inp = document.querySelector('input[ng-model*="Title"]');
-        if (inp) {{
-            inp.value = {title!r};
-            inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
-            inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
-        }}
-    }}''')
+        if (inp) {
+            inp.value = val;
+            inp.dispatchEvent(new Event("input", { bubbles: true }));
+            inp.dispatchEvent(new Event("change", { bubbles: true }));
+            try {
+                if (typeof angular !== 'undefined') {
+                    const el = angular.element(inp);
+                    const ctrl = el.controller('ngModel');
+                    if (ctrl) { ctrl.$setViewValue(val); ctrl.$render(); }
+                    const scope = el.scope();
+                    if (scope) scope.$apply();
+                }
+            } catch (e) {}
+        }
+    }''', title)
     await asyncio.sleep(1)
 
     # آپلود تصاویر
