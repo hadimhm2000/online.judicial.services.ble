@@ -941,6 +941,16 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
             cost_info = await _calculate_cost(sana_page, bot, user_id)
             total_cost = cost_info.get("total", 0)
 
+            # ── گرفتن شناسه پرداخت از بخش هزینه (فقط ذخیره در شیت + پیام به مدیر) ──
+            from payment_id_capture import capture_and_report_payment_ids
+            await capture_and_report_payment_ids(
+                sana_page, bot, user_id,
+                service_name="تجدیدنظر",
+                tracking_code=bill_no,
+                amount=total_cost,
+                exclude_values=[bill_no],
+                log_prefix="TN")
+
             # ── ۱۴. چاپ PDF ─────────────────────────────────────────
             pdf_path = await _print_tajdid_nazar(sana_page, browser_context, bill_no, bot, user_id)
 
