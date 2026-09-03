@@ -4,16 +4,155 @@ panel_sync.py — ثبت رویدادهای استعلام در پنل ادمی�
 این ماژول وظیفه ارسال داده‌های استعلام، لایحه و سایر خدمات
 به API پنل ادمین را بر عهده دارد تا در دیتابیس SQLite ذخیره شوند
 و در پنل ادمین قابل مشاهده باشند.
+
+⭐ نسخه اصلاح‌شده (رفع خطای «خطا در ارتباط با پنل ادمین: TimeoutError()»):
+  ۱) Session مشترک aiohttp — قبلاً برای «هر» درخواست یک ClientSession جدید
+     ساخته می‌شد (handshake TCP جدید + بدون connection reuse). حالا یک
+     session سراسری lazy ساخته و مجدداً استفاده می‌شود.
+  ۲) Timeout واقع‌بینانه — قبلاً total=10s بود که در حالت dev بودن پنل
+     (کامپایل on-demand مسیرهای Next.js) یا شلوغی سرور، مرتباً Timeout
+     می‌داد. حالا total=25s و connect=10s.
+  ۳) Retry خودکار — هر درخواست حداکثر ۳ تلاش (با تاخیر ۱ و ۳ ثانیه).
+     امن است، چون پنل خودش Case تکراری را تشخیص می‌دهد (_duplicate).
+  ۴) Circuit Breaker — اگر پنل چند بار پشت‌سرهم پاسخ ندهد، به‌مدت ۵
+     دقیقه تماس‌های جدید بلافاصله (بدون انتظار) رد می‌شوند تا فلوی اصلی
+     ربات کند نشود. اولین موفقیت، بریکر را ریست می‌کند.
 """
+import asyncio
 import logging
-import json
-import datetime
+import time
 
 import aiohttp
 
 from config import ADMIN_API_BASE
 
 logger = logging.getLogger(__name__)
+
+# ── تنظیمات اتصال ──────────────────────────────────────────────────────
+_PANEL_TIMEOUT = aiohttp.ClientTimeout(total=25, connect=10)
+_PANEL_RETRIES = 3          # تعداد کل تلاش‌ها برای هر درخواست
+_RETRY_DELAYS = (1.0, 3.0)  # تاخیر قبل از تلاش ۲ و ۳ (ثانیه)
+
+# ── Session مشترک ──────────────────────────────────────────────────────
+_panel_session: aiohttp.ClientSession | None = None
+
+
+def _get_panel_session() -> aiohttp.ClientSession:
+    """دریافت session مشترک (lazy) — اتصال‌ها بین درخواست‌ها keep-alive می‌مانند."""
+    global _panel_session
+    if _panel_session is None or _panel_session.closed:
+        connector = aiohttp.TCPConnector(
+            ssl=False,
+            limit=20,             # حداکثر اتصال همزمان
+            ttl_dns_cache=300,    # کش DNS
+            enable_cleanup_closed=True,
+        )
+        _panel_session = aiohttp.ClientSession(
+            connector=connector,
+            timeout=_PANEL_TIMEOUT,
+        )
+    return _panel_session
+
+
+# ── Circuit Breaker ────────────────────────────────────────────────────
+_BREAKER_THRESHOLD = 3       # بعد از ۳ شکست متوالی...
+_BREAKER_COOLDOWN = 300.0    # ...۵ دقیقه تماس نگیر
+_breaker = {"fail_streak": 0, "open_until": 0.0, "last_report": 0.0}
+
+
+def _breaker_is_open() -> bool:
+    return time.monotonic() < _breaker["open_until"]
+
+
+def _breaker_record_success():
+    _breaker["fail_streak"] = 0
+    _breaker["open_until"] = 0.0
+
+
+def _breaker_record_failure():
+    _breaker["fail_streak"] += 1
+    if _breaker["fail_streak"] >= _BREAKER_THRESHOLD:
+        _breaker["open_until"] = time.monotonic() + _BREAKER_COOLDOWN
+        logger.warning(
+            f"[PANEL_SYNC] پنل پاسخگو نیست ({_breaker['fail_streak']} شکست متوالی) — "
+            f"تماس‌های جدید تا {_BREAKER_COOLDOWN:.0f} ثانیه موقتاً متوقف می‌شوند "
+            f"(داده‌ها از دست نمی‌روند؛ فقط ثبت پنل به تعویق می‌افتد)."
+        )
+
+
+def _breaker_log_throttled(msg: str):
+    """لاگ با نرخ محدود — تا هر درخواست رد شده یک خط لاگ نریزد."""
+    now = time.monotonic()
+    if now - _breaker["last_report"] > 60:
+        _breaker["last_report"] = now
+        logger.info(f"[PANEL_SYNC] {msg}")
+
+
+async def _panel_request(method: str, url: str, **kwargs):
+    """اجرای یک درخواست HTTP به پنل با retry + breaker مشترک.
+
+    Returns:
+        (data, None) در موفقیت؛ (None, error_text) در شکست.
+    """
+    if _breaker_is_open():
+        _breaker_log_throttled(
+            "تماس با پنل به‌دلیل خطاهای اخیر موقتاً متوقف است (circuit breaker).")
+        return None, "circuit_open"
+
+    last_err = ""
+    for attempt in range(1, _PANEL_RETRIES + 1):
+        try:
+            session = _get_panel_session()
+            async with session.request(method, url, **kwargs) as resp:
+                if resp.status in (200, 201):
+                    _breaker_record_success()
+                    try:
+                        data = await resp.json()
+                    except Exception:
+                        data = {}
+                    return data, None
+
+                text = await resp.text()
+                last_err = f"HTTP {resp.status} — {text[:200]}"
+                # خطای ۴xx یعنی درخواست مشکل دارد؛ retry بی‌فایده است
+                if 400 <= resp.status < 500:
+                    logger.warning(f"[PANEL_SYNC] درخواست رد شد: {last_err}")
+                    _breaker_record_failure()
+                    return None, last_err
+                logger.warning(
+                    f"[PANEL_SYNC] پاسخ غیرموفق پنل (تلاش {attempt}/{_PANEL_RETRIES}): {last_err}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # repr به‌جای str — برای TimeoutError که str خالی دارد
+            last_err = repr(e)
+            logger.warning(
+                f"[PANEL_SYNC] خطا در ارتباط با پنل ادمین "
+                f"(تلاش {attempt}/{_PANEL_RETRIES}): {last_err}")
+
+        if attempt < _PANEL_RETRIES:
+            await asyncio.sleep(_RETRY_DELAYS[min(attempt - 1, len(_RETRY_DELAYS) - 1)])
+
+    _breaker_record_failure()
+    return None, last_err
+
+
+async def warmup_panel():
+    """بیدار کردن/گرم کردن پنل ادمین در شروع ربات (fire-and-forget).
+
+    اگر پنل در حالت dev اجرا شود، اولین درخواست به هر مسیر باعث کامپایل
+    می‌شود (۱۰ تا ۳۰ ثانیه). این تابع همان کامپایل را در استارت انجام
+    می‌دهد تا درخواست‌های واقعی کاربران timeout نخورند.
+    """
+    try:
+        url = f"{ADMIN_API_BASE}/admin/cases?limit=1"
+        data, err = await _panel_request("GET", url)
+        if err:
+            logger.info(f"[PANEL_SYNC] warmup پنل ناموفق (غیرحیاتی): {err}")
+        else:
+            logger.info("[PANEL_SYNC] warmup پنل ادمین موفق بود.")
+    except Exception as e:
+        logger.info(f"[PANEL_SYNC] warmup پنل با خطا (غیرحیاتی): {e!r}")
 
 
 async def register_case_to_panel(
@@ -75,36 +214,23 @@ async def register_case_to_panel(
     # حذف فیلدهای None
     payload = {k: v for k, v in payload.items() if v is not None}
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200 or resp.status == 201:
-                    data = await resp.json()
-                    if data.get("_duplicate"):
-                        logger.info(
-                            f"[PANEL_SYNC] Case تکراری شناسایی شد: type={service_type} "
-                            f"user={bale_user_id} tracking={tracking_code}"
-                        )
-                        return data
-                    logger.info(
-                        f"[PANEL_SYNC] Case ثبت شد: id={data.get('id', '?')} "
-                        f"type={service_type} user={bale_user_id} tracking={tracking_code}"
-                    )
-                    return data
-                else:
-                    text = await resp.text()
-                    logger.warning(
-                        f"[PANEL_SYNC] خطا در ثبت Case: HTTP {resp.status} — {text[:200]}"
-                    )
-                    return None
-    except Exception as e:
-        # ⭐ repr به‌جای str — برای TimeoutError که str خالی دارد و پیام لاگ
-        # خالی می‌ماند («خطا در ارتباط با پنل ادمین:»)
-        logger.warning(f"[PANEL_SYNC] خطا در ارتباط با پنل ادمین: {e!r}")
+    data, err = await _panel_request("POST", url, json=payload)
+    if data is None:
+        if err != "circuit_open":
+            logger.warning(f"[PANEL_SYNC] خطا در ثبت Case: {err}")
         return None
+
+    if data.get("_duplicate"):
+        logger.info(
+            f"[PANEL_SYNC] Case تکراری شناسایی شد: type={service_type} "
+            f"user={bale_user_id} tracking={tracking_code}"
+        )
+        return data
+    logger.info(
+        f"[PANEL_SYNC] Case ثبت شد: id={data.get('id', '?')} "
+        f"type={service_type} user={bale_user_id} tracking={tracking_code}"
+    )
+    return data
 
 
 async def register_inquiry_to_panel(
@@ -150,25 +276,14 @@ async def update_case_in_panel(case_id: str, **fields):
     url = f"{ADMIN_API_BASE}/admin/cases"
     payload = {"id": case_id, **{k: v for k, v in fields.items() if v is not None}}
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.put(
-                url,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    logger.info(f"[PANEL_SYNC] Case آپدیت شد: id={case_id} fields={list(fields.keys())}")
-                    return data
-                else:
-                    text = await resp.text()
-                    logger.warning(
-                        f"[PANEL_SYNC] خطا در آپدیت Case {case_id}: HTTP {resp.status} — {text[:200]}"
-                    )
-                    return None
-    except Exception as e:
-        logger.warning(f"[PANEL_SYNC] خطا در ارتباط با پنل ادمین (آپدیت {case_id}): {e!r}")
+    data, err = await _panel_request("PUT", url, json=payload)
+    if data is None:
+        if err != "circuit_open":
+            logger.warning(f"[PANEL_SYNC] خطا در آپدیت Case {case_id}: {err}")
         return None
+
+    logger.info(f"[PANEL_SYNC] Case آپدیت شد: id={case_id} fields={list(fields.keys())}")
+    return data
 
 
 async def mark_case_ready_to_send(case_id: str):
@@ -187,26 +302,14 @@ async def mark_case_ready_to_send(case_id: str):
     await update_case_in_panel(case_id, status="COMPLETED")
 
     url = f"{ADMIN_API_BASE}/admin/cases/{case_id}/ready"
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.put(
-                url,
-                json={},
-                timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    logger.info(f"[PANEL_SYNC] Case وارد «آماده ارسال» شد: id={case_id}")
-                    return data
-                else:
-                    text = await resp.text()
-                    logger.warning(
-                        f"[PANEL_SYNC] خطا در انتقال Case {case_id} به ready-to-send: "
-                        f"HTTP {resp.status} — {text[:200]}"
-                    )
-                    return None
-    except Exception as e:
-        logger.warning(f"[PANEL_SYNC] خطا در ارتباط با پنل ادمین (ready {case_id}): {e!r}")
+    data, err = await _panel_request("PUT", url, json={})
+    if data is None:
+        if err != "circuit_open":
+            logger.warning(f"[PANEL_SYNC] خطا در انتقال Case {case_id} به ready-to-send: {err}")
         return None
+
+    logger.info(f"[PANEL_SYNC] Case وارد «آماده ارسال» شد: id={case_id}")
+    return data
 
 
 async def find_case_in_panel(bale_user_id: int | str, service_type: str, tracking_code: str):
@@ -218,21 +321,15 @@ async def find_case_in_panel(bale_user_id: int | str, service_type: str, trackin
         return None
     url = f"{ADMIN_API_BASE}/admin/cases"
     params = {"search": str(tracking_code), "serviceType": service_type, "limit": "50"}
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                url, params=params,
-                timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status != 200:
-                    return None
-                payload = await resp.json()
-                for c in payload.get("cases", []):
-                    if c.get("baleUserId") == str(bale_user_id) and c.get("trackingCode") == str(tracking_code):
-                        return c
-                return None
-    except Exception as e:
-        logger.warning(f"[PANEL_SYNC] خطا در جستجوی پرونده مووجود: {e!r}")
+
+    data, err = await _panel_request("GET", url, params=params)
+    if data is None:
         return None
+
+    for c in data.get("cases", []):
+        if c.get("baleUserId") == str(bale_user_id) and c.get("trackingCode") == str(tracking_code):
+            return c
+    return None
 
 
 async def upsert_case_to_panel(

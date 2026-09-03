@@ -43,6 +43,10 @@ async def send_document_direct(
 ) -> bool:
     """ارسال فایل (سند) به کاربر با multipart/form-data مستقیم.
 
+    ⭐ نسخه اصلاح‌شده: در صورت خطای شبکه/سرویس، یک بار تلاش مجدد انجام
+    می‌شود (ارسال PDF لایحه گاهی در تلاش اول شکست می‌خورد و فایل حذف
+    می‌شد بدون اینکه به کاربر برسد).
+
     Args:
         chat_id: شناسه گفتگو
         file_path: مسیر فایل روی دیسک
@@ -53,6 +57,26 @@ async def send_document_direct(
     Returns:
         True در صورت موفقیت
     """
+    # دو تلاش (اصلی + یک retry) با فاصله کوتاه
+    for attempt in range(1, 3):
+        result = await _send_document_once(chat_id, file_path, filename, caption, reply_markup)
+        if result:
+            return result
+        if attempt == 1:
+            import asyncio as _asyncio
+            await _asyncio.sleep(2)
+            logging.info(f"[BALE-FILE] تلاش مجدد ارسال فایل: {filename or file_path} -> chat {chat_id}")
+    return False
+
+
+async def _send_document_once(
+    chat_id: int,
+    file_path: str,
+    filename: str = None,
+    caption: str = None,
+    reply_markup=None,
+) -> bool:
+    """یک تلاش ارسال فایل (سند) به کاربر با multipart/form-data مستقیم."""
     if not os.path.exists(file_path):
         logger.error(f"[BALE-FILE] فایل وجود ندارد: {file_path}")
         return False

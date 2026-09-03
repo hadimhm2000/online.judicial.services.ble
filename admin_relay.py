@@ -26,16 +26,20 @@ admin_relay.py
         dp.include_router(admin_relay_router)
     ⚠️ قبل از include شدن روتر اصلی کاربران (handlers.py) اضافه شود.
 """
+import datetime
+import json
 import logging
 import os
 import tempfile
+
+import aiohttp
 
 from aiogram import Bot, Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
-from config import ADMIN_ID
+from config import ADMIN_ID, ADMIN_API_BASE, BALE_API_BASE, BOT_TOKEN, BALE_WALLET_TOKEN
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +53,12 @@ class AdminRelayStates(StatesGroup):
     case_ask_amount_choice = State()
     case_enter_amount = State()
     case_enter_tracking = State()
+    # ⭐ فلوی «هزینه دستی مدیر» (/fee): مبلغ ← فاکتور ← پرداخت خودکار ← امضا
+    fee_choose_service = State()
+    fee_enter_amount = State()
+    fee_enter_tracking = State()
+    fee_check_menu = State()
+    fee_tn_casetype = State()
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -179,6 +189,11 @@ async def admin_case_command(message: Message, state: FSMContext):
 @admin_relay_router.message(AdminRelayStates.case_ask_amount_choice, F.text == "/cancel")
 @admin_relay_router.message(AdminRelayStates.case_enter_amount, F.text == "/cancel")
 @admin_relay_router.message(AdminRelayStates.case_enter_tracking, F.text == "/cancel")
+@admin_relay_router.message(AdminRelayStates.fee_choose_service, F.text == "/cancel")
+@admin_relay_router.message(AdminRelayStates.fee_enter_amount, F.text == "/cancel")
+@admin_relay_router.message(AdminRelayStates.fee_enter_tracking, F.text == "/cancel")
+@admin_relay_router.message(AdminRelayStates.fee_check_menu, F.text == "/cancel")
+@admin_relay_router.message(AdminRelayStates.fee_tn_casetype, F.text == "/cancel")
 async def admin_case_cancel(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
@@ -361,4 +376,406 @@ async def _finalize_case_with_invoice(message: Message, state: FSMContext, bot: 
                 pass
     finally:
         await state.clear()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ۳) ⭐ /fee — وارد کردن هزینه توسط مدیر ← فاکتور بله ← پرداخت خودکار ←
+#     ناوبری امضا (به‌جز استعلام که مرحله امضا ندارد)
+# ══════════════════════════════════════════════════════════════════════════
+# مراحل:
+#   /fee <آیدی کاربر> ← انتخاب نوع سرویس ← وارد کردن مبلغ (ریال) ←
+#   وارد کردن کد پیگیری (یا ۰) ← [فقط چک: انتخاب مسیر امضا] ←
+#   [فقط تجدیدنظر: انتخاب نوع دعوی] ← ارسال فاکتور بله برای کاربر ←
+#   پس از پرداخت خودکار توسط کاربر:
+#     - استعلام → فقط ثبت پرداخت (بدون امضا)
+#     - اظهارنامه → فلوی امضای اظهارنامه
+#     - بقیه → فلوی امضای لایحه با مسیر منوی مناسب (ناوبری امضا)
+FEE_SERVICE_LABELS = {
+    "📄 لایحه": {"service_type": "LAVAYEH", "label": "لایحه", "is_ezhharnameh": False, "ask_menu": None},
+    "📋 اظهارنامه": {"service_type": "EZHHARNAMEH", "label": "اظهارنامه", "is_ezhharnameh": True, "ask_menu": None},
+    "⚖️ دعاوی اعتراضی (تجدیدنظر)": {"service_type": "TAJDID_NAZAR", "label": "دعاوی اعتراضی", "is_ezhharnameh": False, "ask_menu": "tn"},
+    "🏦 چک": {"service_type": "CHECK", "label": "دادخواست چک", "is_ezhharnameh": False, "ask_menu": "check"},
+    "🔍 استعلام (پس از پرداخت، امضا ندارد)": {"service_type": "INQUIRY", "label": "استعلام", "is_ezhharnameh": False, "ask_menu": None},
+}
+
+# مسیر منوی سامانه برای امضای چک (مطابق check_scenario.py)
+FEE_CHECK_MENU_PATHS = {
+    "⚖️ دادخواست بدوی (چک بیش از ۱ میلیارد ریال)": ["ارایه و پیگیری دادخواست", "دادخواست بدوی"],
+    "🏛 دعاوی دادگاههای صلح (چک تا ۱ میلیارد ریال)": ["دعاوی دادگاههای صلح", "دعاوی حقوقی"],
+}
+
+# انواع دعاوی اعتراضی (مطابق tn_case_type_kb در keyboards.py)
+FEE_TN_CASE_TYPES = [
+    "تجدیدنظرخواهی", "واخواهی", "فرجام خواهی",
+    "اعاده دادرسی مدنی", "اعاده دادرسی کیفری",
+    "اعتراض ثالث", "اعتراض به قرار دادسرا",
+]
+
+fee_service_kb = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text=k)] for k in FEE_SERVICE_LABELS.keys()] + [[KeyboardButton(text="/cancel")]],
+    resize_keyboard=True
+)
+
+fee_check_menu_kb = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text=k)] for k in FEE_CHECK_MENU_PATHS.keys()] + [[KeyboardButton(text="/cancel")]],
+    resize_keyboard=True
+)
+
+fee_tn_casetype_kb = ReplyKeyboardMarkup(
+    keyboard=(
+        [[KeyboardButton(text=t)] for t in FEE_TN_CASE_TYPES[:3]] +
+        [[KeyboardButton(text=t)] for t in FEE_TN_CASE_TYPES[3:5]] +
+        [[KeyboardButton(text=FEE_TN_CASE_TYPES[5])], [KeyboardButton(text=FEE_TN_CASE_TYPES[6])]] +
+        [[KeyboardButton(text="/cancel")]]
+    ),
+    resize_keyboard=True
+)
+
+
+@admin_relay_router.message(F.text.startswith("/fee"))
+async def admin_fee_command(message: Message, state: FSMContext):
+    """شروع فلوی هزینه دستی: /fee <آیدی عددی کاربر>"""
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip().lstrip("-").isdigit():
+        await message.answer(
+            "⚠️ فرمت صحیح:\n`/fee <آیدی عددی کاربر>`\n\n"
+            "مثال: `/fee 123456789`\n\n"
+            "بعد از این کامند:\n"
+            "۱️⃣ نوع سرویس را انتخاب می‌کنید (لایحه/اظهارنامه/تجدیدنظر/چک/استعلام)\n"
+            "۲️⃣ مبلغ را به ریال وارد می‌کنید\n"
+            "۳️⃣ کد پیگیری را وارد می‌کنید (یا ۰)\n\n"
+            "سپس فاکتور بله طبق مبلغ برای کاربر ارسال می‌شود و پس از پرداخت خودکار، "
+            "به‌جز استعلام (که امضا ندارد)، ناوبری امضا برای کاربر آغاز می‌شود."
+        )
+        return
+
+    target_user_id = int(parts[1].strip())
+    await state.update_data(_fee_target=target_user_id)
+    await message.answer(
+        f"💰 ثبت هزینه دستی برای کاربر `{target_user_id}`\n\n"
+        f"لطفاً *نوع سرویس* را انتخاب کنید:",
+        reply_markup=fee_service_kb)
+    await state.set_state(AdminRelayStates.fee_choose_service)
+
+
+@admin_relay_router.message(AdminRelayStates.fee_choose_service)
+async def admin_fee_service_handler(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    text = message.text or ""
+    if text not in FEE_SERVICE_LABELS:
+        await message.answer("⚠️ لطفاً از دکمه‌های زیر انتخاب کنید:", reply_markup=fee_service_kb)
+        return
+
+    cfg = FEE_SERVICE_LABELS[text]
+    await state.update_data(_fee_service=text, _fee_cfg=cfg)
+    await message.answer(
+        f"✅ نوع سرویس: *{cfg['label']}*\n\n"
+        f"💰 لطفاً *مبلغ* را به *ریال* وارد کنید:\n_(فقط عدد — مثال: `1990000`)_",
+        reply_markup=ReplyKeyboardRemove())
+    await state.set_state(AdminRelayStates.fee_enter_amount)
+
+
+@admin_relay_router.message(AdminRelayStates.fee_enter_amount)
+async def admin_fee_amount_handler(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    text = (message.text or "").strip().translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
+    if not text.isdigit() or int(text) <= 0:
+        await message.answer("⚠️ لطفاً فقط عدد مثبت (به ریال) ارسال کنید:")
+        return
+
+    await state.update_data(_fee_amount=int(text))
+    await message.answer(
+        "🔢 کد پیگیری/بایگانی این پرونده را وارد کنید:\n"
+        "_(این کد برای ناوبری امضا در سامانه استفاده می‌شود؛ اگر ندارید عدد ۰ را بفرستید)_")
+    await state.set_state(AdminRelayStates.fee_enter_tracking)
+
+
+@admin_relay_router.message(AdminRelayStates.fee_enter_tracking)
+async def admin_fee_tracking_handler(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    text = (message.text or "").strip()
+    tracking_code = "" if text == "0" else text
+    await state.update_data(_fee_tracking=tracking_code)
+
+    data = await state.get_data()
+    cfg = data.get("_fee_cfg", {})
+
+    # فقط چک و تجدیدنظر به سوال «مسیر امضا» نیاز دارند
+    if cfg.get("ask_menu") == "check":
+        await message.answer(
+            "🏦 مسیر سامانه برای *امضای این چک* کدام است؟",
+            reply_markup=fee_check_menu_kb)
+        await state.set_state(AdminRelayStates.fee_check_menu)
+        return
+    if cfg.get("ask_menu") == "tn":
+        await message.answer(
+            "⚖️ نوع *دعوی اعتراضی* این پرونده کدام است؟\n"
+            "_(برای مسیر ناوبری امضا در سامانه لازم است)_",
+            reply_markup=fee_tn_casetype_kb)
+        await state.set_state(AdminRelayStates.fee_tn_casetype)
+        return
+
+    await _finalize_admin_fee_invoice(message, state)
+
+
+@admin_relay_router.message(AdminRelayStates.fee_check_menu)
+async def admin_fee_check_menu_handler(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    text = message.text or ""
+    if text not in FEE_CHECK_MENU_PATHS:
+        await message.answer("⚠️ لطفاً یکی از گزینه‌های زیر را انتخاب کنید:", reply_markup=fee_check_menu_kb)
+        return
+    await state.update_data(_fee_sign_menu_path=FEE_CHECK_MENU_PATHS[text])
+    await _finalize_admin_fee_invoice(message, state)
+
+
+@admin_relay_router.message(AdminRelayStates.fee_tn_casetype)
+async def admin_fee_tn_casetype_handler(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    text = message.text or ""
+    if text not in FEE_TN_CASE_TYPES:
+        await message.answer("⚠️ لطفاً یکی از انواع دعوی را انتخاب کنید:", reply_markup=fee_tn_casetype_kb)
+        return
+    # مطابق tajdid_nazar_handlers.py: مسیر امضای تجدیدنظر = [نوع دعوی]
+    await state.update_data(_fee_sign_menu_path=[text])
+    await _finalize_admin_fee_invoice(message, state)
+
+
+async def _finalize_admin_fee_invoice(message: Message, state: FSMContext):
+    """ساخت و ارسال فاکتور بله طبق مبلغ واردشده توسط مدیر + آماده‌سازی فلوی پس از پرداخت."""
+    import runtime_state
+    from states import Form
+
+    data = await state.get_data()
+    target_user_id = data.get("_fee_target")
+    cfg = data.get("_fee_cfg", {})
+    amount = data.get("_fee_amount", 0)
+    tracking_code = data.get("_fee_tracking", "")
+    sign_menu_path = data.get("_fee_sign_menu_path")
+    svc = cfg.get("service_type", "LAVAYEH")
+    label = cfg.get("label", "سرویس")
+
+    try:
+        invoice_payload = json.dumps({"type": "admin_fee", "uid": target_user_id})
+        url = f"{BALE_API_BASE.rstrip('/')}/bot{BOT_TOKEN}/sendInvoice"
+        invoice_data = {
+            "chat_id": target_user_id,
+            "title": f"فاکتور {label}",
+            "description": (
+                f"هزینه خدمات {label} (ثبت توسط مدیریت)\n"
+                f"مبلغ: {amount // 10:,} تومان ({amount:,} ریال)"
+            ),
+            "payload": invoice_payload,
+            "provider_token": BALE_WALLET_TOKEN,
+            "currency": "IRR",
+            "prices": [{"label": label, "amount": amount}],
+        }
+        logger.info(f"[ADMIN-FEE] ارسال sendInvoice به chat_id={target_user_id}, مبلغ={amount:,} ریال, سرویس={svc}")
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+            async with session.post(url, json=invoice_data, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                result = await resp.json()
+                if not result.get("ok"):
+                    logger.error(f"[ADMIN-FEE] خطای sendInvoice: {result}")
+                    await message.answer(
+                        f"❌ خطا در ارسال فاکتور برای کاربر `{target_user_id}`:\n"
+                        f"`{result.get('description', 'نامشخص')}`\n\n"
+                        f"(مطمئن شوید کاربر ربات را استارت کرده باشد)")
+                    await state.clear()
+                    return
+    except Exception as e:
+        logger.error(f"[ADMIN-FEE] خطا در ارسال فاکتور: {e}", exc_info=True)
+        await message.answer(f"❌ خطا در ارسال فاکتور:\n{e}")
+        await state.clear()
+        return
+
+    # ذخیره context پرداخت برای هندلر successful_payment
+    runtime_state.pending_admin_fee_payments[target_user_id] = {
+        "invoice_time": datetime.datetime.now(),
+        "final_fee": amount,
+        "service_type": svc,
+        "tracking_code": tracking_code,
+        "sign_menu_path": sign_menu_path,
+        "admin_id": ADMIN_ID,
+    }
+
+    # ست کردن state کاربر (نه ادمین) به حالت انتظار پرداخت فاکتور مدیر
+    try:
+        user_state = runtime_state.dp.fsm.resolve_context(message.bot, target_user_id, target_user_id)
+        await user_state.set_state(Form.admin_fee_waiting_payment)
+    except Exception as e:
+        logger.warning(f"[ADMIN-FEE] ست کردن state کاربر {target_user_id} ناموفق بود: {e}")
+
+    await message.answer(
+        f"✅ فاکتور *{amount:,} ریالی* ({label}) برای کاربر `{target_user_id}` ارسال شد.\n\n"
+        + (
+            "💳 پس از پرداخت خودکار، پرداخت ثبت می‌شود و کاربر به روند استعلام ادامه می‌دهد (امضا ندارد)."
+            if svc == "INQUIRY" else
+            "💳 پس از پرداخت خودکار، ناوبری امضا برای کاربر آغاز می‌شود."
+        )
+    )
+    await state.clear()
+
+
+async def admin_fee_successful_payment(message: Message, state: FSMContext, bot: Bot):
+    """پرداخت موفق فاکتور «هزینه دستی مدیر» — تشخیص خودکار توسط بله.
+
+    پس از پرداخت:
+      - استعلام (INQUIRY) → فقط ثبت پرداخت (امضا ندارد)
+      - اظهارنامه → فلوی امضای اظهارنامه
+      - بقیه (لایحه/چک/تجدیدنظر) → فلوی امضای لایحه با مسیر منوی مناسب
+        (ناوبری امضا توسط navigate_to_sign_page انجام می‌شود)
+    """
+    import runtime_state
+    from states import Form
+    from sheets import log_event
+
+    user_id = message.from_user.id
+    pending = runtime_state.pending_admin_fee_payments.get(user_id)
+    if not pending:
+        await message.answer("⚠️ فاکتور فعالی برای شما ثبت نشده است.")
+        await state.clear()
+        return
+
+    payment = message.successful_payment
+    svc = pending.get("service_type", "LAVAYEH")
+    amount = pending.get("final_fee", 0)
+    tracking_code = pending.get("tracking_code", "")
+    sign_menu_path = pending.get("sign_menu_path")
+    label = next((c["label"] for c in FEE_SERVICE_LABELS.values() if c["service_type"] == svc), "سرویس")
+
+    # ۱) تایید به کاربر
+    await message.answer(
+        f"✅ *پرداخت شما ثبت شد!*\n\n"
+        f"📄 نوع: *{label}*\n"
+        f"💰 مبلغ: *{amount // 10:,} تومان* ({amount:,} ریال)\n\n"
+        f"🔔 مراحل بعدی به زودی ارسال می‌شود.",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+    # ۲) لاگ رویداد
+    try:
+        await log_event(
+            "پرداخت", label, message.from_user.full_name, user_id,
+            tracking_code=tracking_code,
+            doc_name=label,
+            payment_status="پرداخت شده (فاکتور دستی مدیر)",
+            note=f"مبلغ: {amount:,} ریال | payment_id: {payment.telegram_payment_charge_id}"
+        )
+    except Exception as e:
+        logger.warning(f"[ADMIN-FEE] خطا در log_event: {e}")
+
+    # ۳) اطلاع به مدیر
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"💰 پرداخت فاکتور دستی ({label}):\n\n"
+            f"👤 کاربر: {message.from_user.full_name} ({user_id})\n"
+            f"💰 مبلغ: {amount // 10:,} تومان ({amount:,} ریال)\n"
+            f"🔢 کد پیگیری: {tracking_code or '—'}\n"
+            f"⏱ زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}\n"
+            f"🎫 payment_id: {payment.telegram_payment_charge_id}"
+        )
+    except Exception as e:
+        logger.error(f"[ADMIN-FEE] خطا در اطلاع‌رسانی به ادمین: {e}", exc_info=True)
+
+    # ۴) ثبت در پنل ادمین
+    try:
+        from panel_sync import upsert_case_to_panel
+        await upsert_case_to_panel(
+            bale_user_id=user_id,
+            full_name=message.from_user.full_name,
+            service_type=svc,
+            status="COMPLETED" if svc == "INQUIRY" else "PROCESSING",
+            tracking_code=tracking_code or None,
+            document_category=label,
+            fee=amount,
+            fee_status="PAID",
+            result_summary=(
+                "پرداخت فاکتور دستی مدیر انجام شد؛ استعلام بدون امضا"
+                if svc == "INQUIRY" else
+                "پرداخت فاکتور دستی مدیر انجام شد؛ در انتظار امضای الکترونیک"
+            ),
+        )
+    except Exception as e:
+        logger.warning(f"[ADMIN-FEE] خطا در ثبت پرونده در پنل: {e}")
+
+    runtime_state.pending_admin_fee_payments.pop(user_id, None)
+
+    # ۵) ادامه روند — به‌جز استعلام که امضا ندارد
+    if svc == "INQUIRY":
+        await bot.send_message(
+            user_id,
+            "✅ پرداخت شما ثبت شد.\n\n"
+            "🔎 روند استعلام شما توسط مدیریت ادامه داده می‌شود و نتیجه به‌زودی ارسال می‌گردد."
+        )
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"ℹ️ فاکتور دستی استعلام کاربر {user_id} پرداخت شد — استعلام امضا ندارد؛ "
+                f"نتیجه را با /send {user_id} ارسال کنید."
+            )
+        except Exception:
+            pass
+        await state.clear()
+        return
+
+    if svc == "EZHHARNAMEH":
+        # فلوی امضای اظهارنامه — دقیقاً مثل بعد از پرداخت خودکار اظهارنامه
+        runtime_state.pending_ezhhar_sign[user_id] = {
+            "tracking_code": tracking_code,
+            "is_ezhharnameh": True,
+            "service_type": svc,
+            "sign_persons": [],
+            "persons_awaiting_sign": [],
+            "current_person_idx": 0,
+            "sign_codes_received": {},
+            "sign_sent_time": None,
+            "wrong_code_time": None,
+            "code_sent_announce_time": None,
+            "resend_notified": False,
+            "total_no_action_start": datetime.datetime.now(),
+        }
+        from keyboards import ezhhar_sign_ready_kb
+        await bot.send_message(
+            user_id,
+            "🖊 *مرحله اخذ امضای الکترونیک اظهارنامه:*\n\n"
+            "هر موقع آمادگی دارید که کد امضا ارسال شود، گزینه زیر را انتخاب کنید:",
+            reply_markup=ezhhar_sign_ready_kb)
+        await state.set_state(Form.ezhhar_sign_ready)
+        return
+
+    # لایحه / چک / تجدیدنظر → فلوی امضای لایحه (ناوبری امضا با sign_menu_path)
+    runtime_state.pending_lavayeh_sign[user_id] = {
+        "tracking_code": tracking_code,
+        "lavayeh_title": label,
+        "province": "",
+        "row_number": 1,
+        "persons": [],
+        "service_type": svc,
+        "sign_menu_path": sign_menu_path,
+        "sign_persons": [],
+        "persons_awaiting_sign": [],
+        "current_person_idx": None,
+        "sign_sent_time": None,
+        "sign_codes_received": {},
+        "wrong_code_time": None,
+        "code_sent_announce_time": None,
+        "resend_notified": False,
+        "total_no_action_start": None,
+    }
+    from keyboards import lavayeh_sign_ready_kb
+    await bot.send_message(
+        user_id,
+        "🖊 *مرحله اخذ امضای الکترونیک:*\n\n"
+        "هر موقع آمادگی دارید که کد امضا ارسال شود، گزینه زیر را انتخاب کنید:",
+        reply_markup=lavayeh_sign_ready_kb)
+    await state.set_state(Form.lavayeh_sign_ready)
 

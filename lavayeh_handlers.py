@@ -2406,7 +2406,10 @@ async def _send_lavayeh_task_to_queue(data: dict, user_id: int, title: str, bot:
             "task_type": "LAVAYEH_SUBMIT",
             "lavayeh_title": data.get("lavayeh_title"),
             "lavayeh_system_title": data.get("lavayeh_system_title"),
-            "lavayeh_tracking_code": data.get("lavayeh_tracking_code"),
+            # ⭐ رفع باگ lavayeh_None.pdf: بدون «or ""» اگر کلید در FSM نبود
+            # (مثل فلوی شماره بایگانی) مقدار None به صف می‌رفت و نام فایل PDF
+            # «lavayeh_None.pdf» می‌شد.
+            "lavayeh_tracking_code": data.get("lavayeh_tracking_code") or "",
             "lavayeh_province": data.get("lavayeh_province"),
             "lavayeh_row_number": data.get("lavayeh_row_number"),
             "lavayeh_persons": data.get("lavayeh_persons", []),
@@ -2907,6 +2910,62 @@ async def _go_to_sign_flow_after_prepaid(
         await user_state.set_state(Form.lavayeh_sign_ready)
 
 
+async def _send_lavayeh_pdf_safely(bot: Bot, user_id: int, pdf_path: str, doc_caption: str) -> bool:
+    """ارسال امن PDF لایحه/اظهارنامه به کاربر.
+
+    رفع باگ «ارسال نشدن PDF برای کاربرها»:
+      ۱) فایل قبل از ارسال اعتبارسنجی می‌شود (وجود، حجم، امضای %PDF)
+      ۲) حذف فایل فقط بعد از تایید موفقیت ارسال انجام می‌شود (قبلاً حتی
+         بعد از ارسال ناموفق هم فایل حذف می‌شد و قابل ارسال مجدد نبود)
+      ۳) در صورت شکست، ادمین و کاربر به‌صورت شفاف مطلع می‌شوند
+
+    Returns: True اگر فایل ارسال شد (و حذف شد)؛ در غیر این صورت False و
+    فایل برای تلاش/ارسال دستی بعدی باقی می‌ماند.
+    """
+    from lavayeh_scenario import _is_valid_pdf_file
+
+    if not pdf_path or not _is_valid_pdf_file(pdf_path):
+        logging.error(f"[LAVAYEH] PDF نامعتبر یا موجود نیست، ارسال نشد: {pdf_path} (user={user_id})")
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"⚠️ [LAVAYEH] نسخه چاپی برای کاربر {user_id} آماده/معتبر نبود و ارسال نشد.\n"
+                f"مسیر موردنظر: {pdf_path}\n"
+                f"برای ارسال دستی فایل + فاکتور: /case {user_id}"
+            )
+        except Exception:
+            pass
+        try:
+            await bot.send_message(
+                user_id,
+                "⚠️ ارسال *نسخه چاپی* سند با مشکل مواجه شد.\n"
+                "ثبت شما سالم است و نسخه چاپی متعاقباً توسط مدیریت ارسال می‌شود."
+            )
+        except Exception:
+            pass
+        return False
+
+    sent = await send_document_direct(user_id, pdf_path, caption=doc_caption)
+    if sent:
+        try:
+            os.remove(pdf_path)
+        except Exception:
+            pass
+        return True
+
+    # ارسال ناموفق — فایل را نگه دار تا قابل ارسال مجدد باشد
+    logging.error(f"[LAVAYEH] ارسال PDF ناموفق بود؛ فایل نگه داشته شد: {pdf_path} (user={user_id})")
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"⚠️ [LAVAYEH] ارسال PDF به کاربر {user_id} ناموفق بود (فایل روی سرور نگه داشته شد: {pdf_path}).\n"
+            f"پس از رفع مشکل می‌توانید با /case {user_id} یا /send {user_id} ارسالش کنید."
+        )
+    except Exception:
+        pass
+    return False
+
+
 async def send_bulk_item_result(
     bot: Bot,
     user_id: int,
@@ -2954,14 +3013,11 @@ async def send_bulk_item_result(
     except Exception as panel_err:
         logging.warning(f"[BULK-ITEM] خطا در ثبت پرونده دسته‌جمعی در پنل: {panel_err}")
     
-    # ارسال PDF اگر موجود باشد
-    if pdf_path and os.path.exists(pdf_path):
-        doc_caption = f"📄 *نسخه ثبت‌شده {service_label} (دسته‌جمعی - ردیف {row_index})" 
-        await send_document_direct(user_id, pdf_path, caption=doc_caption)
-        try:
-            os.remove(pdf_path)
-        except Exception:
-            pass
+    # ارسال PDF اگر موجود باشد — با اعتبارسنجی (فقط بعد از ارسال موفق حذف می‌شود)
+    if pdf_path:
+        await _send_lavayeh_pdf_safely(
+            bot, user_id, pdf_path,
+            f"📄 نسخه ثبت‌شده {service_label} (دسته‌جمعی - ردیف {row_index})")
     
     # پیام ثبت موفق
     msg = (
@@ -3045,14 +3101,14 @@ async def send_lavayeh_result(
     if not hasattr(runtime_state, "active_lavayeh_users"):
         runtime_state.active_lavayeh_users = set()
 
-    if os.path.exists(pdf_path):
+    if pdf_path:
+        # ⭐ ارسال امن PDF — با اعتبارسنجی؛ حذف فایل فقط بعد از ارسال موفق
         doc_caption = (
             "📄 *نسخه ثبت‌شده اظهارنامه شما در سامانه قضایی*"
             if is_ezhharnameh else
             "📄 *نسخه ثبت‌شده لایحه شما در سامانه قضایی*"
         )
-        await send_document_direct(user_id, pdf_path, caption=doc_caption)
-        os.remove(pdf_path)
+        await _send_lavayeh_pdf_safely(bot, user_id, pdf_path, doc_caption)
 
     if skip_fee_calc:
         # مبلغ نهایی از قبل محاسبه شده (مثلاً در اعلام وکالت)

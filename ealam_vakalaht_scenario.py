@@ -18,6 +18,7 @@
 """
 import asyncio
 import logging
+import time
 import html as html_lib
 
 
@@ -1297,7 +1298,12 @@ async def _calculate_cost_with_retry(page, bot: Bot, user_id: int, max_retries: 
 
 
 async def _print_lavayeh(page, browser_context, bill_no: str, bot: Bot, user_id: int) -> str:
-    pdf_path = f"ealam_vakalaht_{bill_no}.pdf"
+    # نام فایل امن — اگر bill_no خالی/None بود، «ealam_vakalaht_None.pdf» ساخته نشود
+    from lavayeh_scenario import _is_valid_pdf_file
+    _code = str(bill_no or "").strip()
+    if not _code or _code.lower() == "none":
+        _code = f"u{user_id}-{int(time.time())}"
+    pdf_path = f"ealam_vakalaht_{_code}.pdf"
     try:
         async def click_print():
             await page.evaluate('''() => {
@@ -1320,8 +1326,12 @@ async def _print_lavayeh(page, browser_context, bill_no: str, bot: Bot, user_id:
         await check_and_handle_expiry(print_page, bot, user_id)
         await print_page.pdf(path=pdf_path, format="A4")
         await print_page.close()
+        if _is_valid_pdf_file(pdf_path):
+            return pdf_path
+        logging.warning(f"[EALAM] PDF چاپ نامعتبر بود؛ فال‌بک صفحه اصلی... (user={user_id})")
     except Exception as e:
         logging.error(f"[EALAM] خطا در چاپ: {e}")
+
         try:
             await page.pdf(path=pdf_path, format="A4")
         except Exception:
@@ -1332,6 +1342,17 @@ async def _print_lavayeh(page, browser_context, bill_no: str, bot: Bot, user_id:
             await report_bug(bot, where="click_print", error=e,
                              user_id=user_id,
                              page=getattr(runtime_state, "sana_page", None))
+        except Exception:
+            pass
+
+    if not _is_valid_pdf_file(pdf_path):
+        logging.error(f"[EALAM] تولید PDF اعلام وکالت ناموفق بود (user={user_id})")
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"⚠️ [EALAM] تولید PDF اعلام وکالت برای کاربر {user_id} ناموفق بود.\n"
+                f"برای ارسال دستی: /case {user_id}"
+            )
         except Exception:
             pass
     return pdf_path
