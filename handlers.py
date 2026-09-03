@@ -183,6 +183,17 @@ async def successful_payment_handler(message: types.Message, state: FSMContext, 
     full_name = message.from_user.full_name
     payment = message.successful_payment
 
+    # ⭐ فاکتور «هزینه دستی مدیر» (/fee) — حتی اگر کاربر در state استعلام باشد،
+    # باید به هندلر اختصاصی خودش برود (payload متمایز: {"type": "admin_fee"})
+    try:
+        _pl = _json.loads(getattr(payment, "invoice_payload", "") or "{}")
+    except Exception:
+        _pl = {}
+    if _pl.get("type") == "admin_fee":
+        from admin_relay import admin_fee_successful_payment as _admin_fee_pay
+        await _admin_fee_pay(message, state, bot)
+        return
+
     # ── تشخیص فلوی تک‌موردی vs سبد خرید ──
     if cart:
         # فلوی سبد خرید
@@ -390,6 +401,17 @@ async def global_successful_payment_handler(message: types.Message, state: FSMCo
     """هندلر سراسری — اگر بله successful_payment بفرسته ولی حالت FSM نامطبق باشن"""
     current_state = await state.get_state()
     logging.warning(f"[GLOBAL-PAYMENT] successful_payment دریافت شد. user={message.from_user.id}, state={current_state}")
+
+    # ⭐ فاکتور «هزینه دستی مدیر» (/fee) — پردازش اختصاصی:
+    # استعلام → فقط ثبت پرداخت؛ بقیه سرویس‌ها → ناوبری امضا شروع می‌شود
+    try:
+        _pl = _json.loads(getattr(message.successful_payment, "invoice_payload", "") or "{}")
+    except Exception:
+        _pl = {}
+    if current_state == Form.admin_fee_waiting_payment or _pl.get("type") == "admin_fee":
+        from admin_relay import admin_fee_successful_payment as _admin_fee_pay
+        await _admin_fee_pay(message, state, bot)
+        return
 
     # ── حالت‌های پرداخت لایحه/اظهارنامه — پردازش مستقیم (چون ممکن است روتر فرعی دریافت نکند) ──
     if current_state == Form.waiting_for_lavayeh_payment_receipt:
