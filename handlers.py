@@ -407,23 +407,29 @@ async def global_successful_payment_handler(message: types.Message, state: FSMCo
     current_state = await state.get_state()
     logging.warning(f"[GLOBAL-PAYMENT] successful_payment دریافت شد. user={message.from_user.id}, state={current_state}")
 
-    # ⭐ فاکتور «هزینه دستی مدیر» (/fee) — پردازش اختصاصی:
-    # استعلام → فقط ثبت پرداخت؛ بقیه سرویس‌ها → ناوبری امضا شروع می‌شود
+    # پارس payload فاکتور — «معتبرترین سیگنال» برای تشخیص نوع پرداخت
     try:
         _pl = _json.loads(getattr(message.successful_payment, "invoice_payload", "") or "{}")
     except Exception:
         _pl = {}
-    if current_state == Form.admin_fee_waiting_payment or _pl.get("type") == "admin_fee":
-        from admin_relay import admin_fee_successful_payment as _admin_fee_pay
-        await _admin_fee_pay(message, state, bot)
-        return
 
     # ⭐ هزینهٔ «پیام مدیر از پنل» — payload: {"type": "panel_message", "mid": ...}
     # (این فاکتور از پنل ادمین ارسال می‌شود؛ با پرداخت آن، پیام واقعی برای کاربر
     #  ارسال می‌شود — مستقل از state فعلی کاربر.)
+    # ⚠️ این بررسی عمداً «قبل از» بررسی admin_fee انجام می‌شود؛ چون شرط admin_fee
+    # شامل state کاربر (Form.admin_fee_waiting_payment) هم هست، اگر کاربر همزمان
+    # فاکتور /fee فعال داشته باشد و فاکتور پیام پنل را پرداخت کند، پرداختِ
+    # پیام پنل نباید اشتباهی به فلوی /fee برود — payload معتبرترین سیگنال است.
     if _pl.get("type") == "panel_message":
         from admin_relay import panel_message_successful_payment as _pm_pay
         await _pm_pay(message, state, bot)
+        return
+
+    # ⭐ فاکتور «هزینه دستی مدیر» (/fee) — پردازش اختصاصی:
+    # استعلام → فقط ثبت پرداخت؛ بقیه سرویس‌ها → ناوبری امضا شروع می‌شود
+    if current_state == Form.admin_fee_waiting_payment or _pl.get("type") == "admin_fee":
+        from admin_relay import admin_fee_successful_payment as _admin_fee_pay
+        await _admin_fee_pay(message, state, bot)
         return
 
     # ── حالت‌های پرداخت لایحه/اظهارنامه — پردازش مستقیم (چون ممکن است روتر فرعی دریافت نکند) ──
