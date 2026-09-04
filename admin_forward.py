@@ -126,8 +126,21 @@ async def send_check_submission_to_admin(bot: Bot, admin_id: int, user_id: int, 
     def _person_line(p, idx):
         ptype = p.get("person_type", "")
         if ptype == "شخص حقوقی":
+            reps = p.get("representatives") or []
+            if reps:
+                rep_lines = "\n".join(
+                    f"      {j}. {r.get('representative_type', '')}: {r.get('national_id', '')}"
+                    for j, r in enumerate(reps, start=1))
+                return (f"  {idx}. {ptype} | شناسه: {p.get('company_id','')} | نمایندگان:\n{rep_lines}")
             return (f"  {idx}. {ptype} | شناسه: {p.get('company_id','')} | "
                     f"{p.get('representative_type','')}: {p.get('national_id','')}")
+        if ptype == "وکیل":
+            line = f"  {idx}. وکیل | کدملی: {p.get('national_id','')}"
+            if p.get("contract_number"):
+                line += f" | قرارداد وکالت: {p.get('contract_number','')}"
+            if p.get("stamp_amount_text"):
+                line += f" | تمبر: {p.get('stamp_amount_text','')}"
+            return line
         return f"  {idx}. {ptype} | کدملی: {p.get('national_id','')}"
 
     plaintiffs = data.get("check_plainiffs", [])
