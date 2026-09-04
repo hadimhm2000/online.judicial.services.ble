@@ -56,6 +56,10 @@ model Case {
   readyToSendAt   DateTime?
   sentToUserAt    DateTime?
   sentViaBot      Boolean  @default(false)
+
+  // ⭐ v1.3 — شناسه پرداخت سامانه قضایی (استخراج از بخش هزینه توسط ربات)
+  paymentId       String?  // شناسه پرداخت ۱۸رقمی سامانه (مثل 140520260315135806)
+  systemCost      Int?     // هزینه سامانه قضایی (ریال) — مبنای محاسبه سود
   
   // Timestamps
   createdAt       DateTime @default(now())
@@ -106,6 +110,13 @@ model BotMessage {
   status      String   @default("PENDING") // PENDING, SENT, FAILED
   sentAt      DateTime?
   errorDetails String?
+
+  // ⭐ v1.2 — هزینهٔ پیام (فاکتور کیف پول بله) — پیام پس از پرداخت کاربر ارسال می‌شود
+  costAmount  Int      @default(0)  // مبلغ هزینه (ریال) — ۰ یعنی بدون هزینه
+  costStatus  String   @default("NONE") // NONE (بدون هزینه), AWAITING_PAYMENT (فاکتور ارسال شد), PAID (پرداخت شد)
+  paidAt      DateTime?
+  paymentId   String?  // شناسه پرداخت بله (telegram_payment_charge_id)
+
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }

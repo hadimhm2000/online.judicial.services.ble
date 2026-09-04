@@ -29,6 +29,7 @@ const SERVICE_LABELS: Record<string, string> = {
   EZHHARNAMEH: 'اظهارنامه',
   EALAM_VAKALAHT: 'اعلام وکالت',
   STAMP_CALC: 'محاسبه تمبر',
+  ADMIN_SEND: 'ارسال پیام مدیریت',
 };
 
 export default function FilterBar({

@@ -37,6 +37,7 @@ const SERVICE_LABELS: Record<string, string> = {
   EZHHARNAMEH: 'اظهارنامه',
   EALAM_VAKALAHT: 'اعلام وکالت',
   STAMP_CALC: 'محاسبه تمبر',
+  ADMIN_SEND: 'ارسال پیام مدیریت',
 };
 
 const CHART_CARD = 'chart-card-shine border shadow-sm shadow-black/5 dark:shadow-black/20 hover:shadow-md dark:hover:shadow-black/30 transition-shadow duration-300 card-elevated';

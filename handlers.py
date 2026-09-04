@@ -193,6 +193,11 @@ async def successful_payment_handler(message: types.Message, state: FSMContext, 
         from admin_relay import admin_fee_successful_payment as _admin_fee_pay
         await _admin_fee_pay(message, state, bot)
         return
+    # ⭐ هزینهٔ «پیام مدیر از پنل» — payload: {"type": "panel_message", "mid": ...}
+    if _pl.get("type") == "panel_message":
+        from admin_relay import panel_message_successful_payment as _pm_pay
+        await _pm_pay(message, state, bot)
+        return
 
     # ── تشخیص فلوی تک‌موردی vs سبد خرید ──
     if cart:
@@ -411,6 +416,14 @@ async def global_successful_payment_handler(message: types.Message, state: FSMCo
     if current_state == Form.admin_fee_waiting_payment or _pl.get("type") == "admin_fee":
         from admin_relay import admin_fee_successful_payment as _admin_fee_pay
         await _admin_fee_pay(message, state, bot)
+        return
+
+    # ⭐ هزینهٔ «پیام مدیر از پنل» — payload: {"type": "panel_message", "mid": ...}
+    # (این فاکتور از پنل ادمین ارسال می‌شود؛ با پرداخت آن، پیام واقعی برای کاربر
+    #  ارسال می‌شود — مستقل از state فعلی کاربر.)
+    if _pl.get("type") == "panel_message":
+        from admin_relay import panel_message_successful_payment as _pm_pay
+        await _pm_pay(message, state, bot)
         return
 
     # ── حالت‌های پرداخت لایحه/اظهارنامه — پردازش مستقیم (چون ممکن است روتر فرعی دریافت نکند) ──

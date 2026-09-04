@@ -25,6 +25,8 @@ interface BotMessageItem {
   sentAt: string | null;
   errorDetails: string | null;
   createdAt: string;
+  costAmount?: number | null;
+  costStatus?: string | null;
 }
 
 interface UserSuggestion {
@@ -44,6 +46,11 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; icon: React.
   FAILED: { label: 'شکست خورده', color: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300', icon: XCircle },
 };
 
+const COST_STATUS_CONFIG: Record<string, { label: string; color: string }> = {
+  AWAITING_PAYMENT: { label: 'در انتظار پرداخت هزینه', color: 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300' },
+  PAID: { label: 'هزینه پرداخت شد', color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' },
+};
+
 export default function BotMessageSender({ open, onClose, onRefresh }: Props) {
   const [messages, setMessages] = useState<BotMessageItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -52,6 +59,7 @@ export default function BotMessageSender({ open, onClose, onRefresh }: Props) {
   const [baleUserId, setBaleUserId] = useState('');
   const [fullName, setFullName] = useState('');
   const [messageText, setMessageText] = useState('');
+  const [costToman, setCostToman] = useState('');
   const [userSearch, setUserSearch] = useState('');
   const [userSuggestions, setUserSuggestions] = useState<UserSuggestion[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -160,6 +168,17 @@ export default function BotMessageSender({ open, onClose, onRefresh }: Props) {
       return;
     }
 
+    // اعتبارسنجی مبلغ هزینه (تومان)
+    let costTomanClean: number | null = null;
+    if (costToman.trim() !== '') {
+      const n = parseInt(costToman.replace(/[^0-9]/g, ''), 10);
+      if (!Number.isFinite(n) || n < 0) {
+        toast.error('مبلغ هزینه باید عددی نامنفی باشد');
+        return;
+      }
+      costTomanClean = n;
+    }
+
     try {
       const res = await fetch('/api/admin/bot-messages', {
         method: 'POST',
@@ -170,26 +189,52 @@ export default function BotMessageSender({ open, onClose, onRefresh }: Props) {
           messageText: messageText.trim(),
           fileUrl: attachedFile?.url || null,
           fileName: attachedFile?.name || null,
+          costToman: costTomanClean,
         }),
       });
 
       if (res.ok) {
         const msg = await res.json();
-        toast.success('پیام ثبت شد');
 
+        // پیام بدون هزینه — همان‌طور که ارسال می‌شود
+        if (!costTomanClean) {
+          toast.success('پیام ثبت شد');
+          setSending(msg.id);
+          const sendRes = await fetch(`/api/admin/bot-messages/${msg.id}/send`, { method: 'POST' });
+          setSending(null);
+
+          if (sendRes.ok) {
+            toast.success(`پیام برای ${fullName || baleUserId} ارسال شد`);
+            setMessageText('');
+            setAttachedFile(null);
+            fetchMessages();
+            onRefresh?.();
+          } else {
+            const errData = await sendRes.json().catch(() => null);
+            toast.error(errData?.error || 'خطا در ارسال پیام');
+            fetchMessages();
+          }
+          return;
+        }
+
+        // ⭐ پیام با هزینه — فاکتور کیف پول بله برای کاربر ارسال می‌شود؛
+        // متن/فایل پیام فقط «پس از پرداخت» کاربر ارسال خواهد شد.
         setSending(msg.id);
         const sendRes = await fetch(`/api/admin/bot-messages/${msg.id}/send`, { method: 'POST' });
         setSending(null);
 
         if (sendRes.ok) {
-          toast.success(`پیام برای ${fullName || baleUserId} ارسال شد`);
+          toast.success(
+            `فاکتور هزینه ${costTomanClean.toLocaleString('fa-IR')} تومانی برای ${fullName || baleUserId} ارسال شد — پیام پس از پرداخت کاربر به‌صورت خودکار ارسال می‌شود`
+          );
           setMessageText('');
           setAttachedFile(null);
+          setCostToman('');
           fetchMessages();
           onRefresh?.();
         } else {
           const errData = await sendRes.json().catch(() => null);
-          toast.error(errData?.error || 'خطا در ارسال پیام');
+          toast.error(errData?.error || 'خطا در ارسال فاکتور هزینه');
           fetchMessages();
         }
       } else {
@@ -206,7 +251,12 @@ export default function BotMessageSender({ open, onClose, onRefresh }: Props) {
     try {
       const res = await fetch(`/api/admin/bot-messages/${id}/send`, { method: 'POST' });
       if (res.ok) {
-        toast.success('پیام مجدداً ارسال شد');
+        const data = await res.json();
+        if (data?.awaitingPayment) {
+          toast.info('فاکتور هزینه مجدداً برای کاربر ارسال شد — پیام پس از پرداخت ارسال می‌شود');
+        } else {
+          toast.success('پیام مجدداً ارسال شد');
+        }
         fetchMessages();
       } else {
         const errData = await res.json().catch(() => null);
@@ -384,6 +434,24 @@ export default function BotMessageSender({ open, onClose, onRefresh }: Props) {
                 <p className="text-[10px] text-muted-foreground">حداکثر ۲۰ مگابایت</p>
               </div>
 
+              {/* Cost (تومان) */}
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-medium text-muted-foreground">{'هزینه پیام (تومان — اختیاری)'}</label>
+                <div className="relative">
+                  <Input
+                    placeholder="مثال: 50000 — خالی = بدون هزینه"
+                    value={costToman}
+                    onChange={(e) => setCostToman(e.target.value.replace(/[^0-9]/g, ''))}
+                    className="h-10 text-sm"
+                    dir="ltr"
+                    inputMode="numeric"
+                  />
+                </div>
+                <p className="text-[10px] text-muted-foreground leading-relaxed">
+                  اگر مبلغی وارد کنید، ابتدا «فاکتور کیف پول بله» برای کاربر ارسال می‌شود و متن/فایل پیام پس از پرداخت وی به‌صورت خودکار ارسال خواهد شد.
+                </p>
+              </div>
+
               {/* Send Button */}
               <Button
                 className="w-full h-11 bg-sky-600 hover:bg-sky-700 gap-2 text-sm font-medium"
@@ -468,6 +536,14 @@ export default function BotMessageSender({ open, onClose, onRefresh }: Props) {
                                   <StatusIcon className="h-2.5 w-2.5 ml-0.5" />
                                   {cfg.label}
                                 </Badge>
+                                {(msg.costAmount ?? 0) > 0 && (() => {
+                                  const cc = COST_STATUS_CONFIG[msg.costStatus || 'AWAITING_PAYMENT'] || COST_STATUS_CONFIG.AWAITING_PAYMENT;
+                                  return (
+                                    <Badge className={cn('text-[9px] px-1.5 py-0 rounded-full shrink-0', cc.color)}>
+                                      {cc.label} ({Math.floor((msg.costAmount || 0) / 10).toLocaleString('fa-IR')} ت)
+                                    </Badge>
+                                  );
+                                })()}
                               </div>
                               <div className="flex items-center gap-1 shrink-0">
                                 {(msg.status === 'FAILED' || msg.status === 'PENDING') && (
