@@ -117,6 +117,15 @@ model BotMessage {
   paidAt      DateTime?
   paymentId   String?  // شناسه پرداخت بله (telegram_payment_charge_id)
 
+  // ⭐ v1.4 — نوع سند برای شروع خودکار «روند درج امضا» پس از پرداخت کاربر
+  // LAVAYEH, EZHHARNAMEH, TAJDID_NAZAR, VAKHAVI, FARQAM, DADKHAST_BEDAVI,
+  // SOHL, CHECK_BEDAVI, CHECK_SOHL, INQUIRY — null یعنی بدون امضا (فقط ارسال پیام)
+  serviceType  String?
+  // مسیر منوی سامانه ثنا برای ناوبری به صفحهٔ امضا — JSON array مثل ["واخواهی"]
+  signMenuPath String?
+  // کد رهگیری/بایگانی برای جستجوی سند در صفحهٔ امضا (اختیاری)
+  trackingCode String?
+
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }

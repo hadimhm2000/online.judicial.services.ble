@@ -1,5 +1,6 @@
 import { db } from '@/lib/db';
 import { sendBaleMessage, sendBaleDocument, sendBaleInvoice } from '@/lib/bale';
+import { getServiceOption } from '@/lib/service-types';
 import { NextRequest, NextResponse } from 'next/server';
 import path from 'path';
 
@@ -38,11 +39,12 @@ export async function POST(
     if (message.costAmount > 0 && message.costStatus !== 'PAID') {
       const toman = Math.floor(message.costAmount / 10);
       const amountRial = message.costAmount;
+      const svcLabel = getServiceOption(message.serviceType)?.label;
 
       await sendBaleInvoice(
         message.baleUserId,
-        'هزینه پیام خدمات قضایی',
-        `این فاکتور هزینهٔ پیام/مدارکی است که پس از پرداخت برای شما ارسال می‌شود.\nمبلغ: ${toman.toLocaleString('fa-IR')} تومان (${amountRial.toLocaleString('fa-IR')} ریال)`,
+        svcLabel ? `هزینه ${svcLabel}` : 'هزینه پیام خدمات قضایی',
+        `این فاکتور هزینهٔ ${svcLabel ? svcLabel : 'پیام/مدارکی'} است که پس از پرداخت برای شما ارسال می‌شود.${svcLabel && getServiceOption(message.serviceType)?.hasSignFlow ? '\nپس از پرداخت، مرحلهٔ درج امضای الکترونیک نیز آغاز خواهد شد.' : ''}\nمبلغ: ${toman.toLocaleString('fa-IR')} تومان (${amountRial.toLocaleString('fa-IR')} ریال)`,
         { type: 'panel_message', mid: message.id },
         amountRial
       );

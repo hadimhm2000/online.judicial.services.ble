@@ -8,11 +8,15 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
+import {
   Send, MessageSquare, Search, Check, XCircle, Clock, Trash2, User, ChevronDown,
-  Paperclip, X, Upload,
+  Paperclip, X, Upload, FileText,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { PANEL_SERVICE_OPTIONS, getServiceOption } from '@/lib/service-types';
 
 interface BotMessageItem {
   id: string;
@@ -27,6 +31,8 @@ interface BotMessageItem {
   createdAt: string;
   costAmount?: number | null;
   costStatus?: string | null;
+  serviceType?: string | null;
+  trackingCode?: string | null;
 }
 
 interface UserSuggestion {
@@ -67,6 +73,9 @@ export default function BotMessageSender({ open, onClose, onRefresh }: Props) {
   const [selectedHistoryIds, setSelectedHistoryIds] = useState<Set<string>>(new Set());
   const [attachedFile, setAttachedFile] = useState<{ url: string; name: string } | null>(null);
   const [uploading, setUploading] = useState(false);
+  // ⭐ نوع سند + کد رهگیری — فقط وقتی هزینه وارد شود معنا دارد
+  const [serviceType, setServiceType] = useState('NONE');
+  const [trackingCode, setTrackingCode] = useState('');
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -190,6 +199,8 @@ export default function BotMessageSender({ open, onClose, onRefresh }: Props) {
           fileUrl: attachedFile?.url || null,
           fileName: attachedFile?.name || null,
           costToman: costTomanClean,
+          serviceType: costTomanClean ? serviceType : 'NONE',
+          trackingCode: trackingCode.trim() || null,
         }),
       });
 
@@ -207,6 +218,8 @@ export default function BotMessageSender({ open, onClose, onRefresh }: Props) {
             toast.success(`پیام برای ${fullName || baleUserId} ارسال شد`);
             setMessageText('');
             setAttachedFile(null);
+            setServiceType('NONE');
+            setTrackingCode('');
             fetchMessages();
             onRefresh?.();
           } else {
@@ -224,12 +237,19 @@ export default function BotMessageSender({ open, onClose, onRefresh }: Props) {
         setSending(null);
 
         if (sendRes.ok) {
+          const svcOpt = getServiceOption(serviceType);
           toast.success(
-            `فاکتور هزینه ${costTomanClean.toLocaleString('fa-IR')} تومانی برای ${fullName || baleUserId} ارسال شد — پیام پس از پرداخت کاربر به‌صورت خودکار ارسال می‌شود`
+            `فاکتور هزینه ${costTomanClean.toLocaleString('fa-IR')} تومانی برای ${fullName || baleUserId} ارسال شد — ${
+              svcOpt && svcOpt.hasSignFlow
+                ? `پس از پرداخت، ربات خودکار «روند درج امضای ${svcOpt.label}» را آغاز می‌کند`
+                : 'پیام پس از پرداخت کاربر به‌صورت خودکار ارسال می‌شود'
+            }`
           );
           setMessageText('');
           setAttachedFile(null);
           setCostToman('');
+          setServiceType('NONE');
+          setTrackingCode('');
           fetchMessages();
           onRefresh?.();
         } else {
@@ -452,6 +472,44 @@ export default function BotMessageSender({ open, onClose, onRefresh }: Props) {
                 </p>
               </div>
 
+              {/* ⭐ نوع سند — فقط وقتی هزینه وارد شده باشد نمایش داده می‌شود */}
+              {costToman.trim() !== '' && (
+                <div className="space-y-1.5 p-3 rounded-lg border border-sky-200/60 dark:border-sky-800/50 bg-sky-50/40 dark:bg-sky-900/10">
+                  <label className="text-[11px] font-medium text-muted-foreground flex items-center gap-1.5">
+                    <FileText className="h-3 w-3 text-sky-600" />
+                    {'نوع سند (برای شروع خودکار روند امضا پس از پرداخت)'}
+                  </label>
+                  <Select value={serviceType} onValueChange={(v) => setServiceType(v)}>
+                    <SelectTrigger className="h-10 text-sm bg-background">
+                      <SelectValue placeholder="نوع سند را انتخاب کنید..." />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-64">
+                      {PANEL_SERVICE_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value} className="text-sm">
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+
+                  {getServiceOption(serviceType)?.hasSignFlow && (
+                    <div className="space-y-1.5 pt-1">
+                      <Input
+                        placeholder="کد رهگیری/بایگانی برای ناوبری امضا (اختیاری)"
+                        value={trackingCode}
+                        onChange={(e) => setTrackingCode(e.target.value)}
+                        className="h-10 text-sm"
+                        dir="ltr"
+                      />
+                      <p className="text-[10px] text-muted-foreground leading-relaxed">
+                        پس از پرداخت کاربر، ربات به‌صورت خودکار وارد «مرحلهٔ درج امضای الکترونیک» می‌شود و از کاربر می‌خواهد آماده‌سازی کد امضا را آغاز کند.
+                        {trackingCode.trim() === '' && ' (اگر کد رهگیری را وارد کنید، جستجوی سند در سامانه خودکار انجام می‌شود)'}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Send Button */}
               <Button
                 className="w-full h-11 bg-sky-600 hover:bg-sky-700 gap-2 text-sm font-medium"
@@ -541,6 +599,17 @@ export default function BotMessageSender({ open, onClose, onRefresh }: Props) {
                                   return (
                                     <Badge className={cn('text-[9px] px-1.5 py-0 rounded-full shrink-0', cc.color)}>
                                       {cc.label} ({Math.floor((msg.costAmount || 0) / 10).toLocaleString('fa-IR')} ت)
+                                    </Badge>
+                                  );
+                                })()}
+                                {(() => {
+                                  const svc = getServiceOption(msg.serviceType);
+                                  if (!svc || !msg.serviceType || msg.serviceType === 'NONE') return null;
+                                  return (
+                                    <Badge className="text-[9px] px-1.5 py-0 rounded-full shrink-0 bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300">
+                                      <FileText className="h-2.5 w-2.5 ml-0.5" />
+                                      {svc.label}
+                                      {svc.hasSignFlow ? ' (امضای خودکار)' : ''}
                                     </Badge>
                                   );
                                 })()}
