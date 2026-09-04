@@ -44,6 +44,8 @@ from keyboards import (
     ezhhar_declarant_add_more_kb,
     ezhhar_addressee_add_more_kb,
     check_addressee_add_more_kb,
+    check_legal_rep_add_more_kb,
+    check_rep_doc_images_kb,
     get_check_more_images_kb,
     create_check_cheque_count_kb,
     check_more_docs_kb,
@@ -72,6 +74,7 @@ from check_branches_tree import (
 from upload_helpers import download_images_from_bale
 from config import ADMIN_ID
 from admin_forward import send_check_submission_to_admin
+from stamp_duty import calculate_stamp_duty
 
 check_router = Router()
 
@@ -682,14 +685,44 @@ async def check_khasteh_title_handler(message: Message, state: FSMContext):
     # همراه با تصاویر همان فقره، در مرحلهٔ ۱۰ (بعد از شرح متن) پرسیده می‌شود
     # — چون ممکن است چند فقره چک با کدرهگیری‌های متفاوت پیوست شوند.
     await message.answer(
-        "👤 *مرحله ۴:* لطفاً *نوع شخصیت خواهان* را انتخاب فرمایید:",
+        "👤 *مرحله ۴:* لطفاً *نوع شخصیت خواهان* را انتخاب فرمایید:\n\n"
+        "⚠️ توجه: اگر *وکیل* را انتخاب می‌کنید، باید حداقل یک *شخص حقیقی یا حقوقی* (خواهان) نیز اضافه شود.",
         reply_markup=create_ezhhar_declarant_person_type_kb())
     await state.set_state(Form.check_plaintiff_person_type)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # مرحله ۴ — خواهان (مانند اظهارکننده)
+# ⭐ فلو جدید (مشابه اظهارنامه — طبق دستور کارفرما):
+#   - وکیل: کدملی → شماره قرارداد وکالت (۱۶ رقمی) → محاسبهٔ خودکار تمبر
+#     (اجرائیه چک: ۲۰,۰۰۰ تومان ثابت / سایر خواسته‌ها: محاسبه از مبلغ چک)
+#   - وکیل به‌تنهایی کافی نیست؛ تا خواهان (حقیقی/حقوقی) وارد نشود اجازهٔ
+#     ادامه به مرحلهٔ بعد داده نمی‌شود.
+#   - شخص حقوقی: شناسه ملی → سمت (مدیرعامل/نماینده) → کدملی → پیام
+#     «مدیرعامل/نماینده اضافه شد» → امکان افزودن تا ۵ نماینده؛ برای
+#     «نماینده» ارسال تصویر مدرک نمایندگی الزامی است (در منضمات ثبت می‌شود).
 # ══════════════════════════════════════════════════════════════════════════════
+def _collect_all_nat_ids(data: dict, include_current: bool = False) -> list:
+    """جمع‌آوری همهٔ کدملی‌های ثبت‌شده (خواهان/خوانده/گواه + نمایندگان شرکت‌ها)
+    برای بررسی تکراری‌نبودن."""
+    all_ids = []
+    all_persons = (data.get("check_plainiffs", []) +
+                   data.get("check_defendants", []) +
+                   data.get("check_witnesses", []))
+    for p in all_persons:
+        if p.get("national_id"):
+            all_ids.append(p.get("national_id"))
+        for r in (p.get("representatives") or []):
+            if r.get("national_id"):
+                all_ids.append(r.get("national_id"))
+    if include_current:
+        current = data.get("_check_current_plaintiff", {}) or {}
+        for r in (current.get("representatives") or []):
+            if r.get("national_id"):
+                all_ids.append(r.get("national_id"))
+    return all_ids
+
+
 @check_router.message(Form.check_plaintiff_person_type)
 async def check_plaintiff_person_type_handler(message: Message, state: FSMContext):
     text = message.text or ""
@@ -701,6 +734,21 @@ async def check_plaintiff_person_type_handler(message: Message, state: FSMContex
         if not plaintiffs:
             await message.answer("⚠️ حداقل یک خواهان باید اضافه شود.")
             return
+
+        # ⭐ مشابه اظهارنامه: اگر فقط وکیل اضافه شده، تا ورود خواهان
+        # (شخص حقیقی یا حقوقی) اجازهٔ عبور به مرحلهٔ بعد داده نمی‌شود.
+        has_lawyer = any(p.get("person_type") == "وکیل" for p in plaintiffs)
+        has_real_or_legal = any(
+            p.get("person_type") in ("شخص حقیقی", "شخص حقوقی") for p in plaintiffs)
+        if has_lawyer and not has_real_or_legal:
+            await message.answer(
+                "⚠️ *توجه مهم:*\n\n"
+                "چون *وکیل* اضافه کرده‌اید، *خواهان* (شخص حقیقی یا حقوقی) باید وارد شود\n"
+                "و بدون آن امکان ادامه به مرحلهٔ بعد وجود ندارد.\n\n"
+                "لطفاً نوع شخصیت خواهان را انتخاب کنید:",
+                reply_markup=create_ezhhar_declarant_person_type_kb(exclude=used_types))
+            return
+
         if await _check_maybe_return_to_preview(message, state):
             return
         # رفتن به مرحله خوانده
@@ -799,10 +847,9 @@ async def check_plaintiff_national_id_handler(message: Message, state: FSMContex
         await message.answer("⚠️ کد ملی باید *۱۰ رقمی* باشد:")
         return
 
-    # بررسی تکراری نبودن کدملی
+    # بررسی تکراری نبودن کدملی (شامل نمایندگان شرکت‌های در حال ثبت)
     data = await state.get_data()
-    all_persons = data.get("check_plainiffs", []) + data.get("check_defendants", []) + data.get("check_witnesses", [])
-    all_ids = [p.get("national_id") for p in all_persons if p.get("national_id")]
+    all_ids = _collect_all_nat_ids(data, include_current=True)
     if nat_id in all_ids:
         await message.answer(
             f"⚠️ کد ملی `{nat_id}` قبلاً ثبت شده است.\n"
@@ -811,18 +858,264 @@ async def check_plaintiff_national_id_handler(message: Message, state: FSMContex
             reply_markup=back_only_kb)
         return
 
-    current = data.get("_check_current_plaintiff", {})
+    current = data.get("_check_current_plaintiff", {}) or {}
+    person_type = current.get("person_type", "شخص حقیقی")
+
+    # ⭐ مسیر وکیل — بعد از کدملی، شماره قرارداد وکالت گرفته می‌شود
+    # (مقدار تمبر خودکار محاسبه و اعلام می‌شود — بدون پرسیدن از کاربر)
+    if person_type == "وکیل":
+        current["national_id"] = nat_id
+        await state.update_data(_check_current_plaintiff=current)
+        await message.answer(
+            "✅ *وکیل* با کدملی `" + nat_id + "` دریافت شد.\n\n"
+            "📑 لطفاً *شماره قرارداد وکالت* را وارد فرمایید:\n_(دقیقاً ۱۶ رقمی)_",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.check_plaintiff_vakalat_no)
+        return
+
+    # ⭐ مسیر شخص حقوقی — مدیرعامل/نماینده به لیست نمایندگان شرکت اضافه
+    # می‌شود (تا ۵ نفر). برای «نماینده» ارسال مدرک نمایندگی الزامی است.
+    if person_type == "شخص حقوقی":
+        rep_type = current.get("representative_type", "نماینده")
+        current.setdefault("representatives", [])
+        current["representatives"].append({
+            "representative_type": rep_type,
+            "national_id": nat_id,
+        })
+        await state.update_data(_check_current_plaintiff=current)
+
+        if rep_type == "نماینده":
+            # ⭐ مدرک نمایندگی الزامی — مشابه مسیر اظهارنامه
+            await state.update_data(
+                _current_attachment_title="مدرک نمایندگی",
+                _current_attachment_images=[],
+                _mandatory_proxy_sent=False)
+            await message.answer(
+                f"✅ *نماینده* با کدملی `{nat_id}` اضافه شد.\n\n"
+                "⚠️ چون سمت *نماینده* انتخاب شده، ارسال تصویر *مدرک نمایندگی* الزامی است\n"
+                "و در بخش منضمات ثبت خواهد شد.\n\n"
+                "📸 لطفاً تصویر *مدرک نمایندگی* را ارسال فرمایید.\n"
+                "_(مثلاً: روزنامه رسمی، آگهی تأسیس، وکالت‌نامه رسمی)_\n\n"
+                "پس از ارسال همهٔ تصاویر، دکمه *«اتمام ارسال تصاویر»* را بفشارید.",
+                reply_markup=check_rep_doc_images_kb)
+            await state.set_state(Form.check_legal_rep_doc_images)
+            return
+
+        # مدیرعامل — بدون مدرک
+        await message.answer(
+            f"✅ *مدیرعامل* با کدملی `{nat_id}` اضافه شد.\n\n"
+            "آیا نمایندهٔ دیگری برای این شرکت وجود دارد؟\n"
+            "_(حداکثر ۵ مدیرعامل/نماینده قابل ثبت است)_",
+            reply_markup=check_legal_rep_add_more_kb)
+        await state.set_state(Form.check_legal_rep_more)
+        return
+
+    # مسیر شخص حقیقی — مثل اظهارنامه
     current["national_id"] = nat_id
+    plaintiffs = data.get("check_plainiffs", [])
+    plaintiffs.append(current)
+    await state.update_data(check_plainiffs=plaintiffs, _check_current_plaintiff={})
+
+    await message.answer(
+        f"✅ *شخص حقیقی (خواهان)* با کدملی `{nat_id}` ثبت شد.\n\n"
+        "آیا خواهان دیگری نیز وجود دارد؟",
+        reply_markup=create_ezhhar_declarant_person_type_kb())
+    await state.set_state(Form.check_plaintiff_person_type)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# مرحله ۴-الف — شماره قرارداد وکالت و محاسبهٔ خودکار تمبر وکیل
+# ══════════════════════════════════════════════════════════════════════════════
+@check_router.message(Form.check_plaintiff_vakalat_no)
+async def check_plaintiff_vakalat_no_handler(message: Message, state: FSMContext):
+    """دریافت شماره قرارداد وکالت (۱۶ رقمی) + محاسبهٔ خودکار تمبر.
+
+    ⭐ طبق دستور کارفرما مقدار تمبر از کاربر پرسیده نمی‌شود:
+      - عنوان «صدور اجرائیه چک» → تمبر ثابت ۲۰,۰۰۰ تومان (۲۰۰,۰۰۰ ریال)
+      - سایر خواسته‌ها → محاسبه از مبلغ چک (مبلغ خواسته) بر اساس تعرفه
+        (تمبر مرحلهٔ بدوی — مناسب دادخواست بدوی)
+    """
+    if not message.text:
+        return
+    if message.text == "🔙 بازگشت":
+        await message.answer(
+            "🔢 لطفاً *کد ملی وکیل* خواهان را وارد فرمایید:\n_(۱۰ رقمی)_",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.check_plaintiff_national_id)
+        return
+
+    contract_no = _to_en(message.text)
+    if not re.match(r"^[0-9]{16}$", contract_no):
+        await message.answer("⚠️ شماره قرارداد وکالت باید *دقیقاً ۱۶ رقمی* باشد:")
+        return
+
+    data = await state.get_data()
+    current = data.get("_check_current_plaintiff", {}) or {}
+    current["contract_number"] = contract_no
+
+    # ⭐ محاسبهٔ خودکار تمبر — بدون پرسیدن از کاربر
+    request_title = data.get("check_request_title", "")
+    amount = int(data.get("check_amount", 0) or 0)
+    stamp_rial = 0
+    stamp_text = ""
+    if request_title == "صدور اجرائیه چک":
+        # عنوان اجرائیه چک → تمبر ثابت ۲۰ هزار تومان
+        stamp_rial = 200_000
+        stamp_text = "۲۰,۰۰۰ تومان (۲۰۰,۰۰۰ ریال)"
+    else:
+        # سایر خواسته‌ها → محاسبه از مبلغ خواستهٔ واردشده در ابتدای فلو
+        try:
+            duty = calculate_stamp_duty(amount)
+            stamp_rial = int(duty.get("tamber_bedvi", 0) or 0)
+            stamp_text = f"{stamp_rial // 10:,} تومان ({stamp_rial:,} ریال)"
+        except Exception as calc_err:
+            logger.error(f"[CHECK] خطا در محاسبه تمبر وکالت: {calc_err}")
+            try:
+                await message.bot.send_message(
+                    ADMIN_ID,
+                    f"⚠️ [CHECK] محاسبهٔ تمبر وکالت ناموفق (مبلغ={amount}) — "
+                    f"تمبر بدون مقدار ثبت شد.\nخطا: {calc_err}")
+            except Exception:
+                pass
+            stamp_text = "بدون تمبر (خطا در محاسبه — به مدیریت اطلاع داده شد)"
+
+    current["stamp_amount_value"] = stamp_rial
+    current["stamp_amount_text"] = stamp_text
 
     plaintiffs = data.get("check_plainiffs", [])
     plaintiffs.append(current)
     await state.update_data(check_plainiffs=plaintiffs, _check_current_plaintiff={})
 
     await message.answer(
-        f"✅ خواهان اضافه شد. (تعداد: {len(plaintiffs)})\n\n"
-        "آیا خواهان دیگری نیز وجود دارد؟",
-        reply_markup=ezhhar_declarant_add_more_kb)
-    await state.set_state(Form.check_plaintiff_more)
+        f"✅ *وکیل* با کدملی `{current.get('national_id', '')}` ثبت شد.\n"
+        f"📑 شماره قرارداد وکالت: `{contract_no}`\n"
+        f"💰 مبلغ تمبر وکالت (خودکار محاسبه شد): *{stamp_text}*\n\n"
+        "⚠️ چون *وکیل* اضافه کردید، *خواهان* (شخص حقیقی یا حقوقی) نیز باید وارد شود.\n\n"
+        "لطفاً نوع شخصیت خواهان بعدی را انتخاب فرمایید:",
+        reply_markup=create_ezhhar_declarant_person_type_kb())
+    await state.set_state(Form.check_plaintiff_person_type)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# مرحله ۴-ب — تصاویر مدرک نمایندگی نمایندهٔ شرکت خواهان (الزامی)
+# ══════════════════════════════════════════════════════════════════════════════
+@check_router.message(Form.check_legal_rep_doc_images, F.photo)
+async def check_legal_rep_doc_photo_handler(message: Message, state: FSMContext):
+    data = await state.get_data()
+    images = data.get("_current_attachment_images", [])
+
+    if len(images) >= MAX_ATTACHMENT_IMAGES:
+        await message.answer(
+            f"⛔ حداکثر *{MAX_ATTACHMENT_IMAGES} تصویر* برای این مدرک مجاز است.\n\n"
+            "لطفاً دکمه *«اتمام ارسال تصاویر»* را بفشارید.",
+            reply_markup=check_rep_doc_images_kb)
+        return
+
+    images.append(message.photo[-1].file_id)
+    await state.update_data(_current_attachment_images=images)
+
+    await message.answer(
+        f"✅ تصویر شماره *{len(images)}* دریافت شد.\n\n"
+        "می‌توانید تصویر دیگری ارسال کنید یا دکمه *«اتمام ارسال تصاویر»* را بفشارید:",
+        reply_markup=check_rep_doc_images_kb)
+
+
+@check_router.message(Form.check_legal_rep_doc_images)
+async def check_legal_rep_doc_text_handler(message: Message, state: FSMContext):
+    """هندلر متنی مرحلهٔ مدرک نمایندگی — اتمام یا راهنما."""
+    text = message.text or ""
+
+    if text == "✅ اتمام ارسال تصاویر":
+        data = await state.get_data()
+        images = data.get("_current_attachment_images", [])
+        if not images:
+            await message.answer(
+                "⚠️ ارسال تصویر *مدرک نمایندگی* برای نمایندهٔ شرکت الزامی است.\n\n"
+                "لطفاً حداقل یک تصویر ارسال فرمایید:",
+                reply_markup=check_rep_doc_images_kb)
+            return
+
+        # ⭐ ثبت در پیوست‌های پرونده (منضمات) — مشابه مسیر اظهارنامه
+        attachment_groups = data.get("check_attachment_groups", [])
+        attachment_groups.append({"title": "مدرک نمایندگی", "images": list(images)})
+        await state.update_data(
+            check_attachment_groups=attachment_groups,
+            _current_attachment_images=[],
+            _mandatory_proxy_sent=True)
+
+        current = data.get("_check_current_plaintiff", {}) or {}
+        reps = current.get("representatives", [])
+        await message.answer(
+            "✅ *نماینده* به‌همراه تصاویر *مدرک نمایندگی* ثبت شد.\n\n"
+            f"👔 تعداد مدیرعامل/نمایندگان این شرکت: *{len(reps)}*\n\n"
+            "آیا نمایندهٔ دیگری برای این شرکت وجود دارد؟",
+            reply_markup=check_legal_rep_add_more_kb)
+        await state.set_state(Form.check_legal_rep_more)
+        return
+
+    await message.answer(
+        "⚠️ لطفاً *تصویر* مدرک نمایندگی را ارسال فرمایید یا دکمه "
+        "*«اتمام ارسال تصاویر»* را بفشارید.",
+        reply_markup=check_rep_doc_images_kb)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# مرحله ۴-ج — افزودن نمایندهٔ دیگر شرکت خواهان / اتمام
+# ══════════════════════════════════════════════════════════════════════════════
+MAX_LEGAL_REPRESENTATIVES = 5  # ⭐ حداکثر ۵ مدیرعامل/نماینده برای هر شرکت
+
+
+@check_router.message(Form.check_legal_rep_more)
+async def check_legal_rep_more_handler(message: Message, state: FSMContext):
+    text = message.text or ""
+    data = await state.get_data()
+    current = data.get("_check_current_plaintiff", {}) or {}
+    reps = current.get("representatives", [])
+
+    if text == "➕ افزودن شخص نماینده":
+        if len(reps) >= MAX_LEGAL_REPRESENTATIVES:
+            await message.answer(
+                "⚠️ حداکثر *۵ مدیرعامل/نماینده* برای هر شرکت قابل ثبت است.\n\n"
+                "برای ادامه دکمه *«اتمام و ادامه»* را بفشارید:",
+                reply_markup=check_legal_rep_add_more_kb)
+            return
+        await message.answer(
+            "👔 سمت نمایندهٔ جدید شرکت چه سمتی دارد؟",
+            reply_markup=representative_type_kb)
+        await state.set_state(Form.check_plaintiff_representative_type)
+        return
+
+    if text == "✅ اتمام و ادامه":
+        if not reps:
+            await message.answer(
+                "⚠️ حداقل یک مدیرعامل/نماینده باید برای شرکت وارد شود.\n\n"
+                "لطفاً سمت و کدملی مدیرعامل/نماینده را وارد فرمایید:",
+                reply_markup=representative_type_kb)
+            await state.set_state(Form.check_plaintiff_representative_type)
+            return
+
+        # ⭐ ثبت نهایی شخص حقوقی در لیست خواهان‌ها
+        first_rep = reps[0]
+        current["representative_type"] = first_rep.get("representative_type", "نماینده")
+        current["national_id"] = first_rep.get("national_id", "")
+        plaintiffs = data.get("check_plainiffs", [])
+        plaintiffs.append(current)
+        await state.update_data(check_plainiffs=plaintiffs, _check_current_plaintiff={})
+
+        if await _check_maybe_return_to_preview(message, state):
+            return
+
+        await message.answer(
+            f"✅ *شخص حقوقی (خواهان)* با شناسه ملی `{current.get('company_id', '')}`\n"
+            f"و {len(reps)} مدیرعامل/نماینده ثبت شد.\n\n"
+            "آیا خواهان دیگری نیز وجود دارد؟",
+            reply_markup=create_ezhhar_declarant_person_type_kb())
+        await state.set_state(Form.check_plaintiff_person_type)
+        return
+
+    await message.answer(
+        "⚠️ لطفاً یکی از گزینه‌های موجود را انتخاب کنید:",
+        reply_markup=check_legal_rep_add_more_kb)
 
 
 @check_router.message(Form.check_plaintiff_more)
@@ -984,10 +1277,9 @@ async def check_defendant_national_id_handler(message: Message, state: FSMContex
         await message.answer("⚠️ کد ملی باید *۱۰ رقمی* باشد:")
         return
 
-    # بررسی تکراری نبودن کدملی
+    # بررسی تکراری نبودن کدملی (شامل نمایندگان شرکت‌ها)
     data = await state.get_data()
-    all_persons = data.get("check_plainiffs", []) + data.get("check_defendants", []) + data.get("check_witnesses", [])
-    all_ids = [p.get("national_id") for p in all_persons if p.get("national_id")]
+    all_ids = _collect_all_nat_ids(data, include_current=True)
     if nat_id in all_ids:
         await message.answer(
             f"⚠️ کد ملی `{nat_id}` قبلاً ثبت شده است.\n"
@@ -1108,10 +1400,9 @@ async def check_witness_national_id_handler(message: Message, state: FSMContext)
             reply_markup=check_addressee_add_more_kb)
         return
 
-    # بررسی تکراری نبودن کدملی
+    # بررسی تکراری نبودن کدملی (شامل نمایندگان شرکت‌ها)
     data = await state.get_data()
-    all_persons = data.get("check_plainiffs", []) + data.get("check_defendants", []) + data.get("check_witnesses", [])
-    all_ids = [p.get("national_id") for p in all_persons if p.get("national_id")]
+    all_ids = _collect_all_nat_ids(data, include_current=True)
     if nat_id in all_ids:
         await message.answer(
             f"⚠️ کد ملی `{nat_id}` قبلاً ثبت شده است.\n"
@@ -1644,7 +1935,12 @@ async def check_more_images_handler(message: Message, state: FSMContext):
         # بررسی شخص حقوقی — مدرک نمایندگی اجباری
         persons = data.get("check_plainiffs", []) + data.get("check_defendants", [])
         has_legal = any(p.get("person_type") == "شخص حقوقی" for p in persons)
-        if has_legal:
+        # ⭐ اگر مدرک نمایندگی در فلو نمایندگان خواهان حقوقی از قبل ارسال
+        # شده، دوباره درخواست نمی‌شود (فلو جدید نمایندگان).
+        existing_groups = data.get("check_attachment_groups", []) or []
+        has_rep_doc = any(
+            "نمایندگی" in (g.get("title", "") or "") for g in existing_groups)
+        if has_legal and not has_rep_doc:
             await message.answer(
                 "*مرحله مدارک:*\n\n"
                 "⚠️ *توجه:* چون شخص *حقوقی* دارید، ارسال تصویر *مدرک نمایندگی* اجباری است.\n\n"
@@ -1888,8 +2184,25 @@ def build_check_preview(data: dict) -> str:
         nat_id = p.get("national_id", "")
         if ptype == "شخص حقوقی":
             company_id = p.get("company_id", "")
+            reps = p.get("representatives") or []
+            if reps:
+                # ⭐ نمایش همهٔ مدیرعامل/نمایندگان (فلو جدید)
+                rep_lines = "\n".join(
+                    f"    {j}. {r.get('representative_type', '')}: `{r.get('national_id', '')}`"
+                    for j, r in enumerate(reps, start=1))
+                return (
+                    f"  {idx}. {ptype} | شناسه: `{company_id}` | نمایندگان:\n{rep_lines}")
             rep = p.get("representative_type", "")
             return f"  {idx}. {ptype} | شناسه: `{company_id}` | {rep}: `{nat_id}`"
+        if ptype == "وکیل":
+            contract = p.get("contract_number", "")
+            stamp_txt = p.get("stamp_amount_text", "")
+            line = f"  {idx}. وکیل | کدملی: `{nat_id}`"
+            if contract:
+                line += f" | قرارداد وکالت: `{contract}`"
+            if stamp_txt:
+                line += f" | تمبر: {stamp_txt}"
+            return line
         return f"  {idx}. {ptype} | کدملی: `{nat_id}`"
 
     plaintiffs_text = "\n".join([_person_line(p, i+1) for i, p in enumerate(plaintiffs)]) or "  (ندارد)"

@@ -2624,7 +2624,9 @@ async def send_tajdid_nazar_result(
             bale_user_id=user_id, full_name=str(user_id),
             service_type="TAJDID_NAZAR", status="PENDING_PAYMENT",
             tracking_code=tracking_code or None,
-            document_category=doc_title, fee=final_fee,
+            document_category=doc_title,
+            # ⭐ final_fee ریال است؛ فیلد fee پنل به «تومان» است (مثل استعلام‌ها)
+            fee=final_fee // 10,
             fee_status="UNPAID",
             result_summary="فاکتور ارسال شد؛ در انتظار پرداخت کاربر",
         )
@@ -2681,7 +2683,8 @@ async def tn_successful_payment(message: Message, state: FSMContext, bot: Bot):
             bale_user_id=user_id, full_name=message.from_user.full_name,
             service_type="TAJDID_NAZAR", status="PROCESSING",
             tracking_code=pending.get("tracking_code", "") or None,
-            fee=pending["final_fee"], fee_status="PAID",
+            # ⭐ final_fee ریال است؛ فیلد fee پنل به «تومان» است
+            fee=pending["final_fee"] // 10, fee_status="PAID",
             result_summary="پرداخت انجام شد؛ در انتظار امضای الکترونیک",
         )
     except Exception as panel_err:

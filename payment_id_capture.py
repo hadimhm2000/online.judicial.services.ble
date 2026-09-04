@@ -434,6 +434,7 @@ async def capture_and_report_payment_ids(
 
         # ── ⭐ v1.3: سینک به پنل ادمین (paymentId + systemCost روی پرونده) ──
         # غیرمسدودکننده؛ در پس‌زمینه با چند تلاشِ تاخیری انجام می‌شود.
+        # ⭐ systemCost هم مثل fee به «تومان» ثبت می‌شود (amount ریال است)
         service_type = _resolve_service_type(service_name)
         if service_type:
             _schedule_panel_sync(
@@ -441,7 +442,7 @@ async def capture_and_report_payment_ids(
                 bale_user_id=user_id,
                 tracking_code=tracking_code or "",
                 payment_id=payment_ids[0],
-                system_cost=amount,
+                system_cost=(int(amount) // 10) if isinstance(amount, (int, float)) and amount else amount,
             )
 
         amount_txt = f"{amount:,} ریال" if isinstance(amount, (int, float)) and amount else "—"

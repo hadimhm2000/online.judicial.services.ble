@@ -991,7 +991,8 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                         service_type="TAJDID_NAZAR", status="FAILED",
                         tracking_code=bill_no or None,
                         document_category=case_type,
-                        fee=total_cost,
+                        # ⭐ total_cost ریال است؛ فیلد fee پنل به «تومان» است
+                        fee=total_cost // 10,
                         error_details="ثبت در سامانه انجام شد اما چاپ PDF ناموفق بود",
                         error_step="print_pdf",
                     )

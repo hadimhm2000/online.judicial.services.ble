@@ -466,7 +466,9 @@ async def process_check_task(data: dict, bot: Bot):
                 await asyncio.sleep(1)
             # ۴.۸ ⭐ خواستهٔ فرعی «تامین خواسته» — طبق دستور کارفرما:
             # بعد از خواستهٔ اصلی، دکمهٔ «افزودن» → فیلد «خواسته» → تایپ «تامین»
-            # → انتخاب گزینهٔ اول → ادامهٔ مراحل
+            # → انتخاب گزینهٔ اول → سپس در فیلد «موضوع خواسته مرتبط» که
+            # ظاهر می‌شود، مجدداً گزینهٔ «تامین خواسته» انتخاب می‌شود و در
+            # فیلد شرح، متن ثابت درج می‌گردد.
             if tamin_khasteh:
                 tamin_ok = await _add_secondary_khasteh(
                     sana_page, bot, user_id,
@@ -480,6 +482,17 @@ async def process_check_task(data: dict, bot: Bot):
                         ADMIN_ID,
                         f"⚠️ [CHECK] خواستهٔ فرعی «تامین خواسته» برای کاربر {user_id} "
                         "ثبت نشد — لطفاً در سامانه به‌صورت دستی بررسی/افزودن کنید.")
+                else:
+                    # ⭐ فیلد «موضوع خواسته مرتبط» (jssPetitionRelief2) —
+                    # انتخاب «تامین خواسته» با همان روال دراپ‌داون
+                    related_ok = await _select_tamin_related_relief(sana_page, bot, user_id)
+                    if not related_ok:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"⚠️ [CHECK] فیلد «موضوع خواسته مرتبط» برای تامین خواستهٔ "
+                            f"کاربر {user_id} تنظیم نشد — لطفاً در سامانه بررسی کنید.")
+                    # ⭐ متن شرح ثابت تامین خواسته در #txtDescription1
+                    await _fill_tamin_description(sana_page)
 
             # ۴.۹ ⭐ خواستهٔ فرعی «اعسار از پرداخت هزینه دادرسی» — طبق دستور
             # کارفرما: «افزودن» → فیلد «خواسته» → تایپ «اعسار» → گزینهٔ
@@ -583,6 +596,10 @@ async def process_check_task(data: dict, bot: Bot):
                     await resilient_sleep(sana_page, 10, bot, user_id)
 
             # ── ۷.۵ مرحله «نماينده» (اگر حقوقی داشتیم) ──────────────────
+            # ⭐ فلو جدید: همهٔ مدیرعامل/نمایندگان شرکت خواهانِ حقوقی در این
+            # مرحله ثبت می‌شوند (تا ۵ نفر — قبلاً فقط اولین نماینده ثبت
+            # می‌شد). اولین نفر قبلاً در خودِ مرحلهٔ «خواهان» هم پر شده
+            # (سازگاری با روال سامانه).
             if has_legal_plaintiff:
                 clicked = await sana_page.evaluate('''() => {
                     const steps = Array.from(document.querySelectorAll('.step'));
@@ -595,30 +612,43 @@ async def process_check_task(data: dict, bot: Bot):
                 await resilient_sleep(sana_page, 4, bot, user_id)
 
                 legal_pl = next((p for p in plaintiffs if p.get("person_type") == "شخص حقوقی"), {})
-                rep_type = legal_pl.get("representative_type", "")
-                nat_id = legal_pl.get("national_id", "")
+                # ⭐ لیست نمایندگان (فلو جدید) — فال‌بک به ساختار قدیمی تک‌نماینده
+                legal_reps = list(legal_pl.get("representatives") or [])
+                if not legal_reps:
+                    rep_type_legacy = legal_pl.get("representative_type", "")
+                    nat_id_legacy = legal_pl.get("national_id", "")
+                    if nat_id_legacy:
+                        legal_reps = [{
+                            "representative_type": rep_type_legacy,
+                            "national_id": nat_id_legacy,
+                        }]
 
-                agent_value = "0091000010000008" if rep_type == "مدیرعامل" else "0091000010000010"
+                for rep_idx, rep in enumerate(legal_reps):
+                    rep_type = rep.get("representative_type", "")
+                    nat_id = rep.get("national_id", "")
+                    if not nat_id:
+                        continue
 
-                await sana_page.evaluate('''() => {
-                    const btn = document.querySelector('#btnAddSection');
-                    if (btn && !btn.disabled) btn.click();
-                }''')
-                await resilient_sleep(sana_page, 3, bot, user_id)
-                await wait_for_angular_idle(sana_page)
-                await asyncio.sleep(2)
+                    agent_value = "0091000010000008" if rep_type == "مدیرعامل" else "0091000010000010"
 
-                await sana_page.evaluate('''(val) => {
-                    const sel = document.querySelector('select[ng-model*="AgentTypeId"]');
-                    if (sel && !sel.disabled) {
-                        sel.value = val;
-                        sel.dispatchEvent(new Event("input", { bubbles: true }));
-                        sel.dispatchEvent(new Event("change", { bubbles: true }));
-                    }
-                }''', agent_value)
-                await asyncio.sleep(2)
+                    await sana_page.evaluate('''() => {
+                        const btn = document.querySelector('#btnAddSection');
+                        if (btn && !btn.disabled) btn.click();
+                    }''')
+                    await resilient_sleep(sana_page, 3, bot, user_id)
+                    await wait_for_angular_idle(sana_page)
+                    await asyncio.sleep(2)
 
-                if nat_id:
+                    await sana_page.evaluate('''(val) => {
+                        const sel = document.querySelector('select[ng-model*="AgentTypeId"]');
+                        if (sel && !sel.disabled) {
+                            sel.value = val;
+                            sel.dispatchEvent(new Event("input", { bubbles: true }));
+                            sel.dispatchEvent(new Event("change", { bubbles: true }));
+                        }
+                    }''', agent_value)
+                    await asyncio.sleep(2)
+
                     for _try in range(5):
                         set_ok = await sana_page.evaluate('''(val) => {
                             const inp = document.querySelector('#txtRealIrNationalityCode');
@@ -634,8 +664,16 @@ async def process_check_task(data: dict, bot: Bot):
                             break
                         await asyncio.sleep(3)
 
-                    # ⭐ کلیک استعلام — دکمهٔ استعلام id ندارد؛ از طریق ng-click
-                    await _click_sana_inquiry_button(sana_page, bot, user_id, role="نماینده")
+                    # ⭐ استعلام ثنا با مدیریت خطا (خطا → یکبار retry →
+                    # ارسال متن خطا به کاربر/مدیر) — الگوی سایر اشخاص
+                    rep_status = await _query_sana_check(
+                        sana_page, "actions.callNationalityCode", bot, user_id,
+                        role=f"نماینده {rep_idx + 1}", national_id=nat_id)
+                    if rep_status == "failed":
+                        raise CheckAbortError(
+                            f"استعلام ثنا برای نماینده {rep_idx + 1} "
+                            f"(کدملی {nat_id}) ناموفق",
+                            step="SANA_QUERY_FAILED")
                     await resilient_sleep(sana_page, 5, bot, user_id)
 
             # ── ۸. مرحله «مطلع/ گواه» ───────────────────────────────────
@@ -720,51 +758,25 @@ async def process_check_task(data: dict, bot: Bot):
                 await asyncio.sleep(1)
 
             # ── ۱۱. ثبت موقت ──────────────────────────────────────────────
-            clicked = await sana_page.evaluate('''() => {
-                const btns = Array.from(document.querySelectorAll('button'));
-                const t = btns.find(el => el.innerText && el.innerText.includes("ثبت موقت"));
-                if (t && !t.disabled) { t.click(); return true; }
-                return false;
-            }''')
-            if not clicked:
-                await safe_click_by_text(sana_page, "ثبت موقت", bot, user_id)
-            await resilient_sleep(sana_page, 8, bot, user_id)
-
-            # بررسی ورود همزمان/انقضای نشست دقیقاً همین‌جا حیاتی است: اگر نشست
-            # درست همین لحظه منقضی شده باشد، bill_no زیر خالی/نامعتبر استخراج
-            # می‌شود و کل پرونده با کد بایگانی اشتباه ادامه پیدا می‌کند.
-            had_expiry_save = await check_and_handle_expiry(sana_page, bot, user_id)
-            if had_expiry_save:
-                await resilient_sleep(sana_page, 8, bot, user_id)
-
-            # استخراج شماره بایگانی — با چند تلاش (ممکن است دیر رندر شود)
-            bill_no = ""
-            for _bill_try in range(5):
-                bill_no = await sana_page.evaluate('''() => {
-                    const inp = document.querySelector('#txtBillNo');
-                    if (inp) return inp.value;
-                    const sp = document.querySelector('[ng-model*="BillNo"]');
-                    if (sp) return sp.innerText || sp.textContent;
-                    return "";
-                }''') or ""
-                bill_no = bill_no.strip()
-                if bill_no:
-                    break
-                await asyncio.sleep(3)
-            logging.info(f"[CHECK] bill_no={bill_no}")
+            # ⭐ فلو جدید (طبق دستور کارفرما):
+            #   ۱. کلیک «ثبت موقت»
+            #   ۲. انتظار برای پاپ‌آپ موفقیت («...ثبت شد .») → کلیک «بستن»
+            #   ۳. خطای دیگر → بستن و تلاش مجدد ثبت موقت؛ اگر دوباره خطا
+            #      آمد → اطلاع به کاربر/مدیر و توقف
+            #   ۴. کدرهگیری از #txtPetitionNo (فال‌بک #txtBillNo)
+            #   ۵. کلیک «بازگشت به فهرست» (#btnGotoMainPage)
+            bill_no = await _click_save_temp_check(
+                sana_page, bot, user_id, max_retries=3)
 
             # ⭐ اعتبارسنجی bill_no — قبلاً با کد خالی به منضمات/هزینه/چاپ
             # ادامه داده می‌شد و همهٔ مراحل بعدی روی صفحهٔ نامعتبر fail می‌شد
             # («Option 'منضمات' not found» → ری‌استارت بی‌پایان).
+            # پیام‌های کاربر/مدیر داخل تابع ارسال شده‌اند.
             if not bill_no:
-                err_msg = ("ثبت موقت انجام شد ولی کد بایگانی دادخواست چک از "
-                           "سامانه قابل استخراج نبود.")
-                user_msg = (
-                    "⚠️ *خطا در ثبت موقت دادخواست چک:*\n\n"
-                    "«" + err_msg + "»\n\n"
-                    "فرآیند متوقف شد. لطفاً به مدیریت اطلاع دهید."
-                )
-                raise CheckAbortError(err_msg, step="TEMP_SAVE_NO_BILL", user_msg=user_msg)
+                raise CheckAbortError(
+                    "ثبت موقت دادخواست چک پس از تلاش‌های مجدد موفق نشد "
+                    "(کد رهگیری قابل استخراج نبود)",
+                    step="TEMP_SAVE_NO_BILL")
 
             # ذخیره کدرهگیری در گوگل شیت + اطلاع به مدیر
             await log_event("ثبت موقت", "دادخواست چک", str(user_id), user_id,
@@ -781,7 +793,9 @@ async def process_check_task(data: dict, bot: Bot):
             await resilient_sleep(sana_page, 4, bot, user_id)
 
             # ── ۱۲. مرحله «منضمات» — آپلود تصاویر چک (برای هر فقره) ────
-            if cheque_items or attachment_groups:
+            # ⭐ حتی بدون فقره چک/پیوست اضافی، اگر وکیل داریم برای ثبت
+            # وکالت‌نامه الکترونیک وارد منضمات می‌شویم.
+            if cheque_items or attachment_groups or has_lawyer:
                 attachments_ok = await _process_check_attachments(
                     sana_page,
                     request_title=request_title,
@@ -789,7 +803,8 @@ async def process_check_task(data: dict, bot: Bot):
                     attachment_groups=attachment_groups,
                     bot=bot,
                     user_id=user_id,
-                    bill_no=bill_no)
+                    bill_no=bill_no,
+                    plaintiffs=plaintiffs)
 
                 if not attachments_ok:
                     # پیام‌های مربوطه (کدرهگیری اشتباه / قطعی سامانه) داخل
@@ -1204,6 +1219,192 @@ async def _click_goto_main(page, bot: Bot, user_id: int, max_retries: int = 4) -
     return False
 
 
+async def _close_sweet_popup(page) -> None:
+    """بستن پاپ‌آپ sweet-alert (دکمهٔ confirm/بستن) اگر باز باشد."""
+    try:
+        await page.evaluate('''() => {
+            const popup = document.querySelector('.sweet-alert.showSweetAlert');
+            if (popup) {
+                const btn = popup.querySelector('button.confirm') ||
+                            popup.querySelector('button.cancel');
+                if (btn) btn.click();
+            }
+        }''')
+        await asyncio.sleep(1.5)
+    except Exception:
+        pass
+
+
+async def _read_save_popup(page) -> dict | None:
+    """خواندن وضعیت پاپ‌آپ ثبت موقت.
+
+    خروجی:
+      None                — پاپ‌آپی نیست
+      {"success": True}   — پاپ‌آپ موفقیت (آیکون success یا متن «ثبت شد»)
+      {"text": "..."}     — پاپ‌آپ خطا/هشدار (متن h2+p)
+    """
+    try:
+        return await page.evaluate('''() => {
+            const popup = document.querySelector('.sweet-alert.showSweetAlert');
+            if (!popup) return null;
+            const visible = window.getComputedStyle(popup).display !== 'none';
+            if (!visible) return null;
+            const h2 = popup.querySelector('h2');
+            const p = popup.querySelector('p');
+            const text = ((h2 ? h2.innerText : '') + ' ' + (p ? p.innerText : '')).trim();
+            const successIcon = popup.querySelector('.sa-icon.sa-success');
+            const hasSuccess = successIcon &&
+                window.getComputedStyle(successIcon).display !== 'none';
+            if (hasSuccess) return {success: true, text: text};
+            // پاپ‌آپ موفقیت گاهی فقط متن «ثبت شد» دارد (مثل
+            // «دادخواست بدوی با موفقیت ثبت شد .»)
+            if (text && text.includes("ثبت شد") && !text.includes("خطا")) {
+                return {success: true, text: text};
+            }
+            return {success: false, text: text};
+        }''')
+    except Exception:
+        return None
+
+
+async def _click_save_temp_check(page, bot: Bot, user_id: int,
+                                 max_retries: int = 3) -> str:
+    """کلیک «ثبت موقت» دادخواست چک — طبق دستور کارفرما (عیناً):
+
+      ۱. کلیک ثبت موقت
+      ۲. انتظار برای پاپ‌آپ موفقیت («دادخواست بدوی با موفقیت ثبت شد .»)
+         و کلیک روی دکمهٔ «بستن»
+      ۳. اگر هر خطای دیگری ظاهر شد → بستن و یکبار دیگر تلاش؛ اگر دوباره
+         خطا آمد → اطلاع به کاربر/مدیر و توقف (خروجی "")
+      ۴. کدرهگیری (شماره دادخواست) از #txtPetitionNo (فال‌بک #txtBillNo)
+      ۵. کلیک «بازگشت به فهرست» (#btnGotoMainPage)
+
+    خروجی: کد رهگیری (رشتهٔ خالی یعنی شکست — پیام‌ها ارسال شده‌اند).
+
+    ⚠️ باگ قبلی (TEMP_SAVE_NO_BILL): بعد از کلیک ثبت موقت فقط ۸ ثانیه صبر
+    می‌شد و #txtBillNo خوانده می‌شد — در فلو جدید سامانه بعد از ثبت موقت،
+    پاپ‌آپ موفقیت نمایش داده می‌شود و کدرهگیری در #txtPetitionNo است؛
+    به همین دلیل قبلاً bill_no همیشه خالی می‌ماند و فرآیند به‌اشتباه
+    قطع می‌شد.
+    """
+    last_error = ""
+    for attempt in range(max_retries):
+        # بررسی انقضای نشست قبل از هر تلاش
+        had_expiry = await check_and_handle_expiry(page, bot, user_id)
+        if had_expiry:
+            await asyncio.sleep(3)
+            continue
+
+        clicked = await page.evaluate('''() => {
+            const btn = document.querySelector('#btnSave') ||
+                        Array.from(document.querySelectorAll('button')).find(
+                            b => b.innerText && b.innerText.includes("ثبت موقت"));
+            if (btn && !btn.disabled) { btn.click(); return true; }
+            return false;
+        }''')
+        if not clicked:
+            try:
+                await safe_click_by_text(page, "ثبت موقت", bot, user_id)
+            except NavigationResetError:
+                raise  # هنوز ثبت موقت انجام نشده — ری‌استارت امن است
+            except Exception:
+                pass
+
+        # صبر اولیه + لودینگ افقی (طبق دستور کارفرما: اگر لودینگ هنوز
+        # نمایان است، منتظر می‌مانیم — این کار را
+        # wait_for_horizontal_loading_bar انجام می‌دهد)
+        await asyncio.sleep(5)
+        loading_result = await wait_for_horizontal_loading_bar(page, bot, user_id, timeout=60)
+        if loading_result == "SESSION_EXPIRED":
+            # نشست تمدید شده — تلاش مجدد
+            continue
+        elif loading_result:
+            # خطای واقعی سامانه → بستن و تلاش مجدد ثبت موقت
+            last_error = str(loading_result)
+            logging.warning(
+                f"[CHECK] خطای ثبت موقت (تلاش {attempt + 1}): {last_error[:200]}")
+            await _close_sweet_popup(page)
+            await asyncio.sleep(3)
+            continue
+
+        # بررسی انقضای نشست بعد از ثبت
+        had_expiry = await check_and_handle_expiry(page, bot, user_id)
+        if had_expiry:
+            await asyncio.sleep(3)
+            continue
+
+        # بررسی پاپ‌آپ موفقیت/خطا
+        popup = await _read_save_popup(page)
+        if popup and popup.get("success"):
+            # ✅ موفقیت → کلیک «بستن»
+            logging.info(f"[CHECK] پاپ‌آپ موفقیت ثبت موقت: {popup.get('text', '')[:120]}")
+            await _close_sweet_popup(page)
+            await asyncio.sleep(2)
+
+            # ⭐ استخراج کدرهگیری از #txtPetitionNo (فال‌بک #txtBillNo)
+            bill_no = ""
+            for _try in range(6):
+                bill_no = await page.evaluate('''() => {
+                    const inp = document.querySelector('#txtPetitionNo') ||
+                                document.querySelector('#txtBillNo');
+                    if (inp) return inp.value || "";
+                    const sp = document.querySelector('[ng-model*="BillNo"]');
+                    if (sp) return sp.innerText || sp.textContent || "";
+                    return "";
+                }''') or ""
+                bill_no = bill_no.strip()
+                if bill_no:
+                    break
+                await asyncio.sleep(3)
+
+            logging.info(f"[CHECK] petition_no={bill_no}")
+
+            if bill_no:
+                # ⭐ کلیک «بازگشت به فهرست» (#btnGotoMainPage)
+                await _click_goto_main(page, bot, user_id)
+                return bill_no
+
+            # ثبت موفق بود ولی کدرهگیری استخراج نشد — تلاش مجدد ثبتِ
+            # موقت خطر ثبت تکراری دارد → قطع با اطلاع
+            last_error = ("ثبت موقت با موفقیت انجام شد ولی کد رهگیری "
+                          "(شماره دادخواست) از فیلد قابل استخراج نبود.")
+            break
+
+        if popup and popup.get("text"):
+            # ⭐ خطا → بستن و تلاش مجدد؛ اگر دوباره خطا آمد → اطلاع
+            last_error = str(popup.get("text"))
+            logging.warning(
+                f"[CHECK] پاپ‌آپ خطای ثبت موقت (تلاش {attempt + 1}): {last_error[:200]}")
+            await _close_sweet_popup(page)
+            await asyncio.sleep(3)
+            continue
+
+        # هیچ پاپ‌آپی نیست — کمی صبر و تلاش مجدد
+        logging.warning(f"[CHECK] پاسخی برای ثبت موقت نیامد (تلاش {attempt + 1})")
+        await asyncio.sleep(5)
+
+    # ═══ همهٔ تلاش‌ها شکست خورد — پیام به کاربر و مدیر ═══
+    if not last_error:
+        last_error = "سامانه پس از چند تلاش، پاسخ قطعی برای «ثبت موقت» نداد."
+    user_msg = (
+        "⚠️ *خطا در ثبت موقت دادخواست چک:*\n\n"
+        "«" + last_error[:300] + "»\n\n"
+        "فرآیند متوقف شد. لطفاً به مدیریت اطلاع دهید."
+    )
+    try:
+        await bot.send_message(user_id, user_msg)
+    except Exception:
+        pass
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"❌ [CHECK] قطع فرآیند ثبت موقت user={user_id}: {last_error[:400]}")
+    except Exception:
+        pass
+    logging.error(f"[CHECK] قطع فرآیند user={user_id} (TEMP_SAVE): {last_error[:300]}")
+    return ""
+
+
 async def _click_step_box(page, step_name: str, bot: Bot, user_id: int,
                           max_retries: int = 3) -> bool:
     """کلیک روی باکس (.box) مراحل با h5 مشخص — با retry.
@@ -1448,6 +1649,126 @@ async def _add_secondary_khasteh(page, bot: Bot, user_id: int, search_term: str,
     return ok
 
 
+async def _select_tamin_related_relief(page, bot: Bot, user_id: int) -> bool:
+    """انتخاب «تامین خواسته» در فیلد «موضوع خواسته مرتبط» (jssPetitionRelief2).
+
+    ⭐ طبق دستور کارفرما: بعد از افزودن خواستهٔ فرعی «تامین خواسته»، فیلد
+    «موضوع خواسته مرتبط» ظاهر می‌شود و باید مجدداً (با همان روال دراپ‌داون)
+    گزینهٔ «تامین خواسته» در آن انتخاب شود.
+
+    ساختار فیلد (از HTML سامانه):
+      - div.ui-select-match با placeholder="موضوع خواسته مرتبط"
+      - دکمهٔ ui-select-toggle
+      - input.ui-select-search با placeholder="موضوع خواسته مرتبط"
+      - گزینه‌ها از actions.getReliefFromJSSPetitionType(searchValue)
+    """
+    for attempt in range(3):
+        await wait_for_angular_idle(page)
+
+        # ۱) کلیک روی toggle دراپ‌داون «موضوع خواسته مرتبط» (آخرین نمونه)
+        clicked = await page.evaluate('''() => {
+            let btn = null;
+            const matches = Array.from(
+                document.querySelectorAll('.ui-select-match[placeholder="موضوع خواسته مرتبط"]')
+            ).filter(m => m.offsetParent !== null);
+            const match = matches.length > 0 ? matches[matches.length - 1] : null;
+            if (match) btn = match.querySelector('button.ui-select-toggle');
+            if (!btn) {
+                const spans = Array.from(document.querySelectorAll('.ui-select-placeholder'))
+                    .filter(s => (s.innerText || '').trim() === 'موضوع خواسته مرتبط');
+                const sp = spans.length > 0 ? spans[spans.length - 1] : null;
+                if (sp) btn = sp.closest('button');
+            }
+            if (btn && !btn.disabled) { btn.click(); return true; }
+            return false;
+        }''')
+        if not clicked:
+            logging.warning(
+                f"[CHECK] toggle «موضوع خواسته مرتبط» کلیک نشد (تلاش {attempt + 1}/3)")
+            await asyncio.sleep(2)
+            continue
+
+        await asyncio.sleep(1.5)
+
+        # ۲) تایپ «تامین» در فیلد جستجویِ باز
+        try:
+            search = page.locator('.ui-select-search:visible').last
+            await search.wait_for(state="visible", timeout=6000)
+            await search.fill("")
+            await search.type("تامین", delay=120)
+        except PlaywrightTimeoutError:
+            logging.warning(
+                f"[CHECK] فیلد جستجوی «موضوع خواسته مرتبط» ظاهر نشد (تلاش {attempt + 1}/3)")
+            await asyncio.sleep(2)
+            continue
+        except Exception as e:
+            logging.warning(f"[CHECK] خطا در تایپ «تامین» در فیلد مرتبط: {e}")
+            await asyncio.sleep(2)
+            continue
+
+        # ۳) ۵ ثانیه صبر (همان روال دراپ‌داون خواسته)
+        await asyncio.sleep(5)
+
+        # ۴) انتخاب گزینهٔ «تامین خواسته» (اولین گزینهٔ منطبق)
+        picked = await page.evaluate('''() => {
+            const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+            const items = Array.from(
+                document.querySelectorAll('[ng-bind-html*="typeaheadHighlight"]')
+            ).filter(el => {
+                const r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0;
+            });
+            let target = items.find(el => norm(el.innerText).includes("تامین خواسته"));
+            if (!target) target = items.find(el => norm(el.innerText).includes("تامین"));
+            if (!target) target = items[0] || null;
+            if (target) {
+                const row = target.closest('a, .ui-select-choices-row, li') || target;
+                row.click();
+                return norm(target.innerText);
+            }
+            return null;
+        }''')
+
+        if picked:
+            logging.info(f"[CHECK] گزینهٔ «موضوع خواسته مرتبط» انتخاب شد: {picked}")
+            await asyncio.sleep(3)
+            return True
+
+        logging.warning(
+            f"[CHECK] گزینهٔ فیلد «موضوع خواسته مرتبط» پیدا نشد (تلاش {attempt + 1}/3)")
+        await asyncio.sleep(2)
+
+    return False
+
+
+async def _fill_tamin_description(page) -> None:
+    """درج متن ثابت شرح تامین خواسته در #txtDescription1.
+
+    ⭐ طبق دستور کارفرما — متن عیناً:
+      «بدوا تقاضای صدور قرار تامین خواسته نسبت به اصل خواسته و اجرای قبل از ابلاغ»
+    """
+    try:
+        ok = await page.evaluate('''(text) => {
+            const inp = document.querySelector('#txtDescription1');
+            if (inp) {
+                inp.focus();
+                inp.value = "";
+                inp.value = text;
+                inp.dispatchEvent(new Event("input", { bubbles: true }));
+                inp.dispatchEvent(new Event("change", { bubbles: true }));
+                return true;
+            }
+            return false;
+        }''', "بدوا تقاضای صدور قرار تامین خواسته نسبت به اصل خواسته و اجرای قبل از ابلاغ")
+        if ok:
+            logging.info("[CHECK] متن شرح تامین خواسته در #txtDescription1 درج شد")
+        else:
+            logging.warning("[CHECK] فیلد #txtDescription1 برای شرح تامین پیدا نشد")
+        await asyncio.sleep(1)
+    except Exception as e:
+        logging.warning(f"[CHECK] خطا در درج شرح تامین خواسته: {e}")
+
+
 
 
 async def _click_sana_inquiry_button(page, bot: Bot, user_id: int, role: str = "") -> bool:
@@ -1504,8 +1825,18 @@ async def _query_sana_check(page, ng_click: str, bot: Bot, user_id: int,
     """استعلام شخص از ثنا با الگوی اظهارنامه — کلیک درست، انتظار لودینگ،
     بررسی پاپ‌آپ‌ها و تشخیص موفقیت (غیرفعال شدن فیلد کدملی).
 
-    خروجی: 'ok' | 'not_registered' | 'no_response'
+    ⭐ منطق لودینگ/خطا (طبق دستور کارفرما):
+      - به لودینگ بالای صفحه دقت می‌شود: تا لودینگ نمایان است منتظر
+        می‌مانیم (wait_for_horizontal_loading_bar) و به تسک بعدی نمی‌رویم.
+      - اگر خطای انقضای نشست/ورود همزمان ظاهر شد → مدیر باید مجدد لاگین
+        کند (check_and_handle_expiry تمدید می‌کند) و تلاش مجدد می‌شود.
+      - اگر بعد از لودینگ خطای دیگری نمایش داده شد → بسته می‌شود و
+        یکبار دیگر امتحان می‌شود؛ اگر دوباره خطا ظاهر شد، متن همان خطا
+        برای کاربر و مدیر ارسال می‌شود و خروجی 'failed' است.
+
+    خروجی: 'ok' | 'failed' (پیام‌ها ارسال شده‌اند) | 'no_response'
     """
+    error_seen = False
     for attempt in range(max_retries):
         try:
             had_expiry = await check_and_handle_expiry(page, bot, user_id)
@@ -1534,7 +1865,7 @@ async def _query_sana_check(page, ng_click: str, bot: Bot, user_id: int,
             await asyncio.sleep(3)
             continue
 
-        # صبر اولیه + لودینگ افقی
+        # صبر اولیه + لودینگ افقی — تا وقتی لودینگ نمایان است منتظر می‌مانیم
         await asyncio.sleep(5)
         await wait_for_horizontal_loading_bar(page, bot, user_id)
         await asyncio.sleep(2)
@@ -1564,15 +1895,20 @@ async def _query_sana_check(page, ng_click: str, bot: Bot, user_id: int,
             await asyncio.sleep(1)
 
             if kind == "session":
-                # مدیریت شده توسط check_and_handle_expiry — تلاش مجدد
+                # مدیریت شده توسط check_and_handle_expiry — تمدید و تلاش مجدد
                 continue
 
-            if kind in ("not_registered", "birthdate"):
-                logging.warning(
-                    f"[CHECK][{role}] خطای استعلام ثنا برای کدملی {national_id}: {popup_text!r}")
-                return "not_registered"
-
-            logging.warning(f"[CHECK][{role}] پاپ‌آپ استعلام (تلاش {attempt+1}): {popup_text!r}")
+            # ⭐ خطای غیر نشست: یکبار retry؛ اگر دوباره خطا آمد →
+            # متن خطا برای کاربر و مدیر ارسال می‌شود
+            logging.warning(
+                f"[CHECK][{role}] خطای استعلام ثنا برای کدملی {national_id} "
+                f"(تلاش {attempt+1}): {popup_text!r}")
+            if error_seen:
+                # دفعهٔ دوم → قطعی؛ متن خطا برای کاربر و مدیر ارسال می‌شود
+                await _notify_sana_query_failure(
+                    bot, user_id, national_id, role, popup_text)
+                return "failed"
+            error_seen = True
             await asyncio.sleep(3)
             continue
 
@@ -1647,14 +1983,12 @@ async def _fill_real_person(page, national_id: str, bot: Bot, user_id: int,
     # ⭐ استعلام ثنا — دکمهٔ استعلام از طریق ng-click (id ندارد!)
     status = await _query_sana_check(page, "actions.callNationalityCode", bot, user_id,
                                      role=role, national_id=national_id)
-    if status == "not_registered":
-        # قطع فرآیند — پیام کاربر/مدیر + CheckAbortError (بدون تلاش مجدد)
-        user_msg = await _notify_sana_query_failure(
-            bot, user_id, national_id, role,
-            "اطلاعاتی با این شناسه ملی در سامانه ثنا ثبت نشده است")
+    if status == "failed":
+        # ⭐ خطای قطعی — پیام‌های کاربر/مدیر داخل _query_sana_check ارسال
+        # شده‌اند؛ فقط قطع فرآیند بدون تلاش مجدد
         raise CheckAbortError(
-            f"استعلام ثنا برای {role} (کدملی {national_id}) ثبت‌نشده/ناموفق",
-            step="SANA_QUERY_FAILED", user_msg=user_msg)
+            f"استعلام ثنا برای {role} (کدملی {national_id}) ناموفق",
+            step="SANA_QUERY_FAILED")
     if status == "no_response":
         # پاسخ قطعی نگرفتیم — هشدار و ادامه (اگر فرم واقعاً نامعتبر باشد،
         # bill_no خالی در ثبت موقت قطعش می‌کند)
@@ -1696,13 +2030,11 @@ async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
     company_status = await _query_sana_check(
         page, "actions.callLegalNationalityCode", bot, user_id,
         role=f"{role} (شرکت)", national_id=company_id)
-    if company_status == "not_registered":
-        user_msg = await _notify_sana_query_failure(
-            bot, user_id, company_id, f"{role} (شناسه ملی شرکت)",
-            "اطلاعاتی با این شناسه ملی در سامانه ثنا ثبت نشده است")
+    if company_status == "failed":
+        # پیام‌ها داخل _query_sana_check ارسال شده‌اند — فقط قطع
         raise CheckAbortError(
             f"استعلام ثنا برای شرکت {role} (شناسه {company_id}) ناموفق",
-            step="SANA_QUERY_FAILED", user_msg=user_msg)
+            step="SANA_QUERY_FAILED")
 
     # وارد کردن کدملی نماینده
     if nat_id:
@@ -1725,13 +2057,11 @@ async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
         rep_status = await _query_sana_check(
             page, "actions.callNationalityCode", bot, user_id,
             role=f"{role} (نماینده)", national_id=nat_id)
-        if rep_status == "not_registered":
-            user_msg = await _notify_sana_query_failure(
-                bot, user_id, nat_id, f"{role} (نماینده)",
-                "اطلاعاتی با این شناسه ملی در سامانه ثنا ثبت نشده است")
+        if rep_status == "failed":
+            # پیام‌ها داخل _query_sana_check ارسال شده‌اند — فقط قطع
             raise CheckAbortError(
                 f"استعلام ثنا برای نمایندهٔ {role} (کدملی {nat_id}) ناموفق",
-                step="SANA_QUERY_FAILED", user_msg=user_msg)
+                step="SANA_QUERY_FAILED")
 
 
 async def _fill_lawyer_person(page, national_id: str, bot: Bot, user_id: int):
@@ -2431,6 +2761,89 @@ async def _upload_esteshahadieh_attachment(page, image_paths: list, bot: Bot,
     return True
 
 
+async def _upload_electronic_vakalaht_check(
+        page, contract_number: str, lawyer_amount_value: int,
+        bot: Bot, user_id: int, bill_no: str = "") -> bool:
+    """آپلود وکالت‌نامه الکترونیک برای دادخواست چک (الگوی اظهارنامه/lایحه).
+
+    ⭐ طبق دستور کارفرما: وقتی وکیل انتخاب شده، شماره قرارداد وکالت و
+    مقدار تمبر (خودکار محاسبه‌شده) در فرم «تصوير الكترونيك وكالت نامه»
+    درج می‌شود:
+      - #txtNo ← شماره قرارداد (۱۶ رقمی)
+      - #txtLawyerAmount ← مقدار تمبر (ریال)
+    """
+    from upload_helpers import get_and_close_error_popup_text as _uh_err
+
+    try:
+        had_expiry = await check_and_handle_expiry(page, bot, user_id)
+        if had_expiry:
+            await asyncio.sleep(2)
+
+        # ۱) انتخاب «تصوير الكترونيك وكالت نامه» از نوع پیوست
+        selected = await page.evaluate('''() => {
+            const sel = document.querySelector('#attachmentType');
+            if (!sel) return false;
+            const opts = Array.from(sel.options);
+            const opt = opts.find(o =>
+                (o.text || '').includes("تصوير الكترونيك وكالت نامه") ||
+                (o.text || '').includes("تصویر الکترونیک وکالت نامه")
+            );
+            if (opt) { sel.value = opt.value; sel.dispatchEvent(new Event("change")); return true; }
+            return false;
+        }''')
+        if not selected:
+            logging.warning("[CHECK] گزینه «تصویر الکترونیک وکالت‌نامه» پیدا نشد")
+            return False
+        await asyncio.sleep(3)
+        await wait_for_angular_idle(page)
+        await asyncio.sleep(1)
+
+        # ۲) شماره قرارداد وکالت در #txtNo
+        if contract_number:
+            await page.evaluate('''(val) => {
+                const inp = document.querySelector('#txtNo');
+                if (inp) {
+                    inp.value = val;
+                    inp.dispatchEvent(new Event("input", { bubbles: true }));
+                    inp.dispatchEvent(new Event("change", { bubbles: true }));
+                }
+            }''', str(contract_number))
+            await asyncio.sleep(1)
+
+        # ۳) مقدار تمبر در #txtLawyerAmount
+        if lawyer_amount_value and lawyer_amount_value > 0:
+            await page.evaluate('''(val) => {
+                const inp = document.querySelector('#txtLawyerAmount');
+                if (inp) {
+                    inp.removeAttribute('disabled');
+                    inp.value = String(val);
+                    inp.dispatchEvent(new Event("input", { bubbles: true }));
+                    inp.dispatchEvent(new Event("change", { bubbles: true }));
+                }
+            }''', int(lawyer_amount_value))
+            await asyncio.sleep(1)
+
+        # ۴) ذخیرهٔ سند با retry
+        save_ok = await click_save_doc_with_retry(page, bot, user_id, prefix="CHECK")
+        if not save_ok:
+            error_text = await _uh_err(page)
+            logging.error(f"[CHECK] ذخیرهٔ وکالت‌نامه الکترونیک ناموفق: {error_text!r}")
+            return False
+        logging.info("[CHECK] وکالت‌نامه الکترونیک با موفقیت ثبت شد")
+        return True
+
+    except Exception as e:
+        logging.error(f"[CHECK] خطا در آپلود وکالت‌نامه الکترونیک: {e}")
+        try:
+            from bug_reporter import report_bug
+            await report_bug(bot, where="_upload_electronic_vakalaht_check", error=e,
+                             user_id=user_id,
+                             page=getattr(runtime_state, "sana_page", None))
+        except Exception:
+            pass
+        return False
+
+
 async def _process_check_attachments(
     page,
     request_title: str,
@@ -2438,7 +2851,8 @@ async def _process_check_attachments(
     attachment_groups: list,
     bot: Bot,
     user_id: int,
-    bill_no: str) -> bool:
+    bill_no: str,
+    plaintiffs: list = None) -> bool:
     """اجرای کامل مرحلهٔ «منضمات» دادخواست چک — طبق مشخصات کارفرما.
 
     مسیر:
@@ -2455,6 +2869,8 @@ async def _process_check_attachments(
            RejectReason=کسرموجودی، ReasonForIssuance=بابت پرداخت بدهی)
          - «ثبت و ویرایش پیوست» (#btnSaveDoc) + انتظار پیام تایید
          - آپلود و تایید تصاویر (همان الگو/اخطارهای منضمات قبلی)
+      ۲.۵. ⭐ وکالت‌نامه الکترونیک — اگر وکیل داریم (شماره قرارداد + تمبر
+           خودکار) — الگوی اظهارنامه/lایحه
       ۳. پیوست‌های اضافی کاربر (check_attachment_groups) با «سایر ضمائم»
          (و «تصوير مدرک نمايندگي» برای مدرک نمایندگی) — الگوی اظهارنامه
 
@@ -2583,6 +2999,35 @@ async def _process_check_attachments(
                     os.remove(p)
             except Exception:
                 pass
+
+    # ۲.۵) ⭐ وکالت‌نامه الکترونیک — اگر وکیل داریم (شماره قرارداد + تمبر)
+    lawyers = [p for p in (plaintiffs or []) if p.get("person_type") == "وکیل"]
+    if lawyers:
+        first_lawyer = lawyers[0]
+        contract_no = first_lawyer.get("contract_number", "")
+        stamp_val = int(first_lawyer.get("stamp_amount_value", 0) or 0)
+        if contract_no or stamp_val:
+            # «پیوست جدید» برای فرم وکالت‌نامه الکترونیک
+            await asyncio.sleep(2)
+            clicked = await page.evaluate('''() => {
+                const btn = document.querySelector('#newAttachmentType');
+                if (btn && !btn.disabled) { btn.click(); return true; }
+                return false;
+            }''')
+            if clicked:
+                logging.info("[CHECK][منضمات] کلیک «پیوست جدید» برای وکالت‌نامه الکترونیک")
+                await asyncio.sleep(3)
+                await wait_for_angular_idle(page)
+                await asyncio.sleep(1)
+            vakalaht_ok = await _upload_electronic_vakalaht_check(
+                page, contract_no, stamp_val, bot, user_id, bill_no)
+            if not vakalaht_ok:
+                # شکست وکالت‌نامه فرآیند کلی را قطع نمی‌کند — مدیر مطلع می‌شود
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"⚠️ [CHECK] وکالت‌نامه الکترونیک (قرارداد {contract_no}) برای کاربر "
+                    f"{user_id} ثبت نشد — لطفاً در سامانه به‌صورت دستی بررسی کنید. "
+                    f"کد: {bill_no}")
 
     # ۳) پیوست‌های اضافی کاربر (غیر از تصاویر فقرات چک)
     for g_idx, group in enumerate(attachment_groups):

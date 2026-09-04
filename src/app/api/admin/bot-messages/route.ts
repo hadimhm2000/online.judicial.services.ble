@@ -58,7 +58,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ⭐ هزینهٔ پیام — ورودی UI به «تومان» است؛ ذخیره به «ریال» (مطابق فیلد fee پرونده‌ها)
+    // ⭐ هزینهٔ پیام — ورودی UI به «تومان» است؛ ذخیره به «ریال» (فیلد
+    // costAmount جداول BotMessage برای ارسال فاکتور IRR؛ فیلد جدا از
+    // Case.fee که از v1.4 به بعد به «تومان» است)
     let costAmountRial = 0;
     if (costToman !== undefined && costToman !== null && costToman !== '') {
       const toman = parseInt(String(costToman), 10);
