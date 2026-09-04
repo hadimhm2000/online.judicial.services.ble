@@ -876,7 +876,8 @@ async def admin_fee_successful_payment(message: Message, state: FSMContext, bot:
             ),
             tracking_code=tracking_code or None,
             document_category=label,
-            fee=amount,
+            # ⭐ amount ریال است؛ فیلد fee پنل به «تومان» است (مثل استعلام‌ها)
+            fee=amount // 10,
             fee_status="PAID",
             result_summary=(
                 "پرداخت فاکتور هزینهٔ ارسال پیام مدیر انجام شد"

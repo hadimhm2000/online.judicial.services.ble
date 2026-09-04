@@ -3006,7 +3006,8 @@ async def send_bulk_item_result(
             status="PROCESSING",
             tracking_code=tracking_code or None,
             document_category=f"{lavayeh_title} (دسته‌جمعی — ردیف {row_index})",
-            fee=court_total,
+            # ⭐ court_total ریال است؛ فیلد fee پنل به «تومان» است (مثل استعلام‌ها)
+            fee=court_total // 10,
             fee_status="UNPAID",
             result_summary=f"ردیف {row_index} از دسته {batch_tracking_code} ثبت شد؛ در انتظار پرداخت/امضای دسته",
         )
@@ -3279,7 +3280,8 @@ async def send_lavayeh_result(
             status="PENDING_PAYMENT",
             tracking_code=tracking_code or None,
             document_category=lavayeh_title,
-            fee=final_fee,
+            # ⭐ final_fee ریال است؛ فیلد fee پنل به «تومان» است (مثل استعلام‌ها)
+            fee=final_fee // 10,
             fee_status="UNPAID",
             result_summary="فاکتور ارسال شد؛ در انتظار پرداخت کاربر",
         )
@@ -3400,7 +3402,8 @@ async def lavayeh_successful_payment(message: Message, state: FSMContext, bot: B
             service_type=svc_type,
             status="PROCESSING",
             tracking_code=pending.get("tracking_code", "") or None,
-            fee=pending["final_fee"],
+            # ⭐ final_fee ریال است؛ فیلد fee پنل به «تومان» است
+            fee=pending["final_fee"] // 10,
             fee_status="PAID",
             result_summary="پرداخت انجام شد؛ در انتظار امضای الکترونیک",
         )
@@ -3513,7 +3516,8 @@ async def admin_approve_lavayeh_receipt(callback: CallbackQuery, bot: Bot):
         await upsert_case_to_panel(
             bale_user_id=user_id, full_name=str(user_id), service_type=svc_type,
             status="PROCESSING", tracking_code=pending.get("tracking_code", "") or None,
-            fee=review['expected_amount'], fee_status="PAID",
+            # ⭐ expected_amount ریال است؛ فیلد fee پنل به «تومان» است
+            fee=review['expected_amount'] // 10, fee_status="PAID",
             result_summary="پرداخت با تایید دستی مدیر ثبت شد؛ در انتظار امضای الکترونیک",
         )
     except Exception as panel_err:

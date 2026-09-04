@@ -36,6 +36,13 @@ const PASS_THROUGH_SERVICES = new Set([
 ]);
 
 function estimateSystemCost(serviceType: string, fee: number, recordedCost: number | null): number {
+  // ⭐ fee و systemCost از v1.4 به بعد هر دو به «تومان» هستند (مثل استعلام‌ها).
+  //   - ربات همهٔ feeها را قبل از ارسال به پنل به تومان تبدیل می‌کند
+  //     (court_total/final_fee ریال → fee = مبلغ // 10 تومان).
+  //   - systemCost هم توسط payment_id_capture به تومان ثبت می‌شود.
+  //   - پرونده‌های قدیمی (ریال) باید با اسکریپت migrate_fees_to_toman.js
+  //     یکبار migrate شوند.
+
   // هزینهٔ سامانهٔ دقیق ثبت‌شده توسط ربات
   if (recordedCost !== null && recordedCost !== undefined) return recordedCost;
 
@@ -50,13 +57,16 @@ function estimateSystemCost(serviceType: string, fee: number, recordedCost: numb
   }
 
   if (serviceType === 'LAVAYEH' || serviceType === 'EZHHARNAMEH') {
-    // وارون‌سازی فرمول: fee = 2×rounded − ded  ⟹  rounded = (fee + ded) / 2
-    const r1 = (fee + 100_000) / 2;
-    if (r1 > 0 && r1 <= 2_000_000 && r1 % 1000 === 0) return r1;
-    const r2 = (fee + 280_000) / 2;
-    if (r2 > 2_000_000 && r2 <= 3_000_000 && r2 % 1000 === 0) return r2;
-    const r3 = (fee + 400_000) / 2;
-    if (r3 > 3_000_000 && r3 % 1000 === 0) return r3;
+    // وارون‌سازی فرمول (به تومان):
+    //   fee_rial = 2×rounded_rial − ded_rial
+    //   ⟹  fee_toman = 2×rounded_toman − ded_toman
+    //   کسرهای پلکانی: ۱۰,۰۰۰ / ۲۸,۰۰۰ / ۴۰,۰۰۰ تومان (۱۰۰/۲۸۰/۴۰۰ هزار ریال)
+    const r1 = (fee + 10_000) / 2;
+    if (r1 > 0 && r1 <= 200_000 && r1 % 100 === 0) return r1;
+    const r2 = (fee + 28_000) / 2;
+    if (r2 > 200_000 && r2 <= 300_000 && r2 % 100 === 0) return r2;
+    const r3 = (fee + 40_000) / 2;
+    if (r3 > 300_000 && r3 % 100 === 0) return r3;
     // حالت‌های خاص (معاف/دستی): تقریب نصف مبلغ
     return Math.round(fee / 2);
   }

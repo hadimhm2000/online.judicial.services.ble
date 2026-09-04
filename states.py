@@ -221,6 +221,9 @@ class Form(StatesGroup):
     tn_appellee_vakalat_no = State()     # شماره قرارداد وکالت تجدیدنظرخوانده
     check_plaintiff_vakalat_no = State() # شماره قرارداد وکالت خواهان چک
     check_defendant_vakalat_no = State() # شماره قرارداد وکالت خوانده چک
+    # ⭐ فلو نمایندگان شخص حقوقی خواهان چک (مدیرعامل + تا ۵ نماینده — مشابه اظهارنامه)
+    check_legal_rep_doc_images = State() # تصاویر مدرک نمایندگی نمایندهٔ شرکت خواهان چک
+    check_legal_rep_more = State()       # افزودن نمایندهٔ دیگر / اتمام
 
     # State پرداخت دعاوی اعتراضی — مستقل از لایحه (طبق درخواست کارفرما)
     waiting_for_tn_payment_receipt = State()

@@ -571,6 +571,26 @@ ezhhar_attachment_more_kb = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# =========================================================
+# کیبوردهای فلو نمایندگان شخص حقوقی خواهان چک
+# (مدیرعامل + تا ۵ نماینده — مشابه مسیر اظهارنامه)
+# =========================================================
+
+check_legal_rep_add_more_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="➕ افزودن شخص نماینده")],
+        [KeyboardButton(text="✅ اتمام و ادامه")],
+    ],
+    resize_keyboard=True
+)
+
+check_rep_doc_images_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="✅ اتمام ارسال تصاویر")],
+    ],
+    resize_keyboard=True
+)
+
 ezhhar_confirm_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="✅ تایید و شروع ثبت")],
