@@ -1,4 +1,5 @@
 import { db } from '@/lib/db';
+import { getServiceOption } from '@/lib/service-types';
 import { NextRequest, NextResponse } from 'next/server';
 import { Prisma } from '@prisma/client';
 
@@ -48,7 +49,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { baleUserId, fullName, messageText, fileUrl, fileName, costToman } = body;
+    const { baleUserId, fullName, messageText, fileUrl, fileName, costToman, serviceType, trackingCode } = body;
 
     if (!baleUserId || !messageText) {
       return NextResponse.json(
@@ -74,6 +75,23 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // ⭐ نوع سند — فقط وقتی «هزینه» دارد معنا دارد (امضا پس از پرداخت آغاز می‌شود)
+    let serviceTypeClean: string | null = null;
+    let signMenuPathJson: string | null = null;
+    if (costAmountRial > 0 && serviceType && String(serviceType).trim() !== '' && String(serviceType) !== 'NONE') {
+      const opt = getServiceOption(String(serviceType).trim());
+      if (!opt) {
+        return NextResponse.json(
+          { error: 'نوع سند انتخاب‌شده معتبر نیست' },
+          { status: 400 }
+        );
+      }
+      serviceTypeClean = opt.value;
+      if (opt.hasSignFlow && opt.signMenuPath) {
+        signMenuPathJson = JSON.stringify(opt.signMenuPath);
+      }
+    }
+
     const message = await db.botMessage.create({
       data: {
         baleUserId,
@@ -84,6 +102,12 @@ export async function POST(request: NextRequest) {
         status: 'PENDING',
         costAmount: costAmountRial,
         costStatus: costAmountRial > 0 ? 'AWAITING_PAYMENT' : 'NONE',
+        serviceType: serviceTypeClean,
+        signMenuPath: signMenuPathJson,
+        trackingCode:
+          typeof trackingCode === 'string' && trackingCode.trim() !== ''
+            ? trackingCode.trim()
+            : null,
       },
     });
 
@@ -92,7 +116,7 @@ export async function POST(request: NextRequest) {
         action: 'BOT_MESSAGE_CREATED',
         details:
           costAmountRial > 0
-            ? `پیام جدید برای ${fullName || baleUserId} - با هزینه ${costAmountRial / 10} تومان - در انتظار ارسال`
+            ? `پیام جدید برای ${fullName || baleUserId} - با هزینه ${costAmountRial / 10} تومان${serviceTypeClean ? ` (${getServiceOption(serviceTypeClean)?.label || serviceTypeClean} - امضای خودکار پس از پرداخت)` : ' - بدون امضا'} - در انتظار ارسال`
             : `پیام جدید برای ${fullName || baleUserId} - در انتظار ارسال`,
       },
     });

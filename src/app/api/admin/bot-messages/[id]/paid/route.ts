@@ -1,5 +1,6 @@
 import { db } from '@/lib/db';
 import { sendBaleMessage, sendBaleDocument } from '@/lib/bale';
+import { getServiceOption } from '@/lib/service-types';
 import { NextRequest, NextResponse } from 'next/server';
 import path from 'path';
 
@@ -13,8 +14,11 @@ import path from 'path';
  *  ۱) ثبت پرداخت (costStatus=PAID + paymentId + paidAt)
  *  ۲) ارسال واقعی پیام (متن + فایل پیوست) به کاربر
  *  ۳) آپدیت status=SENT + لاگ فعالیت
+ *  ۴) پاسخ شامل serviceType / signMenuPath / trackingCode است تا ربات
+ *     در صورت نیاز «روند درج امضا» را برای همان نوع سند آغاز کند.
  *
- * idempotent است: اگر قبلاً PAID/SENT شده باشد، فقط ok برمی‌گرداند.
+ * idempotent است: اگر قبلاً PAID/SENT شده باشد، فقط ok + پیام برمی‌گرداند
+ * (تا ربات در تلاش مجدد هم به اطلاعات نوع سند دسترسی داشته باشد).
  */
 export async function POST(
   request: NextRequest,
@@ -37,8 +41,10 @@ export async function POST(
     }
 
     // idempotency — پرداخت/ارسال تکراری مشکلی ایجاد نکند
+    // ⭐ پیام کامل برگردانده می‌شود تا ربات حتی در تلاش مجدد، بتواند فلوی
+    // امضا را با serviceType/signMenuPath/trackingCode درست آغاز کند.
     if (message.costStatus === 'PAID' && message.status === 'SENT') {
-      return NextResponse.json({ ok: true, alreadyProcessed: true });
+      return NextResponse.json({ ok: true, alreadyProcessed: true, message });
     }
 
     // ── ۱) ثبت پرداخت ──
@@ -72,7 +78,11 @@ export async function POST(
     await db.activityLog.create({
       data: {
         action: 'BOT_MESSAGE_PAID_AND_SENT',
-        details: `هزینه پیام ${message.fullName || message.baleUserId} پرداخت شد (${Math.floor(message.costAmount / 10).toLocaleString('fa-IR')} تومان) و پیام ارسال گردید${paymentId ? ` — payment_id: ${paymentId}` : ''}`,
+        details: `هزینه پیام ${message.fullName || message.baleUserId} پرداخت شد (${Math.floor(message.costAmount / 10).toLocaleString('fa-IR')} تومان) و پیام ارسال گردید${
+          message.serviceType
+            ? ` — نوع سند: ${getServiceOption(message.serviceType)?.label || message.serviceType} (ربات روند درج امضا را آغاز می‌کند)`
+            : ''
+        }${paymentId ? ` — payment_id: ${paymentId}` : ''}`,
       },
     });
 

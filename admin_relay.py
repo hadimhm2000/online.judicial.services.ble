@@ -966,3 +966,236 @@ async def admin_fee_successful_payment(message: Message, state: FSMContext, bot:
         reply_markup=lavayeh_sign_ready_kb)
     await state.set_state(Form.lavayeh_sign_ready)
 
+
+# ══════════════════════════════════════════════════════════════════════════
+# ۴) ⭐ پیام پنل ادمین — پرداخت موفق فاکتور {"type": "panel_message", "mid": ...}
+# ══════════════════════════════════════════════════════════════════════════
+
+# برچسب انواع سند «پیام پنل» — هماهنگ با src/lib/service-types.ts در پنل ادمین
+PANEL_MESSAGE_SERVICE_LABELS = {
+    "LAVAYEH": "لایحه",
+    "EZHHARNAMEH": "اظهارنامه",
+    "TAJDID_NAZAR": "تجدیدنظرخواهی",
+    "VAKHAVI": "واخواهی",
+    "FARQAM": "فرجام‌خواهی",
+    "DADKHAST_BEDAVI": "دادخواست بدوی",
+    "SOHL": "دعاوی صلح",
+    "CHECK_BEDAVI": "چک (دادخواست بدوی)",
+    "CHECK_SOHL": "چک (دعاوی صلح)",
+    "INQUIRY": "استعلام",
+}
+
+# سرویس‌هایی که پس از پرداخت «امضا ندارند» — فقط ارسال پیام/فایل
+PANEL_MESSAGE_NO_SIGN_SERVICES = {"", "NONE", "ADMIN_SEND", "INQUIRY"}
+
+
+async def panel_message_successful_payment(message: Message, state: FSMContext, bot: Bot):
+    """پرداخت موفق فاکتور «پیام مدیر از پنل ادمین».
+
+    payload فاکتور: {"type": "panel_message", "mid": "<messageId>"}
+
+    این هندلر توسط successful_payment_handler و global_successful_payment_handler
+    در handlers.py صدا زده می‌شود (مستقل از state فعلی کاربر — چون فاکتور از
+    پنل ارسال شده و به FSM ربات وصل نیست).
+
+    کارها:
+      ۱) POST به پنل: {ADMIN_API_BASE}/admin/bot-messages/{mid}/paid
+         → پنل costStatus را PAID می‌کند و «متن + فایل پیام» را برای کاربر
+           ارسال می‌کند (رفع باگ: قبلاً فقط فاکتور می‌رفت و پس از پرداخت
+           هیچ‌چیز ارسال نمی‌شد، چون این تابع اصلاً وجود نداشت و import
+           در handlers.py با ImportError شکست می‌خورد).
+      ۲) اگر مدیر برای پیام «نوع سند» انتخاب کرده باشد (لایحه/واخواهی/
+         تجدیدنظرخواهی/دادخواست بدوی/صلح/اظهارنامه/چک/...) → شروع خودکار
+         «روند درج امضا» برای همان نوع سند — دقیقاً مثل /fee.
+      ۳) لاگ شیت + اطلاع‌رسانی به مدیر.
+    """
+    import asyncio
+    import runtime_state
+    from states import Form
+    from sheets import log_event
+
+    user_id = message.from_user.id
+    payment = message.successful_payment
+    payment_id = str(getattr(payment, "telegram_payment_charge_id", "") or "")
+    amount_rial = int(getattr(payment, "total_amount", 0) or 0)
+
+    try:
+        _pl = json.loads(getattr(payment, "invoice_payload", "") or "{}")
+    except Exception:
+        _pl = {}
+    mid = str(_pl.get("mid") or "").strip()
+
+    if not mid:
+        logger.error(f"[PANEL-MSG-PAY] invoice_payload بدون mid است: {_pl}")
+        await message.answer(
+            "✅ پرداخت شما ثبت شد.\n\n"
+            "⚠️ اما شناسهٔ پیام مدیریت در فاکتور یافت نشد؛ لطفاً با پشتیبانی در تماس باشید.",
+            reply_markup=ReplyKeyboardRemove())
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"⚠️ فاکتور پیام پنل با payload نامعتبر پرداخت شد!\n\n"
+                f"👤 کاربر: {message.from_user.full_name} ({user_id})\n"
+                f"💰 مبلغ: {amount_rial:,} ریال\n"
+                f"🎫 payment_id: {payment_id}")
+        except Exception:
+            pass
+        await state.clear()
+        return
+
+    # ── ۱) اطلاع به پنل: پرداخت انجام شد → پنل پیام/فایل را ارسال می‌کند ──
+    # ۳ تلاش با تاخیر (پنل ممکن است موقتاً در دسترس نباشد؛ پیام/فایل فقط
+    # در DB پنل است، پس retry تا کاربر پیامش را از دست ندهد ضروری است.)
+    url = f"{ADMIN_API_BASE.rstrip('/')}/admin/bot-messages/{mid}/paid"
+    panel_ok = False
+    panel_msg_info: dict = {}
+    last_err = ""
+    for attempt in range(1, 4):
+        try:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+                async with session.post(
+                    url,
+                    json={"paymentId": payment_id},
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status == 200:
+                        result = await resp.json()
+                        panel_ok = bool(result.get("ok"))
+                        panel_msg_info = result.get("message") or {}
+                        if panel_ok:
+                            break
+                        last_err = "پاسخ ok=false از پنل"
+                    else:
+                        body_text = (await resp.text())[:300]
+                        last_err = f"HTTP {resp.status}: {body_text}"
+        except Exception as e:
+            last_err = str(e)
+        if attempt < 3:
+            await asyncio.sleep(attempt)
+
+    if not panel_ok:
+        logger.error(
+            f"[PANEL-MSG-PAY] خطا در تماس با پنل پس از ۳ تلاش ({url}): {last_err}")
+
+    # اطلاعات نوع سند از پاسخ پنل
+    svc = str(panel_msg_info.get("serviceType") or "").strip()
+    sign_menu_path = None
+    try:
+        _smp = panel_msg_info.get("signMenuPath")
+        if _smp:
+            _parsed = json.loads(_smp)
+            if isinstance(_parsed, list):
+                sign_menu_path = _parsed
+    except Exception:
+        sign_menu_path = None
+    tracking_code = str(panel_msg_info.get("trackingCode") or "").strip()
+    doc_label = PANEL_MESSAGE_SERVICE_LABELS.get(svc, "")
+    has_sign = svc not in PANEL_MESSAGE_NO_SIGN_SERVICES
+
+    # ── ۲) تایید پرداخت به کاربر ──
+    if panel_ok:
+        await message.answer(
+            "✅ پرداخت شما ثبت شد!\n\n"
+            f"💰 مبلغ: {amount_rial // 10:,} تومان"
+            + (f"\n📄 نوع سند: {doc_label}" if doc_label else "")
+            + "\n\n📨 پیام/فایل مدیریت همین حالا برای شما ارسال می‌شود."
+            + ("\n🖊 سپس مرحلهٔ درج امضای الکترونیک آغاز خواهد شد." if has_sign else ""),
+            reply_markup=ReplyKeyboardRemove()
+        )
+    else:
+        await message.answer(
+            "✅ پرداخت شما ثبت شد!\n\n"
+            f"💰 مبلغ: {amount_rial // 10:,} تومان\n\n"
+            "⚠️ ارسال پیام مدیریت با اختلال موقت مواجه شد؛ مدیریت مطلع شد و "
+            "پیام شما به‌زودی ارسال می‌گردد.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+
+    # ── ۳) لاگ رویداد ──
+    try:
+        await log_event(
+            "پرداخت", doc_label or "ارسال پیام مدیریت", message.from_user.full_name, user_id,
+            tracking_code=tracking_code,
+            doc_name=doc_label or "ارسال پیام مدیریت",
+            payment_status="پرداخت شده (فاکتور پیام پنل ادمین)",
+            note=f"مبلغ: {amount_rial:,} ریال | payment_id: {payment_id} | mid: {mid}",
+        )
+    except Exception as e:
+        logger.warning(f"[PANEL-MSG-PAY] خطا در log_event: {e}")
+
+    # ── ۴) اطلاع‌رسانی به مدیر ──
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"💰 پرداخت فاکتور «پیام پنل ادمین»:\n\n"
+            f"👤 کاربر: {message.from_user.full_name} ({user_id})\n"
+            f"💰 مبلغ: {amount_rial // 10:,} تومان ({amount_rial:,} ریال)\n"
+            f"📄 نوع سند: {doc_label or 'بدون امضا (فقط ارسال پیام)'}\n"
+            f"🆔 پیام پنل: {mid}\n"
+            + (f"🔢 کد رهگیری: {tracking_code or '—'}\n" if has_sign else "")
+            + f"📨 ارسال پیام توسط پنل: "
+            + ("موفق ✅" if panel_ok else "ناموفق ❌ — نیازمند پیگیری دستی (دکمهٔ ارسال در تاریخچه پنل)")
+            + f"\n⏱ زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}\n"
+            f"🎫 payment_id: {payment_id}"
+        )
+    except Exception as e:
+        logger.error(f"[PANEL-MSG-PAY] خطا در اطلاع‌رسانی به ادمین: {e}", exc_info=True)
+
+    # ── ۵) شروع خودکار «روند درج امضا» برای نوع سند انتخابی ──
+    if not (panel_ok and has_sign):
+        await state.clear()
+        return
+
+    if svc == "EZHHARNAMEH":
+        # فلوی امضای اظهارنامه — دقیقاً مثل /fee و پرداخت خودکار اظهارنامه
+        runtime_state.pending_ezhhar_sign[user_id] = {
+            "tracking_code": tracking_code,
+            "is_ezhharnameh": True,
+            "service_type": svc,
+            "sign_persons": [],
+            "persons_awaiting_sign": [],
+            "current_person_idx": 0,
+            "sign_codes_received": {},
+            "sign_sent_time": None,
+            "wrong_code_time": None,
+            "code_sent_announce_time": None,
+            "resend_notified": False,
+            "total_no_action_start": datetime.datetime.now(),
+        }
+        from keyboards import ezhhar_sign_ready_kb
+        await bot.send_message(
+            user_id,
+            "🖊 *مرحله اخذ امضای الکترونیک اظهارنامه:*\n\n"
+            "هر موقع آمادگی دارید که کد امضا ارسال شود، گزینه زیر را انتخاب کنید:",
+            reply_markup=ezhhar_sign_ready_kb)
+        await state.set_state(Form.ezhhar_sign_ready)
+        return
+
+    # لایحه / واخواهی / تجدیدنظر / دادخواست بدوی / صلح / چک / فرجام →
+    # فلوی امضای لایحه با مسیر منوی مناسب (ناوبری امضا)
+    runtime_state.pending_lavayeh_sign[user_id] = {
+        "tracking_code": tracking_code,
+        "lavayeh_title": doc_label or "سند",
+        "province": "",
+        "row_number": 1,
+        "persons": [],
+        "service_type": svc,
+        "sign_menu_path": sign_menu_path,
+        "sign_persons": [],
+        "persons_awaiting_sign": [],
+        "current_person_idx": None,
+        "sign_sent_time": None,
+        "sign_codes_received": {},
+        "wrong_code_time": None,
+        "code_sent_announce_time": None,
+        "resend_notified": False,
+        "total_no_action_start": None,
+    }
+    from keyboards import lavayeh_sign_ready_kb
+    await bot.send_message(
+        user_id,
+        "🖊 *مرحله اخذ امضای الکترونیک:*\n\n"
+        "هر موقع آمادگی دارید که کد امضا ارسال شود، گزینه زیر را انتخاب کنید:",
+        reply_markup=lavayeh_sign_ready_kb)
+    await state.set_state(Form.lavayeh_sign_ready)
+
