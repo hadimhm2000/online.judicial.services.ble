@@ -12,7 +12,35 @@ import runtime_state
 from bale_file_sender import send_document_direct
 from config import ADMIN_ID, DEBUG_LOG_REQUESTS, FEES, get_fee
 from sheets import log_event
-from panel_sync import register_inquiry_to_panel, register_failed_inquiry_to_panel
+from panel_sync import register_case_to_panel as _register_case_to_panel_sync
+from panel_sync import register_failed_inquiry_to_panel
+
+
+async def register_inquiry_to_panel(
+    user_id, full_name, tracking_code, doc_category,
+    doc_subcategory=None, fee=0, result_summary=None):
+    """
+    ⭐ v1.3 — ثبت استعلام در پنل ادمین با feeStatus=PAID.
+
+    ریشه‌ی تغییر: این تابع «فقط بعد از پرداخت موفق کیف پول بله» صدا زده می‌شود
+    (داخل process_task که پس از successful_payment اجرا می‌شود)؛ ولی نسخهٔ
+    قبلی استعلام را با fee_status=UNPAID ثبت می‌کرد. نتیجه: استعلام‌های
+    پرداخت‌شده هرگز وارد «درآمد» و «سود» پنل نمی‌شدند و در کارت «پرداخت
+    نشده» انباشته می‌شدند. طبق قاعدهٔ سود («هر مبلغی که بابت استعلام‌ها
+    پرداخت شده مستقیماً وارد سود شود»)، ثبت با PAID انجام می‌شود.
+    """
+    return await _register_case_to_panel_sync(
+        bale_user_id=str(user_id),
+        full_name=full_name,
+        service_type="INQUIRY",
+        status="COMPLETED",
+        tracking_code=tracking_code,
+        document_category=doc_category,
+        sub_category=doc_subcategory,
+        fee=fee,
+        fee_status="PAID",
+        result_summary=result_summary,
+    )
 from keyboards import admin_login_kb, confirm_single_kb, confirm_cart_kb
 from browser_helpers import (
     human_delay, force_click_by_text, soft_click_if_exists, human_type,

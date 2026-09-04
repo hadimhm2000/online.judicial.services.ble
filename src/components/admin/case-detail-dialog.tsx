@@ -65,6 +65,10 @@ const serviceTypeLabels: Record<string, string> = {
   EZHHARNAMEH: 'اظهارنامه',
   EALAM_VAKALAHT: 'اعلام وکالت',
   STAMP_CALC: 'محاسبه تمبر',
+  CHECK: 'دادخواست چک',
+  TAJDID_NAZAR: 'دعاوی اعتراضی',
+  REGIONAL_VALUE: 'ارزش منطقه‌ای',
+  ADMIN_SEND: 'ارسال پیام مدیریت',
 };
 
 const statusLabels: Record<string, string> = {
@@ -391,6 +395,29 @@ export default function CaseDetailDialog({
                       caseItem.feeStatus === 'UNPAID' ? 'text-red-600' : 'text-emerald-600'
                     }
                   />
+                  {/* ⭐ v1.3 — شناسه پرداخت سامانه + هزینه سامانه + سود این پرونده */}
+                  {caseItem.paymentId && (
+                    <InfoCard
+                      label="شناسه پرداخت سامانه"
+                      value={caseItem.paymentId}
+                      dir="ltr"
+                      valueClassName="text-emerald-600 font-mono"
+                    />
+                  )}
+                  {caseItem.systemCost !== null && caseItem.systemCost !== undefined && (
+                    <InfoCard
+                      label="هزینه سامانه"
+                      value={formatToman(caseItem.systemCost)}
+                      valueClassName="text-amber-600"
+                    />
+                  )}
+                  {caseItem.systemCost !== null && caseItem.systemCost !== undefined && (
+                    <InfoCard
+                      label="سود این پرونده"
+                      value={formatToman(Math.max(0, caseItem.fee) - caseItem.systemCost)}
+                      valueClassName="text-emerald-600 font-bold"
+                    />
+                  )}
                 </div>
               </div>
             </div>

@@ -373,7 +373,11 @@ async def process_ealam_vakalaht_task(data: dict, bot: Bot):
                 lavayeh_province=province,
                 lavayeh_row_number=row_number,
                 lavayeh_persons=[{"person_type": "وکیل", "national_id": l} for l in lawyers],
-                skip_fee_calc=True)
+                skip_fee_calc=True,
+                # ⭐ v1.3: قبلاً service_type پاس داده نمی‌شد و پروندهٔ اعلام وکالت
+                # در پنل با نوع «LAVAYEH» ثبت می‌شد؛ حالا با نوع صحیح خودش ثبت می‌شود
+                # تا در ممیزی اتصال بخش‌ها و محاسبه سود، درست دسته‌بندی شود.
+                service_type="EALAM_VAKALAHT")
 
             await bot.send_message(
                 ADMIN_ID,

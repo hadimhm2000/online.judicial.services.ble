@@ -1060,6 +1060,21 @@ async def check_witness_national_id_handler(message: Message, state: FSMContext)
     if text == "✅ اتمام و ادامه":
         if await _check_maybe_return_to_preview(message, state):
             return
+        # ⭐ طبق دستور کارفرما: در صورت اعسار از هزینه دادرسی، کدملی «دو شخص
+        # حقیقی» در مطلع/گواه الزامی است — این الزام قبلاً فقط در مرحلهٔ
+        # «مطلع/گواه دیگری» بررسی می‌شد و کاربر می‌توانست در همین اولین
+        # پرسش، بدون وارد کردن هیچ کدملی، با «اتمام و ادامه» عبور کند.
+        # اکنون در همان اولین پرسش هم اعمال می‌شود.
+        data = await state.get_data()
+        if data.get("check_aasar", False):
+            witnesses = data.get("check_witnesses", [])
+            if len(witnesses) < 2:
+                await message.answer(
+                    "⚠️ چون درخواست *اعسار از هزینه دادرسی* دارید، باید *کدملی دو شخص حقیقی* "
+                    f"به‌عنوان مطلع/گواه وارد شود. (تاکنون: {len(witnesses)} از ۲)\n\n"
+                    "لطفاً کدملی مطلع/گواه را ارسال فرمایید:",
+                    reply_markup=check_addressee_add_more_kb)
+                return  # در همان state (check_witness_national_id) می‌مانیم
         # رفتن به مرحله شرح متن
         await _ask_check_text(message, state)
         return
@@ -1952,6 +1967,21 @@ async def check_confirm_handler(message: Message, state: FSMContext, bot: Bot):
     if text == "✅ تایید و شروع ثبت":
         data = await state.get_data()
         user_id = message.from_user.id
+
+        # ⭐ محافظ نهایی اعسار: اگر اعسار از هزینه دادرسی فعال است ولی کمتر از
+        # دو مطلع/گواه ثبت شده، ثبت مسدود و کاربر به مرحلهٔ مطلع/گواه برمی‌گردد
+        # (هیچ مسیری — از جمله ویرایش‌ها — نباید بتواند این الزام را دور بزند).
+        if data.get("check_aasar", False):
+            witnesses = data.get("check_witnesses", []) or []
+            if len(witnesses) < 2:
+                await message.answer(
+                    "⚠️ درخواست *اعسار از هزینه دادرسی* فعال است ولی *کدملی دو شخص حقیقی* "
+                    "در مطلع/گواه ثبت نشده است. (تاکنون: "
+                    f"{len(witnesses)} از ۲)\n\n"
+                    "برای ادامه، لطفاً کدملی مطلع/گواه را ارسال فرمایید:",
+                    reply_markup=check_addressee_add_more_kb)
+                await state.set_state(Form.check_witness_national_id)
+                return
 
         await message.answer(
             "⏳ *درخواست دادخواست چک تایید شد.*\n\n"

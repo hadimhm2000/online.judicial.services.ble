@@ -1,8 +1,20 @@
 import { db } from '@/lib/db';
-import { sendBaleMessage, sendBaleDocument } from '@/lib/bale';
+import { sendBaleMessage, sendBaleDocument, sendBaleInvoice } from '@/lib/bale';
 import { NextRequest, NextResponse } from 'next/server';
 import path from 'path';
 
+/**
+ * ارسال پیام مدیر به کاربر — با پشتیبانی هزینه (فاکتور کیف پول بله).
+ *
+ * منطق:
+ *  ۱) اگر پیام «هزینه» دارد و هنوز پرداخت نشده:
+ *     → به‌جای ارسال پیام، «فاکتور هزینه» برای کاربر ارسال می‌شود.
+ *     → costStatus = AWAITING_PAYMENT و پیام PENDING می‌ماند.
+ *     → پس از پرداخت، ربات POST /admin/bot-messages/{id}/paid را صدا می‌زند
+ *       و همان‌جا متن/فایل پیام واقعاً برای کاربر ارسال می‌شود.
+ *  ۲) اگر هزینه ندارد (costAmount=0) یا قبلاً پرداخت شده (PAID):
+ *     → ارسال مستقیم متن (+ فایل) — مثل قبل.
+ */
 export async function POST(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -22,6 +34,43 @@ export async function POST(
       );
     }
 
+    // ── حالت ۱: هزینه دارد و هنوز پرداخت نشده → ارسال فاکتور ──
+    if (message.costAmount > 0 && message.costStatus !== 'PAID') {
+      const toman = Math.floor(message.costAmount / 10);
+      const amountRial = message.costAmount;
+
+      await sendBaleInvoice(
+        message.baleUserId,
+        'هزینه پیام خدمات قضایی',
+        `این فاکتور هزینهٔ پیام/مدارکی است که پس از پرداخت برای شما ارسال می‌شود.\nمبلغ: ${toman.toLocaleString('fa-IR')} تومان (${amountRial.toLocaleString('fa-IR')} ریال)`,
+        { type: 'panel_message', mid: message.id },
+        amountRial
+      );
+
+      const updated = await db.botMessage.update({
+        where: { id },
+        data: {
+          costStatus: 'AWAITING_PAYMENT',
+          status: 'PENDING',
+        },
+      });
+
+      await db.activityLog.create({
+        data: {
+          action: 'BOT_MESSAGE_INVOICE_SENT',
+          details: `فاکتور هزینه ${toman.toLocaleString('fa-IR')} تومانی برای ${message.fullName || message.baleUserId} ارسال شد — پیام پس از پرداخت ارسال می‌شود`,
+        },
+      });
+
+      // پاسخ متمایز تا UI پیام درست نشان دهد
+      return NextResponse.json({
+        ...updated,
+        awaitingPayment: true,
+        costAmount: message.costAmount,
+      });
+    }
+
+    // ── حالت ۲: بدون هزینه یا هزینهٔ پرداخت‌شده → ارسال مستقیم ──
     // ارسال پیام متنی
     await sendBaleMessage(message.baleUserId, message.messageText);
 

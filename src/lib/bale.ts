@@ -69,3 +69,49 @@ export async function sendBaleDocument(
   }
   return data;
 }
+
+/**
+ * ارسال فاکتور کیف پول بله به کاربر (برای هزینهٔ پیام مدیر و ...).
+ * پس از پرداخت موفق، خود بله پیام successful_payment را برای ربات می‌فرستد
+ * و ربات فلوی «پرداخت → ارسال پیام» را ادامه می‌دهد.
+ *
+ * amount به «ریال» و currency=IRR است — مطابق الگوی فاکتور در admin_relay.py
+ */
+export async function sendBaleInvoice(
+  chatId: string,
+  title: string,
+  description: string,
+  payload: object,
+  amount: number
+) {
+  if (!chatId?.trim()) {
+    throw new Error('شناسه بله کاربر خالی است');
+  }
+  const walletToken = process.env.BALE_WALLET_TOKEN;
+  if (!walletToken) {
+    throw new Error('BALE_WALLET_TOKEN در فایل .env پنل تنظیم نشده است');
+  }
+  if (!amount || amount <= 0) {
+    throw new Error('مبلغ فاکتور باید بزرگ‌تر از صفر باشد');
+  }
+
+  const res = await fetch(apiUrl('sendInvoice'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: String(chatId).trim(),
+      title,
+      description,
+      payload: JSON.stringify(payload),
+      provider_token: walletToken,
+      currency: 'IRR',
+      prices: [{ label: title, amount }],
+    }),
+  });
+
+  const data = await res.json();
+  if (!data.ok) {
+    throw new Error(data.description || 'ارسال فاکتور بله ناموفق بود');
+  }
+  return data;
+}

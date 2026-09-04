@@ -8,6 +8,19 @@ panel_sync.py — ثبت رویدادها در پنل ادمین (Next.js API) �
   «کل فلوی کاربر» را متوقف می‌کرد. لاگ نمونه:
       [PANEL_SYNC] خطا در ارتباط با پنل ادمین (تلاش 1/3): TimeoutError()
 
+⚠️ اصلاحات این نسخه (رفع TimeoutError و گم‌شدن داده):
+  ۱) warmup پنل دیگر circuit breaker را «باز» نمی‌کند (probe غیرحیاتی است؛
+     قبلاً ۳ شکست warmup پنل را ۵ دقیقه برای همه syncهای واقعی می‌بست!).
+  ۲) timeout warmup به ۶۰ ثانیه افزایش یافت — کامپایل اولیه Next.js در حالت
+     dev (به‌خصوص روی ویندوز) به‌راحتی از ۱۵ ثانیه بیشتر طول می‌کشد و همین
+     علت اصلی TimeoutError() در لاگ استارت ربات بود.
+  ۳) تسک‌های پس‌زمینه وقتی breaker باز است «حذف نمی‌شوند» — تا بسته شدن
+     breaker منتظر می‌مانند تا دادهٔ پرونده در پنل گم نشود.
+  ۴) خطاها دسته‌بندی و با پیام راهنمای قابل‌اقدام لاگ می‌شوند:
+     پنل خاموز/آدرس اشتباه (Connection Refused) در برابر کندی/کامپایل (Timeout).
+  ۵) آدرس هدف در پیام‌های خطا ثبت می‌شود تا اشتباه در ADMIN_API_BASE
+     (پیش‌فرض http://localhost:3000/api) سریع قابل تشخیص باشد.
+
 راه‌حل فعلی:
   ۱) پیش‌فرض همه عملیات نوشتن (register/update/upsert/ready) در «پس‌زمینه»
      اجرا می‌شوند — یعنی هندلر بلافاصله ادامه می‌یابد و پنل هرگز فلوی کاربر
@@ -20,6 +33,7 @@ panel_sync.py — ثبت رویدادها در پنل ادمین (Next.js API) �
   ۴) سقف همروندی ۳ تسک پس‌زمینه — پنل زیر بار ربات غرق نمی‌شود.
   ۵) Circuit Breaker — بعد از ۳ شکست متوالی، ۵ دقیقه تماس جدید فوراً رد
      می‌شود تا صف پس‌زمینه هم بی‌دلیل شلوغ نشود. اولین موفقیت ریست می‌کند.
+     ⭐ تسک‌های پس‌زمینه به‌جای رد شدن، منتظر بسته شدن breaker می‌مانند.
   ۶) پنل خودش Case تکراری را تشخیص می‌دهد (_duplicate) پس retry امن است.
 """
 import asyncio
@@ -97,9 +111,31 @@ def _breaker_log_throttled(msg: str):
         logger.info(f"[PANEL_SYNC] {msg}")
 
 
+def _error_hint(e: BaseException) -> str:
+    """دسته‌بندی خطای اتصال به پنل — پیام راهنمای قابل‌اقدام برمی‌گرداند (یا خالی)."""
+    if isinstance(e, aiohttp.ClientConnectorError):
+        return (
+            "پنل ادمین در این آدرس در حال اجرا نیست یا آدرس/پورت اشتباه است "
+            "(اتصال رد شد). پنل را با `npm run dev` بالا بیاورید و ADMIN_API_BASE "
+            "را در .env چک کنید (پیش‌فرض: http://localhost:3000/api)."
+        )
+    if isinstance(e, (aiohttp.ServerTimeoutError, asyncio.TimeoutError)):
+        return (
+            "اتصال برقرار شد ولی پنل در زمان مقرر پاسخ نداد. اگر پنل تازه استارت "
+            "شده، کامپایل اولیه Next.js (حالت dev) می‌تواند چند ده ثانیه طول "
+            "بکشد — معمولاً بعد از گرم شدن، درخواست‌ها سریع جواب می‌گیرند."
+        )
+    return ""
+
+
 async def _panel_request(method: str, url: str, max_retries: int | None = None,
-                         timeout: aiohttp.ClientTimeout | None = None, **kwargs):
+                         timeout: aiohttp.ClientTimeout | None = None,
+                         breaker_failure: bool = True, **kwargs):
     """اجرای یک درخواست HTTP به پنل با retry + breaker مشترک.
+
+    Args:
+        breaker_failure: اگر False، شکست این درخواست fail_streak مربوط به
+            circuit breaker را افزایش نمی‌دهد (برای probeهای غیرحیاتی مثل warmup).
 
     Returns:
         (data, None) در موفقیت؛ (None, error_text) در شکست.
@@ -108,9 +144,21 @@ async def _panel_request(method: str, url: str, max_retries: int | None = None,
     req_timeout = timeout or _PANEL_TIMEOUT
 
     if _breaker_is_open():
-        _breaker_log_throttled(
-            "تماس با پنل به‌دلیل خطاهای اخیر موقتاً متوقف است (circuit breaker).")
-        return None, "circuit_open"
+        cur_task = asyncio.current_task()
+        # ⭐ تسک پس‌زمینه: به‌جای حذفِ داده، منتظر بسته شدن breaker می‌ماند
+        if cur_task is not None and cur_task in _bg_tasks:
+            deadline = time.monotonic() + _BREAKER_COOLDOWN + 60.0
+            while _breaker_is_open() and time.monotonic() < deadline:
+                _breaker_log_throttled(
+                    "circuit breaker باز است؛ تسک پس‌زمینه برای جلوگیری از گم‌شدن "
+                    "داده منتظر بسته شدن آن می‌ماند.")
+                await asyncio.sleep(5.0)
+            if _breaker_is_open():
+                return None, "circuit_open"
+        else:
+            _breaker_log_throttled(
+                "تماس با پنل به‌دلیل خطاهای اخیر موقتاً متوقف است (circuit breaker).")
+            return None, "circuit_open"
 
     last_err = ""
     for attempt in range(1, retries + 1):
@@ -127,10 +175,10 @@ async def _panel_request(method: str, url: str, max_retries: int | None = None,
 
                 text = await resp.text()
                 last_err = f"HTTP {resp.status} — {text[:200]}"
-                # خطای ۴xx یعنی درخواست مشکل دارد؛ retry بی‌فایده است
+                # خطای ۴xx یعنی پنل زنده است و درخواست ما مشکل دارد؛ retry و
+                # شمارش به‌عنوان «پنل خاموش» بی‌فایده و گمراه‌کننده است.
                 if 400 <= resp.status < 500:
                     logger.warning(f"[PANEL_SYNC] درخواست رد شد: {last_err}")
-                    _breaker_record_failure()
                     return None, last_err
                 logger.warning(
                     f"[PANEL_SYNC] پاسخ غیرموفق پنل (تلاش {attempt}/{retries}): {last_err}")
@@ -139,14 +187,21 @@ async def _panel_request(method: str, url: str, max_retries: int | None = None,
         except Exception as e:
             # repr به‌جای str — برای TimeoutError که str خالی دارد
             last_err = repr(e)
+            hint = _error_hint(e)
             logger.warning(
                 f"[PANEL_SYNC] خطا در ارتباط با پنل ادمین "
-                f"(تلاش {attempt}/{retries}): {last_err}")
+                f"(تلاش {attempt}/{retries}): {last_err}"
+                + (f" — {hint}" if hint else ""))
 
         if attempt < retries:
             await asyncio.sleep(_RETRY_DELAYS[min(attempt - 1, len(_RETRY_DELAYS) - 1)])
 
-    _breaker_record_failure()
+    if breaker_failure:
+        _breaker_record_failure()
+    else:
+        # probe غیرحیاتی (مثل warmup) — فقط لاگ، breaker دست‌نخورده می‌ماند
+        logger.info(
+            "[PANEL_SYNC] شکست غیرحیاتی ثبت شد (breaker تغییری نکرد).")
     return None, last_err
 
 
@@ -514,15 +569,53 @@ async def warmup_panel():
     """بیدار کردن/گرم کردن پنل ادمین در شروع ربات (fire-and-forget).
 
     اگر پنل در حالت dev اجرا شود، اولین درخواست به هر مسیر باعث کامپایل
-    می‌شود (۱۰ تا ۳۰ ثانیه). این تابع همان کامپایل را در استارت انجام
-    می‌دهد تا درخواست‌های واقعی کاربران timeout نخورند.
+    می‌شود (۱۰ تا ۶۰ ثانیه — به سخت‌افزار/دیسک/آنتی‌ویروس ویندوز بستگی دارد).
+    این تابع همان کامپایل را در استارت انجام می‌دهد تا درخواست‌های واقعی
+    کاربران timeout نخورند.
+
+    ⭐ تفاوت با نسخه قبلی (رفع لاگ‌های TimeoutError در استارت):
+      - timeout بلند (۶۰ ثانیه) به‌جای ۱۵ ثانیه → کامپایل اولیه dev پوشش داده
+        می‌شود؛ اگر پنل در حال بالا آمدن باشد جواب می‌گیریم.
+      - فقط ۱ تلاش (به‌جای ۳×۱۵ ثانیهِ بی‌نتیجه) → استارت ربات سریع‌تر تمیز
+        می‌شود و لاگ شلوغ نمی‌شود.
+      - شکست warmup هرگز circuit breaker را باز نمی‌کند (قبلاً همین ۳ شکستِ
+        warmup، پنل را ۵ دقیقه برای همه syncهای واقعی می‌بست!).
+      - در صورت شکست، ۴۵ ثانیه بعد یک تلاش دوم انجام می‌شود (پنل ممکن است
+        هنوز در حال boot/campile باشد).
+      - آدرس هدف لاگ می‌شود تا ADMIN_API_BASE اشتباه سریع کشف شود.
     """
-    try:
-        url = f"{ADMIN_API_BASE}/admin/cases?limit=1"
-        data, err = await _panel_request("GET", url)
-        if err:
-            logger.info(f"[PANEL_SYNC] warmup پنل ناموفق (غیرحیاتی): {err}")
-        else:
+    url = f"{ADMIN_API_BASE}/admin/cases?limit=1"
+    for attempt in (1, 2):
+        try:
+            data, err = await _panel_request(
+                "GET", url,
+                max_retries=1,
+                timeout=aiohttp.ClientTimeout(total=60, connect=5),
+                breaker_failure=False)
+        except Exception as e:  # defensive — warmup هرگز نباید استارت را بشکند
+            logger.info(f"[PANEL_SYNC] warmup پنل با خطا (غیرحیاتی): {e!r}")
+            err = repr(e)
+
+        if err is None:
             logger.info("[PANEL_SYNC] warmup پنل ادمین موفق بود.")
-    except Exception as e:
-        logger.info(f"[PANEL_SYNC] warmup پنل با خطا (غیرحیاتی): {e!r}")
+            return
+
+        logger.info(
+            f"[PANEL_SYNC] warmup پنل ناموفق (غیرحیاتی — تلاش {attempt}/2): {err}\n"
+            f"   آدرس هدف: {url}")
+
+        if attempt == 1:
+            # پنل ممکن است هنوز در حال boot/کامپایل باشد — کمی بعد دوباره
+            await asyncio.sleep(45)
+
+    logger.warning(
+        f"[PANEL_SYNC] پنل ادمین پس از ۲ تلاش پاسخ نداد.\n"
+        f"   آدرس هدف: {url}\n"
+        f"   چک‌لیست:\n"
+        f"   ۱) پنل اجرا شده باشد:  npm run dev   (یا npm run build && npm start)\n"
+        f"   ۲) ADMIN_API_BASE در .env ربات مطابق آدرس/پورت پنل باشد "
+        f"(پیش‌فرض: http://localhost:3000/api)\n"
+        f"   ۳) فایل .env پنل شامل DATABASE_URL معتبر باشد\n"
+        f"   ربات بدون پنل هم کار می‌کند (sync غیرمسدودکننده است)؛ پرونده‌ها "
+        f"تا پنل بالا بیاید در پس‌زمینه صف می‌شوند و گم نمی‌شوند."
+    )

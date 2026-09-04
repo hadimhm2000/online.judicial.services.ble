@@ -470,7 +470,11 @@ async def process_check_task(data: dict, bot: Bot):
             if tamin_khasteh:
                 tamin_ok = await _add_secondary_khasteh(
                     sana_page, bot, user_id,
-                    search_term="تامین", pick_first=True, label="تامین خواسته")
+                    search_term="تامین",
+                    target_texts=["تامین خواسته"],
+                    fallback_texts=["تامین"],
+                    pick_first=True,
+                    label="تامین خواسته")
                 if not tamin_ok:
                     await bot.send_message(
                         ADMIN_ID,
@@ -1358,22 +1362,35 @@ async def _select_khasteh_option(page, request_title: str, bot: Bot, user_id: in
         await asyncio.sleep(5)
 
         # ۴) انتخاب گزینهٔ دقیق از لیست گزینه‌های قابل‌مشاهده
-        picked = await page.evaluate('''(targets, fallbacks, pickFirst, searchTerm) => {
+        #    ⚠️ باگ قبلی: page.evaluate(js, targets, fallbacks, pickFirst, searchTerm)
+        #    با ۴ آرگومان جدا صدا زده می‌شد؛ Playwright فقط «یک» آرگومان اضافه
+        #    می‌پذیرد → TypeError: Page.evaluate() takes from 2 to 3 positional
+        #    arguments but 6 were given → هیچ‌گاه روی گزینهٔ خواسته کلیک نمی‌شد.
+        #    اصلاح: همهٔ پارامترها در «یک دیکشنری» پاس می‌شوند.
+        #    منطق انتخاب (طبق مشخصات کارفرما — اولویت‌دار):
+        #      ۱) متن هدف دقیق (targets) ۲) متن جایگزین (fallbacks)
+        #      ۳) pickFirst → اولین گزینهٔ منطبق با عبارت جستجو
+        picked = await page.evaluate('''(args) => {
             const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+            const targets = (args.targets || []).map(norm);
+            const fallbacks = (args.fallbacks || []).map(norm);
+            const pickFirst = !!args.pickFirst;
+            const searchTerm = norm(args.searchTerm);
             const items = Array.from(document.querySelectorAll('[ng-bind-html*="typeaheadHighlight"]'))
                 .filter(el => {
                     const r = el.getBoundingClientRect();
                     return r.width > 0 && r.height > 0;
                 });
             let target = null;
-            if (pickFirst) {
+            if (targets.length > 0) {
+                target = items.find(el => targets.some(t => t && norm(el.innerText).includes(t)));
+            }
+            if (!target && fallbacks.length > 0) {
+                target = items.find(el => fallbacks.some(t => t && norm(el.innerText).includes(t)));
+            }
+            if (!target && pickFirst) {
                 // گزینهٔ اول — ترجیحاً منطبق با عبارت جستجو
                 target = items.find(el => norm(el.innerText).includes(searchTerm)) || items[0] || null;
-            } else {
-                target = items.find(el => targets.some(t => norm(el.innerText).includes(t)));
-                if (!target) {
-                    target = items.find(el => fallbacks.some(t => norm(el.innerText).includes(t)));
-                }
             }
             if (target) {
                 const row = target.closest('a, .ui-select-choices-row, li') || target;
@@ -1381,7 +1398,8 @@ async def _select_khasteh_option(page, request_title: str, bot: Bot, user_id: in
                 return norm(target.innerText);
             }
             return null;
-        }''', target_texts, fallback_texts, pick_first, search_term)
+        }''', {"targets": target_texts or [], "fallbacks": fallback_texts or [],
+                "pickFirst": bool(pick_first), "searchTerm": search_term or ""})
 
         if picked:
             logging.info(f"[CHECK] گزینهٔ خواسته انتخاب شد: {picked}")
@@ -1612,16 +1630,17 @@ async def _fill_real_person(page, national_id: str, bot: Bot, user_id: int,
     for sel in ["#txtRealIrNationalityCode1", "#txtRealIrNationalityCode"]:
         elem_count = await page.locator(sel).count()
         if elem_count > 0:
-            await page.evaluate('''(sel, val) => {
-                const inp = document.querySelector(sel);
+            # ⚠️ Playwright فقط یک آرگومان اضافی می‌پذیرد — sel/val در یک دیکشنری
+            await page.evaluate('''(a) => {
+                const inp = document.querySelector(a.sel);
                 if (inp && inp.offsetParent !== null) {
                     inp.focus();
                     inp.value = "";
-                    inp.value = val;
+                    inp.value = a.val;
                     inp.dispatchEvent(new Event("input", { bubbles: true }));
                     inp.dispatchEvent(new Event("change", { bubbles: true }));
                 }
-            }''', sel, national_id)
+            }''', {"sel": sel, "val": national_id})
             await asyncio.sleep(1)
             break
 
@@ -1991,8 +2010,8 @@ async def _fill_check_document_fields(page) -> None:
 
     async def _select_option(select_id: str, mode: str):
         """انتخاب اولین/آخرین گزینهٔ واقعیِ select (بدون placeholder/خالی)."""
-        ok = await page.evaluate('''(sid, mode) => {
-            const sel = document.querySelector('#' + sid);
+        ok = await page.evaluate('''(a) => {
+            const sel = document.querySelector('#' + a.sid);
             if (!sel || sel.disabled) return false;
             const opts = Array.from(sel.options).filter(o => {
                 const v = (o.value || '').trim();
@@ -2002,13 +2021,13 @@ async def _fill_check_document_fields(page) -> None:
                 return true;
             });
             if (opts.length === 0) return false;
-            const target = (mode === 'last') ? opts[opts.length - 1] : opts[0];
+            const target = (a.mode === 'last') ? opts[opts.length - 1] : opts[0];
             sel.focus();
             sel.value = target.value;
             sel.dispatchEvent(new Event("input", { bubbles: true }));
             sel.dispatchEvent(new Event("change", { bubbles: true }));
             return true;
-        }''', select_id, mode)
+        }''', {"sid": select_id, "mode": mode})
         if ok:
             logging.info(f"[CHECK][منضمات] {select_id} → گزینهٔ {mode} انتخاب شد")
         else:

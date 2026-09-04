@@ -4,6 +4,9 @@ import React, { useEffect, useState, useRef } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import type { LucideIcon } from 'lucide-react';
+// ⭐ v1.3 — ویجت وضعیت اتصال بخش‌های ربات (داخل همین کامپوننت نصب می‌شود تا
+// page.tsx دست‌نخورده بماند و با بستهٔ v1.2 سازگار بماند)
+import { ConnectionHealthWidget } from '@/components/admin/connection-health-widget';
 
 interface StatsCardsProps {
   stats: {
@@ -16,6 +19,12 @@ interface StatsCardsProps {
     todayCases: number;
     totalRevenue: number;
     unpaidRevenue: number;
+    // ⭐ v1.3 — سود (اختیاری تا با نسخه‌های قدیمی stats هم سازگار بماند)
+    totalProfit?: number;
+    inquiryProfit?: number;
+    serviceProfit?: number;
+    systemCostTotal?: number;
+    profitEstimatedCount?: number;
     createdAt?: string;
   };
 }
@@ -47,6 +56,7 @@ import {
   CalendarCheck,
   Wallet,
   Target,
+  PiggyBank,
 } from 'lucide-react';
 
 function formatNumber(n: number): string {
@@ -393,6 +403,21 @@ const StatsCardsMemo = React.memo(function StatsCards({ stats }: StatsCardsProps
       textGradient: 'text-gradient-emerald',
     },
     {
+      title: 'سود',
+      value: formatToman(stats.totalProfit ?? 0),
+      subtitle:
+        stats.systemCostTotal !== undefined
+          ? `هزینه سامانه: ${formatNumber(stats.systemCostTotal ?? 0)}`
+          : 'درآمد منهای هزینه سامانه',
+      icon: PiggyBank,
+      gradient: 'from-emerald-50 to-green-50 dark:from-emerald-950/30 dark:to-green-950/20',
+      iconBg: 'bg-gradient-to-br from-emerald-600/90 to-green-700/90',
+      iconColor: 'text-white',
+      ringColor: 'ring-emerald-200 dark:ring-emerald-800',
+      patternId: 'circles',
+      textGradient: 'text-gradient-emerald',
+    },
+    {
       title: 'امروز',
       value: stats.todayCases,
       subtitle: 'پرونده جدید',
@@ -525,6 +550,11 @@ const StatsCardsMemo = React.memo(function StatsCards({ stats }: StatsCardsProps
             </CardContent>
           </Card>
         ))}
+      </div>
+
+      {/* ⭐ v1.3 — ویجت وضعیت اتصال بخش‌های ربات به پنل */}
+      <div className="mt-4">
+        <ConnectionHealthWidget />
       </div>
 
       {/* Last updated timestamp */}
