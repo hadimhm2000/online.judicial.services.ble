@@ -48,6 +48,10 @@ admin_relay_router = Router()
 
 class AdminRelayStates(StatesGroup):
     waiting_for_content = State()
+    # ⭐ فلوی «هزینهٔ ارسال پیام مدیر» (/send): بعد از ارسال محتوا، فاکتور اختیاری
+    send_ask_fee = State()
+    send_fee_enter_amount = State()
+    send_fee_enter_tracking = State()
     case_choose_service = State()
     case_upload_pdf = State()
     case_ask_amount_choice = State()
@@ -62,7 +66,15 @@ class AdminRelayStates(StatesGroup):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# ۱) /send — ارسال خام
+# ۱) /send — ارسال خام + ⭐ بخش هزینه (فاکتور اختیاری پس از ارسال)
+# ⭐ کیبورد سؤال هزینه پس از ارسال محتوا به کاربر:
+send_fee_choice_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="💰 بله، فاکتور می‌فرستم")],
+        [KeyboardButton(text="⏭ خیر، بدون هزینه")],
+    ],
+    resize_keyboard=True
+)
 # ══════════════════════════════════════════════════════════════════════════
 @admin_relay_router.message(F.text.startswith("/send"))
 async def admin_send_command(message: Message, state: FSMContext):
@@ -75,6 +87,8 @@ async def admin_send_command(message: Message, state: FSMContext):
             "⚠️ فرمت صحیح:\n`/send <آیدی عددی کاربر>`\n\n"
             "مثال: `/send 123456789`\n\n"
             "بعد از این کامند، پیام یا فایل موردنظر را ارسال کنید تا برای همان کاربر فرستاده شود.\n\n"
+            "💰 *بخش هزینه:* پس از ارسال محتوا، می‌توانید برای همین ارسال فاکتور"
+            "(کیف پول بله) برای کاربر صادر کنید.\n\n"
             "💡 برای ارسال نتیجهٔ یک پرونده (با فاکتور و امضای خودکار)، به‌جای این از "
             "`/case <آیدی کاربر>` استفاده کنید."
         )
@@ -86,6 +100,7 @@ async def admin_send_command(message: Message, state: FSMContext):
     await message.answer(
         f"✅ آیدی مقصد ثبت شد: `{target_user_id}`\n\n"
         f"حالا پیام متنی، عکس، یا فایل موردنظر را ارسال کنید تا عیناً برای این کاربر فرستاده شود.\n"
+        f"💰 پس از ارسال، امکان صدور فاکتور هزینه برای این ارسال وجود دارد.\n"
         f"برای لغو: /cancel"
     )
 
@@ -127,14 +142,158 @@ async def admin_send_content(message: Message, state: FSMContext, bot: Bot):
             await message.answer("⚠️ نوع این پیام پشتیبانی نمی‌شود. لطفاً متن/عکس/فایل/ویدیو/صدا ارسال کنید.")
             return
 
-        await message.answer(f"✅ با موفقیت برای کاربر `{target_user_id}` ارسال شد.")
+        await message.answer(
+            f"✅ با موفقیت برای کاربر `{target_user_id}` ارسال شد.\n\n"
+            f"💰 آیا برای این ارسال هزینه‌ای از کاربر دریافت شود؟",
+            reply_markup=send_fee_choice_kb)
+        await state.set_state(AdminRelayStates.send_ask_fee)
     except Exception as e:
         logger.error(f"[ADMIN-RELAY] خطا در ارسال به {target_user_id}: {e}", exc_info=True)
         await message.answer(
             f"❌ خطا در ارسال به کاربر `{target_user_id}`:\n{e}\n\n"
             f"(ممکن است کاربر هرگز ربات را استارت نکرده یا آن را بلاک کرده باشد)"
         )
+        await state.clear()
 
+
+# ── ⭐ بخش هزینهٔ /send: انتخاب ← مبلغ ← کد پیگیری ← فاکتور ─────────────
+
+@admin_relay_router.message(AdminRelayStates.send_ask_fee, F.text == "⏭ خیر، بدون هزینه")
+async def admin_send_fee_skip_handler(message: Message, state: FSMContext):
+    """مدیر هزینه نمی‌خواهد — پایان فلوی /send (رفتار قبلی)."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    await state.clear()
+    await message.answer(
+        "✅ ارسال بدون هزینه انجام و عملیات تمام شد.",
+        reply_markup=ReplyKeyboardRemove())
+
+
+@admin_relay_router.message(AdminRelayStates.send_ask_fee, F.text == "💰 بله، فاکتور می‌فرستم")
+async def admin_send_fee_yes_handler(message: Message, state: FSMContext):
+    """مدیر می‌خواهد برای این ارسال فاکتور صادر کند — دریافت مبلغ."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    data = await state.get_data()
+    if not data.get("_admin_relay_target"):
+        await state.clear()
+        await message.answer("⚠️ خطا: آیدی مقصد یافت نشد. دوباره با /send شروع کنید.")
+        return
+    await message.answer(
+        "💰 لطفاً *مبلغ* را به *ریال* وارد کنید:\n"
+        "_(فقط عدد — مثال: `500000`)_",
+        reply_markup=ReplyKeyboardRemove())
+    await state.set_state(AdminRelayStates.send_fee_enter_amount)
+
+
+@admin_relay_router.message(AdminRelayStates.send_ask_fee)
+async def admin_send_fee_choice_fallback(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.answer(
+        "⚠️ لطفاً یکی از گزینه‌های زیر را انتخاب کنید:",
+        reply_markup=send_fee_choice_kb)
+
+
+@admin_relay_router.message(AdminRelayStates.send_fee_enter_amount)
+async def admin_send_fee_amount_handler(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    text = (message.text or "").strip().translate(
+        str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
+    if not text.isdigit() or int(text) <= 0:
+        await message.answer("⚠️ لطفاً فقط عدد مثبت (به ریال) ارسال کنید:")
+        return
+
+    await state.update_data(_send_fee_amount=int(text))
+    await message.answer(
+        "🔢 کد پیگیری/بایگانی این ارسال را وارد کنید:\n"
+        "_(اگر ندارید، عدد ۰ را بفرستید)_")
+    await state.set_state(AdminRelayStates.send_fee_enter_tracking)
+
+
+@admin_relay_router.message(AdminRelayStates.send_fee_enter_tracking)
+async def admin_send_fee_tracking_handler(message: Message, state: FSMContext, bot: Bot):
+    if message.from_user.id != ADMIN_ID:
+        return
+    text = (message.text or "").strip()
+    tracking_code = "" if text == "0" else text
+    await state.update_data(_send_fee_tracking=tracking_code)
+    await _finalize_send_fee_invoice(message, state)
+
+
+async def _finalize_send_fee_invoice(message: Message, state: FSMContext):
+    """صدور و ارسال فاکتور کیف پول بله برای هزینهٔ ارسال پیام مدیر (/send).
+
+    پس از پرداخت خودکار توسط کاربر، هندلر admin_fee_successful_payment با
+    service_type=ADMIN_SEND ادامه می‌دهد (بدون ناوبری امضا — فقط ثبت پنل،
+    لاگ شیت و اطلاع به مدیر).
+    """
+    import runtime_state
+    from states import Form
+
+    data = await state.get_data()
+    target_user_id = data.get("_admin_relay_target")
+    amount = data.get("_send_fee_amount", 0)
+    tracking_code = data.get("_send_fee_tracking", "")
+
+    try:
+        invoice_payload = json.dumps({"type": "admin_fee", "uid": target_user_id, "source": "send"})
+        url = f"{BALE_API_BASE.rstrip('/')}/bot{BOT_TOKEN}/sendInvoice"
+        invoice_data = {
+            "chat_id": target_user_id,
+            "title": "فاکتور ارسال پیام",
+            "description": (
+                f"هزینه دریافت پیام/فایل از مدیریت\n"
+                f"مبلغ: {amount // 10:,} تومان ({amount:,} ریال)"
+            ),
+            "payload": invoice_payload,
+            "provider_token": BALE_WALLET_TOKEN,
+            "currency": "IRR",
+            "prices": [{"label": "ارسال پیام", "amount": amount}],
+        }
+        logger.info(
+            f"[ADMIN-SEND-FEE] ارسال sendInvoice به chat_id={target_user_id}, "
+            f"مبلغ={amount:,} ریال, source=send")
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+            async with session.post(url, json=invoice_data, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                result = await resp.json()
+                if not result.get("ok"):
+                    logger.error(f"[ADMIN-SEND-FEE] خطای sendInvoice: {result}")
+                    await message.answer(
+                        f"❌ خطا در ارسال فاکتور برای کاربر `{target_user_id}`:\n"
+                        f"`{result.get('description', 'نامشخص')}`\n\n"
+                        f"(مطمئن شوید کاربر ربات را استارت کرده باشد)")
+                    await state.clear()
+                    return
+    except Exception as e:
+        logger.error(f"[ADMIN-SEND-FEE] خطا در ارسال فاکتور: {e}", exc_info=True)
+        await message.answer(f"❌ خطا در ارسال فاکتور:\n{e}")
+        await state.clear()
+        return
+
+    # ذخیره context پرداخت برای هندلر successful_payment (مثل /fee)
+    runtime_state.pending_admin_fee_payments[target_user_id] = {
+        "invoice_time": datetime.datetime.now(),
+        "final_fee": amount,
+        "service_type": "ADMIN_SEND",
+        "tracking_code": tracking_code,
+        "sign_menu_path": None,
+        "admin_id": ADMIN_ID,
+        "source": "send",
+    }
+
+    # ست کردن state کاربر (نه ادمین) به حالت انتظار پرداخت فاکتور مدیر
+    try:
+        user_state = runtime_state.dp.fsm.resolve_context(message.bot, target_user_id, target_user_id)
+        await user_state.set_state(Form.admin_fee_waiting_payment)
+    except Exception as e:
+        logger.warning(f"[ADMIN-SEND-FEE] ست کردن state کاربر {target_user_id} ناموفق بود: {e}")
+
+    await message.answer(
+        f"✅ فاکتور *{amount:,} ریالی* هزینهٔ ارسال پیام برای کاربر `{target_user_id}` ارسال شد.\n\n"
+        f"💳 پس از پرداخت خودکار توسط کاربر، پرداخت ثبت می‌شود و به شما اطلاع داده می‌شود."
+    )
     await state.clear()
 
 
@@ -184,6 +343,9 @@ async def admin_case_command(message: Message, state: FSMContext):
     await state.set_state(AdminRelayStates.case_choose_service)
 
 
+@admin_relay_router.message(AdminRelayStates.send_ask_fee, F.text == "/cancel")
+@admin_relay_router.message(AdminRelayStates.send_fee_enter_amount, F.text == "/cancel")
+@admin_relay_router.message(AdminRelayStates.send_fee_enter_tracking, F.text == "/cancel")
 @admin_relay_router.message(AdminRelayStates.case_choose_service, F.text == "/cancel")
 @admin_relay_router.message(AdminRelayStates.case_upload_pdf, F.text == "/cancel")
 @admin_relay_router.message(AdminRelayStates.case_ask_amount_choice, F.text == "/cancel")
@@ -397,6 +559,10 @@ FEE_SERVICE_LABELS = {
     "🏦 چک": {"service_type": "CHECK", "label": "دادخواست چک", "is_ezhharnameh": False, "ask_menu": "check"},
     "🔍 استعلام (پس از پرداخت، امضا ندارد)": {"service_type": "INQUIRY", "label": "استعلام", "is_ezhharnameh": False, "ask_menu": None},
 }
+
+# ⭐ برچسب سرویس فاکتور هزینهٔ ارسال پیام مدیر (/send) — جدا از FEE_SERVICE_LABELS
+# تا به‌عنوان دکمه در کیبورد /fee ظاهر نشود؛ فقط برای label lookup استفاده می‌شود.
+ADMIN_SEND_SERVICE_LABEL = "ارسال پیام مدیریت"
 
 # مسیر منوی سامانه برای امضای چک (مطابق check_scenario.py)
 FEE_CHECK_MENU_PATHS = {
@@ -628,6 +794,7 @@ async def admin_fee_successful_payment(message: Message, state: FSMContext, bot:
     """پرداخت موفق فاکتور «هزینه دستی مدیر» — تشخیص خودکار توسط بله.
 
     پس از پرداخت:
+      - ⭐ ارسال پیام مدیریت (ADMIN_SEND) → فقط ثبت پرداخت + اطلاع مدیر (امضا ندارد)
       - استعلام (INQUIRY) → فقط ثبت پرداخت (امضا ندارد)
       - اظهارنامه → فلوی امضای اظهارنامه
       - بقیه (لایحه/چک/تجدیدنظر) → فلوی امضای لایحه با مسیر منوی مناسب
@@ -649,14 +816,21 @@ async def admin_fee_successful_payment(message: Message, state: FSMContext, bot:
     amount = pending.get("final_fee", 0)
     tracking_code = pending.get("tracking_code", "")
     sign_menu_path = pending.get("sign_menu_path")
-    label = next((c["label"] for c in FEE_SERVICE_LABELS.values() if c["service_type"] == svc), "سرویس")
+    if svc == "ADMIN_SEND":
+        label = ADMIN_SEND_SERVICE_LABEL
+    else:
+        label = next((c["label"] for c in FEE_SERVICE_LABELS.values() if c["service_type"] == svc), "سرویس")
 
     # ۱) تایید به کاربر
     await message.answer(
         f"✅ *پرداخت شما ثبت شد!*\n\n"
         f"📄 نوع: *{label}*\n"
         f"💰 مبلغ: *{amount // 10:,} تومان* ({amount:,} ریال)\n\n"
-        f"🔔 مراحل بعدی به زودی ارسال می‌شود.",
+        + (
+            "✅ از پرداخت شما متشکریم. هیچ اقدام دیگری از سمت شما لازم نیست."
+            if svc == "ADMIN_SEND" else
+            "🔔 مراحل بعدی به زودی ارسال می‌شود."
+        ),
         reply_markup=ReplyKeyboardRemove()
     )
 
@@ -666,7 +840,11 @@ async def admin_fee_successful_payment(message: Message, state: FSMContext, bot:
             "پرداخت", label, message.from_user.full_name, user_id,
             tracking_code=tracking_code,
             doc_name=label,
-            payment_status="پرداخت شده (فاکتور دستی مدیر)",
+            payment_status=(
+                "پرداخت شده (فاکتور ارسال پیام مدیر)"
+                if svc == "ADMIN_SEND" else
+                "پرداخت شده (فاکتور دستی مدیر)"
+            ),
             note=f"مبلغ: {amount:,} ریال | payment_id: {payment.telegram_payment_charge_id}"
         )
     except Exception as e:
@@ -693,12 +871,16 @@ async def admin_fee_successful_payment(message: Message, state: FSMContext, bot:
             bale_user_id=user_id,
             full_name=message.from_user.full_name,
             service_type=svc,
-            status="COMPLETED" if svc == "INQUIRY" else "PROCESSING",
+            status=(
+                "COMPLETED" if svc in ("INQUIRY", "ADMIN_SEND") else "PROCESSING"
+            ),
             tracking_code=tracking_code or None,
             document_category=label,
             fee=amount,
             fee_status="PAID",
             result_summary=(
+                "پرداخت فاکتور هزینهٔ ارسال پیام مدیر انجام شد"
+                if svc == "ADMIN_SEND" else
                 "پرداخت فاکتور دستی مدیر انجام شد؛ استعلام بدون امضا"
                 if svc == "INQUIRY" else
                 "پرداخت فاکتور دستی مدیر انجام شد؛ در انتظار امضای الکترونیک"
@@ -709,7 +891,12 @@ async def admin_fee_successful_payment(message: Message, state: FSMContext, bot:
 
     runtime_state.pending_admin_fee_payments.pop(user_id, None)
 
-    # ۵) ادامه روند — به‌جز استعلام که امضا ندارد
+    # ۵) ادامه روند — به‌جز استعلام و ارسال پیام مدیریت که امضا ندارند
+    if svc == "ADMIN_SEND":
+        # ⭐ هزینهٔ ارسال پیام مدیر — پیام/فایل قبلاً ارسال شده؛ فقط ثبت نهایی
+        await state.clear()
+        return
+
     if svc == "INQUIRY":
         await bot.send_message(
             user_id,

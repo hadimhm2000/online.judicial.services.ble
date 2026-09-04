@@ -68,6 +68,9 @@ export interface CaseItem {
   serviceType: string;
   status: string;
   trackingCode: string | null;
+  // ⭐ v1.3 — شناسه پرداخت سامانه قضایی + هزینه سامانه
+  paymentId: string | null;
+  systemCost: number | null;
   documentCategory: string | null;
   branchName: string | null;
   branchCode: string | null;
@@ -90,7 +93,7 @@ export interface CaseItem {
   rowNumber: string | null;
 }
 
-type ColumnKey = 'name' | 'serviceType' | 'status' | 'fee' | 'feeStatus' | 'branch' | 'date' | 'trackingCode' | 'signature' | 'actions';
+type ColumnKey = 'name' | 'serviceType' | 'status' | 'fee' | 'feeStatus' | 'branch' | 'date' | 'trackingCode' | 'paymentId' | 'signature' | 'actions';
 
 const COLUMN_LABELS: Record<ColumnKey, string> = {
   name: 'نام کاربر',
@@ -101,6 +104,7 @@ const COLUMN_LABELS: Record<ColumnKey, string> = {
   branch: 'شعبه / استان',
   date: 'تاریخ',
   trackingCode: 'کد پیگیری',
+  paymentId: 'شناسه پرداخت',
   signature: 'امضا',
   actions: 'عملیات',
 };
@@ -114,6 +118,7 @@ const DEFAULT_COLUMN_VISIBILITY: Record<ColumnKey, boolean> = {
   branch: true,
   date: true,
   trackingCode: true,
+  paymentId: true,
   signature: true,
   actions: true,
 };
@@ -142,6 +147,7 @@ function loadColumnVisibility(): Record<ColumnKey, boolean> {
     defaults.branch = false;
     defaults.signature = false;
     defaults.trackingCode = false;
+    defaults.paymentId = false;
   }
   return defaults;
 }
@@ -190,6 +196,10 @@ const serviceTypeLabels: Record<string, string> = {
   EZHHARNAMEH: 'اظهارنامه',
   EALAM_VAKALAHT: 'اعلام وکالت',
   STAMP_CALC: 'محاسبه تمبر',
+  CHECK: 'دادخواست چک',
+  TAJDID_NAZAR: 'دعاوی اعتراضی',
+  REGIONAL_VALUE: 'ارزش منطقه‌ای',
+  ADMIN_SEND: 'ارسال پیام مدیریت',
 };
 
 const serviceTypeColors: Record<string, string> = {
@@ -198,6 +208,10 @@ const serviceTypeColors: Record<string, string> = {
   EZHHARNAMEH: 'bg-teal-100 text-teal-800 dark:bg-teal-900/30 dark:text-teal-300',
   EALAM_VAKALAHT: 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300',
   STAMP_CALC: 'bg-pink-100 text-pink-800 dark:bg-pink-900/30 dark:text-pink-300',
+  CHECK: 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-300',
+  TAJDID_NAZAR: 'bg-fuchsia-100 text-fuchsia-800 dark:bg-fuchsia-900/30 dark:text-fuchsia-300',
+  REGIONAL_VALUE: 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900/30 dark:text-cyan-300',
+  ADMIN_SEND: 'bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-300',
 };
 
 const statusLabels: Record<string, string> = {
@@ -575,6 +589,11 @@ const CasesTableMemo = React.memo(function CasesTable({
                     {'کد پیگیری'}
                   </TableHead>
                 )}
+                {columnVisibility.paymentId && (
+                  <TableHead className="px-3 py-3 text-xs font-semibold hidden lg:table-cell">
+                    {'شناسه پرداخت'}
+                  </TableHead>
+                )}
                 {columnVisibility.status && (
                   <TableHead className="px-3 py-3 text-xs font-semibold">{'وضعیت'}</TableHead>
                 )}
@@ -688,6 +707,25 @@ const CasesTableMemo = React.memo(function CasesTable({
                       <p className="text-[11px] text-muted-foreground font-mono" dir="ltr">
                         {c.trackingCode || '—'}
                       </p>
+                    </TableCell>
+                  )}
+                  {columnVisibility.paymentId && (
+                    <TableCell className="px-3 py-3 hidden lg:table-cell" onClick={(e) => e.stopPropagation()}>
+                      {c.paymentId ? (
+                        <p
+                          className="text-[11px] font-mono text-emerald-700 dark:text-emerald-300 cursor-help"
+                          dir="ltr"
+                          title={
+                            c.systemCost
+                              ? `هزینه سامانه: ${new Intl.NumberFormat('fa-IR').format(c.systemCost)}`
+                              : 'شناسه پرداخت استخراج‌شده از سامانه قضایی'
+                          }
+                        >
+                          {c.paymentId}
+                        </p>
+                      ) : (
+                        <p className="text-[11px] text-muted-foreground">—</p>
+                      )}
                     </TableCell>
                   )}
                   {columnVisibility.status && (
@@ -876,6 +914,19 @@ const CasesTableMemo = React.memo(function CasesTable({
                             {c.trackingCode && (
                               <p className="text-[11px] text-muted-foreground font-mono" dir="ltr">
                                 {c.trackingCode}
+                              </p>
+                            )}
+                            {c.paymentId && (
+                              <p
+                                className="text-[11px] font-mono text-emerald-700 dark:text-emerald-300"
+                                dir="ltr"
+                                title={
+                                  c.systemCost
+                                    ? `هزینه سامانه: ${new Intl.NumberFormat('fa-IR').format(c.systemCost)}`
+                                    : 'شناسه پرداخت سامانه قضایی'
+                                }
+                              >
+                                {c.paymentId}
                               </p>
                             )}
                           </div>

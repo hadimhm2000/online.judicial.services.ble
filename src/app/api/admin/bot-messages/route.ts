@@ -48,13 +48,30 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { baleUserId, fullName, messageText, fileUrl, fileName } = body;
+    const { baleUserId, fullName, messageText, fileUrl, fileName, costToman } = body;
 
     if (!baleUserId || !messageText) {
       return NextResponse.json(
         { error: 'شناسه بله و متن پیام الزامی است' },
         { status: 400 }
       );
+    }
+
+    // ⭐ هزینهٔ پیام — ورودی UI به «تومان» است؛ ذخیره به «ریال» (مطابق فیلد fee پرونده‌ها)
+    let costAmountRial = 0;
+    if (costToman !== undefined && costToman !== null && costToman !== '') {
+      const toman = parseInt(String(costToman), 10);
+      if (Number.isFinite(toman)) {
+        if (toman < 0) {
+          return NextResponse.json(
+            { error: 'مبلغ هزینه نمی‌تواند منفی باشد' },
+            { status: 400 }
+          );
+        }
+        if (toman > 0) {
+          costAmountRial = toman * 10;
+        }
+      }
     }
 
     const message = await db.botMessage.create({
@@ -65,13 +82,18 @@ export async function POST(request: NextRequest) {
         fileUrl: fileUrl || null,
         fileName: fileName || null,
         status: 'PENDING',
+        costAmount: costAmountRial,
+        costStatus: costAmountRial > 0 ? 'AWAITING_PAYMENT' : 'NONE',
       },
     });
 
     await db.activityLog.create({
       data: {
         action: 'BOT_MESSAGE_CREATED',
-        details: `پیام جدید برای ${fullName || baleUserId} - در انتظار ارسال`,
+        details:
+          costAmountRial > 0
+            ? `پیام جدید برای ${fullName || baleUserId} - با هزینه ${costAmountRial / 10} تومان - در انتظار ارسال`
+            : `پیام جدید برای ${fullName || baleUserId} - در انتظار ارسال`,
       },
     });
 

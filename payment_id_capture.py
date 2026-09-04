@@ -9,6 +9,14 @@
   - شناسه در گوگل‌شیت ذخیره شود (اسپردشیت «BotData»، ورک‌شیت «شناسه پرداخت»).
   - نتیجه فقط برای مدیر (ADMIN_ID) ارسال شود — به کاربر هیچ پیامی ارسال نمی‌شود.
 
+⭐ v1.3:
+  - علاوه بر گوگل‌شیت، شناسه پرداخت + «هزینه سامانه» روی پروندهٔ پنل ادمین
+    (فیلدهای paymentId / systemCost) ثبت می‌شود تا در بخش «آماده ارسال»
+    نمایش داده شود و مبنای محاسبه «سود» باشد.
+  - چون استخراج «قبل از» ثبت نهایی پرونده در پنل رخ می‌دهد، سینک در
+    پس‌زمینه با چند تلاشِ تاخیری (۰/۴۵/۱۵۰/۴۲۰ ثانیه) انجام می‌شود و
+    هرگز فلوی اصلی ربات را نمی‌شکند.
+
 نحوه استفاده در سناریوها (بلافاصله بعد از محاسبه هزینه و «قبل از» کلیک
 بازگشت به فهرست، چون صفحه هنوز در بخش هزینه است):
 
@@ -29,10 +37,162 @@ import asyncio
 import datetime
 import logging
 
+import aiohttp
 import gspread
 from google.oauth2.service_account import Credentials
 
-from config import ADMIN_ID
+from config import ADMIN_ID, ADMIN_API_BASE
+
+# ────────────────────────── سینک به پنل ادمین (v1.3) ──────────────────────────
+# نگاشت «نام بخش» فارسی (که سناریوها پاس می‌دهند) به serviceType پنل
+SERVICE_TYPE_MAP = {
+    "دادخواست چک": "CHECK",
+    "چک": "CHECK",
+    "لایحه": "LAVAYEH",
+    "اظهارنامه": "EZHHARNAMEH",
+    "اعلام وکالت": "EALAM_VAKALAHT",
+    "تجدیدنظر": "TAJDID_NAZAR",
+}
+
+# تاخیرهای تلاش برای یافتن/به‌روزرسانی پرونده در پنل (ثانیه).
+# شناسه پرداخت «قبل از» ثبت نهایی پرونده در پنل استخراج می‌شود (upsert پرونده
+# کمی بعد در send_lavayeh_result انجام می‌شود)؛ برای همین چند تلاش تاخیری داریم.
+_PANEL_SYNC_DELAYS = (0, 45, 150, 420)
+
+
+def _resolve_service_type(service_name: str) -> str | None:
+    """تبدیل نام فارسی بخش به serviceType پنل (اگر شناخته نشد None)."""
+    if not service_name:
+        return None
+    name = str(service_name).strip()
+    if name in SERVICE_TYPE_MAP:
+        return SERVICE_TYPE_MAP[name]
+    for key, val in SERVICE_TYPE_MAP.items():
+        if key in name or name in key:
+            return val
+    return None
+
+
+async def _find_panel_case(service_type: str, bale_user_id, tracking_code: str):
+    """
+    یافتن پروندهٔ مربوطه در پنل برای ثبت شناسه پرداخت.
+    اول جستجو با کد رهگیری؛ اگر پیدا نشد با آیدی کاربر (آخرین پروندهٔ همان سرویس).
+    """
+    url = f"{ADMIN_API_BASE}/admin/cases"
+    search_value = str(tracking_code).strip() if tracking_code else str(bale_user_id)
+    params = {"search": search_value, "serviceType": service_type, "limit": "50"}
+
+    try:
+        connector = aiohttp.TCPConnector(ssl=False)
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            async with session.get(url, params=params) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+    except Exception as e:
+        logging.debug(f"[PAY-ID] خطا در جستجوی پرونده در پنل: {e}")
+        return None
+
+    cases = data.get("cases") or []
+    uid = str(bale_user_id)
+    same_user = [c for c in cases if str(c.get("baleUserId")) == uid]
+    if not same_user:
+        return None
+
+    # اولویت ۱: تطابق دقیق کد رهگیری
+    if tracking_code:
+        tc = str(tracking_code).strip()
+        for c in same_user:
+            if c.get("trackingCode") == tc:
+                return c
+        # کد رهگیری مرکب اعلام وکالت: "X | کد لایحه: Y"
+        for c in same_user:
+            if c.get("trackingCode") and tc in str(c.get("trackingCode")):
+                return c
+
+    # اولویت ۲: جدیدترین پروندهٔ همین سرویس
+    try:
+        same_user.sort(key=lambda c: c.get("createdAt") or "", reverse=True)
+    except Exception:
+        pass
+    return same_user[0]
+
+
+async def _update_panel_case(case_id: str, payment_id: str, system_cost) -> bool:
+    """به‌روزرسانی paymentId/systemCost روی پروندهٔ موجود در پنل."""
+    url = f"{ADMIN_API_BASE}/admin/cases"
+    payload = {"id": case_id, "paymentId": str(payment_id)}
+    if isinstance(system_cost, (int, float)) and system_cost:
+        payload["systemCost"] = int(system_cost)
+
+    try:
+        connector = aiohttp.TCPConnector(ssl=False)
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            async with session.put(url, json=payload) as resp:
+                if resp.status == 200:
+                    return True
+                body = await resp.text()
+                logging.warning(
+                    f"[PAY-ID] پنل پرونده را نپذیرفت (HTTP {resp.status}): {body[:200]}")
+                return False
+    except Exception as e:
+        logging.debug(f"[PAY-ID] خطا در به‌روزرسانی پرونده در پنل: {e}")
+        return False
+
+
+async def _sync_payment_to_panel_task(
+    service_type: str, bale_user_id, tracking_code: str,
+    payment_id: str, system_cost):
+    """
+    تسک پس‌زمینه: با چند تلاشِ تاخیری، پرونده را در پنل پیدا و
+    paymentId + systemCost را ثبت می‌کند. هرگز exception نمی‌دهد.
+    """
+    for i, delay in enumerate(_PANEL_SYNC_DELAYS):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            case = await _find_panel_case(service_type, bale_user_id, tracking_code)
+            if not case:
+                logging.info(
+                    f"[PAY-ID] تلاش {i + 1}/{len(_PANEL_SYNC_DELAYS)}: پرونده هنوز در پنل "
+                    f"ایجاد نشده (type={service_type} user={bale_user_id})")
+                continue
+            ok = await _update_panel_case(case["id"], payment_id, system_cost)
+            if ok:
+                logging.info(
+                    f"[PAY-ID] ✅ شناسه پرداخت {payment_id} روی پروندهٔ پنل "
+                    f"ثبت شد (id={case['id']} type={service_type})")
+                return
+        except Exception as e:
+            logging.warning(f"[PAY-ID] خطا در سینک به پنل (تلاش {i + 1}): {e}")
+
+    logging.warning(
+        f"[PAY-ID] ⚠️ شناسه پرداخت {payment_id} در پنل ثبت نشد "
+        f"(پروندهٔ type={service_type} user={bale_user_id} پیدا نشد) — "
+        f"در گوگل‌شیت ذخیره شده است.")
+
+
+def _schedule_panel_sync(
+    service_type: str, bale_user_id, tracking_code: str,
+    payment_id: str, system_cost):
+    """زمان‌بندی غیرمسدودکنندهٔ سینک شناسه پرداخت به پنل."""
+    if not service_type:
+        return
+    try:
+        task = asyncio.get_event_loop().create_task(
+            _sync_payment_to_panel_task(
+                service_type, bale_user_id, tracking_code, payment_id, system_cost))
+        # نگه‌داشتن مرجع تسک تا garbage-collect نشود
+        _BACKGROUND_TASKS.add(task)
+        task.add_done_callback(_BACKGROUND_TASKS.discard)
+    except Exception as e:
+        logging.warning(f"[PAY-ID] زمان‌بندی سینک پنل ناموفق: {e}")
+
+
+_BACKGROUND_TASKS = set()
+
 
 # ────────────────────────── تنظیمات گوگل‌شیت ──────────────────────────
 SCOPES = [
@@ -271,6 +431,18 @@ async def capture_and_report_payment_ids(
             )
             if ok:
                 saved += 1
+
+        # ── ⭐ v1.3: سینک به پنل ادمین (paymentId + systemCost روی پرونده) ──
+        # غیرمسدودکننده؛ در پس‌زمینه با چند تلاشِ تاخیری انجام می‌شود.
+        service_type = _resolve_service_type(service_name)
+        if service_type:
+            _schedule_panel_sync(
+                service_type=service_type,
+                bale_user_id=user_id,
+                tracking_code=tracking_code or "",
+                payment_id=payment_ids[0],
+                system_cost=amount,
+            )
 
         amount_txt = f"{amount:,} ریال" if isinstance(amount, (int, float)) and amount else "—"
         sheet_txt = "✅ در گوگل‌شیت ذخیره شد" if saved == len(payment_ids) else f"⚠️ {saved}/{len(payment_ids)} ردیف ذخیره شد"
