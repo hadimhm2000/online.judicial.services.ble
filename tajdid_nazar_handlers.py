@@ -515,7 +515,7 @@ async def tn_insolvency_handler(message: Message, state: FSMContext):
 # مرحله ۸ — اشخاص تجدیدنظرخواه (شبیه اظهارکننده اظهارنامه)
 # ══════════════════════════════════════════════════════════════════════════════
 @tajdid_nazar_router.message(Form.tn_appellant_person_type)
-async def tn_appellant_person_type_handler(message: Message, state: FSMContext):
+async def tn_appellant_person_type_handler(message: Message, state: FSMContext, bot: Bot):
     text = message.text or ""
     data = await state.get_data()
     appellants = data.get("tn_appellants", [])
@@ -727,7 +727,7 @@ async def tn_appellant_national_id_handler(message: Message, state: FSMContext):
 
 
 @tajdid_nazar_router.message(Form.tn_appellant_more)
-async def tn_appellant_more_handler(message: Message, state: FSMContext):
+async def tn_appellant_more_handler(message: Message, state: FSMContext, bot: Bot):
     """پاسخ به سوال آیا {appellant_label} دیگری دارد — تغییر مسیر به مرحله合适的."""
     text = message.text or ""
     data = await state.get_data()
@@ -819,7 +819,7 @@ async def tn_appellant_more_handler(message: Message, state: FSMContext):
 # مرحله ۹ — اشخاص تجدیدنظرخوانده (شبیه مخاطب اظهارنامه)
 # ══════════════════════════════════════════════════════════════════════════════
 @tajdid_nazar_router.message(Form.tn_appellee_person_type)
-async def tn_appellee_person_type_handler(message: Message, state: FSMContext):
+async def tn_appellee_person_type_handler(message: Message, state: FSMContext, bot: Bot):
     text = message.text or ""
     data = await state.get_data()
     appellees = data.get("tn_appellees", [])
@@ -1586,6 +1586,50 @@ async def _handle_query_persons(message: Message, state: FSMContext, bot: Bot, s
     labels = data.get("tn_labels", {})
     section_label = labels.get(section, "تجدیدنظرخواه" if section == "appellant" else "تجدیدنظرخوانده")
 
+    # ══════════════════════════════════════════════════════════════
+    # اگر تجدیدنظرخواه قبلاً از همین روش (استعلام از پرونده) استفاده
+    # کرده باشد، دیگر نباید برای تجدیدنظرخوانده دوباره به سامانه سنا
+    # استعلام زد. همان نتیجهٔ استعلام اول (که هنگام استعلام تجدیدنظرخواه
+    # در state ذخیره شده) بازیابی می‌شود و فقط افرادی که قبلاً به‌عنوان
+    # تجدیدنظرخواه انتخاب شده‌اند، از لیست حذف می‌شوند — چون یک فرد
+    # نمی‌تواند همزمان تجدیدنظرخواه و تجدیدنظرخوانده باشد.
+    # اگر تجدیدنظرخواه از این روش استفاده نکرده باشد، تجدیدنظرخوانده
+    # باید بتواند استعلام کامل و مستقل خودش را انجام دهد (همهٔ افراد
+    # پرونده نمایش داده شود) — این حالت از مسیر عادی زیر عبور می‌کند.
+    # ══════════════════════════════════════════════════════════════
+    if section == "appellee" and data.get("tn_appellant_query_mode"):
+        cached_names = data.get("tn_case_query_names") or []
+        if cached_names:
+            already_selected = set(data.get("tn_appellant_selected_names", []))
+            remaining = [n for n in cached_names if n.get("name") not in already_selected]
+            remaining_reindexed = [{"index": i, "name": n["name"]} for i, n in enumerate(remaining)]
+
+            if not remaining_reindexed:
+                await message.answer(
+                    "⚠️ همهٔ افراد پرونده قبلاً به‌عنوان "
+                    f"{labels.get('appellant', 'تجدیدنظرخواه')} انتخاب شده‌اند.\n\n"
+                    "لطفاً از روش ورود دستی کدملی استفاده فرمایید:")
+                await message.answer(
+                    f"👥 لطفاً *نوع شخصیت {section_label}* را انتخاب فرمایید:",
+                    reply_markup=create_tn_appellee_person_type_kb())
+                await state.set_state(Form.tn_appellee_person_type)
+                return
+
+            runtime_state.tn_queried_persons[user_id] = {
+                "all_names": remaining_reindexed,
+                "section": section,
+                "selected_indices": [],
+            }
+            await state.set_state(Form.tn_appellee_select_from_list)
+            await message.answer(
+                "✅ *از نتیجهٔ استعلام قبلی (همان استعلام "
+                f"{labels.get('appellant', 'تجدیدنظرخواه')}) استفاده شد.*\n\n"
+                f"افرادی که قبلاً به‌عنوان {labels.get('appellant', 'تجدیدنظرخواه')} انتخاب "
+                "شده‌اند از این لیست حذف شده‌اند:",
+                reply_markup=ReplyKeyboardRemove())
+            await _show_person_selection_list(bot, user_id, remaining_reindexed, [], section, data)
+            return
+
     # نام step در سامانه
     from tajdid_nazar_scenario import (
         APPELLANT_STEP_MAP, APPELLEE_STEP_MAP,
@@ -1629,6 +1673,13 @@ async def _handle_query_persons(message: Message, state: FSMContext, bot: Bot, s
                     reply_markup=create_tn_appellee_person_type_kb())
                 await state.set_state(Form.tn_appellee_person_type)
             return
+
+        # اگر این استعلام مربوط به تجدیدنظرخواه است، نتیجهٔ کامل (همهٔ
+        # افراد پرونده) در state هم ذخیره می‌شود تا اگر لازم شد،
+        # تجدیدنظرخوانده بدون استعلام مجدد از سامانه از همین نتیجه
+        # استفاده کند (نگاه کنید به ابتدای همین تابع).
+        if section == "appellant":
+            await state.update_data(tn_case_query_names=names)
 
         # ذخیره نتایج در runtime_state
         runtime_state.tn_queried_persons[user_id] = {

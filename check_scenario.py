@@ -1995,29 +1995,78 @@ async def _fill_real_person(page, national_id: str, bot: Bot, user_id: int,
         logging.warning(f"[CHECK][{role}] استعلام بدون پاسخ — ادامه با احتیاط")
 
 
+async def _set_legal_record_no_zero_check(page):
+    """شماره ثبت شخص حقوقی (#txtLegalIrShSabt / RecordNo) را روی «0» می‌گذارد.
+
+    ⚠️ این مرحله در نسخهٔ قبلی _fill_legal_person در چک به‌کل حذف شده بود.
+    مطابق الگوی اظهارنامه (_set_legal_record_no_zero در
+    ezhharnameh_scenario.py)، وقتی شخص حقوقی خصوصی است، سامانه این فیلد
+    را اجباری می‌کند و بدون آن، ثبت با خطای اعتبارسنجی مواجه می‌شود. این
+    فیلد فقط پس از استعلام موفق شرکت رندر می‌شود، پس باید بعد از
+    callLegalNationalityCode صدا زده شود.
+    """
+    for _ in range(10):
+        done = await page.evaluate('''() => {
+            const inp = document.querySelector('#txtLegalIrShSabt');
+            if (!inp) return false;
+            inp.value = "0";
+            inp.dispatchEvent(new Event("input", { bubbles: true }));
+            inp.dispatchEvent(new Event("change", { bubbles: true }));
+            try {
+                if (typeof angular !== 'undefined') {
+                    const ctrl = angular.element(inp).controller('ngModel');
+                    if (ctrl) { ctrl.$setViewValue("0"); ctrl.$render(); }
+                }
+            } catch(e) {}
+            return true;
+        }''')
+        if done:
+            logging.info("[CHECK] شماره ثبت شخص حقوقی روی «0» تنظیم شد")
+            await asyncio.sleep(1)
+            return True
+        await asyncio.sleep(0.5)
+    logging.warning("[CHECK] فیلد شماره ثبت (#txtLegalIrShSabt) یافت نشد — رد شد")
+    return False
+
+
 async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
                              role: str = "", idx: int = 0):
-    """پر کردن اطلاعات شخص حقوقی + استعلام شرکت و نماینده"""
+    """پر کردن اطلاعات شخص حقوقی + استعلام شرکت و نماینده.
+
+    ⭐ رفع باگ: این تابع دقیقاً مطابق _fill_legal_person در
+    ezhharnameh_scenario.py بازنویسی شد (طبق درخواست صریح، فلوی چک باید
+    عیناً همان مراحل اظهارنامه را برای خواهان/خوانده شخص حقوقی طی کند).
+    مشکلات نسخهٔ قبلی که باعث شکست ثبت خواهان حقوقی در چک می‌شد:
+      ۱. هیچ‌کدام از رادیوباتن‌های «شخص حقوقی» و «غیردولتی/خصوصی» کلیک
+         نمی‌شدند — روی این سامانه، فرم به‌طور پیش‌فرض روی «شخص حقیقی»
+         است و بدون این کلیک‌ها، فیلد شناسه ملی شرکت اصلاً رندر نمی‌شود.
+      ۲. فیلد «شماره ثبت» شخص حقوقی خصوصی (که سامانه پس از استعلام
+         موفق شرکت اجباری می‌کند) هرگز پر نمی‌شد.
+      ۳. نوع نماینده (دراپ‌داون AgentTypeId) قبل از استعلام شرکت انتخاب
+         می‌شد، در حالی که این فیلد معمولاً فقط بعد از پاسخ موفق استعلام
+         شرکت در صفحه ظاهر می‌شود.
+    """
     company_id = person.get("company_id", "")
     nat_id = person.get("national_id", "")
-    rep_type = person.get("representative_type", "")
+    rep_type = person.get("representative_type", "نماینده")
 
-    agent_value = "0091000010000008" if rep_type == "مدیرعامل" else "0091000010000010"
-
-    # انتخاب نوع نماینده
-    await page.evaluate('''(val) => {
-        const sel = document.querySelector('select[ng-model*="AgentTypeId"]');
-        if (sel && !sel.disabled) {
-            sel.value = val;
-            sel.dispatchEvent(new Event("input", { bubbles: true }));
-            sel.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-    }''', agent_value)
+    # ── انتخاب رادیوباتن «شخص حقوقی» (مشابه اظهارنامه) ──────────────
+    await page.evaluate('''() => {
+        const rdb = document.querySelector('#rdb3, input[value="3"][name="personType"]');
+        if (rdb) rdb.click();
+    }''')
     await asyncio.sleep(2)
 
-    # وارد کردن شناسه ملی شرکت
+    # ── انتخاب «غیردولتی / خصوصی» ────────────────────────────────────
+    await page.evaluate('''() => {
+        const rdb = document.querySelector('#rdbPrivate, input[value="4"][name="LegalPersonType"]');
+        if (rdb) rdb.click();
+    }''')
+    await asyncio.sleep(2)
+
+    # وارد کردن شناسه ملی شرکت (چند سلکتور برای اطمینان از تطبیق فرم)
     await page.evaluate('''(val) => {
-        const inp = document.querySelector('#txtLegalNationalityCode');
+        const inp = document.querySelector('#txtLegalNationalityCode, #txtLegalIrNationalityCode');
         if (inp && inp.offsetParent !== null) {
             inp.value = val;
             inp.dispatchEvent(new Event("input", { bubbles: true }));
@@ -2036,32 +2085,54 @@ async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
             f"استعلام ثنا برای شرکت {role} (شناسه {company_id}) ناموفق",
             step="SANA_QUERY_FAILED")
 
-    # وارد کردن کدملی نماینده
-    if nat_id:
-        for _try in range(5):
-            set_ok = await page.evaluate('''(val) => {
-                const inp = document.querySelector('#txtRealIrNationalityCode');
-                if (inp && !inp.disabled) {
-                    inp.value = val;
-                    inp.dispatchEvent(new Event("input", { bubbles: true }));
-                    inp.dispatchEvent(new Event("change", { bubbles: true }));
-                    return true;
-                }
-                return false;
-            }''', nat_id)
-            if set_ok:
-                break
-            await asyncio.sleep(3)
+    # شماره ثبت شخص حقوقی — همیشه صفر (مشابه اظهارنامه)
+    await _set_legal_record_no_zero_check(page)
 
-        # ⭐ استعلام نماینده
-        rep_status = await _query_sana_check(
-            page, "actions.callNationalityCode", bot, user_id,
-            role=f"{role} (نماینده)", national_id=nat_id)
-        if rep_status == "failed":
-            # پیام‌ها داخل _query_sana_check ارسال شده‌اند — فقط قطع
-            raise CheckAbortError(
-                f"استعلام ثنا برای نمایندهٔ {role} (کدملی {nat_id}) ناموفق",
-                step="SANA_QUERY_FAILED")
+    if not nat_id:
+        # بدون کدملی نماینده — فقط ثبت شناسه ملی شرکت کافی است
+        logging.info(f"[CHECK] شخص حقوقی {role} بدون کدملی نماینده — فقط شناسه ملی شرکت ثبت شد")
+        return
+
+    await asyncio.sleep(3)
+
+    # انتخاب نوع نماینده (مدیرعامل یا نماینده) — بعد از استعلام موفق شرکت،
+    # چون این دراپ‌داون معمولاً فقط پس از پاسخ موفق شرکت رندر می‌شود
+    agent_value = "0091000010000008" if rep_type == "مدیرعامل" else "0091000010000010"
+    await page.evaluate('''(val) => {
+        const sel = document.querySelector('select[ng-model*="AgentTypeId"]');
+        if (sel && !sel.disabled) {
+            sel.value = val;
+            sel.dispatchEvent(new Event("input", { bubbles: true }));
+            sel.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+    }''', agent_value)
+    await asyncio.sleep(2)
+
+    # وارد کردن کدملی نماینده
+    for _try in range(5):
+        set_ok = await page.evaluate('''(val) => {
+            const inp = document.querySelector('#txtRealIrNationalityCode');
+            if (inp && !inp.disabled) {
+                inp.value = val;
+                inp.dispatchEvent(new Event("input", { bubbles: true }));
+                inp.dispatchEvent(new Event("change", { bubbles: true }));
+                return true;
+            }
+            return false;
+        }''', nat_id)
+        if set_ok:
+            break
+        await asyncio.sleep(3)
+
+    # ⭐ استعلام نماینده
+    rep_status = await _query_sana_check(
+        page, "actions.callNationalityCode", bot, user_id,
+        role=f"{role} (نماینده)", national_id=nat_id)
+    if rep_status == "failed":
+        # پیام‌ها داخل _query_sana_check ارسال شده‌اند — فقط قطع
+        raise CheckAbortError(
+            f"استعلام ثنا برای نمایندهٔ {role} (کدملی {nat_id}) ناموفق",
+            step="SANA_QUERY_FAILED")
 
 
 async def _fill_lawyer_person(page, national_id: str, bot: Bot, user_id: int):

@@ -137,6 +137,34 @@ class LavayehFatalError(Exception):
     pass
 
 
+class LavayehServiceDownError(LavayehFatalError):
+    """
+    خطای اختصاصی برای زمانی که سرویس سمت سرور سامانه سنا (مثلاً «بازیابی
+    فهرست واحد های قضایی با کد شعبه») قطع است. این خطا مربوط به داده‌های
+    وارد شده توسط کاربر (شماره پرونده/بایگانی/کد شعبه) نیست، بلکه یک
+    اختلال زیرساختی در سامانه سناست — پس نباید کاربر را به بررسی اطلاعاتش
+    ارجاع داد، بلکه باید صریحاً اعلام شود که سامانه قطع است و بعداً
+    امتحان شود.
+    """
+    pass
+
+
+# امضای متن‌های خطای سمت سرور سنا که نشان‌دهندهٔ قطعی سرویس (نه خطای داده)
+# هستند. هرگاه پاپ‌آپ خطا حاوی هرکدام از این عبارات باشد، یعنی مشکل از
+# سمت کاربر نیست و سامانه سنا موقتاً در دسترس نیست.
+_SERVICE_DOWN_ERROR_SIGNATURES = (
+    "بازیابی فهرست واحد های قضایی",
+    "بازیابی فهرست واحدهای قضایی",
+)
+
+
+def _is_service_down_error(error_text: str) -> bool:
+    """آیا متن خطای پاپ‌آپ نشان‌دهندهٔ قطعی سرویس سمت سرور سناست؟"""
+    if not error_text:
+        return False
+    return any(sig in error_text for sig in _SERVICE_DOWN_ERROR_SIGNATURES)
+
+
 # ══════════════════════════════════════════════════════════════════════
 # تابع اصلی پردازش لایحه
 # ══════════════════════════════════════════════════════════════════════
@@ -768,6 +796,65 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                 runtime_state.active_lavayeh_users.discard(user_id)
             return
 
+        except LavayehServiceDownError as e:
+            # ══════════════════════════════════════════════════════════
+            # قطعی سرویس سمت سرور سنا (نه خطای داده/ورودی کاربر). پیام
+            # صریح و جدا از قالب «خطای ثبت موقت» عادی ارسال می‌شود تا
+            # کاربر گمراه نشود و به بررسی اطلاعات خودش هدایت نشود.
+            # ══════════════════════════════════════════════════════════
+            is_bulk_err = data.get("_is_bulk", False)
+            batch_tc_err = data.get("batch_tracking_code", "")
+            row_num_err = data.get("_bulk_row_index") or data.get("lavayeh_row_number", 1)
+
+            service_down_msg = (
+                "⛔ *سامانهٔ سنا موقتاً در دسترس نیست*\n\n"
+                "سرویس استعلام واحدهای قضایی سامانه با خطا مواجه شده و در حال حاضر قطع است.\n\n"
+                "لطفاً *دو ساعت دیگر* مجدداً امتحان بفرمائید."
+            )
+            if is_bulk_err:
+                if batch_tc_err:
+                    try:
+                        from bulk_submissions import BULK_TASKS, mark_bulk_item_done
+                        if batch_tc_err in BULK_TASKS:
+                            BULK_TASKS[batch_tc_err].setdefault("failures", []).append({
+                                "row_index": row_num_err,
+                                "tracking_code": tracking_code,
+                                "title": title,
+                                "error": str(e),
+                            })
+                        await mark_bulk_item_done(bot, user_id, batch_tc_err)
+                    except Exception as log_err:
+                        logging.error(f"[LAVAYEH] خطا در ثبت گزارش شکست ردیف (قطعی سرویس): {log_err}")
+                await bot.send_message(
+                    user_id,
+                    f"{service_down_msg}\n\n(ردیف {row_num_err} — کد: `{tracking_code}`)",
+                    parse_mode="Markdown"
+                )
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"⛔ [LAVAYEH] سرویس سنا قطع است — ردیف {row_num_err} (کد: {tracking_code}) در بچ "
+                    f"{batch_tc_err} رد شد. جزئیات: {str(e)}"
+                )
+            else:
+                await bot.send_message(user_id, service_down_msg, parse_mode="Markdown")
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"⛔ [LAVAYEH] سرویس استعلام واحدهای قضایی سنا برای کاربر {user_id} قطع است: {str(e)}"
+                )
+
+            runtime_state.active_lavayeh_users.discard(user_id)
+            logging.info(f"[LAVAYEH] قطعی سرویس سنا برای user={user_id}: {e}")
+            await log_event(
+                "خطای سامانه", "لایحه", str(user_id), user_id,
+                tracking_code=tracking_code, doc_name=title,
+                note=f"قطعی سرویس سنا (واحدهای قضایی) ردیف {row_num_err}"
+            )
+            await _safe_register_case(
+                event_type="خطای سامانه", full_name=str(user_id), user_id=user_id,
+                trackingCode=tracking_code or "", documentCategory=title,
+                errorDetails="سرویس سنا (بازیابی واحدهای قضایی) قطع است", errorStep="SANA_SERVICE_DOWN")
+            return
+
         except LavayehFatalError as e:
             is_bulk_err = data.get("_is_bulk", False)
             batch_tc_err = data.get("batch_tracking_code", "")
@@ -1183,6 +1270,11 @@ async def _click_validate_with_retry(page, bot: Bot, user_id: int, max_retries: 
 
     error_text = await _get_and_close_error_popup_text(page)
     if error_text:
+        if _is_service_down_error(error_text):
+            logging.error(f"[LAVAYEH] سرویس استعلام واحدهای قضایی سنا قطع است — توقف فوری: {error_text}")
+            raise LavayehServiceDownError(
+                "سامانهٔ استعلام واحدهای قضایی سنا موقتاً قطع است. لطفاً دو ساعت دیگر مجدداً تلاش بفرمائید."
+            )
         logging.warning(f"[LAVAYEH] خطای صحت‌سنجی (تلاش ۱): {error_text}")
         await asyncio.sleep(5)
 
@@ -1200,6 +1292,11 @@ async def _click_validate_with_retry(page, bot: Bot, user_id: int, max_retries: 
 
         error_text = await _get_and_close_error_popup_text(page)
         if error_text:
+            if _is_service_down_error(error_text):
+                logging.error(f"[LAVAYEH] سرویس استعلام واحدهای قضایی سنا قطع است — توقف فوری: {error_text}")
+                raise LavayehServiceDownError(
+                    "سامانهٔ استعلام واحدهای قضایی سنا موقتاً قطع است. لطفاً دو ساعت دیگر مجدداً تلاش بفرمائید."
+                )
             logging.warning(f"[LAVAYEH] خطای صحت‌سنجی (تلاش {attempt+1}): {error_text}")
             await asyncio.sleep(5)
             continue
@@ -2326,6 +2423,11 @@ async def _click_validate_with_retry_archive(page, bot: Bot, user_id: int):
 
         error_text = await _get_and_close_error_popup_text(page)
         if error_text:
+            if _is_service_down_error(error_text):
+                logging.error(f"[LAVAYEH] سرویس استعلام واحدهای قضایی سنا قطع است — توقف فوری: {error_text}")
+                raise LavayehServiceDownError(
+                    "سامانهٔ استعلام واحدهای قضایی سنا موقتاً قطع است. لطفاً دو ساعت دیگر مجدداً تلاش بفرمائید."
+                )
             consecutive_errors += 1
             logging.warning(f"[LAVAYEH] خطای صحت‌سنجی بایگانی (تلاش {attempt+1}): {error_text}")
             if consecutive_errors >= 2:
