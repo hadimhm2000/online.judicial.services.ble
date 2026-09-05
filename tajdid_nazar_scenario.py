@@ -45,6 +45,71 @@ class TajdidFatalError(Exception):
     pass
 
 
+async def _select_province(page, province: str, bot: Bot, user_id: int, max_retries: int = 4) -> bool:
+    """
+    انتخاب استان از دراپ‌داون ui-select با نرمال‌سازی حروف عربی/فارسی و
+    چند استراتژی تطبیق (دقیق → بدون فاصله → شامل‌شدن جزئی)، هرگز با تایپ
+    مستقیم نام استان در فیلد.
+
+    این تابع جایگزین safe_click_by_text(page, province[:10], ...) شد که
+    برای استان‌های کوتاه مثل «یزد» به‌طور مکرر با خطای
+    NavigationResetError مواجه می‌شد — چون کلیک روی متن ساده، تفاوت
+    فرم عربی/فارسی حروف (ي/ك در برابر ی/ک) را در نظر نمی‌گرفت و دراپ‌داون
+    را دوباره باز نمی‌کرد. الگو دقیقاً از _select_province در
+    lavayeh_scenario.py که در عمل پایدار بوده کپی شده است.
+    """
+    for attempt in range(max_retries):
+        await page.evaluate('''() => {
+            const btn = document.querySelector('.ui-select-toggle');
+            if (btn) btn.click();
+        }''')
+        await asyncio.sleep(1.5 + attempt * 0.5)
+
+        clicked = await page.evaluate(r'''(province) => {
+            const normalize = (s) => (s || '')
+                .replace(/\u064A/g, '\u06CC')
+                .replace(/\u0643/g, '\u06A9')
+                .replace(/\u200c/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+
+            const normProvince = normalize(province);
+            const items = Array.from(document.querySelectorAll('.ui-select-choices-row'));
+            if (items.length === 0) return false;
+
+            // ۱) تطبیق دقیق پس از نرمال‌سازی
+            let target = items.find(el => normalize(el.innerText) === normProvince);
+            // ۲) تطبیق بدون فاصله (رفع تفاوت‌های نیم‌فاصله)
+            if (!target) {
+                const flat = (s) => normalize(s).replace(/\s+/g, '');
+                const flatProvince = flat(province);
+                target = items.find(el => flat(el.innerText) === flatProvince);
+            }
+            // ۳) تطبیق جزئی (شامل‌شدن دوطرفه) به‌عنوان آخرین راه
+            if (!target) {
+                target = items.find(el => {
+                    const t = normalize(el.innerText);
+                    return t && (t.includes(normProvince) || normProvince.includes(t));
+                });
+            }
+            if (target) { target.click(); return true; }
+            return false;
+        }''', province)
+
+        if clicked:
+            await asyncio.sleep(2)
+            return True
+
+        logging.warning(
+            f"[TN] انتخاب استان '{province}' با کلیک در تلاش {attempt + 1} ناموفق بود؛ "
+            f"دوباره تلاش می‌شود (بدون تایپ در فیلد)."
+        )
+        await asyncio.sleep(1.5)
+
+    logging.error(f"[TN] انتخاب استان '{province}' پس از {max_retries} تلاش با کلیک ناموفق ماند.")
+    return False
+
+
 class TajdidSanaQueryError(Exception):
     """خطای استعلام ثنا — شناسه ملی ثبت نشده."""
     def __init__(self, message: str, national_id: str = "", person_role: str = "", person_index: int = 0):
@@ -722,7 +787,15 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
             await asyncio.sleep(1)
 
             # استان
-            await safe_click_by_text(sana_page, province[:10], bot, user_id)
+            province_selected = await _select_province(sana_page, province, bot, user_id)
+            if not province_selected:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"❌ [TN] انتخاب استان '{province}' برای کاربر {user_id} ناموفق."
+                )
+                raise TajdidFatalError(
+                    f"استان «{province}» در لیست سامانه پیدا نشد. لطفاً نام استان را بررسی و مجدداً اقدام نمایید."
+                )
             await resilient_sleep(sana_page, 3, bot, user_id)
 
             # کلیک بازیابی
@@ -1200,7 +1273,12 @@ async def pre_query_tn_persons(data: dict, bot: Bot, step_name: str) -> list:
     await asyncio.sleep(1)
 
     # استان
-    await safe_click_by_text(sana_page, province[:10], bot, user_id)
+    province_selected = await _select_province(sana_page, province, bot, user_id)
+    if not province_selected:
+        logging.error(f"[TN] استعلام افراد: انتخاب استان '{province}' ناموفق بود.")
+        raise TajdidFatalError(
+            f"استان «{province}» در لیست سامانه پیدا نشد. لطفاً نام استان را بررسی کنید."
+        )
     await resilient_sleep(sana_page, 3, bot, user_id)
 
     # کلیک بازیابی
