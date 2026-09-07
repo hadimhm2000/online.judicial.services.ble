@@ -1356,7 +1356,7 @@ async def tn_delete_image(message: Message, state: FSMContext, bot: Bot):
     if not images:
         await message.answer("⚠️ لیست تصاویر خالی است.")
         return
-    await message.answer("🗑 *حذف تصویر:*\\n\\nعکس‌های ارسالی:")
+    await message.answer("🗑 *حذف تصویر:*\n\nعکس‌های ارسالی:")
     for i, file_id in enumerate(images):
         await bot.send_photo(message.chat.id, photo=file_id, caption=f"تصویر شماره {i + 1}")
     await message.answer(
@@ -1700,7 +1700,7 @@ async def _handle_query_persons(message: Message, state: FSMContext, bot: Bot, s
     except TajdidFatalError as e:
         logger.error(f"[TN] خطای استعلام افراد: {e}")
         await message.answer(
-            f"❌ خطا در استعلام: {e}\\n\\n"
+            f"❌ خطا در استعلام: {e}\n\n"
             "لطفاً از روش ورود دستی کدملی استفاده فرمایید:")
         if section == "appellant":
             await message.answer(
@@ -2615,10 +2615,6 @@ async def send_tajdid_nazar_result(
                 fee_status="MANUAL_APPROVED",
                 result_summary="معاف از پرداخت؛ در انتظار امضای الکترونیک",
             )
-            # ⭐ طبق سیاست جدید: تمام موارد هزینه‌دار (به‌جز استعلام) باید در
-            # پنل ادمین وارد قسمت «ارسال» شوند، حتی اگر امضا هنوز درج نشده
-            # باشد — نه فقط پس از تکمیل امضا.
-            await mark_case_ready_to_send_by_tracking(user_id, "TAJDID_NAZAR", tracking_code)
         except Exception as panel_err:
             logging.warning(f"[TN-PAYMENT] خطا در آپدیت پرونده معاف در پنل: {panel_err}")
         await _tn_start_sign_flow(bot, user_id, tracking_code, case_type, tn_persons)
@@ -2742,10 +2738,6 @@ async def tn_successful_payment(message: Message, state: FSMContext, bot: Bot):
             fee=pending["final_fee"] // 10, fee_status="PAID",
             result_summary="پرداخت انجام شد؛ در انتظار امضای الکترونیک",
         )
-        # ⭐ طبق سیاست جدید: تمام موارد هزینه‌دار (به‌جز استعلام) باید در پنل
-        # ادمین وارد قسمت «ارسال» شوند، حتی اگر امضا هنوز درج نشده باشد.
-        await mark_case_ready_to_send_by_tracking(
-            user_id, "TAJDID_NAZAR", pending.get("tracking_code", ""))
     except Exception as panel_err:
         logging.warning(f"[TN-PAYMENT] خطا در آپدیت پرونده در پنل: {panel_err}")
 
