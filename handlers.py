@@ -38,6 +38,7 @@ from keyboards import (
     payment_cancel_kb, disrupted_retry_kb, test_mode_doc_type_kb, test_mode_section_kb,
     test_mode_att_title_kb_first, test_mode_att_title_kb, test_mode_att_more_kb,
     test_mode_ealam_representative_kb, test_mode_ealam_stamp_kb, test_mode_ealam_stamp_type_kb,
+    test_mode_tn_case_type_kb, test_mode_check_path_kb,
     TEST_VISIBLE_USER_ID)
 from lavayeh_handlers import lavayeh_router
 from stamp_calc_handlers import stamp_calc_router
@@ -1548,7 +1549,7 @@ async def test_mode_receive_tracking_code(message: types.Message, state: FSMCont
 
 @router.message(Form.test_mode_doc_type)
 async def test_mode_doc_type(message: types.Message, state: FSMContext):
-    """انتخاب نوع سند: لایحه یا اظهارنامه."""
+    """انتخاب نوع سند: لایحه، اظهارنامه، دعاوی اعتراضی، اعلام وکالت یا چک."""
     if not message.text:
         return
 
@@ -1565,6 +1566,8 @@ async def test_mode_doc_type(message: types.Message, state: FSMContext):
         doc_type = "دعاوی اعتراضی"
     elif "اعلام وکالت" in message.text:
         doc_type = "اعلام وکالت"
+    elif "چک" in message.text:
+        doc_type = "چک"
     else:
         await message.answer("لطفاً یکی از گزینه‌های بالا را انتخاب کنید:", reply_markup=test_mode_doc_type_kb)
         return
@@ -1572,6 +1575,27 @@ async def test_mode_doc_type(message: types.Message, state: FSMContext):
     await state.update_data(test_doc_type=doc_type)
     data = await state.get_data()
     tracking_code = data['test_tracking_code']
+
+    # ⭐ چک — انتخاب مسیر ثبت (دادخواست بدوی / دعاوی حقوقی صلح)
+    if doc_type == "چک":
+        await message.answer(
+            f"🔖 کدرهگیری: `{tracking_code}`\n"
+            f"📂 نوع: *{doc_type}*\n\n"
+            f"📍 دادخواست چک شما در کدام مسیر ثبت شده است؟",
+            reply_markup=test_mode_check_path_kb)
+        await state.set_state(Form.test_mode_check_path)
+        return
+
+    # ⭐ دعاوی اعتراضی — نمایش زیرمجموعه‌ها (۷ نوع دعوی) تا مدیر هرکدام
+    # را که خواست جداگانه تست کند (طبق دستور کارفرما)
+    if doc_type == "دعاوی اعتراضی":
+        await message.answer(
+            f"🔖 کدرهگیری: `{tracking_code}`\n"
+            f"📂 نوع: *{doc_type}*\n\n"
+            f"⚖️ *لطفاً نوع دعوی موردنظر برای تست را انتخاب فرمایید:*",
+            reply_markup=test_mode_tn_case_type_kb)
+        await state.set_state(Form.test_mode_tn_case_type)
+        return
 
     await message.answer(
         f"🔖 کدرهگیری: `{tracking_code}`\n"
@@ -1581,9 +1605,89 @@ async def test_mode_doc_type(message: types.Message, state: FSMContext):
     await state.set_state(Form.test_mode_section_select)
 
 
+@router.message(Form.test_mode_check_path)
+async def test_mode_check_path_handler(message: types.Message, state: FSMContext):
+    """انتخاب مسیر ثبت چک در حالت تست (دادخواست بدوی / دعاوی حقوقی صلح)."""
+    text = message.text or ""
+    if not text:
+        return
+
+    if "بازگشت" in text:
+        await message.answer(
+            "🧪 *حالت تست* — تست بابت کدام مورد است؟",
+            reply_markup=test_mode_doc_type_kb)
+        await state.set_state(Form.test_mode_doc_type)
+        return
+
+    if "بدوی" in text:
+        check_path = "دادخواست بدوی"
+    elif "صلح" in text or "دعاوی حقوقی" in text:
+        check_path = "دعاوی حقوقی"
+    else:
+        await message.answer(
+            "⚠️ لطفاً یکی از مسیرهای زیر را انتخاب کنید:",
+            reply_markup=test_mode_check_path_kb)
+        return
+
+    data = await state.get_data()
+    tracking_code = data['test_tracking_code']
+    await state.update_data(test_check_path=check_path)
+
+    await message.answer(
+        f"✅ مسیر «*{check_path}*» انتخاب شد.\n\n"
+        f"🔖 کدرهگیری: `{tracking_code}`\n"
+        f"📂 نوع: *چک*\n\n"
+        f"آیا می‌خواهید کدام بخش را تست کنید؟",
+        reply_markup=test_mode_section_kb)
+    await state.set_state(Form.test_mode_section_select)
+
+
+@router.message(Form.test_mode_tn_case_type)
+async def test_mode_tn_case_type_handler(message: types.Message, state: FSMContext):
+    """انتخاب زیرمجموعهٔ دعاوی اعتراضی (نوع دعوی) در حالت تست."""
+    text = (message.text or "").strip()
+    if not text:
+        return
+
+    if "بازگشت" in text:
+        await message.answer(
+            "🧪 *حالت تست* — تست بابت کدام مورد است؟",
+            reply_markup=test_mode_doc_type_kb)
+        await state.set_state(Form.test_mode_doc_type)
+        return
+
+    tn_valid_types = [
+        "تجدیدنظرخواهی", "واخواهی", "فرجام خواهی",
+        "اعاده دادرسی مدنی", "اعاده دادرسی کیفری",
+        "اعتراض ثالث", "اعتراض به قرار دادسرا"
+    ]
+    matched = None
+    for vt in tn_valid_types:
+        if vt in text or text in vt:
+            matched = vt
+            break
+    if not matched:
+        await message.answer(
+            "⚠️ لطفاً یکی از زیرمجموعه‌های دعاوی اعتراضی را انتخاب کنید:",
+            reply_markup=test_mode_tn_case_type_kb)
+        return
+
+    data = await state.get_data()
+    tracking_code = data['test_tracking_code']
+    await state.update_data(test_tn_case_type=matched)
+
+    await message.answer(
+        f"✅ *{matched}* انتخاب شد.\n\n"
+        f"🔖 کدرهگیری: `{tracking_code}`\n"
+        f"📂 نوع: *دعاوی اعتراضی*\n\n"
+        f"آیا می‌خواهید کدام بخش را تست کنید؟",
+        reply_markup=test_mode_section_kb)
+    await state.set_state(Form.test_mode_section_select)
+
+
 @router.message(Form.test_mode_section_select)
 async def test_mode_section_select(message: types.Message, state: FSMContext):
-    """انتخاب بخش تست: منضمات یا امضا."""
+    """انتخاب بخش تست: منضمات، امضا، هزینه یا ثبت کامل."""
     if not message.text:
         return
 
@@ -1614,9 +1718,37 @@ async def test_mode_section_select(message: types.Message, state: FSMContext):
             await state.set_state(Form.test_mode_attachment_title)
 
     elif "ثبت کامل" in message.text and "اعتراضی" in message.text:
-        # تست ثبت کامل دعوی اعتراضی — ورود به فلوی دعاوی اعتراضی
-        from tajdid_nazar_handlers import tajdid_nazar_entry
-        await tajdid_nazar_entry(message, state)
+        # ⭐ تست ثبت کامل دعوی اعتراضی — با نوع دعوی انتخاب‌شده از
+        # زیرمجموعه‌ها (قبلاً tajdid_nazar_entry کل state را پاک می‌کرد و
+        # نوع دعوی را دوباره می‌پرسید؛ اکنون مستقیماً با case_type از پیش
+        # انتخاب‌شده وارد فلوی ثبت می‌شویم).
+        tn_case_type = data.get('test_tn_case_type', "")
+        if not tn_case_type:
+            await message.answer(
+                "⚖️ لطفاً ابتدا *نوع دعوی* (زیرمجموعهٔ دعاوی اعتراضی) را انتخاب فرمایید:",
+                reply_markup=test_mode_tn_case_type_kb)
+            await state.set_state(Form.test_mode_tn_case_type)
+            return
+
+        from tajdid_nazar_handlers import _get_labels
+        labels = _get_labels(tn_case_type)
+        await state.update_data(
+            tn_appellants=[],
+            tn_appellees=[],
+            tn_witnesses=[],
+            tn_attachments=[],
+            tn_images=[],
+            tn_text="",
+            tn_extra_text="",
+            tn_reasons=[],
+            case_type=tn_case_type,
+            tn_labels=labels)
+        await message.answer(
+            f"🧪 *تست ثبت کامل دعوی اعتراضی شروع شد*\n\n"
+            f"⚖️ نوع دعوی: *{tn_case_type}*\n\n"
+            f"*مرحله ۱:* لطفاً *شماره دادنامه* را ارسال فرمایید:",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.tn_judge_no)
 
     elif "امضا" in message.text:
         await message.answer(
@@ -1637,6 +1769,46 @@ async def test_mode_section_select(message: types.Message, state: FSMContext):
                 "⚠️ اعلام وکالت بخش امضای جداگانه ندارد.\n"
                 "لطفاً از گزینه *تست بخش منضمات* استفاده کنید.",
                 reply_markup=test_mode_section_kb)
+            return
+        elif doc_type == "چک":
+            # ⭐ تست امضای چک — ناوبری با همان مسیر منوی ثبت چک
+            check_path = data.get('test_check_path', "دادخواست بدوی")
+            if check_path == "دعاوی حقوقی":
+                sign_menu_path = ["دعاوی دادگاههای صلح", "دعاوی حقوقی"]
+            else:
+                sign_menu_path = ["ارایه و پیگیری دادخواست", "دادخواست بدوی"]
+            sign_task_type = "LAVAYEH_SEND_SIGN_CODE"
+            runtime_state.pending_lavayeh_sign[user_id] = {
+                "tracking_code": tracking_code,
+                "is_test": True,
+                "sign_menu_path": sign_menu_path,
+            }
+            await runtime_state.job_queue.put({
+                'user_id': user_id,
+                'task_type': sign_task_type,
+                'tracking_code': tracking_code,
+                'phase': 'navigate',
+                'doc_category': doc_type,
+                'sign_menu_path': sign_menu_path,
+            })
+            await state.clear()
+            return
+        elif doc_type == "دعاوی اعتراضی":
+            # ⭐ تست امضای دعاوی اعتراضی — با نوع دعوی انتخاب‌شده
+            tn_case_type_sign = data.get('test_tn_case_type', 'تجدیدنظرخواهی')
+            runtime_state.pending_tn_sign[user_id] = {
+                "tracking_code": tracking_code,
+                "case_type": tn_case_type_sign,
+                "is_test": True,
+            }
+            await runtime_state.job_queue.put({
+                'user_id': user_id,
+                'task_type': 'TN_SEND_SIGN_CODE',
+                'tracking_code': tracking_code,
+                'sign_menu_path': [tn_case_type_sign],
+                'phase': 'navigate',
+            })
+            await state.clear()
             return
         else:
             sign_task_type = "EZHHARNAMEH_SEND_SIGN_CODE"
@@ -1663,12 +1835,19 @@ async def test_mode_section_select(message: types.Message, state: FSMContext):
             f"📂 نوع: *{doc_type}*\n\n"
             f"⏳ در حال ناوبری و محاسبه هزینه...")
 
-        await runtime_state.job_queue.put({
+        cost_job = {
             'user_id': user_id,
             'task_type': 'TEST_COST',
             'tracking_code': tracking_code,
             'doc_category': doc_type,
-        })
+        }
+        # ⭐ زیرمجموعه‌ها برای ناوبری صحیح (چک / دعاوی اعتراضی)
+        if doc_type == "چک":
+            cost_job['doc_subcategory'] = data.get('test_check_path', 'دادخواست بدوی')
+        elif doc_type == "دعاوی اعتراضی":
+            cost_job['doc_subcategory'] = data.get('test_tn_case_type', '')
+
+        await runtime_state.job_queue.put(cost_job)
         await state.clear()
 
 
@@ -2010,6 +2189,17 @@ async def _test_mode_send_attachments_task(message: types.Message, state: FSMCon
         'doc_category': doc_type,
         'test_attachments': attachments,
     }
+
+    # ⭐ زیرمجموعه‌ها برای ناوبری صحیح تست منضمات (چک / دعاوی اعتراضی)
+    if doc_type == "چک":
+        job_data['doc_subcategory'] = data.get('test_check_path', 'دادخواست بدوی')
+        check_path_info = data.get('test_check_path', 'دادخواست بدوی')
+        ealam_info = f"\n📍 مسیر ثبت: *{check_path_info}*\n"
+    elif doc_type == "دعاوی اعتراضی":
+        job_data['doc_subcategory'] = data.get('test_tn_case_type', '')
+        tn_type_info = data.get('test_tn_case_type', '')
+        if tn_type_info:
+            ealam_info = f"\n⚖️ نوع دعوی: *{tn_type_info}*\n"
 
     if doc_type == "اعلام وکالت":
         representative_type = data.get('test_ealam_representative_type', '')

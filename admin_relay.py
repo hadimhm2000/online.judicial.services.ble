@@ -522,7 +522,8 @@ async def _finalize_case_with_invoice(message: Message, state: FSMContext, bot: 
             lavayeh_persons=[],
             skip_fee_calc=True,
             is_ezhharnameh=cfg.get("is_ezhharnameh", False),
-            service_type=cfg.get("service_type"))
+            service_type=cfg.get("service_type"),
+            admin_manual=True)
         await message.answer(
             f"✅ فاکتور {amount:,} ریالی برای کاربر `{target_user_id}` ارسال شد.\n"
             f"پس از پرداخت، کاربر به‌صورت خودکار وارد بخش امضا می‌شود."

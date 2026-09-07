@@ -752,7 +752,32 @@ test_mode_doc_type_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📝 لایحه"), KeyboardButton(text="📋 اظهارنامه")],
         [KeyboardButton(text="⚖️ دعاوی اعتراضی"), KeyboardButton(text="⚖️ اعلام وکالت")],
+        [KeyboardButton(text="🏦 چک")],
         [KeyboardButton(text="❌ انصراف")],
+    ],
+    resize_keyboard=True
+)
+
+# ⭐ زیرمجموعه‌های دعاوی اعتراضی در حالت تست — تا مدیر بتواند هر نوع
+# دعوی را جداگانه تست کند (طبق دستور کارفرما)
+test_mode_tn_case_type_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="تجدیدنظرخواهی"), KeyboardButton(text="واخواهی")],
+        [KeyboardButton(text="فرجام خواهی"), KeyboardButton(text="اعاده دادرسی مدنی")],
+        [KeyboardButton(text="اعاده دادرسی کیفری"), KeyboardButton(text="اعتراض ثالث")],
+        [KeyboardButton(text="اعتراض به قرار دادسرا")],
+        [KeyboardButton(text="🔙 بازگشت")],
+    ],
+    resize_keyboard=True
+)
+
+# ⭐ مسیر ثبت چک در حالت تست — دادخواست چک بسته به مبلغ در یکی از دو
+# مسیر ثبت می‌شود؛ مدیر مسیر پروندهٔ تستی خود را انتخاب می‌کند
+test_mode_check_path_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="دادخواست بدوی (بیش از ۱ میلیارد ریال)")],
+        [KeyboardButton(text="دعاوی حقوقی صلح (کمتر از ۱ میلیارد ریال)")],
+        [KeyboardButton(text="🔙 بازگشت")],
     ],
     resize_keyboard=True
 )

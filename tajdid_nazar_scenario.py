@@ -368,6 +368,59 @@ async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
                 break
 
 
+async def _fill_lawyer_person_tn(page, national_id: str, bot: Bot, user_id: int):
+    """پر کردن کدملی وکیل + استعلام — ⭐ طبق HTML واقعی مرحلهٔ «وکیل» سامانه:
+
+      ۱. بعد از گزینهٔ «افزودن»، ابتدا کدملی در فیلد «#txtNationalityCode»
+         وارد می‌شود (ng-model="viewModel.currentPetitionPerson.NationalityCode")
+      ۲. سپس دکمهٔ «استعلام شخص» زده می‌شود:
+         ng-click="actions.getLawyerDataWithSana(viewModel.currentPetitionPerson,false)"
+         (دکمهٔ btn-warning با tooltip «استعلام شخص»)
+    """
+    if not national_id:
+        logging.warning("[TN][وکیل] کدملی وکیل خالی است — رد شدن")
+        return
+
+    # ورود کدملی در #txtNationalityCode — با retry تا رندر فرم پس از «افزودن»
+    nat_id_set = False
+    for _try in range(5):
+        nat_id_set = await page.evaluate('''(val) => {
+            const inp = document.querySelector('#txtNationalityCode');
+            if (inp && !inp.disabled && inp.offsetParent !== null) {
+                inp.focus();
+                inp.value = "";
+                inp.value = val;
+                inp.dispatchEvent(new Event("input", { bubbles: true }));
+                inp.dispatchEvent(new Event("change", { bubbles: true }));
+                try {
+                    if (typeof angular !== 'undefined') {
+                        const el = angular.element(inp);
+                        const ctrl = el.controller('ngModel');
+                        if (ctrl) { ctrl.$setViewValue(val); ctrl.$render(); }
+                        const scope = el.scope();
+                        if (scope) scope.$apply();
+                    }
+                } catch (e) {}
+                return true;
+            }
+            return false;
+        }''', national_id)
+        if nat_id_set:
+            break
+        logging.warning(f"[TN][وکیل] فیلد #txtNationalityCode پیدا نشد — تلاش {_try + 1}")
+        await asyncio.sleep(3)
+
+    if not nat_id_set:
+        logging.error("[TN][وکیل] فیلد #txtNationalityCode پس از ۵ تلاش پیدا نشد")
+        return
+
+    await asyncio.sleep(2)
+
+    # استعلام وکیل — دکمهٔ «استعلام شخص» (actions.getLawyerDataWithSana)
+    await _query_sana(page, "actions.getLawyerDataWithSana", bot, user_id,
+                      current_national_id=national_id, person_role="lawyer")
+
+
 async def _query_sana(page, ng_click: str, bot: Bot, user_id: int,
                       is_legal: bool = False,
                       current_national_id: str = "",
@@ -701,7 +754,31 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
             await resilient_sleep(sana_page, 5, bot, user_id)
 
             # ── ۳. کلیک «ثبت و اصلاح دادخواست» ──────────────────────
-            await _click_step_box(sana_page, "ثبت و اصلاح دادخواست", bot, user_id)
+            # ⭐ اعتراض به قرار دادسرا: سامانه روی مسیر عادی «خطای سیستم : ۱»
+            # می‌دهد؛ طبق دستور کارفرما باید باکس «ثبت و اصلاح درخواست»
+            # (زیرنویس: «اين مرحله در دفاتر خدمات انجام مي شود.») کلیک شود و
+            # روند ثبت از همان‌جا شروع می‌شود.
+            if is_prosecutor:
+                # بستن پاپ‌آپ احتمالی «خطای سیستم» قبل از ادامه
+                try:
+                    await sana_page.evaluate('''() => {
+                        const popup = document.querySelector('.sweet-alert.showSweetAlert');
+                        if (popup && popup.offsetParent !== null) {
+                            const btn = popup.querySelector('button.confirm, button.cancel');
+                            if (btn) btn.click();
+                        }
+                    }''')
+                    await asyncio.sleep(1)
+                except Exception:
+                    pass
+
+                reg_box_ok = await _click_step_box(sana_page, "ثبت و اصلاح درخواست", bot, user_id)
+                if not reg_box_ok:
+                    logging.warning(
+                        "[TN] باکس «ثبت و اصلاح درخواست» پیدا نشد — تلاش با «ثبت و اصلاح دادخواست»")
+                    await _click_step_box(sana_page, "ثبت و اصلاح دادخواست", bot, user_id)
+            else:
+                await _click_step_box(sana_page, "ثبت و اصلاح دادخواست", bot, user_id)
             await resilient_sleep(sana_page, 5, bot, user_id)
 
             # ── ۴. مرحله «شروع» ────────────────────────────────────
@@ -831,15 +908,18 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                     await asyncio.sleep(1)
 
                 # مبلغ
+                # ⚠️ قبلاً براکت‌ها با {{{{ اسکیپ می‌شدند → JS نامعتبر →
+                # مقدار مبلغ هرگز پر نمی‌شد؛ اکنون با پاس آرگومانی درست شد.
                 amount_str = str(amount) if amount > 0 else "1"
-                await sana_page.evaluate(f'''() => {{{{
+                await sana_page.evaluate('''(val) => {
                     const inp = document.querySelector('input[ng-model*="Amount"]');
-                    if (inp) {{{{
-                        inp.value = "{amount_str}";
-                        inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
-                        inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
-                    }}}}
-                }}''')
+                    if (inp) {
+                        inp.focus();
+                        inp.value = val;
+                        inp.dispatchEvent(new Event("input", { bubbles: true }));
+                        inp.dispatchEvent(new Event("change", { bubbles: true }));
+                    }
+                }''', amount_str)
                 await asyncio.sleep(1)
 
                 # اعسار
@@ -904,6 +984,38 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                     else:
                         await _fill_real_person(sana_page, person["national_id"], bot, user_id,
                                                 person_role="appellant", person_index=idx)
+                    await resilient_sleep(sana_page, 10, bot, user_id)
+
+            # ── ۶.۵ مرحله «وکیل» (اگر وکیل داریم) ─────────────────
+            # ⭐ قبلاً وکیل به‌کلی نادیده گرفته می‌شد (کدملی و استعلام هرگز
+            # انجام نمی‌شد). طبق دستور کارفرما: بعد از «افزودن»، ابتدا کدملی
+            # در #txtNationalityCode وارد شود و سپس دکمهٔ استعلام
+            # (actions.getLawyerDataWithSana) زده شود — الگوی اظهارنامه/چک.
+            if has_lawyer:
+                lawyer_step_clicked = await sana_page.evaluate('''() => {
+                    const steps = Array.from(document.querySelectorAll('.step'));
+                    const t = steps.find(el => el.innerText && el.innerText.trim() === "وكيل");
+                    if (t) { t.click(); return true; }
+                    return false;
+                }''')
+                if not lawyer_step_clicked:
+                    try:
+                        await safe_click_by_text(sana_page, "وكيل", bot, user_id)
+                        lawyer_step_clicked = True
+                    except Exception as lawyer_nav_err:
+                        logging.warning(
+                            f"[TN] مرحلهٔ «وکیل» در ناوبری پیدا نشد ({lawyer_nav_err}) — "
+                            f"ادامه بدون step جداگانهٔ وکیل")
+                if lawyer_step_clicked:
+                    await resilient_sleep(sana_page, 4, bot, user_id)
+
+                for idx, person in enumerate(appellants):
+                    if person.get("person_type") != "وکیل":
+                        continue
+                    await _click_add_btn(sana_page, bot, user_id)
+                    await resilient_sleep(sana_page, 3, bot, user_id)
+                    await _fill_lawyer_person_tn(
+                        sana_page, person.get("national_id", ""), bot, user_id)
                     await resilient_sleep(sana_page, 10, bot, user_id)
 
             # ── ۷. مرحله تجدیدنظرخوانده (فقط برای غیر اعتراض به قرار دادسرا)
@@ -1211,7 +1323,26 @@ async def pre_query_tn_persons(data: dict, bot: Bot, step_name: str) -> list:
     await resilient_sleep(sana_page, 5, bot, user_id)
 
     # ۴. کلیک ثبت و اصلاح دادخواست
-    await _click_step_box(sana_page, "ثبت و اصلاح دادخواست", bot, user_id)
+    # ⭐ اعتراض به قرار دادسرا — باکس «ثبت و اصلاح درخواست» (الگوی اصلی ثبت)
+    is_prosecutor_q = case_type == "اعتراض به قرار دادسرا"
+    if is_prosecutor_q:
+        # بستن پاپ‌آپ احتمالی «خطای سیستم»
+        try:
+            await sana_page.evaluate('''() => {
+                const popup = document.querySelector('.sweet-alert.showSweetAlert');
+                if (popup && popup.offsetParent !== null) {
+                    const btn = popup.querySelector('button.confirm, button.cancel');
+                    if (btn) btn.click();
+                }
+            }''')
+            await asyncio.sleep(1)
+        except Exception:
+            pass
+        q_reg_ok = await _click_step_box(sana_page, "ثبت و اصلاح درخواست", bot, user_id)
+        if not q_reg_ok:
+            await _click_step_box(sana_page, "ثبت و اصلاح دادخواست", bot, user_id)
+    else:
+        await _click_step_box(sana_page, "ثبت و اصلاح دادخواست", bot, user_id)
     await resilient_sleep(sana_page, 5, bot, user_id)
 
     # ۵. مرحله شروع — انتخاب شخص حقیقی
@@ -1240,36 +1371,42 @@ async def pre_query_tn_persons(data: dict, bot: Bot, step_name: str) -> list:
     await resilient_sleep(sana_page, 4, bot, user_id)
 
     # شماره دادنامه
-    await sana_page.evaluate(f'''() => {{{{
+    # ⚠️ قبلاً براکت‌های JS با {{{{ (چهارتایی) اسکیپ شده بودند که به {{
+    # در جاوااسکریپت تبدیل می‌شد و باعث SyntaxError در page.evaluate و
+    # شکست کامل «استعلام افراد پرونده موجود» می‌گشت — اکنون درست شده است.
+    await sana_page.evaluate('''(val) => {
         const inp = document.querySelector('#txtJudgeNo');
-        if (inp) {{{{
-            inp.value = "{judge_no}";
-            inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
-            inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
-        }}}}
-    }}}}''')
+        if (inp) {
+            inp.focus();
+            inp.value = val;
+            inp.dispatchEvent(new Event("input", { bubbles: true }));
+            inp.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+    }''', judge_no)
     await asyncio.sleep(1)
 
     # شماره پرونده
-    await sana_page.evaluate(f'''() => {{{{
+    await sana_page.evaluate('''(val) => {
         const inp = document.querySelector('#txtReferingCaseNo');
-        if (inp) {{{{
-            inp.value = "{file_no}";
-            inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
-            inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
-        }}}}
-    }}}}''')
+        if (inp) {
+            inp.focus();
+            inp.value = val;
+            inp.dispatchEvent(new Event("input", { bubbles: true }));
+            inp.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+    }''', file_no)
     await asyncio.sleep(1)
 
     # تاریخ دادنامه
-    await sana_page.evaluate(f'''() => {{{{
+    await sana_page.evaluate('''(val) => {
         const inps = document.querySelectorAll('input[persian-datepicker-popup]');
-        if (inps.length > 0) {{{{
-            inps[0].value = "{judge_date}";
-            inps[0].dispatchEvent(new Event("input", {{ bubbles: true }}));
-            inps[0].dispatchEvent(new Event("change", {{ bubbles: true }}));
-        }}}}
-    }}}}''')
+        if (inps.length > 0) {
+            inps[0].focus();
+            inps[0].value = val;
+            inps[0].dispatchEvent(new Event("input", { bubbles: true }));
+            inps[0].dispatchEvent(new Event("change", { bubbles: true }));
+        }
+    }''', judge_date)
     await asyncio.sleep(1)
 
     # استان
@@ -1374,18 +1511,19 @@ async def _remove_unselected_from_system(page, selected_names: list, bot: Bot, u
             break
 
         # حذف آیتم با کلیک روی دکمه btn-danger
-        clicked = await page.evaluate(f'''() => {{{{
+        # ⚠️ قبلاً براکت‌ها با {{{{ اسکیپ می‌شدند → JS نامعتبر؛ اکنون درست شد.
+        clicked = await page.evaluate('''(idx) => {
             const items = document.querySelectorAll('jud-nav-list .nav-list div[ng-repeat]');
-            if ({to_remove_idx} < items.length) {{{{
-                const item = items[{to_remove_idx}];
+            if (idx < items.length) {
+                const item = items[idx];
                 const deleteBtn = item.querySelector('.btn-danger');
-                if (deleteBtn) {{{{
+                if (deleteBtn) {
                     deleteBtn.click();
                     return true;
-                }}}}
-            }}}}
+                }
+            }
             return false;
-        }}}}''')
+        }''', to_remove_idx)
         if clicked:
             logging.info(f"[TN] حذف '{to_remove_name}' از لیست سامانه.")
             await asyncio.sleep(1.5)
