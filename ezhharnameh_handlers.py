@@ -1200,7 +1200,7 @@ async def ezhhar_proxy_delete_image(message: Message, state: FSMContext, bot: Bo
     if not images:
         await message.answer("⚠️ لیست تصاویر خالی است.")
         return
-    await message.answer("🗑 *حذف تصویر:*\\n\\nعکس‌های ارسالی:")
+    await message.answer("🗑 *حذف تصویر:*\n\nعکس‌های ارسالی:")
     for i, file_id in enumerate(images):
         await bot.send_photo(message.chat.id, photo=file_id, caption=f"تصویر شماره {i + 1}")
     await message.answer(
