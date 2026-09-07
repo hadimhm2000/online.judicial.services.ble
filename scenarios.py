@@ -554,6 +554,109 @@ async def wait_for_manual_login(bot: Bot):
 # TEST_ATTACHMENTS — تست بخش منضمات بدون ایجاد کدرهگیری جدید
 # ══════════════════════════════════════════════════════════════════════════════
 
+async def _test_navigate_to_case(sana_page, bot: Bot, user_id: int,
+                                 category: str, subcategory: str,
+                                 tracking_code: str) -> bool:
+    """ناوبری مشترک حالت تست (مدیر): رفتن به منوی دستهٔ سند (+ زیرمجموعه)،
+    جستجوی کدرهگیری در کارتابل و باز کردن پرونده.
+
+    پشتیبانی: لایحه، اظهارنامه، اعلام وکالت، چک (دادخواست بدوی /
+    دعاوی حقوقی صلح) و دعاوی اعتراضی (۷ نوع دعوی).
+    خروجی True یعنی پرونده باز شده و ادامهٔ مراحل (منضمات/هزینه) مجاز است.
+    """
+    success = await goto_url_with_retry(
+        sana_page, "https://sakha2.adliran.ir/Offices/Index", bot, user_id
+    )
+    if not success:
+        await bot.send_message(user_id, "❌ خطا در اتصال به سامانه.")
+        return False
+
+    await human_delay(4.0, 6.0)
+
+    # ── کلیک منوی دسته (+ زیرمجموعه در صورت نیاز) ──────────────────
+    if category in ("لایحه", "اعلام وکالت"):
+        await safe_click_by_text(sana_page, "ارایه و پیگیری لایحه", bot, user_id)
+    elif category == "اظهارنامه":
+        await safe_click_by_text(sana_page, "ارایه و پیگیری اظهارنامه", bot, user_id)
+    elif category == "چک":
+        if subcategory == "دعاوی حقوقی":
+            await safe_click_by_text(sana_page, "دعاوی دادگاههای صلح", bot, user_id)
+            await resilient_sleep(sana_page, 2, bot, user_id)
+            await safe_click_by_text(sana_page, "دعاوی حقوقی", bot, user_id)
+        else:
+            await safe_click_by_text(sana_page, "ارایه و پیگیری دادخواست", bot, user_id)
+            await resilient_sleep(sana_page, 2, bot, user_id)
+            await safe_click_by_text(sana_page, "دادخواست بدوی", bot, user_id)
+    elif category == "دعاوی اعتراضی":
+        await safe_click_by_text(sana_page, "دعاوی اعتراضی", bot, user_id)
+        if subcategory:
+            await resilient_sleep(sana_page, 2, bot, user_id)
+            await safe_click_by_text(sana_page, subcategory, bot, user_id)
+    await resilient_sleep(sana_page, 5, bot, user_id)
+
+    # ── رادیوی جستجوی لایحه (فقط لایحه/اعلام وکالت) ─────────────────
+    if category in ("لایحه", "اعلام وکالت"):
+        radio_clicked = await sana_page.evaluate('''() => {
+            const radio = document.querySelector('#rdbGetPetition');
+            if (radio) { radio.click(); return true; }
+            return false;
+        }''')
+        if not radio_clicked:
+            await safe_click_by_text(sana_page, "جستجوی لایحه", bot, user_id)
+        await resilient_sleep(sana_page, 4, bot, user_id)
+
+    try:
+        await sana_page.wait_for_selector('#txtPetitionNo, #billNo', timeout=15000)
+    except Exception:
+        await bot.send_message(user_id, "❌ صفحه کارتابل لود نشد.")
+        return False
+
+    # ── ورود کدرهگیری ──────────────────────────────────────────────
+    if category in ("لایحه", "اعلام وکالت"):
+        await safe_type(sana_page, '#billNo', tracking_code, bot, user_id)
+    else:
+        selector = '#txtPetitionNo, #billNo, input[name="txtPetitionNo"], input[name="billNo"]'
+        await safe_type(sana_page, selector, tracking_code, bot, user_id)
+    await resilient_sleep(sana_page, 2, bot, user_id)
+
+    # ── کلیک دکمه جستجو ───────────────────────────────────────────
+    if category in ("لایحه", "اعلام وکالت"):
+        await sana_page.evaluate('''() => {
+            const btn = document.querySelector('#btnGetJSSBill');
+            if (btn) { btn.click(); return; }
+        }''')
+    else:
+        await sana_page.evaluate('''() => {
+            const exactBtn = document.querySelector('#btnGetJSSPetition');
+            if (exactBtn) { exactBtn.click(); return; }
+            const btns = Array.from(document.querySelectorAll('button'));
+            const searchBtn = btns.find(b => b.innerText && b.innerText.includes("جستجو"));
+            if (searchBtn) searchBtn.click();
+        }''')
+
+    await asyncio.sleep(3)
+    await wait_for_horizontal_loading_bar(sana_page, bot, user_id, timeout=60)
+
+    # ── بستن پاپ‌آپ‌ها ────────────────────────────────────────────
+    await sana_page.evaluate('''() => {
+        const btns = Array.from(document.querySelectorAll('button'));
+        const closeBtn = btns.find(b =>
+            (b.innerText && b.innerText.trim() === "بستن") || b.classList.contains("confirm")
+        );
+        if(closeBtn) closeBtn.click();
+    }''')
+    await resilient_sleep(sana_page, 2, bot, user_id)
+
+    if (
+        await sana_page.locator(".alert-danger").is_visible()
+        or await sana_page.locator('text="اطلاعاتی یافت نشد"').is_visible()
+    ):
+        await bot.send_message(user_id, f"❌ پرونده‌ای با کد `{tracking_code}` یافت نگردید.")
+        return False
+
+    return True
+
+
 async def _process_test_attachments(data: dict, bot: Bot):
     """
     تست بخش منضمات: ناوبری به پرونده، ورود به تب منضمات و آپلود مدارک.
@@ -563,84 +666,15 @@ async def _process_test_attachments(data: dict, bot: Bot):
     user_id = data['user_id']
     tracking_code = data.get('tracking_code')
     category = data.get('doc_category')
+    subcategory = data.get('doc_subcategory')
     test_attachments = data.get('test_attachments', [])
 
     downloaded_paths = []
 
     try:
-        success = await goto_url_with_retry(
-            sana_page, "https://sakha2.adliran.ir/Offices/Index", bot, user_id
-        )
-        if not success:
-            await bot.send_message(user_id, "❌ خطا در اتصال به سامانه.")
-            return
-
-        await human_delay(4.0, 6.0)
-
-        # ── ناوبری به بخش مورد نظر ─────────────────────────────────────
-        if category == "لایحه":
-            await safe_click_by_text(sana_page, "ارایه و پیگیری لایحه", bot, user_id)
-        elif category == "اظهارنامه":
-            await safe_click_by_text(sana_page, "ارایه و پیگیری اظهارنامه", bot, user_id)
-        await resilient_sleep(sana_page, 5, bot, user_id)
-
-        # ── تنظیم رادیو و ورود کدرهگیری ──────────────────────────────
-        if category == "لایحه":
-            radio_clicked = await sana_page.evaluate('''() => {
-                const radio = document.querySelector('#rdbGetPetition');
-                if (radio) { radio.click(); return true; }
-                return false;
-            }''')
-            if not radio_clicked:
-                await safe_click_by_text(sana_page, "جستجوی لایحه", bot, user_id)
-            await resilient_sleep(sana_page, 4, bot, user_id)
-
-        try:
-            await sana_page.wait_for_selector('#txtPetitionNo, #billNo', timeout=15000)
-        except Exception:
-            await bot.send_message(user_id, "❌ صفحه کارتابل لود نشد.")
-            return
-
-        if category == "لایحه":
-            await safe_type(sana_page, '#billNo', tracking_code, bot, user_id)
-        else:
-            selector = '#txtPetitionNo, #billNo, input[name="txtPetitionNo"], input[name="billNo"]'
-            await safe_type(sana_page, selector, tracking_code, bot, user_id)
-        await resilient_sleep(sana_page, 2, bot, user_id)
-
-        # ── کلیک دکمه جستجو ───────────────────────────────────────────
-        if category == "لایحه":
-            await sana_page.evaluate('''() => {
-                const btn = document.querySelector('#btnGetJSSBill');
-                if (btn) { btn.click(); return; }
-            }''')
-        else:
-            await sana_page.evaluate('''() => {
-                const exactBtn = document.querySelector('#btnGetJSSPetition');
-                if (exactBtn) { exactBtn.click(); return; }
-                const btns = Array.from(document.querySelectorAll('button'));
-                const searchBtn = btns.find(b => b.innerText && b.innerText.includes("جستجو"));
-                if (searchBtn) searchBtn.click();
-            }''')
-
-        await asyncio.sleep(3)
-        await wait_for_horizontal_loading_bar(sana_page, bot, user_id, timeout=60)
-
-        # ── بستن پاپ‌آپ‌ها ────────────────────────────────────────────
-        await sana_page.evaluate('''() => {
-            const btns = Array.from(document.querySelectorAll('button'));
-            const closeBtn = btns.find(b =>
-                (b.innerText && b.innerText.trim() === "بستن") || b.classList.contains("confirm")
-            );
-            if(closeBtn) closeBtn.click();
-        }''')
-        await resilient_sleep(sana_page, 2, bot, user_id)
-
-        if (
-            await sana_page.locator(".alert-danger").is_visible()
-            or await sana_page.locator('text="اطلاعاتی یافت نشد"').is_visible()
-        ):
-            await bot.send_message(user_id, f"❌ پرونده‌ای با کد `{tracking_code}` یافت نگردید.")
+        # ⭐ ناوبری مشترک — پشتیبانی از لایحه/اظهارنامه/اعلام وکالت/چک/دعاوی اعتراضی
+        if not await _test_navigate_to_case(
+                sana_page, bot, user_id, category, subcategory, tracking_code):
             return
 
         # ── ورود به تب منضمات ────────────────────────────────────────
@@ -740,6 +774,134 @@ async def _process_test_attachments(data: dict, bot: Bot):
                     os.remove(path)
             except Exception:
                 pass
+
+
+async def _process_test_cost(data: dict, bot: Bot):
+    """
+    ⭐ تست بخش هزینه (مدیر) — ناوبری به پرونده با کدرهگیری، ورود به باکس
+    «محاسبه و دريافت هزينه» و استخراج/گزارش جدول هزینه‌ها.
+
+    پشتیبانی از همهٔ دسته‌ها از طریق ناوبری مشترک _test_navigate_to_case:
+    لایحه / اظهارنامه / اعلام وکالت / چک / دعاوی اعتراضی (زیرمجموعه‌ها).
+
+    خروجی: پیام جدول هزینه‌ها (ردیف‌ها + جمع کل) برای مدیر.
+    """
+    sana_page = runtime_state.sana_page
+    user_id = data['user_id']
+    tracking_code = data.get('tracking_code')
+    category = data.get('doc_category')
+    subcategory = data.get('doc_subcategory')
+
+    try:
+        # ── ناوبری مشترک به پرونده ─────────────────────────────────
+        if not await _test_navigate_to_case(
+                sana_page, bot, user_id, category, subcategory, tracking_code):
+            return
+
+        # ── کلیک باکس «محاسبه و دريافت هزينه» ───────────────────────
+        cost_box_clicked = await sana_page.evaluate('''() => {
+            const heads = Array.from(document.querySelectorAll('.box h5'));
+            const t = heads.find(el => el.innerText && (
+                el.innerText.includes("محاسبه و دريافت هزينه") ||
+                el.innerText.includes("محاسبه و دریافت هزینه") ||
+                el.innerText.includes("محاسبه")
+            ));
+            if (t) {
+                const box = t.closest('.box');
+                if (box) { box.click(); return true; }
+            }
+            return false;
+        }''')
+        if not cost_box_clicked:
+            # فال‌بک: باکس step-label یا متن ساده
+            try:
+                await safe_click_by_text(sana_page, "محاسبه و دريافت هزينه", bot, user_id)
+                cost_box_clicked = True
+            except Exception as cost_nav_err:
+                logging.warning(f"[TEST-COST] باکس هزینه پیدا نشد: {cost_nav_err}")
+
+        await asyncio.sleep(3)
+        await wait_for_horizontal_loading_bar(sana_page, bot, user_id, timeout=60)
+        await resilient_sleep(sana_page, 8, bot, user_id)
+
+        # ── استخراج جدول هزینه‌ها ──────────────────────────────────
+        cost_rows = await sana_page.evaluate('''() => {
+            const rows = Array.from(document.querySelectorAll('table.table-bordered tbody tr'));
+            const out = [];
+            for (const row of rows) {
+                const cells = row.querySelectorAll('td');
+                if (cells.length < 3) continue;
+                const label = (cells[1].innerText || '').trim();
+                const amountText = (cells[2].innerText || '').trim();
+                if (!label) continue;
+                out.push({ label: label, amount: amountText });
+            }
+            return out;
+        }''')
+
+        # جمع کل — td والدِ div جمع کل با فال‌بک td سبزرنگ
+        cost_sum = await sana_page.evaluate('''() => {
+            const costDiv = document.querySelector('[ng-model="viewModel.costSum"]');
+            if (costDiv) {
+                const td = costDiv.closest('td');
+                const text = td ? (td.innerText || td.textContent || '') : '';
+                const nums = text.replace(/,/g, '').match(/[0-9]+/);
+                if (nums) return parseInt(nums[0]);
+            }
+            const greenTds = Array.from(document.querySelectorAll('table td.color-green'));
+            for (const td of greenTds) {
+                const t = (td.innerText || '').replace(/,/g, '').replace(/\\s/g, '');
+                if (/^[0-9]+$/.test(t) && parseInt(t) > 0) {
+                    return parseInt(t);
+                }
+            }
+            return 0;
+        }''')
+
+        # ── گزارش نتیجه به مدیر ────────────────────────────────────
+        doc_label = category if category else "نامشخص"
+        if subcategory:
+            doc_label += f" — {subcategory}"
+
+        if not cost_rows and not cost_sum:
+            await bot.send_message(
+                user_id,
+                f"❌ *تست هزینه ناموفق*\n\n"
+                f"🔖 کدرهگیری: `{tracking_code}`\n"
+                f"📂 نوع: *{doc_label}*\n\n"
+                f"ورود به بخش هزینه انجام نشد یا جدول هزینه نمایش داده نشد."
+                f" (باکس کلیک‌شده: {'بله' if cost_box_clicked else 'خیر'})")
+            await bot.send_message(
+                ADMIN_ID,
+                f"❌ [TEST-COST] تست هزینه ناموفق — کد: {tracking_code} | نوع: {doc_label} "
+                f"| باکس: {'کلیک شد' if cost_box_clicked else 'پیدا نشد'}")
+            return
+
+        rows_text = "\n".join(
+            f"  • {r['label']}: {r['amount']}" for r in (cost_rows or [])) or "  (بدون ردیف)"
+        sum_text = f"{cost_sum:,} ریال" if cost_sum else "پیدا نشد"
+
+        await bot.send_message(
+            user_id,
+            f"✅ *تست هزینه موفق*\n\n"
+            f"🔖 کدرهگیری: `{tracking_code}`\n"
+            f"📂 نوع: *{doc_label}*\n\n"
+            f"*ردیف‌های هزینه:*\n{rows_text}\n\n"
+            f"💵 *جمع کل: {sum_text}*")
+        await bot.send_message(
+            ADMIN_ID,
+            f"🧪 [TEST-COST] تست هزینه موفق — کد: {tracking_code} | نوع: {doc_label} "
+            f"| جمع کل: {sum_text} | ردیف‌ها: {len(cost_rows or [])}")
+
+    except Exception as e:
+        logging.error(f"[TEST-COST] خطا در تست هزینه: {e}", exc_info=True)
+        await bot.send_message(user_id, f"❌ خطا در تست هزینه: {str(e)[:200]}")
+    finally:
+        # بازگشت به فهرست برای تسک‌های بعدی
+        try:
+            await sana_page.goto("https://sakha2.adliran.ir/Offices/Index")
+        except Exception:
+            pass
 
 
 async def _bulk_progress_note_result(bot: Bot, user_id: int, tracking_code: str, doc_name: str, is_invalid: bool) -> bool:
@@ -926,6 +1088,11 @@ async def process_task(data, bot: Bot):
     # ── سناریوی تست منضمات (مدیر) ─────────────────────────────────────────
     if task_type == "TEST_ATTACHMENTS":
         await _process_test_attachments(data, bot)
+        return
+
+    # ── سناریوی تست هزینه (مدیر) ─────────────────────────────────────────
+    if task_type == "TEST_COST":
+        await _process_test_cost(data, bot)
         return
 
     max_task_attempts = 3

@@ -2615,6 +2615,10 @@ async def send_tajdid_nazar_result(
                 fee_status="MANUAL_APPROVED",
                 result_summary="معاف از پرداخت؛ در انتظار امضای الکترونیک",
             )
+            # ⭐ طبق سیاست جدید: تمام موارد هزینه‌دار (به‌جز استعلام) باید در
+            # پنل ادمین وارد قسمت «ارسال» شوند، حتی اگر امضا هنوز درج نشده
+            # باشد — نه فقط پس از تکمیل امضا.
+            await mark_case_ready_to_send_by_tracking(user_id, "TAJDID_NAZAR", tracking_code)
         except Exception as panel_err:
             logging.warning(f"[TN-PAYMENT] خطا در آپدیت پرونده معاف در پنل: {panel_err}")
         await _tn_start_sign_flow(bot, user_id, tracking_code, case_type, tn_persons)
@@ -2738,6 +2742,10 @@ async def tn_successful_payment(message: Message, state: FSMContext, bot: Bot):
             fee=pending["final_fee"] // 10, fee_status="PAID",
             result_summary="پرداخت انجام شد؛ در انتظار امضای الکترونیک",
         )
+        # ⭐ طبق سیاست جدید: تمام موارد هزینه‌دار (به‌جز استعلام) باید در پنل
+        # ادمین وارد قسمت «ارسال» شوند، حتی اگر امضا هنوز درج نشده باشد.
+        await mark_case_ready_to_send_by_tracking(
+            user_id, "TAJDID_NAZAR", pending.get("tracking_code", ""))
     except Exception as panel_err:
         logging.warning(f"[TN-PAYMENT] خطا در آپدیت پرونده در پنل: {panel_err}")
 

@@ -254,6 +254,10 @@ class Form(StatesGroup):
     test_mode_ealam_representative_type = State()
     test_mode_ealam_contract_number = State()
     test_mode_ealam_stamp_amount = State()
+    # ⭐ تست دعاوی اعتراضی — انتخاب زیرمجموعه (نوع دعوی) برای تست جداگانه
+    test_mode_tn_case_type = State()
+    # ⭐ تست چک — انتخاب مسیر ثبت (دادخواست بدوی / دعاوی حقوقی صلح)
+    test_mode_check_path = State()
 
     # =========================================================
     # State های بخش ثبت دعاوی چک
