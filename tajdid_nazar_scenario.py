@@ -12,6 +12,7 @@
   ۳. کلیک «ثبت و اصلاح دادخواست»
   ۴. مرحله «شروع» — انتخاب نوع ارائه (حقیقی/حقوقی/وکیل)
   ۵. مرحله «اطلاعات دادنامه» — شماره دادنامه، پرونده، تاریخ، استان
+     (در اعتراض به قرار دادسرا نام این step «اطلاعات قرار» است)
   ۶. بازیابی اطلاعات + پاپ‌آپ ثنا (خیر)
   ۷. حکم/قرار، مبلغ، اعسار
   ۸. مرحله «تجدیدنظرخواه» — افزودن اشخاص (شبیه اظهارکننده)
@@ -138,7 +139,9 @@ APPELLANT_STEP_MAP = {
     "اعاده دادرسی مدنی": "درخواست‌کننده",
     "اعاده دادرسی کیفری": "درخواست‌کننده",
     "اعتراض ثالث": "اعتراض‌کننده ثالث",
-    "اعتراض به قرار دادسرا": "اعتراض‌کننده",
+    # ⭐ طبق HTML واقعی سامانه، step شخص اول در اعتراض به قرار دادسرا
+    # «درخواست دهنده» است (نه «اعتراض‌کننده») — عیناً مانند تجدیدنظر.
+    "اعتراض به قرار دادسرا": "درخواست دهنده",
 }
 
 # نگاشت نوع دعوی به نام step اشخاص دوم
@@ -152,11 +155,20 @@ APPELLEE_STEP_MAP = {
     "اعتراض به قرار دادسرا": "اعتراض‌شونده",
 }
 
-# نام step شهود/مطلع
+# نگاشت نوع دعوی به نام step شهود/مطلع
 WITNESS_STEP_MAP = {
     "اعاده دادرسی کیفری": "سايراشخاص",  # در کیفری نامش «سایر اشخاص» است
 }
 WITNESS_STEP_DEFAULT = "مطلع/ گواه"
+
+# ⭐ اعتراض به قرار دادسرا — طبق HTML واقعی سامانه، step اطلاعات آن
+# «اطلاعات قرار» نام دارد (نه «اطلاعات دادنامه»); بقیهٔ رفتار آن مرحله
+# (شماره قرار/پرونده، تاریخ، استان، بازیابی، پاپ‌آپ ثنا) عیناً مانند
+# تجدیدنظر است.
+DOC_INFO_STEP_MAP = {
+    "اعتراض به قرار دادسرا": "اطلاعات قرار",
+}
+DOC_INFO_STEP_DEFAULT = "اطلاعات دادنامه"
 
 # نگاشت جهات اعاده دادرسی به ایندکس checkbox
 EADAH_MADANI_REASON_INDICES = {
@@ -618,6 +630,27 @@ async def _calculate_cost(page, bot: Bot, user_id: int) -> dict:
     return {"cost_sum": cost_sum, "extra_items": extra_items, "total": total}
 
 
+async def _close_system_error_popup(page):
+    """بستن پاپ‌آپ sweet-alert (مثل «خطای سیستم : ۱») در صورت ظاهر شدن.
+
+    ⭐ در اعتراض به قرار دادسرا، سامانه گاهی پس از ورود به مسیر ثبت،
+    پاپ‌آپ «خطای سیستم : ۱» نشان می‌دهد؛ طبق دستور کارفرما باکس
+    «ثبت و اصلاح درخواست» کلیک می‌شود و این پاپ‌آپ (قبل/بعد از کلیک)
+    بسته می‌شود تا روند ثبت از همان‌جا ادامه یابد.
+    """
+    try:
+        await page.evaluate('''() => {
+            const popup = document.querySelector('.sweet-alert.showSweetAlert');
+            if (popup && popup.offsetParent !== null) {
+                const btn = popup.querySelector('button.confirm, button.cancel');
+                if (btn) btn.click();
+            }
+        }''')
+        await asyncio.sleep(1)
+    except Exception:
+        pass
+
+
 async def _click_goto_main(page, bot: Bot, user_id: int):
     """کلیک بازگشت به فهرست."""
     clicked = await page.evaluate('''() => {
@@ -719,6 +752,9 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
     appellant_step = APPELLANT_STEP_MAP.get(case_type, "تجديدنظرخواه")
     appellee_step = APPELLEE_STEP_MAP.get(case_type, "تجديدنظرخوانده")
     witness_step = WITNESS_STEP_MAP.get(case_type, WITNESS_STEP_DEFAULT)
+    # ⭐ اعتراض به قرار دادسرا: step اطلاعات «اطلاعات قرار» نام دارد؛
+    # بقیهٔ دعاوی «اطلاعات دادنامه». رفتار مرحله عیناً مانند تجدیدنظر است.
+    doc_info_step = DOC_INFO_STEP_MAP.get(case_type, DOC_INFO_STEP_DEFAULT)
     menu_item = CASE_TYPE_MENU_MAP.get(case_type, case_type)
 
     logging.info(
@@ -760,23 +796,15 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
             # روند ثبت از همان‌جا شروع می‌شود.
             if is_prosecutor:
                 # بستن پاپ‌آپ احتمالی «خطای سیستم» قبل از ادامه
-                try:
-                    await sana_page.evaluate('''() => {
-                        const popup = document.querySelector('.sweet-alert.showSweetAlert');
-                        if (popup && popup.offsetParent !== null) {
-                            const btn = popup.querySelector('button.confirm, button.cancel');
-                            if (btn) btn.click();
-                        }
-                    }''')
-                    await asyncio.sleep(1)
-                except Exception:
-                    pass
+                await _close_system_error_popup(sana_page)
 
                 reg_box_ok = await _click_step_box(sana_page, "ثبت و اصلاح درخواست", bot, user_id)
                 if not reg_box_ok:
                     logging.warning(
                         "[TN] باکس «ثبت و اصلاح درخواست» پیدا نشد — تلاش با «ثبت و اصلاح دادخواست»")
                     await _click_step_box(sana_page, "ثبت و اصلاح دادخواست", bot, user_id)
+                # بستن پاپ‌آپ «خطای سیستم : ۱» که ممکن است پس از ورود ظاهر شود
+                await _close_system_error_popup(sana_page)
             else:
                 await _click_step_box(sana_page, "ثبت و اصلاح دادخواست", bot, user_id)
             await resilient_sleep(sana_page, 5, bot, user_id)
@@ -826,8 +854,11 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                 }''')
                 await asyncio.sleep(2)
 
-            # ── ۵. مرحله «اطلاعات دادنامه» ────────────────────────
-            await _click_step_label(sana_page, "اطلاعات دادنامه", bot, user_id)
+            # ── ۵. مرحله «اطلاعات دادنامه / اطلاعات قرار» ────────
+            # ⭐ در اعتراض به قرار دادسرا نام این step «اطلاعات قرار» است؛
+            # فیلدهای آن (شماره قرار/پرونده، تاریخ، استان، بازیابی) عیناً
+            # مانند تجدیدنظر پر می‌شوند.
+            await _click_step_label(sana_page, doc_info_step, bot, user_id)
             await resilient_sleep(sana_page, 4, bot, user_id)
 
             # شماره دادنامه
@@ -1326,21 +1357,12 @@ async def pre_query_tn_persons(data: dict, bot: Bot, step_name: str) -> list:
     # ⭐ اعتراض به قرار دادسرا — باکس «ثبت و اصلاح درخواست» (الگوی اصلی ثبت)
     is_prosecutor_q = case_type == "اعتراض به قرار دادسرا"
     if is_prosecutor_q:
-        # بستن پاپ‌آپ احتمالی «خطای سیستم»
-        try:
-            await sana_page.evaluate('''() => {
-                const popup = document.querySelector('.sweet-alert.showSweetAlert');
-                if (popup && popup.offsetParent !== null) {
-                    const btn = popup.querySelector('button.confirm, button.cancel');
-                    if (btn) btn.click();
-                }
-            }''')
-            await asyncio.sleep(1)
-        except Exception:
-            pass
+        # بستن پاپ‌آپ احتمالی «خطای سیستم» (قبل و بعد از ورود به مسیر ثبت)
+        await _close_system_error_popup(sana_page)
         q_reg_ok = await _click_step_box(sana_page, "ثبت و اصلاح درخواست", bot, user_id)
         if not q_reg_ok:
             await _click_step_box(sana_page, "ثبت و اصلاح دادخواست", bot, user_id)
+        await _close_system_error_popup(sana_page)
     else:
         await _click_step_box(sana_page, "ثبت و اصلاح دادخواست", bot, user_id)
     await resilient_sleep(sana_page, 5, bot, user_id)
@@ -1361,13 +1383,17 @@ async def pre_query_tn_persons(data: dict, bot: Bot, step_name: str) -> list:
     }''')
     await asyncio.sleep(2)
 
-    # ۶. مرحله اطلاعات دادنامه
+    # ۶. مرحله اطلاعات دادنامه / اطلاعات قرار
+    # ⭐ اعتراض به قرار دادسرا: نام این step «اطلاعات قرار» است — قبلاً
+    # ربات دنبال «اطلاعات دادنامه» می‌گشت، پیدا نمی‌کرد و کل استعلام
+    # با NavigationResetError به خطا می‌خورد.
     judge_no = data.get("tn_judge_no", "")
     file_no = data.get("tn_file_no", "")
     judge_date = data.get("tn_judge_date", "")
     province = data.get("tn_province", "")
 
-    await _click_step_label(sana_page, "اطلاعات دادنامه", bot, user_id)
+    doc_info_step_q = DOC_INFO_STEP_MAP.get(case_type, DOC_INFO_STEP_DEFAULT)
+    await _click_step_label(sana_page, doc_info_step_q, bot, user_id)
     await resilient_sleep(sana_page, 4, bot, user_id)
 
     # شماره دادنامه
