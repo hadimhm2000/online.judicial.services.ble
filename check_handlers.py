@@ -1911,6 +1911,40 @@ async def check_cheque_images_photo_handler(message: Message, state: FSMContext)
     if await _check_maybe_return_to_preview(message, state):
         return
 
+    # ⭐ الزام مدرک نمایندگی برای شخص حقوقی — دقیقاً الگوی اظهارنامه:
+    # قبل از پرسیدن «مدرک دیگری دارید؟»، اگر شخص حقوقی (خواهان یا خوانده)
+    # داریم و هنوز مدرک نمایندگی ارسال نشده، ابتدا مدرک نمایندگی اجباری
+    # گرفته می‌شود (مثال کارفرما: وکیل + شخص حقوقی انتخاب شد ولی در ضمائم
+    # گفته نشد که تصویر مدرک نمایندگی الزامی است).
+    data = await state.get_data()
+    persons_all = data.get("check_plainiffs", []) + data.get("check_defendants", [])
+    has_legal_any = any(p.get("person_type") == "شخص حقوقی" for p in persons_all)
+    existing_groups_0 = data.get("check_attachment_groups", []) or []
+    has_rep_doc_0 = any(
+        "نمایندگی" in (g.get("title", "") or "") for g in existing_groups_0)
+    if has_legal_any and not has_rep_doc_0:
+        from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+        rep_kb = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="✅ اتمام ارسال تصاویر")],
+                [KeyboardButton(text="🔙 بازگشت")],
+            ], resize_keyboard=True)
+        await state.update_data(
+            _mandatory_proxy_sent=False,
+            _current_attachment_title="مدرک نمایندگی",
+            _current_attachment_images=[])
+        await message.answer(
+            "📎 *مرحله مدارک:*\n\n"
+            "⚠️ *توجه مهم:* چون شخص *حقوقی* در پرونده دارید (خواهان/خوانده) و "
+            "(وکیل/نماینده) نیز انتخاب شده، ارسال تصویر *مدرک نمایندگی اجباری* است "
+            "و در بخش منضمات ثبت خواهد شد.\n\n"
+            "📸 لطفاً تصویر *مدرک نمایندگی* را ارسال فرمایید.\n"
+            "_(مثلاً: روزنامه رسمی، آگهی تأسیس، وکالت‌نامه رسمی)_\n\n"
+            "پس از ارسال همهٔ تصاویر، دکمه *«اتمام ارسال تصاویر»* را بفشارید.",
+            reply_markup=rep_kb)
+        await state.set_state(Form.check_attachment_images)
+        return
+
     await message.answer(
         "📎 آیا مدرک دیگری (غیر از تصاویر فقرات چک) نیز دارید؟",
         reply_markup=check_more_docs_kb)
@@ -1970,6 +2004,32 @@ async def check_more_images_handler(message: Message, state: FSMContext):
         return
 
     if text == "✅ خیر، ادامه به انتخاب دادگاه":
+        # ⭐ الزام مدرک نمایندگی — مسیر «خیر» هم بدون مدرک نمایندگی رد
+        # نمی‌شود (الگوی «رد کردن» اظهارنامه). اگر شخص حقوقی داریم و هنوز
+        # مدرک نمایندگی در پیوست‌ها ثبت نشده، ابتدا آن گرفته می‌شود.
+        persons_chk = data.get("check_plainiffs", []) + data.get("check_defendants", [])
+        has_legal_chk = any(p.get("person_type") == "شخص حقوقی" for p in persons_chk)
+        groups_chk = data.get("check_attachment_groups", []) or []
+        rep_doc_chk = any("نمایندگی" in (g.get("title", "") or "") for g in groups_chk)
+        mandatory_flag = data.get("_mandatory_proxy_sent", True)
+        if has_legal_chk and not rep_doc_chk and not mandatory_flag:
+            from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+            rep_kb2 = ReplyKeyboardMarkup(
+                keyboard=[
+                    [KeyboardButton(text="✅ اتمام ارسال تصاویر")],
+                    [KeyboardButton(text="🔙 بازگشت")],
+                ], resize_keyboard=True)
+            await state.update_data(
+                _mandatory_proxy_sent=False,
+                _current_attachment_title="مدرک نمایندگی",
+                _current_attachment_images=[])
+            await message.answer(
+                "⚠️ ارسال تصویر *مدرک نمایندگی* برای شخص حقوقی اجباری است.\n\n"
+                "📸 لطفاً ابتدا تصویر *مدرک نمایندگی* را ارسال فرمایید.\n"
+                "_(مثلاً: روزنامه رسمی، آگهی تأسیس، وکالت‌نامه رسمی)_",
+                reply_markup=rep_kb2)
+            await state.set_state(Form.check_attachment_images)
+            return
         await _ask_check_branch(message, state)
         return
 
@@ -2144,6 +2204,31 @@ async def check_attachment_more_handler(message: Message, state: FSMContext):
             reply_markup=check_attachment_title_kb)
         await state.set_state(Form.check_attachment_title)
     elif text == "✅ خیر، ادامه به انتخاب دادگاه":
+        # ⭐ الزام مدرک نمایندگی — آخرین محافظ قبل از انتخاب دادگاه
+        data = await state.get_data()
+        persons_am = data.get("check_plainiffs", []) + data.get("check_defendants", [])
+        has_legal_am = any(p.get("person_type") == "شخص حقوقی" for p in persons_am)
+        groups_am = data.get("check_attachment_groups", []) or []
+        rep_doc_am = any("نمایندگی" in (g.get("title", "") or "") for g in groups_am)
+        mandatory_am = data.get("_mandatory_proxy_sent", True)
+        if has_legal_am and not rep_doc_am and not mandatory_am:
+            from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+            rep_kb3 = ReplyKeyboardMarkup(
+                keyboard=[
+                    [KeyboardButton(text="✅ اتمام ارسال تصاویر")],
+                    [KeyboardButton(text="🔙 بازگشت")],
+                ], resize_keyboard=True)
+            await state.update_data(
+                _mandatory_proxy_sent=False,
+                _current_attachment_title="مدرک نمایندگی",
+                _current_attachment_images=[])
+            await message.answer(
+                "⚠️ ارسال تصویر *مدرک نمایندگی* برای شخص حقوقی اجباری است.\n\n"
+                "📸 لطفاً ابتدا تصویر *مدرک نمایندگی* را ارسال فرمایید.\n"
+                "_(مثلاً: روزنامه رسمی، آگهی تأسیس، وکالت‌نامه رسمی)_",
+                reply_markup=rep_kb3)
+            await state.set_state(Form.check_attachment_images)
+            return
         await _ask_check_branch(message, state)
     elif "بازگشت" in text:
         await message.answer(

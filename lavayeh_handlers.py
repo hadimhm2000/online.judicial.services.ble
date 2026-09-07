@@ -60,7 +60,7 @@ from bulk_submissions import (
 
 lavayeh_router = Router()
 
-from panel_sync import upsert_case_to_panel
+from panel_sync import upsert_case_to_panel, mark_case_ready_to_send_by_tracking
 
 # ── include کردن روتر امضا ──────────────────────────────────────────────────
 from lavayeh_sign_handlers import lavayeh_sign_router
@@ -3083,7 +3083,8 @@ async def send_lavayeh_result(
     is_ezhharnameh: bool = False,
     prepaid: bool = False,
     service_type: str | None = None,
-    sign_menu_path: list = None):
+    sign_menu_path: list = None,
+    admin_manual: bool = False):
     """ارسال نتیجهٔ ثبت به کاربر + فاکتور پرداخت (درگاه) + شروع فلوی امضا.
 
     ⭐ sign_menu_path: مسیر منوی سامانه برای ناوبری به صفحهٔ امضا — برای
@@ -3093,6 +3094,13 @@ async def send_lavayeh_result(
     می‌شود. قبلاً این پارامتر وجود نداشت و check_scenario با TypeError
     شکست می‌خورد (send_lavayeh_result() got an unexpected keyword
     argument 'sign_menu_path').
+
+    ⭐ admin_manual: وقتی True است یعنی این پرونده از طریق دستور ادمین
+    (`/case` با فاکتور) ثبت شده — یعنی خودِ ادمین کارِ ثبت در سامانهٔ سنا
+    را به‌صورت دستی انجام داده، نه ربات به‌صورت خودکار. در این حالت
+    document_category («نوع») و fee («درآمد») در ثبت‌های پنل ادمین خالی
+    گذاشته می‌شوند، چون این آمار برای سنجش عملکرد خودِ اتوماسیون است و
+    ثبت دستی ادمین نباید در آن لحاظ شود.
     """
     if lavayeh_persons is None:
         lavayeh_persons = []
@@ -3149,6 +3157,7 @@ async def send_lavayeh_result(
             "is_ezhharnameh": is_ezhharnameh,
             "service_type": service_type,
             "sign_menu_path": sign_menu_path,
+            "admin_manual": admin_manual,
         }
         await bot.send_message(
             user_id,
@@ -3162,11 +3171,15 @@ async def send_lavayeh_result(
                 service_type=service_type,
                 status="PROCESSING",
                 tracking_code=tracking_code or None,
-                document_category=lavayeh_title,
+                document_category=None if admin_manual else lavayeh_title,
                 fee=0,
                 fee_status="MANUAL_APPROVED",
                 result_summary="معاف از پرداخت؛ در انتظار امضای الکترونیک",
             )
+            # ⭐ طبق سیاست جدید: تمام موارد هزینه‌دار (به‌جز استعلام) باید در
+            # پنل ادمین وارد قسمت «ارسال» شوند، حتی اگر امضا هنوز درج نشده
+            # باشد — نه فقط پس از تکمیل امضا.
+            await mark_case_ready_to_send_by_tracking(user_id, service_type, tracking_code)
         except Exception as panel_err:
             logging.warning(f"[LAVAYEH] خطا در آپدیت پرونده معاف در پنل: {panel_err}")
         # رفتن مستقیم به فلوی امضا
@@ -3195,10 +3208,14 @@ async def send_lavayeh_result(
                 service_type=service_type,
                 status="PROCESSING",
                 tracking_code=tracking_code or None,
-                document_category=lavayeh_title,
+                document_category=None if admin_manual else lavayeh_title,
                 fee_status="PAID",
                 result_summary="پرداخت قبلی تایید شده؛ در انتظار امضای الکترونیک",
             )
+            # ⭐ طبق سیاست جدید: تمام موارد هزینه‌دار (به‌جز استعلام) باید در
+            # پنل ادمین وارد قسمت «ارسال» شوند، حتی اگر امضا هنوز درج نشده
+            # باشد.
+            await mark_case_ready_to_send_by_tracking(user_id, service_type, tracking_code)
         except Exception as panel_err:
             logging.warning(f"[LAVAYEH] خطا در آپدیت پرونده پیش‌پرداخت‌شده در پنل: {panel_err}")
         # رفتن مستقیم به فلوی امضا
@@ -3270,6 +3287,7 @@ async def send_lavayeh_result(
         "is_ezhharnameh": is_ezhharnameh,
         "service_type": service_type,
         "sign_menu_path": sign_menu_path,
+        "admin_manual": admin_manual,
     }
 
     try:
@@ -3279,9 +3297,9 @@ async def send_lavayeh_result(
             service_type=service_type,
             status="PENDING_PAYMENT",
             tracking_code=tracking_code or None,
-            document_category=lavayeh_title,
+            document_category=None if admin_manual else lavayeh_title,
             # ⭐ final_fee ریال است؛ فیلد fee پنل به «تومان» است (مثل استعلام‌ها)
-            fee=final_fee // 10,
+            fee=0 if admin_manual else final_fee // 10,
             fee_status="UNPAID",
             result_summary="فاکتور ارسال شد؛ در انتظار پرداخت کاربر",
         )
@@ -3403,10 +3421,15 @@ async def lavayeh_successful_payment(message: Message, state: FSMContext, bot: B
             status="PROCESSING",
             tracking_code=pending.get("tracking_code", "") or None,
             # ⭐ final_fee ریال است؛ فیلد fee پنل به «تومان» است
-            fee=pending["final_fee"] // 10,
+            fee=0 if pending.get("admin_manual") else pending["final_fee"] // 10,
             fee_status="PAID",
+            document_category=None if pending.get("admin_manual") else pending.get("lavayeh_title"),
             result_summary="پرداخت انجام شد؛ در انتظار امضای الکترونیک",
         )
+        # ⭐ طبق سیاست جدید: تمام موارد هزینه‌دار (به‌جز استعلام) باید در پنل
+        # ادمین وارد قسمت «ارسال» شوند، حتی اگر امضا هنوز درج نشده باشد.
+        await mark_case_ready_to_send_by_tracking(
+            user_id, svc_type, pending.get("tracking_code", ""))
     except Exception as panel_err:
         logging.warning(f"[LAVAYEH-PAYMENT] خطا در آپدیت پرونده در پنل: {panel_err}")
 
@@ -3517,9 +3540,15 @@ async def admin_approve_lavayeh_receipt(callback: CallbackQuery, bot: Bot):
             bale_user_id=user_id, full_name=str(user_id), service_type=svc_type,
             status="PROCESSING", tracking_code=pending.get("tracking_code", "") or None,
             # ⭐ expected_amount ریال است؛ فیلد fee پنل به «تومان» است
-            fee=review['expected_amount'] // 10, fee_status="PAID",
+            fee=0 if pending.get("admin_manual") else review['expected_amount'] // 10,
+            fee_status="PAID",
+            document_category=None if pending.get("admin_manual") else pending.get("lavayeh_title"),
             result_summary="پرداخت با تایید دستی مدیر ثبت شد؛ در انتظار امضای الکترونیک",
         )
+        # ⭐ طبق سیاست جدید: تمام موارد هزینه‌دار (به‌جز استعلام) باید در پنل
+        # ادمین وارد قسمت «ارسال» شوند، حتی اگر امضا هنوز درج نشده باشد.
+        await mark_case_ready_to_send_by_tracking(
+            user_id, svc_type, pending.get("tracking_code", ""))
     except Exception as panel_err:
         logging.warning(f"[LAVAYEH] خطا در آپدیت پرونده (تایید دستی) در پنل: {panel_err}")
 
