@@ -1,0 +1,1169 @@
+diff --git a/admin_relay.py b/admin_relay.py
+index 9ee34cb..264351c 100644
+--- a/admin_relay.py
++++ b/admin_relay.py
+@@ -522,7 +522,8 @@ async def _finalize_case_with_invoice(message: Message, state: FSMContext, bot:
+             lavayeh_persons=[],
+             skip_fee_calc=True,
+             is_ezhharnameh=cfg.get("is_ezhharnameh", False),
+-            service_type=cfg.get("service_type"))
++            service_type=cfg.get("service_type"),
++            admin_manual=True)
+         await message.answer(
+             f"✅ فاکتور {amount:,} ریالی برای کاربر `{target_user_id}` ارسال شد.\n"
+             f"پس از پرداخت، کاربر به‌صورت خودکار وارد بخش امضا می‌شود."
+diff --git a/check_scenario.py b/check_scenario.py
+index 2b804d5..37c65d8 100644
+--- a/check_scenario.py
++++ b/check_scenario.py
+@@ -953,12 +953,16 @@ async def process_check_task(data: dict, bot: Bot):
+                 )
+ 
+             # ── گرفتن شناسه پرداخت از بخش هزینه (فقط ذخیره در شیت + پیام به مدیر) ──
++            # ⭐ رفع باگ: amount باید «هزینهٔ واقعی سامانه» (costSum، پیش از
++            # اعمال فرمول سود دفتر) باشد، نه final_total که مبلغ نهایی
++            # دریافتی از کاربر است — وگرنه در پنل «هزینه سامانه» با «هزینه»
++            # برابر می‌شود و سود همیشه صفر نمایش داده می‌شود.
+             from payment_id_capture import capture_and_report_payment_ids
+             await capture_and_report_payment_ids(
+                 sana_page, bot, user_id,
+                 service_name="دادخواست چک",
+                 tracking_code=bill_no,
+-                amount=final_total,
++                amount=cost_data.get("costSum", 0),
+                 exclude_values=[bill_no],
+                 log_prefix="CHECK")
+ 
+@@ -1995,29 +1999,78 @@ async def _fill_real_person(page, national_id: str, bot: Bot, user_id: int,
+         logging.warning(f"[CHECK][{role}] استعلام بدون پاسخ — ادامه با احتیاط")
+ 
+ 
++async def _set_legal_record_no_zero_check(page):
++    """شماره ثبت شخص حقوقی (#txtLegalIrShSabt / RecordNo) را روی «0» می‌گذارد.
++
++    ⚠️ این مرحله در نسخهٔ قبلی _fill_legal_person در چک به‌کل حذف شده بود.
++    مطابق الگوی اظهارنامه (_set_legal_record_no_zero در
++    ezhharnameh_scenario.py)، وقتی شخص حقوقی خصوصی است، سامانه این فیلد
++    را اجباری می‌کند و بدون آن، ثبت با خطای اعتبارسنجی مواجه می‌شود. این
++    فیلد فقط پس از استعلام موفق شرکت رندر می‌شود، پس باید بعد از
++    callLegalNationalityCode صدا زده شود.
++    """
++    for _ in range(10):
++        done = await page.evaluate('''() => {
++            const inp = document.querySelector('#txtLegalIrShSabt');
++            if (!inp) return false;
++            inp.value = "0";
++            inp.dispatchEvent(new Event("input", { bubbles: true }));
++            inp.dispatchEvent(new Event("change", { bubbles: true }));
++            try {
++                if (typeof angular !== 'undefined') {
++                    const ctrl = angular.element(inp).controller('ngModel');
++                    if (ctrl) { ctrl.$setViewValue("0"); ctrl.$render(); }
++                }
++            } catch(e) {}
++            return true;
++        }''')
++        if done:
++            logging.info("[CHECK] شماره ثبت شخص حقوقی روی «0» تنظیم شد")
++            await asyncio.sleep(1)
++            return True
++        await asyncio.sleep(0.5)
++    logging.warning("[CHECK] فیلد شماره ثبت (#txtLegalIrShSabt) یافت نشد — رد شد")
++    return False
++
++
+ async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
+                              role: str = "", idx: int = 0):
+-    """پر کردن اطلاعات شخص حقوقی + استعلام شرکت و نماینده"""
++    """پر کردن اطلاعات شخص حقوقی + استعلام شرکت و نماینده.
++
++    ⭐ رفع باگ: این تابع دقیقاً مطابق _fill_legal_person در
++    ezhharnameh_scenario.py بازنویسی شد (طبق درخواست صریح، فلوی چک باید
++    عیناً همان مراحل اظهارنامه را برای خواهان/خوانده شخص حقوقی طی کند).
++    مشکلات نسخهٔ قبلی که باعث شکست ثبت خواهان حقوقی در چک می‌شد:
++      ۱. هیچ‌کدام از رادیوباتن‌های «شخص حقوقی» و «غیردولتی/خصوصی» کلیک
++         نمی‌شدند — روی این سامانه، فرم به‌طور پیش‌فرض روی «شخص حقیقی»
++         است و بدون این کلیک‌ها، فیلد شناسه ملی شرکت اصلاً رندر نمی‌شود.
++      ۲. فیلد «شماره ثبت» شخص حقوقی خصوصی (که سامانه پس از استعلام
++         موفق شرکت اجباری می‌کند) هرگز پر نمی‌شد.
++      ۳. نوع نماینده (دراپ‌داون AgentTypeId) قبل از استعلام شرکت انتخاب
++         می‌شد، در حالی که این فیلد معمولاً فقط بعد از پاسخ موفق استعلام
++         شرکت در صفحه ظاهر می‌شود.
++    """
+     company_id = person.get("company_id", "")
+     nat_id = person.get("national_id", "")
+-    rep_type = person.get("representative_type", "")
++    rep_type = person.get("representative_type", "نماینده")
+ 
+-    agent_value = "0091000010000008" if rep_type == "مدیرعامل" else "0091000010000010"
++    # ── انتخاب رادیوباتن «شخص حقوقی» (مشابه اظهارنامه) ──────────────
++    await page.evaluate('''() => {
++        const rdb = document.querySelector('#rdb3, input[value="3"][name="personType"]');
++        if (rdb) rdb.click();
++    }''')
++    await asyncio.sleep(2)
+ 
+-    # انتخاب نوع نماینده
+-    await page.evaluate('''(val) => {
+-        const sel = document.querySelector('select[ng-model*="AgentTypeId"]');
+-        if (sel && !sel.disabled) {
+-            sel.value = val;
+-            sel.dispatchEvent(new Event("input", { bubbles: true }));
+-            sel.dispatchEvent(new Event("change", { bubbles: true }));
+-        }
+-    }''', agent_value)
++    # ── انتخاب «غیردولتی / خصوصی» ────────────────────────────────────
++    await page.evaluate('''() => {
++        const rdb = document.querySelector('#rdbPrivate, input[value="4"][name="LegalPersonType"]');
++        if (rdb) rdb.click();
++    }''')
+     await asyncio.sleep(2)
+ 
+-    # وارد کردن شناسه ملی شرکت
++    # وارد کردن شناسه ملی شرکت (چند سلکتور برای اطمینان از تطبیق فرم)
+     await page.evaluate('''(val) => {
+-        const inp = document.querySelector('#txtLegalNationalityCode');
++        const inp = document.querySelector('#txtLegalNationalityCode, #txtLegalIrNationalityCode');
+         if (inp && inp.offsetParent !== null) {
+             inp.value = val;
+             inp.dispatchEvent(new Event("input", { bubbles: true }));
+@@ -2036,32 +2089,54 @@ async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
+             f"استعلام ثنا برای شرکت {role} (شناسه {company_id}) ناموفق",
+             step="SANA_QUERY_FAILED")
+ 
++    # شماره ثبت شخص حقوقی — همیشه صفر (مشابه اظهارنامه)
++    await _set_legal_record_no_zero_check(page)
++
++    if not nat_id:
++        # بدون کدملی نماینده — فقط ثبت شناسه ملی شرکت کافی است
++        logging.info(f"[CHECK] شخص حقوقی {role} بدون کدملی نماینده — فقط شناسه ملی شرکت ثبت شد")
++        return
++
++    await asyncio.sleep(3)
++
++    # انتخاب نوع نماینده (مدیرعامل یا نماینده) — بعد از استعلام موفق شرکت،
++    # چون این دراپ‌داون معمولاً فقط پس از پاسخ موفق شرکت رندر می‌شود
++    agent_value = "0091000010000008" if rep_type == "مدیرعامل" else "0091000010000010"
++    await page.evaluate('''(val) => {
++        const sel = document.querySelector('select[ng-model*="AgentTypeId"]');
++        if (sel && !sel.disabled) {
++            sel.value = val;
++            sel.dispatchEvent(new Event("input", { bubbles: true }));
++            sel.dispatchEvent(new Event("change", { bubbles: true }));
++        }
++    }''', agent_value)
++    await asyncio.sleep(2)
++
+     # وارد کردن کدملی نماینده
+-    if nat_id:
+-        for _try in range(5):
+-            set_ok = await page.evaluate('''(val) => {
+-                const inp = document.querySelector('#txtRealIrNationalityCode');
+-                if (inp && !inp.disabled) {
+-                    inp.value = val;
+-                    inp.dispatchEvent(new Event("input", { bubbles: true }));
+-                    inp.dispatchEvent(new Event("change", { bubbles: true }));
+-                    return true;
+-                }
+-                return false;
+-            }''', nat_id)
+-            if set_ok:
+-                break
+-            await asyncio.sleep(3)
++    for _try in range(5):
++        set_ok = await page.evaluate('''(val) => {
++            const inp = document.querySelector('#txtRealIrNationalityCode');
++            if (inp && !inp.disabled) {
++                inp.value = val;
++                inp.dispatchEvent(new Event("input", { bubbles: true }));
++                inp.dispatchEvent(new Event("change", { bubbles: true }));
++                return true;
++            }
++            return false;
++        }''', nat_id)
++        if set_ok:
++            break
++        await asyncio.sleep(3)
+ 
+-        # ⭐ استعلام نماینده
+-        rep_status = await _query_sana_check(
+-            page, "actions.callNationalityCode", bot, user_id,
+-            role=f"{role} (نماینده)", national_id=nat_id)
+-        if rep_status == "failed":
+-            # پیام‌ها داخل _query_sana_check ارسال شده‌اند — فقط قطع
+-            raise CheckAbortError(
+-                f"استعلام ثنا برای نمایندهٔ {role} (کدملی {nat_id}) ناموفق",
+-                step="SANA_QUERY_FAILED")
++    # ⭐ استعلام نماینده
++    rep_status = await _query_sana_check(
++        page, "actions.callNationalityCode", bot, user_id,
++        role=f"{role} (نماینده)", national_id=nat_id)
++    if rep_status == "failed":
++        # پیام‌ها داخل _query_sana_check ارسال شده‌اند — فقط قطع
++        raise CheckAbortError(
++            f"استعلام ثنا برای نمایندهٔ {role} (کدملی {nat_id}) ناموفق",
++            step="SANA_QUERY_FAILED")
+ 
+ 
+ async def _fill_lawyer_person(page, national_id: str, bot: Bot, user_id: int):
+diff --git a/ezhharnameh_scenario.py b/ezhharnameh_scenario.py
+index d19fb0b..acc096d 100644
+--- a/ezhharnameh_scenario.py
++++ b/ezhharnameh_scenario.py
+@@ -656,12 +656,18 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
+             logging.info(f"[EZHHAR] cost_info={cost_info}, final_total={final_total}, cost_error={cost_error}")
+ 
+             # ── گرفتن شناسه پرداخت از بخش هزینه (فقط ذخیره در شیت + پیام به مدیر) ──
++            # ⭐ رفع باگ: amount باید «هزینهٔ واقعی سامانه» (پیش از اعمال
++            # فرمول سود دفتر) باشد، نه final_total که همان مبلغ نهایی
++            # دریافتی از کاربر است. قبلاً final_total اینجا پاس داده
++            # می‌شد و چون همان final_fee (fee ارسالی به پنل) هم هست، در
++            # پنل «هزینه سامانه» == «هزینه» می‌شد و سود همیشه صفر نمایش
++            # داده می‌شد.
+             from payment_id_capture import capture_and_report_payment_ids
+             await capture_and_report_payment_ids(
+                 sana_page, bot, user_id,
+                 service_name="اظهارنامه",
+                 tracking_code=bill_no,
+-                amount=cost_info.get("final_total", 0) or cost_info.get("cost_sum", 0),
++                amount=cost_info.get("main_total", 0) or cost_info.get("cost_sum", 0),
+                 exclude_values=[bill_no],
+                 log_prefix="EZHHAR")
+ 
+diff --git a/keyboards.py b/keyboards.py
+index 3c5ac12..dbb48f1 100644
+--- a/keyboards.py
++++ b/keyboards.py
+@@ -852,15 +852,18 @@ tn_confirm_kb = ReplyKeyboardMarkup(
+     resize_keyboard=True
+ )
+ 
+-def create_tn_edit_kb(labels: dict = None, has_reasons: bool = False, has_appellee: bool = True) -> ReplyKeyboardMarkup:
++def create_tn_edit_kb(labels: dict = None, has_reasons: bool = False, has_appellee: bool = True,
++                       is_prosecutor: bool = False) -> ReplyKeyboardMarkup:
+     """کیبورد داینامیک ویرایش - برچسب‌ها بر اساس نوع دعوی"""
+     labels = labels or {}
+     appellant_label = labels.get("appellant", "تجدیدنظرخواه")
+     appellee_label = labels.get("appellee", "تجدیدنظرخوانده")
+     witness_label = labels.get("witness_step", "مطلع/گواه")
++    # برای «اعتراض به قرار دادسرا» عنوان این دکمه باید «قرار» باشد نه «دادنامه»
++    judge_info_label = "قرار" if is_prosecutor else "دادنامه"
+ 
+     keyboard = [
+-        [KeyboardButton(text="🔢 ویرایش اطلاعات دادنامه")],
++        [KeyboardButton(text=f"🔢 ویرایش اطلاعات {judge_info_label}")],
+         [KeyboardButton(text=f"👤 ویرایش {appellant_label}")],
+     ]
+     if has_appellee:
+diff --git a/lavayeh_handlers.py b/lavayeh_handlers.py
+index 429940b..b47dd87 100644
+--- a/lavayeh_handlers.py
++++ b/lavayeh_handlers.py
+@@ -60,7 +60,7 @@ from bulk_submissions import (
+ 
+ lavayeh_router = Router()
+ 
+-from panel_sync import upsert_case_to_panel
++from panel_sync import upsert_case_to_panel, mark_case_ready_to_send_by_tracking
+ 
+ # ── include کردن روتر امضا ──────────────────────────────────────────────────
+ from lavayeh_sign_handlers import lavayeh_sign_router
+@@ -3083,7 +3083,8 @@ async def send_lavayeh_result(
+     is_ezhharnameh: bool = False,
+     prepaid: bool = False,
+     service_type: str | None = None,
+-    sign_menu_path: list = None):
++    sign_menu_path: list = None,
++    admin_manual: bool = False):
+     """ارسال نتیجهٔ ثبت به کاربر + فاکتور پرداخت (درگاه) + شروع فلوی امضا.
+ 
+     ⭐ sign_menu_path: مسیر منوی سامانه برای ناوبری به صفحهٔ امضا — برای
+@@ -3093,6 +3094,13 @@ async def send_lavayeh_result(
+     می‌شود. قبلاً این پارامتر وجود نداشت و check_scenario با TypeError
+     شکست می‌خورد (send_lavayeh_result() got an unexpected keyword
+     argument 'sign_menu_path').
++
++    ⭐ admin_manual: وقتی True است یعنی این پرونده از طریق دستور ادمین
++    (`/case` با فاکتور) ثبت شده — یعنی خودِ ادمین کارِ ثبت در سامانهٔ سنا
++    را به‌صورت دستی انجام داده، نه ربات به‌صورت خودکار. در این حالت
++    document_category («نوع») و fee («درآمد») در ثبت‌های پنل ادمین خالی
++    گذاشته می‌شوند، چون این آمار برای سنجش عملکرد خودِ اتوماسیون است و
++    ثبت دستی ادمین نباید در آن لحاظ شود.
+     """
+     if lavayeh_persons is None:
+         lavayeh_persons = []
+@@ -3149,6 +3157,7 @@ async def send_lavayeh_result(
+             "is_ezhharnameh": is_ezhharnameh,
+             "service_type": service_type,
+             "sign_menu_path": sign_menu_path,
++            "admin_manual": admin_manual,
+         }
+         await bot.send_message(
+             user_id,
+@@ -3162,11 +3171,19 @@ async def send_lavayeh_result(
+                 service_type=service_type,
+                 status="PROCESSING",
+                 tracking_code=tracking_code or None,
+-                document_category=lavayeh_title,
++                document_category=None if admin_manual else lavayeh_title,
+                 fee=0,
+-                fee_status="MANUAL_APPROVED",
+-                result_summary="معاف از پرداخت؛ در انتظار امضای الکترونیک",
++                fee_status="ADMIN_MANUAL" if admin_manual else "MANUAL_APPROVED",
++                result_summary=(
++                    "صرفاً توسط مدیر ثبت شده؛ بدون محاسبهٔ هزینه"
++                    if admin_manual else
++                    "معاف از پرداخت؛ در انتظار امضای الکترونیک"
++                ),
+             )
++            # ⭐ طبق سیاست جدید: تمام موارد هزینه‌دار (به‌جز استعلام) باید در
++            # پنل ادمین وارد قسمت «ارسال» شوند، حتی اگر امضا هنوز درج نشده
++            # باشد — نه فقط پس از تکمیل امضا.
++            await mark_case_ready_to_send_by_tracking(user_id, service_type, tracking_code)
+         except Exception as panel_err:
+             logging.warning(f"[LAVAYEH] خطا در آپدیت پرونده معاف در پنل: {panel_err}")
+         # رفتن مستقیم به فلوی امضا
+@@ -3195,10 +3212,18 @@ async def send_lavayeh_result(
+                 service_type=service_type,
+                 status="PROCESSING",
+                 tracking_code=tracking_code or None,
+-                document_category=lavayeh_title,
+-                fee_status="PAID",
+-                result_summary="پرداخت قبلی تایید شده؛ در انتظار امضای الکترونیک",
++                document_category=None if admin_manual else lavayeh_title,
++                fee_status="ADMIN_MANUAL" if admin_manual else "PAID",
++                result_summary=(
++                    "صرفاً توسط مدیر ثبت شده؛ بدون محاسبهٔ هزینه"
++                    if admin_manual else
++                    "پرداخت قبلی تایید شده؛ در انتظار امضای الکترونیک"
++                ),
+             )
++            # ⭐ طبق سیاست جدید: تمام موارد هزینه‌دار (به‌جز استعلام) باید در
++            # پنل ادمین وارد قسمت «ارسال» شوند، حتی اگر امضا هنوز درج نشده
++            # باشد.
++            await mark_case_ready_to_send_by_tracking(user_id, service_type, tracking_code)
+         except Exception as panel_err:
+             logging.warning(f"[LAVAYEH] خطا در آپدیت پرونده پیش‌پرداخت‌شده در پنل: {panel_err}")
+         # رفتن مستقیم به فلوی امضا
+@@ -3270,6 +3295,7 @@ async def send_lavayeh_result(
+         "is_ezhharnameh": is_ezhharnameh,
+         "service_type": service_type,
+         "sign_menu_path": sign_menu_path,
++        "admin_manual": admin_manual,
+     }
+ 
+     try:
+@@ -3277,14 +3303,23 @@ async def send_lavayeh_result(
+             bale_user_id=user_id,
+             full_name=str(user_id),
+             service_type=service_type,
+-            status="PENDING_PAYMENT",
++            status="PROCESSING" if admin_manual else "PENDING_PAYMENT",
+             tracking_code=tracking_code or None,
+-            document_category=lavayeh_title,
++            document_category=None if admin_manual else lavayeh_title,
+             # ⭐ final_fee ریال است؛ فیلد fee پنل به «تومان» است (مثل استعلام‌ها)
+-            fee=final_fee // 10,
+-            fee_status="UNPAID",
+-            result_summary="فاکتور ارسال شد؛ در انتظار پرداخت کاربر",
++            fee=0 if admin_manual else final_fee // 10,
++            fee_status="ADMIN_MANUAL" if admin_manual else "UNPAID",
++            result_summary=(
++                "صرفاً توسط مدیر ثبت شده؛ بدون محاسبهٔ هزینه"
++                if admin_manual else
++                "فاکتور ارسال شد؛ در انتظار پرداخت کاربر"
++            ),
+         )
++        if admin_manual:
++            # ⭐ موارد ثبت‌شده توسط مدیر چون هزینه‌ای در پنل محاسبه نمی‌شود،
++            # نیازی به مرحلهٔ «در انتظار پرداخت» ندارند — مستقیماً آمادهٔ
++            # ارسال علامت‌گذاری می‌شوند.
++            await mark_case_ready_to_send_by_tracking(user_id, service_type, tracking_code)
+     except Exception as panel_err:
+         logging.warning(f"[LAVAYEH] خطا در ثبت پرونده (در انتظار پرداخت) در پنل: {panel_err}")
+ 
+@@ -3403,10 +3438,19 @@ async def lavayeh_successful_payment(message: Message, state: FSMContext, bot: B
+             status="PROCESSING",
+             tracking_code=pending.get("tracking_code", "") or None,
+             # ⭐ final_fee ریال است؛ فیلد fee پنل به «تومان» است
+-            fee=pending["final_fee"] // 10,
+-            fee_status="PAID",
+-            result_summary="پرداخت انجام شد؛ در انتظار امضای الکترونیک",
++            fee=0 if pending.get("admin_manual") else pending["final_fee"] // 10,
++            fee_status="ADMIN_MANUAL" if pending.get("admin_manual") else "PAID",
++            document_category=None if pending.get("admin_manual") else pending.get("lavayeh_title"),
++            result_summary=(
++                "صرفاً توسط مدیر ثبت شده؛ بدون محاسبهٔ هزینه"
++                if pending.get("admin_manual") else
++                "پرداخت انجام شد؛ در انتظار امضای الکترونیک"
++            ),
+         )
++        # ⭐ طبق سیاست جدید: تمام موارد هزینه‌دار (به‌جز استعلام) باید در پنل
++        # ادمین وارد قسمت «ارسال» شوند، حتی اگر امضا هنوز درج نشده باشد.
++        await mark_case_ready_to_send_by_tracking(
++            user_id, svc_type, pending.get("tracking_code", ""))
+     except Exception as panel_err:
+         logging.warning(f"[LAVAYEH-PAYMENT] خطا در آپدیت پرونده در پنل: {panel_err}")
+ 
+@@ -3517,9 +3561,19 @@ async def admin_approve_lavayeh_receipt(callback: CallbackQuery, bot: Bot):
+             bale_user_id=user_id, full_name=str(user_id), service_type=svc_type,
+             status="PROCESSING", tracking_code=pending.get("tracking_code", "") or None,
+             # ⭐ expected_amount ریال است؛ فیلد fee پنل به «تومان» است
+-            fee=review['expected_amount'] // 10, fee_status="PAID",
+-            result_summary="پرداخت با تایید دستی مدیر ثبت شد؛ در انتظار امضای الکترونیک",
++            fee=0 if pending.get("admin_manual") else review['expected_amount'] // 10,
++            fee_status="ADMIN_MANUAL" if pending.get("admin_manual") else "PAID",
++            document_category=None if pending.get("admin_manual") else pending.get("lavayeh_title"),
++            result_summary=(
++                "صرفاً توسط مدیر ثبت شده؛ بدون محاسبهٔ هزینه"
++                if pending.get("admin_manual") else
++                "پرداخت با تایید دستی مدیر ثبت شد؛ در انتظار امضای الکترونیک"
++            ),
+         )
++        # ⭐ طبق سیاست جدید: تمام موارد هزینه‌دار (به‌جز استعلام) باید در پنل
++        # ادمین وارد قسمت «ارسال» شوند، حتی اگر امضا هنوز درج نشده باشد.
++        await mark_case_ready_to_send_by_tracking(
++            user_id, svc_type, pending.get("tracking_code", ""))
+     except Exception as panel_err:
+         logging.warning(f"[LAVAYEH] خطا در آپدیت پرونده (تایید دستی) در پنل: {panel_err}")
+ 
+diff --git a/lavayeh_scenario.py b/lavayeh_scenario.py
+index 0771532..e8ee130 100644
+--- a/lavayeh_scenario.py
++++ b/lavayeh_scenario.py
+@@ -137,6 +137,34 @@ class LavayehFatalError(Exception):
+     pass
+ 
+ 
++class LavayehServiceDownError(LavayehFatalError):
++    """
++    خطای اختصاصی برای زمانی که سرویس سمت سرور سامانه سنا (مثلاً «بازیابی
++    فهرست واحد های قضایی با کد شعبه») قطع است. این خطا مربوط به داده‌های
++    وارد شده توسط کاربر (شماره پرونده/بایگانی/کد شعبه) نیست، بلکه یک
++    اختلال زیرساختی در سامانه سناست — پس نباید کاربر را به بررسی اطلاعاتش
++    ارجاع داد، بلکه باید صریحاً اعلام شود که سامانه قطع است و بعداً
++    امتحان شود.
++    """
++    pass
++
++
++# امضای متن‌های خطای سمت سرور سنا که نشان‌دهندهٔ قطعی سرویس (نه خطای داده)
++# هستند. هرگاه پاپ‌آپ خطا حاوی هرکدام از این عبارات باشد، یعنی مشکل از
++# سمت کاربر نیست و سامانه سنا موقتاً در دسترس نیست.
++_SERVICE_DOWN_ERROR_SIGNATURES = (
++    "بازیابی فهرست واحد های قضایی",
++    "بازیابی فهرست واحدهای قضایی",
++)
++
++
++def _is_service_down_error(error_text: str) -> bool:
++    """آیا متن خطای پاپ‌آپ نشان‌دهندهٔ قطعی سرویس سمت سرور سناست؟"""
++    if not error_text:
++        return False
++    return any(sig in error_text for sig in _SERVICE_DOWN_ERROR_SIGNATURES)
++
++
+ # ══════════════════════════════════════════════════════════════════════
+ # تابع اصلی پردازش لایحه
+ # ══════════════════════════════════════════════════════════════════════
+@@ -768,6 +796,65 @@ async def process_lavayeh_task(data: dict, bot: Bot):
+                 runtime_state.active_lavayeh_users.discard(user_id)
+             return
+ 
++        except LavayehServiceDownError as e:
++            # ══════════════════════════════════════════════════════════
++            # قطعی سرویس سمت سرور سنا (نه خطای داده/ورودی کاربر). پیام
++            # صریح و جدا از قالب «خطای ثبت موقت» عادی ارسال می‌شود تا
++            # کاربر گمراه نشود و به بررسی اطلاعات خودش هدایت نشود.
++            # ══════════════════════════════════════════════════════════
++            is_bulk_err = data.get("_is_bulk", False)
++            batch_tc_err = data.get("batch_tracking_code", "")
++            row_num_err = data.get("_bulk_row_index") or data.get("lavayeh_row_number", 1)
++
++            service_down_msg = (
++                "⛔ *سامانهٔ سنا موقتاً در دسترس نیست*\n\n"
++                "سرویس استعلام واحدهای قضایی سامانه با خطا مواجه شده و در حال حاضر قطع است.\n\n"
++                "لطفاً *دو ساعت دیگر* مجدداً امتحان بفرمائید."
++            )
++            if is_bulk_err:
++                if batch_tc_err:
++                    try:
++                        from bulk_submissions import BULK_TASKS, mark_bulk_item_done
++                        if batch_tc_err in BULK_TASKS:
++                            BULK_TASKS[batch_tc_err].setdefault("failures", []).append({
++                                "row_index": row_num_err,
++                                "tracking_code": tracking_code,
++                                "title": title,
++                                "error": str(e),
++                            })
++                        await mark_bulk_item_done(bot, user_id, batch_tc_err)
++                    except Exception as log_err:
++                        logging.error(f"[LAVAYEH] خطا در ثبت گزارش شکست ردیف (قطعی سرویس): {log_err}")
++                await bot.send_message(
++                    user_id,
++                    f"{service_down_msg}\n\n(ردیف {row_num_err} — کد: `{tracking_code}`)",
++                    parse_mode="Markdown"
++                )
++                await bot.send_message(
++                    ADMIN_ID,
++                    f"⛔ [LAVAYEH] سرویس سنا قطع است — ردیف {row_num_err} (کد: {tracking_code}) در بچ "
++                    f"{batch_tc_err} رد شد. جزئیات: {str(e)}"
++                )
++            else:
++                await bot.send_message(user_id, service_down_msg, parse_mode="Markdown")
++                await bot.send_message(
++                    ADMIN_ID,
++                    f"⛔ [LAVAYEH] سرویس استعلام واحدهای قضایی سنا برای کاربر {user_id} قطع است: {str(e)}"
++                )
++
++            runtime_state.active_lavayeh_users.discard(user_id)
++            logging.info(f"[LAVAYEH] قطعی سرویس سنا برای user={user_id}: {e}")
++            await log_event(
++                "خطای سامانه", "لایحه", str(user_id), user_id,
++                tracking_code=tracking_code, doc_name=title,
++                note=f"قطعی سرویس سنا (واحدهای قضایی) ردیف {row_num_err}"
++            )
++            await _safe_register_case(
++                event_type="خطای سامانه", full_name=str(user_id), user_id=user_id,
++                trackingCode=tracking_code or "", documentCategory=title,
++                errorDetails="سرویس سنا (بازیابی واحدهای قضایی) قطع است", errorStep="SANA_SERVICE_DOWN")
++            return
++
+         except LavayehFatalError as e:
+             is_bulk_err = data.get("_is_bulk", False)
+             batch_tc_err = data.get("batch_tracking_code", "")
+@@ -1183,6 +1270,11 @@ async def _click_validate_with_retry(page, bot: Bot, user_id: int, max_retries:
+ 
+     error_text = await _get_and_close_error_popup_text(page)
+     if error_text:
++        if _is_service_down_error(error_text):
++            logging.error(f"[LAVAYEH] سرویس استعلام واحدهای قضایی سنا قطع است — توقف فوری: {error_text}")
++            raise LavayehServiceDownError(
++                "سامانهٔ استعلام واحدهای قضایی سنا موقتاً قطع است. لطفاً دو ساعت دیگر مجدداً تلاش بفرمائید."
++            )
+         logging.warning(f"[LAVAYEH] خطای صحت‌سنجی (تلاش ۱): {error_text}")
+         await asyncio.sleep(5)
+ 
+@@ -1200,6 +1292,11 @@ async def _click_validate_with_retry(page, bot: Bot, user_id: int, max_retries:
+ 
+         error_text = await _get_and_close_error_popup_text(page)
+         if error_text:
++            if _is_service_down_error(error_text):
++                logging.error(f"[LAVAYEH] سرویس استعلام واحدهای قضایی سنا قطع است — توقف فوری: {error_text}")
++                raise LavayehServiceDownError(
++                    "سامانهٔ استعلام واحدهای قضایی سنا موقتاً قطع است. لطفاً دو ساعت دیگر مجدداً تلاش بفرمائید."
++                )
+             logging.warning(f"[LAVAYEH] خطای صحت‌سنجی (تلاش {attempt+1}): {error_text}")
+             await asyncio.sleep(5)
+             continue
+@@ -2326,6 +2423,11 @@ async def _click_validate_with_retry_archive(page, bot: Bot, user_id: int):
+ 
+         error_text = await _get_and_close_error_popup_text(page)
+         if error_text:
++            if _is_service_down_error(error_text):
++                logging.error(f"[LAVAYEH] سرویس استعلام واحدهای قضایی سنا قطع است — توقف فوری: {error_text}")
++                raise LavayehServiceDownError(
++                    "سامانهٔ استعلام واحدهای قضایی سنا موقتاً قطع است. لطفاً دو ساعت دیگر مجدداً تلاش بفرمائید."
++                )
+             consecutive_errors += 1
+             logging.warning(f"[LAVAYEH] خطای صحت‌سنجی بایگانی (تلاش {attempt+1}): {error_text}")
+             if consecutive_errors >= 2:
+diff --git a/src/components/admin/case-detail-dialog.tsx b/src/components/admin/case-detail-dialog.tsx
+index 923eba7..c564c94 100644
+--- a/src/components/admin/case-detail-dialog.tsx
++++ b/src/components/admin/case-detail-dialog.tsx
+@@ -382,16 +382,26 @@ export default function CaseDetailDialog({
+                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                   <InfoCard
+                     label="هزینه"
+-                    value={formatToman(caseItem.fee)}
+-                    valueClassName={caseItem.feeStatus === 'UNPAID' ? 'text-red-600' : 'text-emerald-600'}
++                    value={
++                      caseItem.feeStatus === 'ADMIN_MANUAL'
++                        ? 'صرفاً توسط مدیر ثبت شده'
++                        : formatToman(caseItem.fee)
++                    }
++                    valueClassName={
++                      caseItem.feeStatus === 'ADMIN_MANUAL' ? 'text-slate-500' :
++                      caseItem.feeStatus === 'UNPAID' ? 'text-red-600' : 'text-emerald-600'
++                    }
+                   />
+                   <InfoCard
+                     label="وضعیت پرداخت"
+                     value={
+                       caseItem.feeStatus === 'PAID' ? 'پرداخت شده' :
+-                      caseItem.feeStatus === 'MANUAL_APPROVED' ? 'تأیید دستی' : 'پرداخت نشده'
++                      caseItem.feeStatus === 'MANUAL_APPROVED' ? 'تأیید دستی' :
++                      caseItem.feeStatus === 'ADMIN_MANUAL' ? 'ثبت توسط مدیر (بدون محاسبهٔ هزینه)' :
++                      'پرداخت نشده'
+                     }
+                     valueClassName={
++                      caseItem.feeStatus === 'ADMIN_MANUAL' ? 'text-slate-500' :
+                       caseItem.feeStatus === 'UNPAID' ? 'text-red-600' : 'text-emerald-600'
+                     }
+                   />
+@@ -404,14 +414,19 @@ export default function CaseDetailDialog({
+                       valueClassName="text-emerald-600 font-mono"
+                     />
+                   )}
+-                  {caseItem.systemCost !== null && caseItem.systemCost !== undefined && (
++                  {/* موارد ثبت‌شده توسط مدیر اصلاً هزینه/سود ندارند — این دو
++                      کارت فقط برای پرونده‌های واقعی (غیر ADMIN_MANUAL) که
++                      systemCost معتبر دارند نمایش داده می‌شوند. */}
++                  {caseItem.feeStatus !== 'ADMIN_MANUAL' &&
++                    caseItem.systemCost !== null && caseItem.systemCost !== undefined && (
+                     <InfoCard
+                       label="هزینه سامانه"
+                       value={formatToman(caseItem.systemCost)}
+                       valueClassName="text-amber-600"
+                     />
+                   )}
+-                  {caseItem.systemCost !== null && caseItem.systemCost !== undefined && (
++                  {caseItem.feeStatus !== 'ADMIN_MANUAL' &&
++                    caseItem.systemCost !== null && caseItem.systemCost !== undefined && (
+                     <InfoCard
+                       label="سود این پرونده"
+                       value={formatToman(Math.max(0, caseItem.fee) - caseItem.systemCost)}
+diff --git a/src/components/admin/cases-table.tsx b/src/components/admin/cases-table.tsx
+index afd5ba8..b57cc33 100644
+--- a/src/components/admin/cases-table.tsx
++++ b/src/components/admin/cases-table.tsx
+@@ -248,12 +248,14 @@ const feeStatusLabels: Record<string, string> = {
+   PAID: 'پرداخت شده',
+   UNPAID: 'پرداخت نشده',
+   MANUAL_APPROVED: 'تأیید دستی',
++  ADMIN_MANUAL: 'ثبت توسط مدیر',
+ };
+ 
+ const feeStatusColors: Record<string, string> = {
+   PAID: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+   UNPAID: 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300',
+   MANUAL_APPROVED: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
++  ADMIN_MANUAL: 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
+ };
+ 
+ const stepLabels: Record<string, string> = {
+diff --git a/tajdid_nazar_handlers.py b/tajdid_nazar_handlers.py
+index a6584c0..d253a5d 100644
+--- a/tajdid_nazar_handlers.py
++++ b/tajdid_nazar_handlers.py
+@@ -79,10 +79,12 @@ def _to_en(text: str) -> str:
+     return text.translate(_FA_AR).replace(" ", "").strip()
+ 
+ 
+-def _validate_judge_no(code: str):
+-    """اعتبارسنجی شماره دادنامه — ۱۴۰۰ به بعد ۱۸ رقمی، ۹۹ و قبل‌تر ۱۶ رقمی."""
++def _validate_judge_no(code: str, label: str = "دادنامه"):
++    """اعتبارسنجی شماره دادنامه/قرار — ۱۴۰۰ به بعد ۱۸ رقمی، ۹۹ و قبل‌تر ۱۶ رقمی.
++
++    label: برچسبی که در پیام خطا نمایش داده می‌شود («دادنامه» یا «قرار»)."""
+     if not code.isdigit():
+-        return False, "⚠️ شماره دادنامه باید فقط شامل اعداد باشد."
++        return False, f"⚠️ شماره {label} باید فقط شامل اعداد باشد."
+     # تعیین سال از ۴ رقم ابتدایی
+     prefix = int(code[:4]) if len(code) >= 4 else 0
+     if prefix >= 1400:
+@@ -91,7 +93,7 @@ def _validate_judge_no(code: str):
+         expected = 16
+     if len(code) != expected:
+         return False, (
+-            f"⚠️ شماره دادنامه باید *{expected} رقمی* باشد.\n"
++            f"⚠️ شماره {label} باید *{expected} رقمی* باشد.\n"
+             f"_(۱۴۰۰ به بعد: ۱۸ رقمی | ۹۹ و قبل‌تر: ۱۶ رقمی)_\n\n"
+             f"کد شما *{len(code)} رقمی* است. مجدداً وارد فرمایید:"
+         )
+@@ -232,10 +234,19 @@ async def tn_case_type_handler(message: Message, state: FSMContext):
+ 
+     labels = _get_labels(matched)
+     await state.update_data(case_type=matched, tn_labels=labels)
+-    await message.answer(
+-        f"✅ *{matched}* انتخاب شد.\n\n"
+-        f"*مرحله ۱:* لطفاً *شماره دادنامه* را ارسال فرمایید:",
+-        reply_markup=back_only_kb)
++    if _is_prosecutor_objection(matched):
++        # برای اعتراض به قرار دادسرا، از همان ابتدا فقط «شماره قرار»
++        # پرسیده می‌شود — مفهوم «دادنامه» برای این نوع دعوی وجود ندارد.
++        await message.answer(
++            f"✅ *{matched}* انتخاب شد.\n\n"
++            f"*مرحله ۱:* لطفاً *شماره قرار* را ارسال فرمایید:\n\n"
++            f"_(۱۴۰۰ تا ۱۴۰۷: ۱۸ رقمی | ۹۹ و قبل‌تر: ۱۶ رقمی)_",
++            reply_markup=back_only_kb)
++    else:
++        await message.answer(
++            f"✅ *{matched}* انتخاب شد.\n\n"
++            f"*مرحله ۱:* لطفاً *شماره دادنامه* را ارسال فرمایید:",
++            reply_markup=back_only_kb)
+     await state.set_state(Form.tn_judge_no)
+ 
+ 
+@@ -252,9 +263,13 @@ async def tn_judge_no_handler(message: Message, state: FSMContext):
+         await state.set_state(Form.tn_case_type)
+         return
+ 
++    data = await state.get_data()
++    is_prosec = _is_prosecutor_objection(data.get("case_type", ""))
++    number_label = "قرار" if is_prosec else "دادنامه"
++
+     judge_no = _to_en(message.text)
+     # اعتبارسنجی ۱۶/۱۸ رقمی — مشابه لایحه
+-    valid, result = _validate_judge_no(judge_no)
++    valid, result = _validate_judge_no(judge_no, label=number_label)
+     if not valid:
+         await message.answer(result,
+                              reply_markup=back_only_kb)
+@@ -263,7 +278,7 @@ async def tn_judge_no_handler(message: Message, state: FSMContext):
+ 
+     await state.update_data(tn_judge_no=judge_no)
+     await message.answer(
+-        f"✅ شماره دادنامه `{judge_no}` ثبت شد.\n\n"
++        f"✅ شماره {number_label} `{judge_no}` ثبت شد.\n\n"
+         f"*مرحله ۲:* لطفاً *شماره پرونده* را ارسال کنید.\n\n"
+         f"_(۱۴۰۰ به بعد: ۱۸ رقمی | ۹۹ و قبل‌تر: ۱۶ رقمی)_",
+         reply_markup=back_only_kb)
+@@ -277,9 +292,13 @@ async def tn_judge_no_handler(message: Message, state: FSMContext):
+ async def tn_file_no_handler(message: Message, state: FSMContext):
+     if not message.text:
+         return
++    data = await state.get_data()
++    is_prosec = _is_prosecutor_objection(data.get("case_type", ""))
++    number_label = "قرار" if is_prosec else "دادنامه"
++
+     if message.text == "🔙 بازگشت":
+         await message.answer(
+-            "لطفاً *شماره دادنامه* را ارسال کنید:\n\n"
++            f"لطفاً *شماره {number_label}* را ارسال کنید:\n\n"
+             "_(۱۴۰۰ به بعد: ۱۸ رقمی | ۹۹ و قبل‌تر: ۱۶ رقمی)_",
+             reply_markup=back_only_kb)
+         await state.set_state(Form.tn_judge_no)
+@@ -300,7 +319,7 @@ async def tn_file_no_handler(message: Message, state: FSMContext):
+     await state.update_data(tn_file_no=file_no)
+     await message.answer(
+         f"✅ شماره پرونده `{file_no}` ثبت شد.\n\n"
+-        f"*مرحله ۳:* لطفاً *تاریخ تنظیم دادنامه* را ارسال فرمایید:\n_(مثال: 1403/09/15)_",
++        f"*مرحله ۳:* لطفاً *تاریخ تنظیم {number_label}* را ارسال فرمایید:\n_(مثال: 1403/09/15)_",
+         reply_markup=back_only_kb)
+     await state.set_state(Form.tn_judge_date)
+ 
+@@ -367,12 +386,24 @@ async def tn_province_handler(message: Message, state: FSMContext):
+     case_type = data.get("case_type", "")
+ 
+     if _is_prosecutor_objection(case_type):
++        # توجه: شماره قرار همان ابتدا (مرحله ۱) از کاربر گرفته شده است؛
++        # اینجا دیگر نباید دوباره پرسیده شود (قبلاً این تکرار باعث سردرگمی
++        # می‌شد: یک‌بار «شماره دادنامه» و یک‌بار «شماره قرار» پرسیده می‌شد).
++        # برای این نوع دعوی، حکم/قرار، مبلغ و اعسار هم معنا ندارد —
++        # مستقیماً به انتخاب نوع شخصیت درخواست‌دهنده می‌رویم.
++        if data.get("_tn_editing", False):
++            await state.update_data(_tn_editing=False)
++            await _go_to_tn_preview(message, state)
++            return
++
++        labels = data.get("tn_labels", {})
++        appellant_label = labels.get("appellant", "درخواست دهنده")
+         await message.answer(
+             f"✅ استان *{matched_province}* ثبت شد.\n\n"
+-            f"*مرحله ۵:* لطفاً *شماره قرار* را ارسال کنید.\n\n"
+-            f"نکته: شماره‌های *۱۴۰۰ تا ۱۴۰۷* باید *۱۸ رقمی* و شماره‌های *۹۹ و قبل‌تر* باید *۱۶ رقمی* باشند.",
+-            reply_markup=back_only_kb)
+-        await state.set_state(Form.tn_order_no)
++            f"*مرحله ۶:* لطفاً *نوع شخصیت {appellant_label}* را انتخاب فرمایید:\n\n"
++            f"⚠️ توجه: اگر *وکیل* را انتخاب می‌کنید، باید حداقل یک *شخص حقیقی یا حقوقی* نیز اضافه کنید.",
++            reply_markup=create_tn_appellant_person_type_kb())
++        await state.set_state(Form.tn_appellant_person_type)
+     else:
+         labels = data.get("tn_labels", {})
+         await message.answer(
+@@ -501,6 +532,14 @@ async def tn_insolvency_handler(message: Message, state: FSMContext):
+ 
+     await state.update_data(tn_insolvency=_is_yes)
+     data = await state.get_data()
++
++    # بررسی حالت ویرایش: اگر کاربر فقط در حال ویرایش «اطلاعات دادنامه»
++    # بود، نباید مجبور به تکرار انتخاب اشخاص شود — مستقیم به پیش‌نمایش.
++    if data.get("_tn_editing", False):
++        await state.update_data(_tn_editing=False)
++        await _go_to_tn_preview(message, state)
++        return
++
+     labels = data.get("tn_labels", {})
+     appellant_label = labels.get("appellant", "تجدیدنظرخواه")
+ 
+@@ -515,7 +554,7 @@ async def tn_insolvency_handler(message: Message, state: FSMContext):
+ # مرحله ۸ — اشخاص تجدیدنظرخواه (شبیه اظهارکننده اظهارنامه)
+ # ══════════════════════════════════════════════════════════════════════════════
+ @tajdid_nazar_router.message(Form.tn_appellant_person_type)
+-async def tn_appellant_person_type_handler(message: Message, state: FSMContext):
++async def tn_appellant_person_type_handler(message: Message, state: FSMContext, bot: Bot):
+     text = message.text or ""
+     data = await state.get_data()
+     appellants = data.get("tn_appellants", [])
+@@ -727,7 +766,7 @@ async def tn_appellant_national_id_handler(message: Message, state: FSMContext):
+ 
+ 
+ @tajdid_nazar_router.message(Form.tn_appellant_more)
+-async def tn_appellant_more_handler(message: Message, state: FSMContext):
++async def tn_appellant_more_handler(message: Message, state: FSMContext, bot: Bot):
+     """پاسخ به سوال آیا {appellant_label} دیگری دارد — تغییر مسیر به مرحله合适的."""
+     text = message.text or ""
+     data = await state.get_data()
+@@ -819,7 +858,7 @@ async def tn_appellant_more_handler(message: Message, state: FSMContext):
+ # مرحله ۹ — اشخاص تجدیدنظرخوانده (شبیه مخاطب اظهارنامه)
+ # ══════════════════════════════════════════════════════════════════════════════
+ @tajdid_nazar_router.message(Form.tn_appellee_person_type)
+-async def tn_appellee_person_type_handler(message: Message, state: FSMContext):
++async def tn_appellee_person_type_handler(message: Message, state: FSMContext, bot: Bot):
+     text = message.text or ""
+     data = await state.get_data()
+     appellees = data.get("tn_appellees", [])
+@@ -994,6 +1033,13 @@ async def tn_more_witnesses_handler(message: Message, state: FSMContext):
+     witness_label = labels.get("witness_step", "مطلع/گواه")
+ 
+     if text.startswith("✅ خیر") or text == "خیر" or "ادامه مراحل" in text:
++        # بررسی حالت ویرایش: اگر کاربر فقط در حال ویرایش شهود/مطلع بود
++        # نباید مجبور به عبور دوباره از متن/مدارک/توضیحات شود.
++        if data.get("_tn_editing", False):
++            await state.update_data(_tn_editing=False)
++            await _go_to_tn_preview(message, state)
++            return
++
+         # رفتن به مرحله شرح متن — ابتدا انتخاب روش ورود
+         await message.answer(
+             "*مرحله ۱۱:* لطفاً روش ورود *شرح متن* را انتخاب فرمایید:\n\n"
+@@ -1586,6 +1632,50 @@ async def _handle_query_persons(message: Message, state: FSMContext, bot: Bot, s
+     labels = data.get("tn_labels", {})
+     section_label = labels.get(section, "تجدیدنظرخواه" if section == "appellant" else "تجدیدنظرخوانده")
+ 
++    # ══════════════════════════════════════════════════════════════
++    # اگر تجدیدنظرخواه قبلاً از همین روش (استعلام از پرونده) استفاده
++    # کرده باشد، دیگر نباید برای تجدیدنظرخوانده دوباره به سامانه سنا
++    # استعلام زد. همان نتیجهٔ استعلام اول (که هنگام استعلام تجدیدنظرخواه
++    # در state ذخیره شده) بازیابی می‌شود و فقط افرادی که قبلاً به‌عنوان
++    # تجدیدنظرخواه انتخاب شده‌اند، از لیست حذف می‌شوند — چون یک فرد
++    # نمی‌تواند همزمان تجدیدنظرخواه و تجدیدنظرخوانده باشد.
++    # اگر تجدیدنظرخواه از این روش استفاده نکرده باشد، تجدیدنظرخوانده
++    # باید بتواند استعلام کامل و مستقل خودش را انجام دهد (همهٔ افراد
++    # پرونده نمایش داده شود) — این حالت از مسیر عادی زیر عبور می‌کند.
++    # ══════════════════════════════════════════════════════════════
++    if section == "appellee" and data.get("tn_appellant_query_mode"):
++        cached_names = data.get("tn_case_query_names") or []
++        if cached_names:
++            already_selected = set(data.get("tn_appellant_selected_names", []))
++            remaining = [n for n in cached_names if n.get("name") not in already_selected]
++            remaining_reindexed = [{"index": i, "name": n["name"]} for i, n in enumerate(remaining)]
++
++            if not remaining_reindexed:
++                await message.answer(
++                    "⚠️ همهٔ افراد پرونده قبلاً به‌عنوان "
++                    f"{labels.get('appellant', 'تجدیدنظرخواه')} انتخاب شده‌اند.\n\n"
++                    "لطفاً از روش ورود دستی کدملی استفاده فرمایید:")
++                await message.answer(
++                    f"👥 لطفاً *نوع شخصیت {section_label}* را انتخاب فرمایید:",
++                    reply_markup=create_tn_appellee_person_type_kb())
++                await state.set_state(Form.tn_appellee_person_type)
++                return
++
++            runtime_state.tn_queried_persons[user_id] = {
++                "all_names": remaining_reindexed,
++                "section": section,
++                "selected_indices": [],
++            }
++            await state.set_state(Form.tn_appellee_select_from_list)
++            await message.answer(
++                "✅ *از نتیجهٔ استعلام قبلی (همان استعلام "
++                f"{labels.get('appellant', 'تجدیدنظرخواه')}) استفاده شد.*\n\n"
++                f"افرادی که قبلاً به‌عنوان {labels.get('appellant', 'تجدیدنظرخواه')} انتخاب "
++                "شده‌اند از این لیست حذف شده‌اند:",
++                reply_markup=ReplyKeyboardRemove())
++            await _show_person_selection_list(bot, user_id, remaining_reindexed, [], section, data)
++            return
++
+     # نام step در سامانه
+     from tajdid_nazar_scenario import (
+         APPELLANT_STEP_MAP, APPELLEE_STEP_MAP,
+@@ -1630,6 +1720,13 @@ async def _handle_query_persons(message: Message, state: FSMContext, bot: Bot, s
+                 await state.set_state(Form.tn_appellee_person_type)
+             return
+ 
++        # اگر این استعلام مربوط به تجدیدنظرخواه است، نتیجهٔ کامل (همهٔ
++        # افراد پرونده) در state هم ذخیره می‌شود تا اگر لازم شد،
++        # تجدیدنظرخوانده بدون استعلام مجدد از سامانه از همین نتیجه
++        # استفاده کند (نگاه کنید به ابتدای همین تابع).
++        if section == "appellant":
++            await state.update_data(tn_case_query_names=names)
++
+         # ذخیره نتایج در runtime_state
+         runtime_state.tn_queried_persons[user_id] = {
+             "all_names": names,
+@@ -2206,7 +2303,8 @@ async def tn_confirm_handler(message: Message, state: FSMContext, bot: Bot):
+         # FIX: استفاده از کیبورد داینامیک با برچسب‌های صحیح (مثلاً «معترض ثالث»
+         # به جای «تجدیدنظرخواه» برای اعتراض ثالث)
+         dynamic_edit_kb = create_tn_edit_kb(
+-            labels=labels, has_reasons=has_reasons, has_appellee=has_appellee
++            labels=labels, has_reasons=has_reasons, has_appellee=has_appellee,
++            is_prosecutor=_is_prosecutor_objection(case_type)
+         )
+         await message.answer(
+             "✏️ *ویرایش اطلاعات:*\n\nکدام بخش را می‌خواهید ویرایش کنید؟",
+@@ -2230,16 +2328,26 @@ async def tn_edit_choice_handler(message: Message, state: FSMContext):
+     await state.update_data(_tn_editing=True)
+     appellant_label = labels.get("appellant", "تجدیدنظرخواه")
+     appellee_label = labels.get("appellee", "تجدیدنظرخوانده")
++    witness_label = labels.get("witness_step", "مطلع/گواه")
+     case_type = data.get("case_type", "")
++    is_prosec = _is_prosecutor_objection(case_type)
++    # این متن‌ها باید عیناً با دکمه‌های create_tn_edit_kb یکسان باشند —
++    # قبلاً یکی از اموجی/برچسب‌ها فرق داشت (📋 در برابر 🔢، «دادنامه» ثابت
++    # به‌جای برچسب داینامیک، و «👀 شهود/مطلع» در برابر «👁 {witness_label}»)
++    # و در نتیجه دکمه‌های «ویرایش اطلاعات دادنامه» و «ویرایش شهود/مطلع»
++    # هیچ‌وقت match نمی‌شدند و ویرایش عملاً کار نمی‌کرد.
++    judge_info_label = "قرار" if is_prosec else "دادنامه"
++    edit_judge_btn = f"🔢 ویرایش اطلاعات {judge_info_label}"
++    edit_witness_btn = f"👁 ویرایش {witness_label}"
+ 
+     if text == "🔙 بازگشت به پیش‌نمایش":
+         await _go_to_tn_preview(message, state)
+         return
+ 
+-    if text == "📋 ویرایش اطلاعات دادنامه":
++    if text == edit_judge_btn:
+         await state.update_data(tn_judge_no="")
+         await message.answer(
+-            "📋 لطفاً *شماره دادنامه* جدید را ارسال فرمایید:\n\n_(۱۴۰۰ تا ۱۴۰۷: ۱۸ رقمی | ۹۹ و قبل‌تر: ۱۶ رقمی)_",
++            f"📋 لطفاً *شماره {judge_info_label}* جدید را ارسال فرمایید:\n\n_(۱۴۰۰ تا ۱۴۰۷: ۱۸ رقمی | ۹۹ و قبل‌تر: ۱۶ رقمی)_",
+             reply_markup=back_only_kb)
+         await state.set_state(Form.tn_judge_no)
+         return
+@@ -2262,10 +2370,8 @@ async def tn_edit_choice_handler(message: Message, state: FSMContext):
+         await state.set_state(Form.tn_appellee_person_type)
+         return
+ 
+-    if text == "👀 ویرایش شهود/مطلع":
++    if text == edit_witness_btn:
+         await state.update_data(tn_witnesses=[])
+-        labels = data.get("tn_labels", {})
+-        witness_label = labels.get("witness_step", "مطلع/گواه")
+         await message.answer(
+             f"👀 لیست {witness_label} پاک شد.\n"
+             f"در صورتی که {witness_label} دارید، کدملی را وارد فرمایید:\n\n"
+@@ -2315,7 +2421,7 @@ async def tn_edit_choice_handler(message: Message, state: FSMContext):
+     # FIX: کیبورد داینامیک با برچسب‌های صحیح
+     dynamic_edit_kb = create_tn_edit_kb(
+         labels=labels, has_reasons=_needs_reasons(case_type),
+-        has_appellee=not _is_prosecutor_objection(case_type)
++        has_appellee=not is_prosec, is_prosecutor=is_prosec
+     )
+     await message.answer(
+         "⚠️ لطفاً یکی از گزینه‌های موجود را انتخاب فرمایید:",
+@@ -2564,6 +2670,10 @@ async def send_tajdid_nazar_result(
+                 fee_status="MANUAL_APPROVED",
+                 result_summary="معاف از پرداخت؛ در انتظار امضای الکترونیک",
+             )
++            # ⭐ طبق سیاست جدید: تمام موارد هزینه‌دار (به‌جز استعلام) باید در
++            # پنل ادمین وارد قسمت «ارسال» شوند، حتی اگر امضا هنوز درج نشده
++            # باشد — نه فقط پس از تکمیل امضا.
++            await mark_case_ready_to_send_by_tracking(user_id, "TAJDID_NAZAR", tracking_code)
+         except Exception as panel_err:
+             logging.warning(f"[TN-PAYMENT] خطا در آپدیت پرونده معاف در پنل: {panel_err}")
+         await _tn_start_sign_flow(bot, user_id, tracking_code, case_type, tn_persons)
+@@ -2687,6 +2797,10 @@ async def tn_successful_payment(message: Message, state: FSMContext, bot: Bot):
+             fee=pending["final_fee"] // 10, fee_status="PAID",
+             result_summary="پرداخت انجام شد؛ در انتظار امضای الکترونیک",
+         )
++        # ⭐ طبق سیاست جدید: تمام موارد هزینه‌دار (به‌جز استعلام) باید در پنل
++        # ادمین وارد قسمت «ارسال» شوند، حتی اگر امضا هنوز درج نشده باشد.
++        await mark_case_ready_to_send_by_tracking(
++            user_id, "TAJDID_NAZAR", pending.get("tracking_code", ""))
+     except Exception as panel_err:
+         logging.warning(f"[TN-PAYMENT] خطا در آپدیت پرونده در پنل: {panel_err}")
+ 
+diff --git a/tajdid_nazar_scenario.py b/tajdid_nazar_scenario.py
+index 65bd961..316a0b8 100644
+--- a/tajdid_nazar_scenario.py
++++ b/tajdid_nazar_scenario.py
+@@ -45,6 +45,71 @@ class TajdidFatalError(Exception):
+     pass
+ 
+ 
++async def _select_province(page, province: str, bot: Bot, user_id: int, max_retries: int = 4) -> bool:
++    """
++    انتخاب استان از دراپ‌داون ui-select با نرمال‌سازی حروف عربی/فارسی و
++    چند استراتژی تطبیق (دقیق → بدون فاصله → شامل‌شدن جزئی)، هرگز با تایپ
++    مستقیم نام استان در فیلد.
++
++    این تابع جایگزین safe_click_by_text(page, province[:10], ...) شد که
++    برای استان‌های کوتاه مثل «یزد» به‌طور مکرر با خطای
++    NavigationResetError مواجه می‌شد — چون کلیک روی متن ساده، تفاوت
++    فرم عربی/فارسی حروف (ي/ك در برابر ی/ک) را در نظر نمی‌گرفت و دراپ‌داون
++    را دوباره باز نمی‌کرد. الگو دقیقاً از _select_province در
++    lavayeh_scenario.py که در عمل پایدار بوده کپی شده است.
++    """
++    for attempt in range(max_retries):
++        await page.evaluate('''() => {
++            const btn = document.querySelector('.ui-select-toggle');
++            if (btn) btn.click();
++        }''')
++        await asyncio.sleep(1.5 + attempt * 0.5)
++
++        clicked = await page.evaluate(r'''(province) => {
++            const normalize = (s) => (s || '')
++                .replace(/\u064A/g, '\u06CC')
++                .replace(/\u0643/g, '\u06A9')
++                .replace(/\u200c/g, ' ')
++                .replace(/\s+/g, ' ')
++                .trim();
++
++            const normProvince = normalize(province);
++            const items = Array.from(document.querySelectorAll('.ui-select-choices-row'));
++            if (items.length === 0) return false;
++
++            // ۱) تطبیق دقیق پس از نرمال‌سازی
++            let target = items.find(el => normalize(el.innerText) === normProvince);
++            // ۲) تطبیق بدون فاصله (رفع تفاوت‌های نیم‌فاصله)
++            if (!target) {
++                const flat = (s) => normalize(s).replace(/\s+/g, '');
++                const flatProvince = flat(province);
++                target = items.find(el => flat(el.innerText) === flatProvince);
++            }
++            // ۳) تطبیق جزئی (شامل‌شدن دوطرفه) به‌عنوان آخرین راه
++            if (!target) {
++                target = items.find(el => {
++                    const t = normalize(el.innerText);
++                    return t && (t.includes(normProvince) || normProvince.includes(t));
++                });
++            }
++            if (target) { target.click(); return true; }
++            return false;
++        }''', province)
++
++        if clicked:
++            await asyncio.sleep(2)
++            return True
++
++        logging.warning(
++            f"[TN] انتخاب استان '{province}' با کلیک در تلاش {attempt + 1} ناموفق بود؛ "
++            f"دوباره تلاش می‌شود (بدون تایپ در فیلد)."
++        )
++        await asyncio.sleep(1.5)
++
++    logging.error(f"[TN] انتخاب استان '{province}' پس از {max_retries} تلاش با کلیک ناموفق ماند.")
++    return False
++
++
+ class TajdidSanaQueryError(Exception):
+     """خطای استعلام ثنا — شناسه ملی ثبت نشده."""
+     def __init__(self, message: str, national_id: str = "", person_role: str = "", person_index: int = 0):
+@@ -66,6 +131,10 @@ CASE_TYPE_MENU_MAP = {
+ }
+ 
+ # نگاشت نوع دعوی به نام step اشخاص اول
++# توجه: برای «اعتراض به قرار دادسرا» نام step در سامانه ثنا واقعاً
++# «درخواست دهنده» است (نه «اعتراض‌کننده») — طبق ساختار DOM واقعی صفحه.
++# مقدار اشتباه قبلی باعث می‌شد safe_click_by_text این step را پیدا نکند
++# و NavigationResetError بدهد (ثبت اعتراض به قرار دادسرا انجام نمی‌شد).
+ APPELLANT_STEP_MAP = {
+     "تجدیدنظرخواهی": "تجديدنظرخواه",
+     "واخواهی": "واخواه",
+@@ -73,7 +142,7 @@ APPELLANT_STEP_MAP = {
+     "اعاده دادرسی مدنی": "درخواست‌کننده",
+     "اعاده دادرسی کیفری": "درخواست‌کننده",
+     "اعتراض ثالث": "اعتراض‌کننده ثالث",
+-    "اعتراض به قرار دادسرا": "اعتراض‌کننده",
++    "اعتراض به قرار دادسرا": "درخواست دهنده",
+ }
+ 
+ # نگاشت نوع دعوی به نام step اشخاص دوم
+@@ -635,8 +704,12 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
+             await _click_menu_item(sana_page, menu_item, bot, user_id)
+             await resilient_sleep(sana_page, 5, bot, user_id)
+ 
+-            # ── ۳. کلیک «ثبت و اصلاح دادخواست» ──────────────────────
+-            await _click_step_box(sana_page, "ثبت و اصلاح دادخواست", bot, user_id)
++            # ── ۳. کلیک «ثبت و اصلاح دادخواست/درخواست» ──────────────
++            # نکته: برای «اعتراض به قرار دادسرا» متن واقعی روی سامانه
++            # «ثبت و اصلاح درخواست» است (نه «دادخواست»). استفاده از متن
++            # اشتباه باعث NavigationResetError و ری‌لود بی‌نتیجه می‌شد.
++            register_box_text = "ثبت و اصلاح درخواست" if is_prosecutor else "ثبت و اصلاح دادخواست"
++            await _click_step_box(sana_page, register_box_text, bot, user_id)
+             await resilient_sleep(sana_page, 5, bot, user_id)
+ 
+             # ── ۴. مرحله «شروع» ────────────────────────────────────
+@@ -684,8 +757,10 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
+                 }''')
+                 await asyncio.sleep(2)
+ 
+-            # ── ۵. مرحله «اطلاعات دادنامه» ────────────────────────
+-            await _click_step_label(sana_page, "اطلاعات دادنامه", bot, user_id)
++            # ── ۵. مرحله «اطلاعات دادنامه/قرار» ────────────────────
++            # برای «اعتراض به قرار دادسرا» نام step واقعی «اطلاعات قرار» است.
++            judge_info_step = "اطلاعات قرار" if is_prosecutor else "اطلاعات دادنامه"
++            await _click_step_label(sana_page, judge_info_step, bot, user_id)
+             await resilient_sleep(sana_page, 4, bot, user_id)
+ 
+             # شماره دادنامه
+@@ -722,7 +797,15 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
+             await asyncio.sleep(1)
+ 
+             # استان
+-            await safe_click_by_text(sana_page, province[:10], bot, user_id)
++            province_selected = await _select_province(sana_page, province, bot, user_id)
++            if not province_selected:
++                await bot.send_message(
++                    ADMIN_ID,
++                    f"❌ [TN] انتخاب استان '{province}' برای کاربر {user_id} ناموفق."
++                )
++                raise TajdidFatalError(
++                    f"استان «{province}» در لیست سامانه پیدا نشد. لطفاً نام استان را بررسی و مجدداً اقدام نمایید."
++                )
+             await resilient_sleep(sana_page, 3, bot, user_id)
+ 
+             # کلیک بازیابی
+@@ -1120,6 +1203,7 @@ async def pre_query_tn_persons(data: dict, bot: Bot, step_name: str) -> list:
+ 
+     case_type = data.get("case_type", "")
+     menu_item = CASE_TYPE_MENU_MAP.get(case_type, case_type)
++    is_prosecutor = case_type == "اعتراض به قرار دادسرا"
+ 
+     # ۱. رفتن به سامانه
+     ok = await goto_url_with_retry(
+@@ -1137,8 +1221,11 @@ async def pre_query_tn_persons(data: dict, bot: Bot, step_name: str) -> list:
+     await _click_menu_item(sana_page, menu_item, bot, user_id)
+     await resilient_sleep(sana_page, 5, bot, user_id)
+ 
+-    # ۴. کلیک ثبت و اصلاح دادخواست
+-    await _click_step_box(sana_page, "ثبت و اصلاح دادخواست", bot, user_id)
++    # ۴. کلیک ثبت و اصلاح دادخواست/درخواست
++    # نکته: برای «اعتراض به قرار دادسرا» متن واقعی «ثبت و اصلاح درخواست»
++    # است — همان باگی که در خطای استعلام افراد گزارش شده بود.
++    register_box_text = "ثبت و اصلاح درخواست" if is_prosecutor else "ثبت و اصلاح دادخواست"
++    await _click_step_box(sana_page, register_box_text, bot, user_id)
+     await resilient_sleep(sana_page, 5, bot, user_id)
+ 
+     # ۵. مرحله شروع — انتخاب شخص حقیقی
+@@ -1163,10 +1250,11 @@ async def pre_query_tn_persons(data: dict, bot: Bot, step_name: str) -> list:
+     judge_date = data.get("tn_judge_date", "")
+     province = data.get("tn_province", "")
+ 
+-    await _click_step_label(sana_page, "اطلاعات دادنامه", bot, user_id)
++    judge_info_step = "اطلاعات قرار" if is_prosecutor else "اطلاعات دادنامه"
++    await _click_step_label(sana_page, judge_info_step, bot, user_id)
+     await resilient_sleep(sana_page, 4, bot, user_id)
+ 
+-    # شماره دادنامه
++    # شماره دادنامه/قرار
+     await sana_page.evaluate(f'''() => {{{{
+         const inp = document.querySelector('#txtJudgeNo');
+         if (inp) {{{{
+@@ -1200,7 +1288,12 @@ async def pre_query_tn_persons(data: dict, bot: Bot, step_name: str) -> list:
+     await asyncio.sleep(1)
+ 
+     # استان
+-    await safe_click_by_text(sana_page, province[:10], bot, user_id)
++    province_selected = await _select_province(sana_page, province, bot, user_id)
++    if not province_selected:
++        logging.error(f"[TN] استعلام افراد: انتخاب استان '{province}' ناموفق بود.")
++        raise TajdidFatalError(
++            f"استان «{province}» در لیست سامانه پیدا نشد. لطفاً نام استان را بررسی کنید."
++        )
+     await resilient_sleep(sana_page, 3, bot, user_id)
+ 
+     # کلیک بازیابی

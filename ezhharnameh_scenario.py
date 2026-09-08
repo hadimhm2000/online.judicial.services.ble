@@ -656,12 +656,18 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
             logging.info(f"[EZHHAR] cost_info={cost_info}, final_total={final_total}, cost_error={cost_error}")
 
             # ── گرفتن شناسه پرداخت از بخش هزینه (فقط ذخیره در شیت + پیام به مدیر) ──
+            # ⭐ رفع باگ: amount باید «هزینهٔ واقعی سامانه» (پیش از اعمال
+            # فرمول سود دفتر) باشد، نه final_total که همان مبلغ نهایی
+            # دریافتی از کاربر است. قبلاً final_total اینجا پاس داده
+            # می‌شد و چون همان final_fee (fee ارسالی به پنل) هم هست، در
+            # پنل «هزینه سامانه» == «هزینه» می‌شد و سود همیشه صفر نمایش
+            # داده می‌شد.
             from payment_id_capture import capture_and_report_payment_ids
             await capture_and_report_payment_ids(
                 sana_page, bot, user_id,
                 service_name="اظهارنامه",
                 tracking_code=bill_no,
-                amount=cost_info.get("final_total", 0) or cost_info.get("cost_sum", 0),
+                amount=cost_info.get("main_total", 0) or cost_info.get("cost_sum", 0),
                 exclude_values=[bill_no],
                 log_prefix="EZHHAR")
 

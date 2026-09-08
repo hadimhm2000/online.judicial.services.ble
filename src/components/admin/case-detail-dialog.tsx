@@ -382,16 +382,26 @@ export default function CaseDetailDialog({
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <InfoCard
                     label="هزینه"
-                    value={formatToman(caseItem.fee)}
-                    valueClassName={caseItem.feeStatus === 'UNPAID' ? 'text-red-600' : 'text-emerald-600'}
+                    value={
+                      caseItem.feeStatus === 'ADMIN_MANUAL'
+                        ? 'صرفاً توسط مدیر ثبت شده'
+                        : formatToman(caseItem.fee)
+                    }
+                    valueClassName={
+                      caseItem.feeStatus === 'ADMIN_MANUAL' ? 'text-slate-500' :
+                      caseItem.feeStatus === 'UNPAID' ? 'text-red-600' : 'text-emerald-600'
+                    }
                   />
                   <InfoCard
                     label="وضعیت پرداخت"
                     value={
                       caseItem.feeStatus === 'PAID' ? 'پرداخت شده' :
-                      caseItem.feeStatus === 'MANUAL_APPROVED' ? 'تأیید دستی' : 'پرداخت نشده'
+                      caseItem.feeStatus === 'MANUAL_APPROVED' ? 'تأیید دستی' :
+                      caseItem.feeStatus === 'ADMIN_MANUAL' ? 'ثبت توسط مدیر (بدون محاسبهٔ هزینه)' :
+                      'پرداخت نشده'
                     }
                     valueClassName={
+                      caseItem.feeStatus === 'ADMIN_MANUAL' ? 'text-slate-500' :
                       caseItem.feeStatus === 'UNPAID' ? 'text-red-600' : 'text-emerald-600'
                     }
                   />
@@ -404,14 +414,19 @@ export default function CaseDetailDialog({
                       valueClassName="text-emerald-600 font-mono"
                     />
                   )}
-                  {caseItem.systemCost !== null && caseItem.systemCost !== undefined && (
+                  {/* موارد ثبت‌شده توسط مدیر اصلاً هزینه/سود ندارند — این دو
+                      کارت فقط برای پرونده‌های واقعی (غیر ADMIN_MANUAL) که
+                      systemCost معتبر دارند نمایش داده می‌شوند. */}
+                  {caseItem.feeStatus !== 'ADMIN_MANUAL' &&
+                    caseItem.systemCost !== null && caseItem.systemCost !== undefined && (
                     <InfoCard
                       label="هزینه سامانه"
                       value={formatToman(caseItem.systemCost)}
                       valueClassName="text-amber-600"
                     />
                   )}
-                  {caseItem.systemCost !== null && caseItem.systemCost !== undefined && (
+                  {caseItem.feeStatus !== 'ADMIN_MANUAL' &&
+                    caseItem.systemCost !== null && caseItem.systemCost !== undefined && (
                     <InfoCard
                       label="سود این پرونده"
                       value={formatToman(Math.max(0, caseItem.fee) - caseItem.systemCost)}
