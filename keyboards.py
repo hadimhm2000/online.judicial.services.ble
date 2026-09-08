@@ -752,32 +752,7 @@ test_mode_doc_type_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📝 لایحه"), KeyboardButton(text="📋 اظهارنامه")],
         [KeyboardButton(text="⚖️ دعاوی اعتراضی"), KeyboardButton(text="⚖️ اعلام وکالت")],
-        [KeyboardButton(text="🏦 چک")],
         [KeyboardButton(text="❌ انصراف")],
-    ],
-    resize_keyboard=True
-)
-
-# ⭐ زیرمجموعه‌های دعاوی اعتراضی در حالت تست — تا مدیر بتواند هر نوع
-# دعوی را جداگانه تست کند (طبق دستور کارفرما)
-test_mode_tn_case_type_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="تجدیدنظرخواهی"), KeyboardButton(text="واخواهی")],
-        [KeyboardButton(text="فرجام خواهی"), KeyboardButton(text="اعاده دادرسی مدنی")],
-        [KeyboardButton(text="اعاده دادرسی کیفری"), KeyboardButton(text="اعتراض ثالث")],
-        [KeyboardButton(text="اعتراض به قرار دادسرا")],
-        [KeyboardButton(text="🔙 بازگشت")],
-    ],
-    resize_keyboard=True
-)
-
-# ⭐ مسیر ثبت چک در حالت تست — دادخواست چک بسته به مبلغ در یکی از دو
-# مسیر ثبت می‌شود؛ مدیر مسیر پروندهٔ تستی خود را انتخاب می‌کند
-test_mode_check_path_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="دادخواست بدوی (بیش از ۱ میلیارد ریال)")],
-        [KeyboardButton(text="دعاوی حقوقی صلح (کمتر از ۱ میلیارد ریال)")],
-        [KeyboardButton(text="🔙 بازگشت")],
     ],
     resize_keyboard=True
 )
@@ -877,15 +852,18 @@ tn_confirm_kb = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-def create_tn_edit_kb(labels: dict = None, has_reasons: bool = False, has_appellee: bool = True) -> ReplyKeyboardMarkup:
+def create_tn_edit_kb(labels: dict = None, has_reasons: bool = False, has_appellee: bool = True,
+                       is_prosecutor: bool = False) -> ReplyKeyboardMarkup:
     """کیبورد داینامیک ویرایش - برچسب‌ها بر اساس نوع دعوی"""
     labels = labels or {}
     appellant_label = labels.get("appellant", "تجدیدنظرخواه")
     appellee_label = labels.get("appellee", "تجدیدنظرخوانده")
     witness_label = labels.get("witness_step", "مطلع/گواه")
+    # برای «اعتراض به قرار دادسرا» عنوان این دکمه باید «قرار» باشد نه «دادنامه»
+    judge_info_label = "قرار" if is_prosecutor else "دادنامه"
 
     keyboard = [
-        [KeyboardButton(text="🔢 ویرایش اطلاعات دادنامه")],
+        [KeyboardButton(text=f"🔢 ویرایش اطلاعات {judge_info_label}")],
         [KeyboardButton(text=f"👤 ویرایش {appellant_label}")],
     ]
     if has_appellee:

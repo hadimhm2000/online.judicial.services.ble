@@ -3173,8 +3173,12 @@ async def send_lavayeh_result(
                 tracking_code=tracking_code or None,
                 document_category=None if admin_manual else lavayeh_title,
                 fee=0,
-                fee_status="MANUAL_APPROVED",
-                result_summary="معاف از پرداخت؛ در انتظار امضای الکترونیک",
+                fee_status="ADMIN_MANUAL" if admin_manual else "MANUAL_APPROVED",
+                result_summary=(
+                    "صرفاً توسط مدیر ثبت شده؛ بدون محاسبهٔ هزینه"
+                    if admin_manual else
+                    "معاف از پرداخت؛ در انتظار امضای الکترونیک"
+                ),
             )
             # ⭐ طبق سیاست جدید: تمام موارد هزینه‌دار (به‌جز استعلام) باید در
             # پنل ادمین وارد قسمت «ارسال» شوند، حتی اگر امضا هنوز درج نشده
@@ -3209,8 +3213,12 @@ async def send_lavayeh_result(
                 status="PROCESSING",
                 tracking_code=tracking_code or None,
                 document_category=None if admin_manual else lavayeh_title,
-                fee_status="PAID",
-                result_summary="پرداخت قبلی تایید شده؛ در انتظار امضای الکترونیک",
+                fee_status="ADMIN_MANUAL" if admin_manual else "PAID",
+                result_summary=(
+                    "صرفاً توسط مدیر ثبت شده؛ بدون محاسبهٔ هزینه"
+                    if admin_manual else
+                    "پرداخت قبلی تایید شده؛ در انتظار امضای الکترونیک"
+                ),
             )
             # ⭐ طبق سیاست جدید: تمام موارد هزینه‌دار (به‌جز استعلام) باید در
             # پنل ادمین وارد قسمت «ارسال» شوند، حتی اگر امضا هنوز درج نشده
@@ -3295,14 +3303,23 @@ async def send_lavayeh_result(
             bale_user_id=user_id,
             full_name=str(user_id),
             service_type=service_type,
-            status="PENDING_PAYMENT",
+            status="PROCESSING" if admin_manual else "PENDING_PAYMENT",
             tracking_code=tracking_code or None,
             document_category=None if admin_manual else lavayeh_title,
             # ⭐ final_fee ریال است؛ فیلد fee پنل به «تومان» است (مثل استعلام‌ها)
             fee=0 if admin_manual else final_fee // 10,
-            fee_status="UNPAID",
-            result_summary="فاکتور ارسال شد؛ در انتظار پرداخت کاربر",
+            fee_status="ADMIN_MANUAL" if admin_manual else "UNPAID",
+            result_summary=(
+                "صرفاً توسط مدیر ثبت شده؛ بدون محاسبهٔ هزینه"
+                if admin_manual else
+                "فاکتور ارسال شد؛ در انتظار پرداخت کاربر"
+            ),
         )
+        if admin_manual:
+            # ⭐ موارد ثبت‌شده توسط مدیر چون هزینه‌ای در پنل محاسبه نمی‌شود،
+            # نیازی به مرحلهٔ «در انتظار پرداخت» ندارند — مستقیماً آمادهٔ
+            # ارسال علامت‌گذاری می‌شوند.
+            await mark_case_ready_to_send_by_tracking(user_id, service_type, tracking_code)
     except Exception as panel_err:
         logging.warning(f"[LAVAYEH] خطا در ثبت پرونده (در انتظار پرداخت) در پنل: {panel_err}")
 
@@ -3422,9 +3439,13 @@ async def lavayeh_successful_payment(message: Message, state: FSMContext, bot: B
             tracking_code=pending.get("tracking_code", "") or None,
             # ⭐ final_fee ریال است؛ فیلد fee پنل به «تومان» است
             fee=0 if pending.get("admin_manual") else pending["final_fee"] // 10,
-            fee_status="PAID",
+            fee_status="ADMIN_MANUAL" if pending.get("admin_manual") else "PAID",
             document_category=None if pending.get("admin_manual") else pending.get("lavayeh_title"),
-            result_summary="پرداخت انجام شد؛ در انتظار امضای الکترونیک",
+            result_summary=(
+                "صرفاً توسط مدیر ثبت شده؛ بدون محاسبهٔ هزینه"
+                if pending.get("admin_manual") else
+                "پرداخت انجام شد؛ در انتظار امضای الکترونیک"
+            ),
         )
         # ⭐ طبق سیاست جدید: تمام موارد هزینه‌دار (به‌جز استعلام) باید در پنل
         # ادمین وارد قسمت «ارسال» شوند، حتی اگر امضا هنوز درج نشده باشد.
@@ -3541,9 +3562,13 @@ async def admin_approve_lavayeh_receipt(callback: CallbackQuery, bot: Bot):
             status="PROCESSING", tracking_code=pending.get("tracking_code", "") or None,
             # ⭐ expected_amount ریال است؛ فیلد fee پنل به «تومان» است
             fee=0 if pending.get("admin_manual") else review['expected_amount'] // 10,
-            fee_status="PAID",
+            fee_status="ADMIN_MANUAL" if pending.get("admin_manual") else "PAID",
             document_category=None if pending.get("admin_manual") else pending.get("lavayeh_title"),
-            result_summary="پرداخت با تایید دستی مدیر ثبت شد؛ در انتظار امضای الکترونیک",
+            result_summary=(
+                "صرفاً توسط مدیر ثبت شده؛ بدون محاسبهٔ هزینه"
+                if pending.get("admin_manual") else
+                "پرداخت با تایید دستی مدیر ثبت شد؛ در انتظار امضای الکترونیک"
+            ),
         )
         # ⭐ طبق سیاست جدید: تمام موارد هزینه‌دار (به‌جز استعلام) باید در پنل
         # ادمین وارد قسمت «ارسال» شوند، حتی اگر امضا هنوز درج نشده باشد.

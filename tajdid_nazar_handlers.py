@@ -79,10 +79,12 @@ def _to_en(text: str) -> str:
     return text.translate(_FA_AR).replace(" ", "").strip()
 
 
-def _validate_judge_no(code: str):
-    """اعتبارسنجی شماره دادنامه — ۱۴۰۰ به بعد ۱۸ رقمی، ۹۹ و قبل‌تر ۱۶ رقمی."""
+def _validate_judge_no(code: str, label: str = "دادنامه"):
+    """اعتبارسنجی شماره دادنامه/قرار — ۱۴۰۰ به بعد ۱۸ رقمی، ۹۹ و قبل‌تر ۱۶ رقمی.
+
+    label: برچسبی که در پیام خطا نمایش داده می‌شود («دادنامه» یا «قرار»)."""
     if not code.isdigit():
-        return False, "⚠️ شماره دادنامه باید فقط شامل اعداد باشد."
+        return False, f"⚠️ شماره {label} باید فقط شامل اعداد باشد."
     # تعیین سال از ۴ رقم ابتدایی
     prefix = int(code[:4]) if len(code) >= 4 else 0
     if prefix >= 1400:
@@ -91,7 +93,7 @@ def _validate_judge_no(code: str):
         expected = 16
     if len(code) != expected:
         return False, (
-            f"⚠️ شماره دادنامه باید *{expected} رقمی* باشد.\n"
+            f"⚠️ شماره {label} باید *{expected} رقمی* باشد.\n"
             f"_(۱۴۰۰ به بعد: ۱۸ رقمی | ۹۹ و قبل‌تر: ۱۶ رقمی)_\n\n"
             f"کد شما *{len(code)} رقمی* است. مجدداً وارد فرمایید:"
         )
@@ -232,10 +234,19 @@ async def tn_case_type_handler(message: Message, state: FSMContext):
 
     labels = _get_labels(matched)
     await state.update_data(case_type=matched, tn_labels=labels)
-    await message.answer(
-        f"✅ *{matched}* انتخاب شد.\n\n"
-        f"*مرحله ۱:* لطفاً *شماره دادنامه* را ارسال فرمایید:",
-        reply_markup=back_only_kb)
+    if _is_prosecutor_objection(matched):
+        # برای اعتراض به قرار دادسرا، از همان ابتدا فقط «شماره قرار»
+        # پرسیده می‌شود — مفهوم «دادنامه» برای این نوع دعوی وجود ندارد.
+        await message.answer(
+            f"✅ *{matched}* انتخاب شد.\n\n"
+            f"*مرحله ۱:* لطفاً *شماره قرار* را ارسال فرمایید:\n\n"
+            f"_(۱۴۰۰ تا ۱۴۰۷: ۱۸ رقمی | ۹۹ و قبل‌تر: ۱۶ رقمی)_",
+            reply_markup=back_only_kb)
+    else:
+        await message.answer(
+            f"✅ *{matched}* انتخاب شد.\n\n"
+            f"*مرحله ۱:* لطفاً *شماره دادنامه* را ارسال فرمایید:",
+            reply_markup=back_only_kb)
     await state.set_state(Form.tn_judge_no)
 
 
@@ -252,9 +263,13 @@ async def tn_judge_no_handler(message: Message, state: FSMContext):
         await state.set_state(Form.tn_case_type)
         return
 
+    data = await state.get_data()
+    is_prosec = _is_prosecutor_objection(data.get("case_type", ""))
+    number_label = "قرار" if is_prosec else "دادنامه"
+
     judge_no = _to_en(message.text)
     # اعتبارسنجی ۱۶/۱۸ رقمی — مشابه لایحه
-    valid, result = _validate_judge_no(judge_no)
+    valid, result = _validate_judge_no(judge_no, label=number_label)
     if not valid:
         await message.answer(result,
                              reply_markup=back_only_kb)
@@ -263,7 +278,7 @@ async def tn_judge_no_handler(message: Message, state: FSMContext):
 
     await state.update_data(tn_judge_no=judge_no)
     await message.answer(
-        f"✅ شماره دادنامه `{judge_no}` ثبت شد.\n\n"
+        f"✅ شماره {number_label} `{judge_no}` ثبت شد.\n\n"
         f"*مرحله ۲:* لطفاً *شماره پرونده* را ارسال کنید.\n\n"
         f"_(۱۴۰۰ به بعد: ۱۸ رقمی | ۹۹ و قبل‌تر: ۱۶ رقمی)_",
         reply_markup=back_only_kb)
@@ -277,9 +292,13 @@ async def tn_judge_no_handler(message: Message, state: FSMContext):
 async def tn_file_no_handler(message: Message, state: FSMContext):
     if not message.text:
         return
+    data = await state.get_data()
+    is_prosec = _is_prosecutor_objection(data.get("case_type", ""))
+    number_label = "قرار" if is_prosec else "دادنامه"
+
     if message.text == "🔙 بازگشت":
         await message.answer(
-            "لطفاً *شماره دادنامه* را ارسال کنید:\n\n"
+            f"لطفاً *شماره {number_label}* را ارسال کنید:\n\n"
             "_(۱۴۰۰ به بعد: ۱۸ رقمی | ۹۹ و قبل‌تر: ۱۶ رقمی)_",
             reply_markup=back_only_kb)
         await state.set_state(Form.tn_judge_no)
@@ -300,7 +319,7 @@ async def tn_file_no_handler(message: Message, state: FSMContext):
     await state.update_data(tn_file_no=file_no)
     await message.answer(
         f"✅ شماره پرونده `{file_no}` ثبت شد.\n\n"
-        f"*مرحله ۳:* لطفاً *تاریخ تنظیم دادنامه* را ارسال فرمایید:\n_(مثال: 1403/09/15)_",
+        f"*مرحله ۳:* لطفاً *تاریخ تنظیم {number_label}* را ارسال فرمایید:\n_(مثال: 1403/09/15)_",
         reply_markup=back_only_kb)
     await state.set_state(Form.tn_judge_date)
 
@@ -367,12 +386,24 @@ async def tn_province_handler(message: Message, state: FSMContext):
     case_type = data.get("case_type", "")
 
     if _is_prosecutor_objection(case_type):
+        # توجه: شماره قرار همان ابتدا (مرحله ۱) از کاربر گرفته شده است؛
+        # اینجا دیگر نباید دوباره پرسیده شود (قبلاً این تکرار باعث سردرگمی
+        # می‌شد: یک‌بار «شماره دادنامه» و یک‌بار «شماره قرار» پرسیده می‌شد).
+        # برای این نوع دعوی، حکم/قرار، مبلغ و اعسار هم معنا ندارد —
+        # مستقیماً به انتخاب نوع شخصیت درخواست‌دهنده می‌رویم.
+        if data.get("_tn_editing", False):
+            await state.update_data(_tn_editing=False)
+            await _go_to_tn_preview(message, state)
+            return
+
+        labels = data.get("tn_labels", {})
+        appellant_label = labels.get("appellant", "درخواست دهنده")
         await message.answer(
             f"✅ استان *{matched_province}* ثبت شد.\n\n"
-            f"*مرحله ۵:* لطفاً *شماره قرار* را ارسال کنید.\n\n"
-            f"نکته: شماره‌های *۱۴۰۰ تا ۱۴۰۷* باید *۱۸ رقمی* و شماره‌های *۹۹ و قبل‌تر* باید *۱۶ رقمی* باشند.",
-            reply_markup=back_only_kb)
-        await state.set_state(Form.tn_order_no)
+            f"*مرحله ۶:* لطفاً *نوع شخصیت {appellant_label}* را انتخاب فرمایید:\n\n"
+            f"⚠️ توجه: اگر *وکیل* را انتخاب می‌کنید، باید حداقل یک *شخص حقیقی یا حقوقی* نیز اضافه کنید.",
+            reply_markup=create_tn_appellant_person_type_kb())
+        await state.set_state(Form.tn_appellant_person_type)
     else:
         labels = data.get("tn_labels", {})
         await message.answer(
@@ -501,6 +532,14 @@ async def tn_insolvency_handler(message: Message, state: FSMContext):
 
     await state.update_data(tn_insolvency=_is_yes)
     data = await state.get_data()
+
+    # بررسی حالت ویرایش: اگر کاربر فقط در حال ویرایش «اطلاعات دادنامه»
+    # بود، نباید مجبور به تکرار انتخاب اشخاص شود — مستقیم به پیش‌نمایش.
+    if data.get("_tn_editing", False):
+        await state.update_data(_tn_editing=False)
+        await _go_to_tn_preview(message, state)
+        return
+
     labels = data.get("tn_labels", {})
     appellant_label = labels.get("appellant", "تجدیدنظرخواه")
 
@@ -994,6 +1033,13 @@ async def tn_more_witnesses_handler(message: Message, state: FSMContext):
     witness_label = labels.get("witness_step", "مطلع/گواه")
 
     if text.startswith("✅ خیر") or text == "خیر" or "ادامه مراحل" in text:
+        # بررسی حالت ویرایش: اگر کاربر فقط در حال ویرایش شهود/مطلع بود
+        # نباید مجبور به عبور دوباره از متن/مدارک/توضیحات شود.
+        if data.get("_tn_editing", False):
+            await state.update_data(_tn_editing=False)
+            await _go_to_tn_preview(message, state)
+            return
+
         # رفتن به مرحله شرح متن — ابتدا انتخاب روش ورود
         await message.answer(
             "*مرحله ۱۱:* لطفاً روش ورود *شرح متن* را انتخاب فرمایید:\n\n"
@@ -1356,7 +1402,7 @@ async def tn_delete_image(message: Message, state: FSMContext, bot: Bot):
     if not images:
         await message.answer("⚠️ لیست تصاویر خالی است.")
         return
-    await message.answer("🗑 *حذف تصویر:*\n\nعکس‌های ارسالی:")
+    await message.answer("🗑 *حذف تصویر:*\\n\\nعکس‌های ارسالی:")
     for i, file_id in enumerate(images):
         await bot.send_photo(message.chat.id, photo=file_id, caption=f"تصویر شماره {i + 1}")
     await message.answer(
@@ -1700,7 +1746,7 @@ async def _handle_query_persons(message: Message, state: FSMContext, bot: Bot, s
     except TajdidFatalError as e:
         logger.error(f"[TN] خطای استعلام افراد: {e}")
         await message.answer(
-            f"❌ خطا در استعلام: {e}\n\n"
+            f"❌ خطا در استعلام: {e}\\n\\n"
             "لطفاً از روش ورود دستی کدملی استفاده فرمایید:")
         if section == "appellant":
             await message.answer(
@@ -2257,7 +2303,8 @@ async def tn_confirm_handler(message: Message, state: FSMContext, bot: Bot):
         # FIX: استفاده از کیبورد داینامیک با برچسب‌های صحیح (مثلاً «معترض ثالث»
         # به جای «تجدیدنظرخواه» برای اعتراض ثالث)
         dynamic_edit_kb = create_tn_edit_kb(
-            labels=labels, has_reasons=has_reasons, has_appellee=has_appellee
+            labels=labels, has_reasons=has_reasons, has_appellee=has_appellee,
+            is_prosecutor=_is_prosecutor_objection(case_type)
         )
         await message.answer(
             "✏️ *ویرایش اطلاعات:*\n\nکدام بخش را می‌خواهید ویرایش کنید؟",
@@ -2281,16 +2328,26 @@ async def tn_edit_choice_handler(message: Message, state: FSMContext):
     await state.update_data(_tn_editing=True)
     appellant_label = labels.get("appellant", "تجدیدنظرخواه")
     appellee_label = labels.get("appellee", "تجدیدنظرخوانده")
+    witness_label = labels.get("witness_step", "مطلع/گواه")
     case_type = data.get("case_type", "")
+    is_prosec = _is_prosecutor_objection(case_type)
+    # این متن‌ها باید عیناً با دکمه‌های create_tn_edit_kb یکسان باشند —
+    # قبلاً یکی از اموجی/برچسب‌ها فرق داشت (📋 در برابر 🔢، «دادنامه» ثابت
+    # به‌جای برچسب داینامیک، و «👀 شهود/مطلع» در برابر «👁 {witness_label}»)
+    # و در نتیجه دکمه‌های «ویرایش اطلاعات دادنامه» و «ویرایش شهود/مطلع»
+    # هیچ‌وقت match نمی‌شدند و ویرایش عملاً کار نمی‌کرد.
+    judge_info_label = "قرار" if is_prosec else "دادنامه"
+    edit_judge_btn = f"🔢 ویرایش اطلاعات {judge_info_label}"
+    edit_witness_btn = f"👁 ویرایش {witness_label}"
 
     if text == "🔙 بازگشت به پیش‌نمایش":
         await _go_to_tn_preview(message, state)
         return
 
-    if text == "📋 ویرایش اطلاعات دادنامه":
+    if text == edit_judge_btn:
         await state.update_data(tn_judge_no="")
         await message.answer(
-            "📋 لطفاً *شماره دادنامه* جدید را ارسال فرمایید:\n\n_(۱۴۰۰ تا ۱۴۰۷: ۱۸ رقمی | ۹۹ و قبل‌تر: ۱۶ رقمی)_",
+            f"📋 لطفاً *شماره {judge_info_label}* جدید را ارسال فرمایید:\n\n_(۱۴۰۰ تا ۱۴۰۷: ۱۸ رقمی | ۹۹ و قبل‌تر: ۱۶ رقمی)_",
             reply_markup=back_only_kb)
         await state.set_state(Form.tn_judge_no)
         return
@@ -2313,10 +2370,8 @@ async def tn_edit_choice_handler(message: Message, state: FSMContext):
         await state.set_state(Form.tn_appellee_person_type)
         return
 
-    if text == "👀 ویرایش شهود/مطلع":
+    if text == edit_witness_btn:
         await state.update_data(tn_witnesses=[])
-        labels = data.get("tn_labels", {})
-        witness_label = labels.get("witness_step", "مطلع/گواه")
         await message.answer(
             f"👀 لیست {witness_label} پاک شد.\n"
             f"در صورتی که {witness_label} دارید، کدملی را وارد فرمایید:\n\n"
@@ -2366,7 +2421,7 @@ async def tn_edit_choice_handler(message: Message, state: FSMContext):
     # FIX: کیبورد داینامیک با برچسب‌های صحیح
     dynamic_edit_kb = create_tn_edit_kb(
         labels=labels, has_reasons=_needs_reasons(case_type),
-        has_appellee=not _is_prosecutor_objection(case_type)
+        has_appellee=not is_prosec, is_prosecutor=is_prosec
     )
     await message.answer(
         "⚠️ لطفاً یکی از گزینه‌های موجود را انتخاب فرمایید:",
@@ -2615,6 +2670,10 @@ async def send_tajdid_nazar_result(
                 fee_status="MANUAL_APPROVED",
                 result_summary="معاف از پرداخت؛ در انتظار امضای الکترونیک",
             )
+            # ⭐ طبق سیاست جدید: تمام موارد هزینه‌دار (به‌جز استعلام) باید در
+            # پنل ادمین وارد قسمت «ارسال» شوند، حتی اگر امضا هنوز درج نشده
+            # باشد — نه فقط پس از تکمیل امضا.
+            await mark_case_ready_to_send_by_tracking(user_id, "TAJDID_NAZAR", tracking_code)
         except Exception as panel_err:
             logging.warning(f"[TN-PAYMENT] خطا در آپدیت پرونده معاف در پنل: {panel_err}")
         await _tn_start_sign_flow(bot, user_id, tracking_code, case_type, tn_persons)
@@ -2738,6 +2797,10 @@ async def tn_successful_payment(message: Message, state: FSMContext, bot: Bot):
             fee=pending["final_fee"] // 10, fee_status="PAID",
             result_summary="پرداخت انجام شد؛ در انتظار امضای الکترونیک",
         )
+        # ⭐ طبق سیاست جدید: تمام موارد هزینه‌دار (به‌جز استعلام) باید در پنل
+        # ادمین وارد قسمت «ارسال» شوند، حتی اگر امضا هنوز درج نشده باشد.
+        await mark_case_ready_to_send_by_tracking(
+            user_id, "TAJDID_NAZAR", pending.get("tracking_code", ""))
     except Exception as panel_err:
         logging.warning(f"[TN-PAYMENT] خطا در آپدیت پرونده در پنل: {panel_err}")
 
