@@ -12,7 +12,6 @@
   ۳. کلیک «ثبت و اصلاح دادخواست»
   ۴. مرحله «شروع» — انتخاب نوع ارائه (حقیقی/حقوقی/وکیل)
   ۵. مرحله «اطلاعات دادنامه» — شماره دادنامه، پرونده، تاریخ، استان
-     (در اعتراض به قرار دادسرا نام این step «اطلاعات قرار» است)
   ۶. بازیابی اطلاعات + پاپ‌آپ ثنا (خیر)
   ۷. حکم/قرار، مبلغ، اعسار
   ۸. مرحله «تجدیدنظرخواه» — افزودن اشخاص (شبیه اظهارکننده)
@@ -132,6 +131,10 @@ CASE_TYPE_MENU_MAP = {
 }
 
 # نگاشت نوع دعوی به نام step اشخاص اول
+# توجه: برای «اعتراض به قرار دادسرا» نام step در سامانه ثنا واقعاً
+# «درخواست دهنده» است (نه «اعتراض‌کننده») — طبق ساختار DOM واقعی صفحه.
+# مقدار اشتباه قبلی باعث می‌شد safe_click_by_text این step را پیدا نکند
+# و NavigationResetError بدهد (ثبت اعتراض به قرار دادسرا انجام نمی‌شد).
 APPELLANT_STEP_MAP = {
     "تجدیدنظرخواهی": "تجديدنظرخواه",
     "واخواهی": "واخواه",
@@ -139,8 +142,6 @@ APPELLANT_STEP_MAP = {
     "اعاده دادرسی مدنی": "درخواست‌کننده",
     "اعاده دادرسی کیفری": "درخواست‌کننده",
     "اعتراض ثالث": "اعتراض‌کننده ثالث",
-    # ⭐ طبق HTML واقعی سامانه، step شخص اول در اعتراض به قرار دادسرا
-    # «درخواست دهنده» است (نه «اعتراض‌کننده») — عیناً مانند تجدیدنظر.
     "اعتراض به قرار دادسرا": "درخواست دهنده",
 }
 
@@ -155,20 +156,11 @@ APPELLEE_STEP_MAP = {
     "اعتراض به قرار دادسرا": "اعتراض‌شونده",
 }
 
-# نگاشت نوع دعوی به نام step شهود/مطلع
+# نام step شهود/مطلع
 WITNESS_STEP_MAP = {
     "اعاده دادرسی کیفری": "سايراشخاص",  # در کیفری نامش «سایر اشخاص» است
 }
 WITNESS_STEP_DEFAULT = "مطلع/ گواه"
-
-# ⭐ اعتراض به قرار دادسرا — طبق HTML واقعی سامانه، step اطلاعات آن
-# «اطلاعات قرار» نام دارد (نه «اطلاعات دادنامه»); بقیهٔ رفتار آن مرحله
-# (شماره قرار/پرونده، تاریخ، استان، بازیابی، پاپ‌آپ ثنا) عیناً مانند
-# تجدیدنظر است.
-DOC_INFO_STEP_MAP = {
-    "اعتراض به قرار دادسرا": "اطلاعات قرار",
-}
-DOC_INFO_STEP_DEFAULT = "اطلاعات دادنامه"
 
 # نگاشت جهات اعاده دادرسی به ایندکس checkbox
 EADAH_MADANI_REASON_INDICES = {
@@ -380,59 +372,6 @@ async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
                 break
 
 
-async def _fill_lawyer_person_tn(page, national_id: str, bot: Bot, user_id: int):
-    """پر کردن کدملی وکیل + استعلام — ⭐ طبق HTML واقعی مرحلهٔ «وکیل» سامانه:
-
-      ۱. بعد از گزینهٔ «افزودن»، ابتدا کدملی در فیلد «#txtNationalityCode»
-         وارد می‌شود (ng-model="viewModel.currentPetitionPerson.NationalityCode")
-      ۲. سپس دکمهٔ «استعلام شخص» زده می‌شود:
-         ng-click="actions.getLawyerDataWithSana(viewModel.currentPetitionPerson,false)"
-         (دکمهٔ btn-warning با tooltip «استعلام شخص»)
-    """
-    if not national_id:
-        logging.warning("[TN][وکیل] کدملی وکیل خالی است — رد شدن")
-        return
-
-    # ورود کدملی در #txtNationalityCode — با retry تا رندر فرم پس از «افزودن»
-    nat_id_set = False
-    for _try in range(5):
-        nat_id_set = await page.evaluate('''(val) => {
-            const inp = document.querySelector('#txtNationalityCode');
-            if (inp && !inp.disabled && inp.offsetParent !== null) {
-                inp.focus();
-                inp.value = "";
-                inp.value = val;
-                inp.dispatchEvent(new Event("input", { bubbles: true }));
-                inp.dispatchEvent(new Event("change", { bubbles: true }));
-                try {
-                    if (typeof angular !== 'undefined') {
-                        const el = angular.element(inp);
-                        const ctrl = el.controller('ngModel');
-                        if (ctrl) { ctrl.$setViewValue(val); ctrl.$render(); }
-                        const scope = el.scope();
-                        if (scope) scope.$apply();
-                    }
-                } catch (e) {}
-                return true;
-            }
-            return false;
-        }''', national_id)
-        if nat_id_set:
-            break
-        logging.warning(f"[TN][وکیل] فیلد #txtNationalityCode پیدا نشد — تلاش {_try + 1}")
-        await asyncio.sleep(3)
-
-    if not nat_id_set:
-        logging.error("[TN][وکیل] فیلد #txtNationalityCode پس از ۵ تلاش پیدا نشد")
-        return
-
-    await asyncio.sleep(2)
-
-    # استعلام وکیل — دکمهٔ «استعلام شخص» (actions.getLawyerDataWithSana)
-    await _query_sana(page, "actions.getLawyerDataWithSana", bot, user_id,
-                      current_national_id=national_id, person_role="lawyer")
-
-
 async def _query_sana(page, ng_click: str, bot: Bot, user_id: int,
                       is_legal: bool = False,
                       current_national_id: str = "",
@@ -630,27 +569,6 @@ async def _calculate_cost(page, bot: Bot, user_id: int) -> dict:
     return {"cost_sum": cost_sum, "extra_items": extra_items, "total": total}
 
 
-async def _close_system_error_popup(page):
-    """بستن پاپ‌آپ sweet-alert (مثل «خطای سیستم : ۱») در صورت ظاهر شدن.
-
-    ⭐ در اعتراض به قرار دادسرا، سامانه گاهی پس از ورود به مسیر ثبت،
-    پاپ‌آپ «خطای سیستم : ۱» نشان می‌دهد؛ طبق دستور کارفرما باکس
-    «ثبت و اصلاح درخواست» کلیک می‌شود و این پاپ‌آپ (قبل/بعد از کلیک)
-    بسته می‌شود تا روند ثبت از همان‌جا ادامه یابد.
-    """
-    try:
-        await page.evaluate('''() => {
-            const popup = document.querySelector('.sweet-alert.showSweetAlert');
-            if (popup && popup.offsetParent !== null) {
-                const btn = popup.querySelector('button.confirm, button.cancel');
-                if (btn) btn.click();
-            }
-        }''')
-        await asyncio.sleep(1)
-    except Exception:
-        pass
-
-
 async def _click_goto_main(page, bot: Bot, user_id: int):
     """کلیک بازگشت به فهرست."""
     clicked = await page.evaluate('''() => {
@@ -752,9 +670,6 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
     appellant_step = APPELLANT_STEP_MAP.get(case_type, "تجديدنظرخواه")
     appellee_step = APPELLEE_STEP_MAP.get(case_type, "تجديدنظرخوانده")
     witness_step = WITNESS_STEP_MAP.get(case_type, WITNESS_STEP_DEFAULT)
-    # ⭐ اعتراض به قرار دادسرا: step اطلاعات «اطلاعات قرار» نام دارد؛
-    # بقیهٔ دعاوی «اطلاعات دادنامه». رفتار مرحله عیناً مانند تجدیدنظر است.
-    doc_info_step = DOC_INFO_STEP_MAP.get(case_type, DOC_INFO_STEP_DEFAULT)
     menu_item = CASE_TYPE_MENU_MAP.get(case_type, case_type)
 
     logging.info(
@@ -789,24 +704,12 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
             await _click_menu_item(sana_page, menu_item, bot, user_id)
             await resilient_sleep(sana_page, 5, bot, user_id)
 
-            # ── ۳. کلیک «ثبت و اصلاح دادخواست» ──────────────────────
-            # ⭐ اعتراض به قرار دادسرا: سامانه روی مسیر عادی «خطای سیستم : ۱»
-            # می‌دهد؛ طبق دستور کارفرما باید باکس «ثبت و اصلاح درخواست»
-            # (زیرنویس: «اين مرحله در دفاتر خدمات انجام مي شود.») کلیک شود و
-            # روند ثبت از همان‌جا شروع می‌شود.
-            if is_prosecutor:
-                # بستن پاپ‌آپ احتمالی «خطای سیستم» قبل از ادامه
-                await _close_system_error_popup(sana_page)
-
-                reg_box_ok = await _click_step_box(sana_page, "ثبت و اصلاح درخواست", bot, user_id)
-                if not reg_box_ok:
-                    logging.warning(
-                        "[TN] باکس «ثبت و اصلاح درخواست» پیدا نشد — تلاش با «ثبت و اصلاح دادخواست»")
-                    await _click_step_box(sana_page, "ثبت و اصلاح دادخواست", bot, user_id)
-                # بستن پاپ‌آپ «خطای سیستم : ۱» که ممکن است پس از ورود ظاهر شود
-                await _close_system_error_popup(sana_page)
-            else:
-                await _click_step_box(sana_page, "ثبت و اصلاح دادخواست", bot, user_id)
+            # ── ۳. کلیک «ثبت و اصلاح دادخواست/درخواست» ──────────────
+            # نکته: برای «اعتراض به قرار دادسرا» متن واقعی روی سامانه
+            # «ثبت و اصلاح درخواست» است (نه «دادخواست»). استفاده از متن
+            # اشتباه باعث NavigationResetError و ری‌لود بی‌نتیجه می‌شد.
+            register_box_text = "ثبت و اصلاح درخواست" if is_prosecutor else "ثبت و اصلاح دادخواست"
+            await _click_step_box(sana_page, register_box_text, bot, user_id)
             await resilient_sleep(sana_page, 5, bot, user_id)
 
             # ── ۴. مرحله «شروع» ────────────────────────────────────
@@ -854,11 +757,10 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                 }''')
                 await asyncio.sleep(2)
 
-            # ── ۵. مرحله «اطلاعات دادنامه / اطلاعات قرار» ────────
-            # ⭐ در اعتراض به قرار دادسرا نام این step «اطلاعات قرار» است؛
-            # فیلدهای آن (شماره قرار/پرونده، تاریخ، استان، بازیابی) عیناً
-            # مانند تجدیدنظر پر می‌شوند.
-            await _click_step_label(sana_page, doc_info_step, bot, user_id)
+            # ── ۵. مرحله «اطلاعات دادنامه/قرار» ────────────────────
+            # برای «اعتراض به قرار دادسرا» نام step واقعی «اطلاعات قرار» است.
+            judge_info_step = "اطلاعات قرار" if is_prosecutor else "اطلاعات دادنامه"
+            await _click_step_label(sana_page, judge_info_step, bot, user_id)
             await resilient_sleep(sana_page, 4, bot, user_id)
 
             # شماره دادنامه
@@ -939,18 +841,15 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                     await asyncio.sleep(1)
 
                 # مبلغ
-                # ⚠️ قبلاً براکت‌ها با {{{{ اسکیپ می‌شدند → JS نامعتبر →
-                # مقدار مبلغ هرگز پر نمی‌شد؛ اکنون با پاس آرگومانی درست شد.
                 amount_str = str(amount) if amount > 0 else "1"
-                await sana_page.evaluate('''(val) => {
+                await sana_page.evaluate(f'''() => {{{{
                     const inp = document.querySelector('input[ng-model*="Amount"]');
-                    if (inp) {
-                        inp.focus();
-                        inp.value = val;
-                        inp.dispatchEvent(new Event("input", { bubbles: true }));
-                        inp.dispatchEvent(new Event("change", { bubbles: true }));
-                    }
-                }''', amount_str)
+                    if (inp) {{{{
+                        inp.value = "{amount_str}";
+                        inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
+                        inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
+                    }}}}
+                }}''')
                 await asyncio.sleep(1)
 
                 # اعسار
@@ -1015,38 +914,6 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                     else:
                         await _fill_real_person(sana_page, person["national_id"], bot, user_id,
                                                 person_role="appellant", person_index=idx)
-                    await resilient_sleep(sana_page, 10, bot, user_id)
-
-            # ── ۶.۵ مرحله «وکیل» (اگر وکیل داریم) ─────────────────
-            # ⭐ قبلاً وکیل به‌کلی نادیده گرفته می‌شد (کدملی و استعلام هرگز
-            # انجام نمی‌شد). طبق دستور کارفرما: بعد از «افزودن»، ابتدا کدملی
-            # در #txtNationalityCode وارد شود و سپس دکمهٔ استعلام
-            # (actions.getLawyerDataWithSana) زده شود — الگوی اظهارنامه/چک.
-            if has_lawyer:
-                lawyer_step_clicked = await sana_page.evaluate('''() => {
-                    const steps = Array.from(document.querySelectorAll('.step'));
-                    const t = steps.find(el => el.innerText && el.innerText.trim() === "وكيل");
-                    if (t) { t.click(); return true; }
-                    return false;
-                }''')
-                if not lawyer_step_clicked:
-                    try:
-                        await safe_click_by_text(sana_page, "وكيل", bot, user_id)
-                        lawyer_step_clicked = True
-                    except Exception as lawyer_nav_err:
-                        logging.warning(
-                            f"[TN] مرحلهٔ «وکیل» در ناوبری پیدا نشد ({lawyer_nav_err}) — "
-                            f"ادامه بدون step جداگانهٔ وکیل")
-                if lawyer_step_clicked:
-                    await resilient_sleep(sana_page, 4, bot, user_id)
-
-                for idx, person in enumerate(appellants):
-                    if person.get("person_type") != "وکیل":
-                        continue
-                    await _click_add_btn(sana_page, bot, user_id)
-                    await resilient_sleep(sana_page, 3, bot, user_id)
-                    await _fill_lawyer_person_tn(
-                        sana_page, person.get("national_id", ""), bot, user_id)
                     await resilient_sleep(sana_page, 10, bot, user_id)
 
             # ── ۷. مرحله تجدیدنظرخوانده (فقط برای غیر اعتراض به قرار دادسرا)
@@ -1336,6 +1203,7 @@ async def pre_query_tn_persons(data: dict, bot: Bot, step_name: str) -> list:
 
     case_type = data.get("case_type", "")
     menu_item = CASE_TYPE_MENU_MAP.get(case_type, case_type)
+    is_prosecutor = case_type == "اعتراض به قرار دادسرا"
 
     # ۱. رفتن به سامانه
     ok = await goto_url_with_retry(
@@ -1353,18 +1221,11 @@ async def pre_query_tn_persons(data: dict, bot: Bot, step_name: str) -> list:
     await _click_menu_item(sana_page, menu_item, bot, user_id)
     await resilient_sleep(sana_page, 5, bot, user_id)
 
-    # ۴. کلیک ثبت و اصلاح دادخواست
-    # ⭐ اعتراض به قرار دادسرا — باکس «ثبت و اصلاح درخواست» (الگوی اصلی ثبت)
-    is_prosecutor_q = case_type == "اعتراض به قرار دادسرا"
-    if is_prosecutor_q:
-        # بستن پاپ‌آپ احتمالی «خطای سیستم» (قبل و بعد از ورود به مسیر ثبت)
-        await _close_system_error_popup(sana_page)
-        q_reg_ok = await _click_step_box(sana_page, "ثبت و اصلاح درخواست", bot, user_id)
-        if not q_reg_ok:
-            await _click_step_box(sana_page, "ثبت و اصلاح دادخواست", bot, user_id)
-        await _close_system_error_popup(sana_page)
-    else:
-        await _click_step_box(sana_page, "ثبت و اصلاح دادخواست", bot, user_id)
+    # ۴. کلیک ثبت و اصلاح دادخواست/درخواست
+    # نکته: برای «اعتراض به قرار دادسرا» متن واقعی «ثبت و اصلاح درخواست»
+    # است — همان باگی که در خطای استعلام افراد گزارش شده بود.
+    register_box_text = "ثبت و اصلاح درخواست" if is_prosecutor else "ثبت و اصلاح دادخواست"
+    await _click_step_box(sana_page, register_box_text, bot, user_id)
     await resilient_sleep(sana_page, 5, bot, user_id)
 
     # ۵. مرحله شروع — انتخاب شخص حقیقی
@@ -1383,56 +1244,47 @@ async def pre_query_tn_persons(data: dict, bot: Bot, step_name: str) -> list:
     }''')
     await asyncio.sleep(2)
 
-    # ۶. مرحله اطلاعات دادنامه / اطلاعات قرار
-    # ⭐ اعتراض به قرار دادسرا: نام این step «اطلاعات قرار» است — قبلاً
-    # ربات دنبال «اطلاعات دادنامه» می‌گشت، پیدا نمی‌کرد و کل استعلام
-    # با NavigationResetError به خطا می‌خورد.
+    # ۶. مرحله اطلاعات دادنامه
     judge_no = data.get("tn_judge_no", "")
     file_no = data.get("tn_file_no", "")
     judge_date = data.get("tn_judge_date", "")
     province = data.get("tn_province", "")
 
-    doc_info_step_q = DOC_INFO_STEP_MAP.get(case_type, DOC_INFO_STEP_DEFAULT)
-    await _click_step_label(sana_page, doc_info_step_q, bot, user_id)
+    judge_info_step = "اطلاعات قرار" if is_prosecutor else "اطلاعات دادنامه"
+    await _click_step_label(sana_page, judge_info_step, bot, user_id)
     await resilient_sleep(sana_page, 4, bot, user_id)
 
-    # شماره دادنامه
-    # ⚠️ قبلاً براکت‌های JS با {{{{ (چهارتایی) اسکیپ شده بودند که به {{
-    # در جاوااسکریپت تبدیل می‌شد و باعث SyntaxError در page.evaluate و
-    # شکست کامل «استعلام افراد پرونده موجود» می‌گشت — اکنون درست شده است.
-    await sana_page.evaluate('''(val) => {
+    # شماره دادنامه/قرار
+    await sana_page.evaluate(f'''() => {{{{
         const inp = document.querySelector('#txtJudgeNo');
-        if (inp) {
-            inp.focus();
-            inp.value = val;
-            inp.dispatchEvent(new Event("input", { bubbles: true }));
-            inp.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-    }''', judge_no)
+        if (inp) {{{{
+            inp.value = "{judge_no}";
+            inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
+            inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
+        }}}}
+    }}}}''')
     await asyncio.sleep(1)
 
     # شماره پرونده
-    await sana_page.evaluate('''(val) => {
+    await sana_page.evaluate(f'''() => {{{{
         const inp = document.querySelector('#txtReferingCaseNo');
-        if (inp) {
-            inp.focus();
-            inp.value = val;
-            inp.dispatchEvent(new Event("input", { bubbles: true }));
-            inp.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-    }''', file_no)
+        if (inp) {{{{
+            inp.value = "{file_no}";
+            inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
+            inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
+        }}}}
+    }}}}''')
     await asyncio.sleep(1)
 
     # تاریخ دادنامه
-    await sana_page.evaluate('''(val) => {
+    await sana_page.evaluate(f'''() => {{{{
         const inps = document.querySelectorAll('input[persian-datepicker-popup]');
-        if (inps.length > 0) {
-            inps[0].focus();
-            inps[0].value = val;
-            inps[0].dispatchEvent(new Event("input", { bubbles: true }));
-            inps[0].dispatchEvent(new Event("change", { bubbles: true }));
-        }
-    }''', judge_date)
+        if (inps.length > 0) {{{{
+            inps[0].value = "{judge_date}";
+            inps[0].dispatchEvent(new Event("input", {{ bubbles: true }}));
+            inps[0].dispatchEvent(new Event("change", {{ bubbles: true }}));
+        }}}}
+    }}}}''')
     await asyncio.sleep(1)
 
     # استان
@@ -1537,19 +1389,18 @@ async def _remove_unselected_from_system(page, selected_names: list, bot: Bot, u
             break
 
         # حذف آیتم با کلیک روی دکمه btn-danger
-        # ⚠️ قبلاً براکت‌ها با {{{{ اسکیپ می‌شدند → JS نامعتبر؛ اکنون درست شد.
-        clicked = await page.evaluate('''(idx) => {
+        clicked = await page.evaluate(f'''() => {{{{
             const items = document.querySelectorAll('jud-nav-list .nav-list div[ng-repeat]');
-            if (idx < items.length) {
-                const item = items[idx];
+            if ({to_remove_idx} < items.length) {{{{
+                const item = items[{to_remove_idx}];
                 const deleteBtn = item.querySelector('.btn-danger');
-                if (deleteBtn) {
+                if (deleteBtn) {{{{
                     deleteBtn.click();
                     return true;
-                }
-            }
+                }}}}
+            }}}}
             return false;
-        }''', to_remove_idx)
+        }}}}''')
         if clicked:
             logging.info(f"[TN] حذف '{to_remove_name}' از لیست سامانه.")
             await asyncio.sleep(1.5)

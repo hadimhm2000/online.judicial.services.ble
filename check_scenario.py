@@ -942,81 +942,6 @@ async def process_check_task(data: dict, bot: Bot):
                 f"fixedExtra={cost_data.get('fixedExtra')} final={final_total} "
                 f"ردیف‌های منطبق‌شده ({len(_matched)}): {_matched}"
             )
-
-            # ⭐ تشخیص شکست ورود به بخش هزینه — طبق دستور کارفرما: وقتی
-            # ربات نتوانست وارد بخش هزینه شود و محاسبه کند، مبلغ (که فقط
-            # از ثابتِ ۵۵۰,۰۰۰ ریال ساخته شده) هرگز برای کاربر ارسال
-            # نمی‌شود؛ به‌جای آن کدرهگیری + شماره پشتیبانی اعلام می‌گردد.
-            cost_entered = (
-                cost_box_ok
-                and (cost_data.get("costSum", 0) > 0 or cost_data.get("rowSum", 0) > 0)
-            )
-
-            if not cost_entered:
-                logging.error(
-                    f"[CHECK] ورود به بخش هزینه ناموفق (box={cost_box_ok}, "
-                    f"costSum={cost_data.get('costSum')}, rowSum={cost_data.get('rowSum')}) "
-                    f"— کاربر {user_id} | کد: {bill_no}")
-
-                # چاپ PDF — نسخهٔ ثبت‌شده برای کاربر ارسال می‌شود
-                await _click_goto_main(sana_page, bot, user_id)
-                await resilient_sleep(sana_page, 4, bot, user_id)
-                pdf_path = await _print_check(
-                    sana_page, browser_context, bill_no, bot, user_id)
-
-                # ارسال PDF (در صورت موفقیت) — بدون هیچ مبلغی
-                if pdf_path and os.path.exists(pdf_path):
-                    try:
-                        from bale_file_sender import send_document_direct
-                        await send_document_direct(
-                            user_id, pdf_path,
-                            caption="📄 *نسخه ثبت‌شده دادخواست چک شما در سامانه قضایی*")
-                    except Exception as pdf_err:
-                        logging.error(f"[CHECK] خطا در ارسال PDF بخش هزینه: {pdf_err}")
-
-                # ⭐ پیام کدرهگیری + شماره پشتیبانی — بدون ذکر هیچ مبلغی
-                await bot.send_message(
-                    user_id,
-                    f"⚠️ در حال حاضر امکان محاسبه و دریافت هزینه از سامانه وجود ندارد.\n\n"
-                    f"🔢 کد رهگیری شما: *{bill_no}*\n\n"
-                    f"جهت ادامه روند ثبت و هزینه به شماره *{SUPPORT_PHONE}* "
-                    f"در واتساپ یا بله پیام دهید.")
-                await bot.send_message(
-                    ADMIN_ID,
-                    f"⚠️ [CHECK] ربات نتوانست وارد بخش هزینه شود و محاسبه کند — "
-                    f"کاربر {user_id} | کد: {bill_no} | نوع: {request_title}\n"
-                    f"هزینه به‌صورت دستی پیگیری شود. (بدون فاکتور پرداخت)")
-                try:
-                    from panel_sync import upsert_case_to_panel
-                    await upsert_case_to_panel(
-                        bale_user_id=user_id, full_name=str(user_id),
-                        service_type="CHECK", status="PROCESSING",
-                        tracking_code=bill_no or None,
-                        document_category=f"دادخواست چک — {request_title}{_doc_category_suffix}",
-                        result_summary="ثبت شد؛ محاسبه هزینه ناموفق — پیگیری دستی پشتیبانی",
-                        error_step="cost_calculation_failed")
-                except Exception as panel_err:
-                    logging.warning(f"[CHECK] خطا در آپدیت پنل (هزینه ناموفق): {panel_err!r}")
-
-                # ردیف دسته‌جمعی باید «تمام‌شده» علامت بخورد
-                if is_bulk_check and batch_tracking_code:
-                    try:
-                        from bulk_submissions import BULK_TASKS, mark_bulk_item_done
-                        if batch_tracking_code in BULK_TASKS:
-                            BULK_TASKS[batch_tracking_code].setdefault("failures", []).append({
-                                "row_index": bulk_row_index,
-                                "tracking_code": bill_no,
-                                "title": f"دادخواست چک — {request_title}",
-                                "error": "ثبت انجام شد؛ ورود به بخش هزینه ناموفق — پیگیری دستی",
-                            })
-                        await mark_bulk_item_done(bot, user_id, batch_tracking_code)
-                    except Exception as log_err:
-                        logging.error(f"[CHECK] خطا در mark_bulk_item_done (هزینه ناموفق): {log_err}")
-
-                # بازگشت به فهرست و پایان — بدون فاکتور/درگاه پرداخت/امضا
-                await _click_goto_main(sana_page, bot, user_id)
-                return
-
             if len(_matched) != 4:
                 # اگر ۴ ردیف هزینهٔ خاص پیدا نشد، یا ساختار جدول عوض شده یا
                 # یکی از عناوین فرق کرده — باید فوراً به مدیر اطلاع داد.
@@ -1028,12 +953,16 @@ async def process_check_task(data: dict, bot: Bot):
                 )
 
             # ── گرفتن شناسه پرداخت از بخش هزینه (فقط ذخیره در شیت + پیام به مدیر) ──
+            # ⭐ رفع باگ: amount باید «هزینهٔ واقعی سامانه» (costSum، پیش از
+            # اعمال فرمول سود دفتر) باشد، نه final_total که مبلغ نهایی
+            # دریافتی از کاربر است — وگرنه در پنل «هزینه سامانه» با «هزینه»
+            # برابر می‌شود و سود همیشه صفر نمایش داده می‌شود.
             from payment_id_capture import capture_and_report_payment_ids
             await capture_and_report_payment_ids(
                 sana_page, bot, user_id,
                 service_name="دادخواست چک",
                 tracking_code=bill_no,
-                amount=final_total,
+                amount=cost_data.get("costSum", 0),
                 exclude_values=[bill_no],
                 log_prefix="CHECK")
 
@@ -2211,63 +2140,8 @@ async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
 
 
 async def _fill_lawyer_person(page, national_id: str, bot: Bot, user_id: int):
-    """پر کردن کدملی وکیل + استعلام — ⭐ طبق HTML واقعی مرحلهٔ «وکیل» سامانه:
-
-      ۱. بعد از گزینهٔ «افزودن»، ابتدا کدملی در فیلد «#txtNationalityCode»
-         وارد می‌شود (ng-model="viewModel.currentPetitionPerson.NationalityCode")
-         — نه #txtRealIrNationalityCode که مربوط به اشخاص عادی است.
-      ۲. سپس دکمهٔ «استعلام» زده می‌شود:
-         ng-click="actions.getLawyerDataWithSana(viewModel.currentPetitionPerson,false)"
-         (دکمهٔ btn-warning با tooltip «استعلام شخص»)
-
-    الگو دقیقاً از ezhharnameh_scenario._fill_lawyer_person برداشته شده است.
-    """
-    # ── ورود کدملی در #txtNationalityCode (با retry تا رندر فرم پس از «افزودن»)
-    nat_id_set = False
-    for _try in range(5):
-        nat_id_set = await page.evaluate('''(val) => {
-            const inp = document.querySelector('#txtNationalityCode');
-            if (inp && !inp.disabled && inp.offsetParent !== null) {
-                inp.focus();
-                inp.value = "";
-                inp.value = val;
-                inp.dispatchEvent(new Event("input", { bubbles: true }));
-                inp.dispatchEvent(new Event("change", { bubbles: true }));
-                try {
-                    if (typeof angular !== 'undefined') {
-                        const el = angular.element(inp);
-                        const ctrl = el.controller('ngModel');
-                        if (ctrl) { ctrl.$setViewValue(val); ctrl.$render(); }
-                        const scope = el.scope();
-                        if (scope) scope.$apply();
-                    }
-                } catch (e) {}
-                return true;
-            }
-            return false;
-        }''', national_id)
-        if nat_id_set:
-            break
-        logging.warning(f"[CHECK][وکیل] فیلد #txtNationalityCode پیدا نشد — تلاش {_try + 1}")
-        await asyncio.sleep(3)
-
-    if not nat_id_set:
-        logging.error("[CHECK][وکیل] فیلد #txtNationalityCode پس از ۵ تلاش پیدا نشد")
-
-    await asyncio.sleep(2)
-
-    # ── استعلام وکیل — دکمهٔ «استعلام شخص» (actions.getLawyerDataWithSana)
-    status = await _query_sana_check(
-        page, "getLawyerDataWithSana", bot, user_id,
-        role="وکیل", national_id=national_id)
-    if status == "failed":
-        # ⭐ خطای قطعی — پیام‌های کاربر/مدیر داخل _query_sana_check ارسال
-        # شده‌اند؛ فقط قطع فرآیند بدون تلاش مجدد
-        raise CheckAbortError(
-            f"استعلام ثنا برای وکیل (کدملی {national_id}) ناموفق",
-            step="SANA_QUERY_FAILED")
-    if status == "no_response":
-        logging.warning("[CHECK][وکیل] استعلام بدون پاسخ — ادامه با احتیاط")
+    """پر کردن کدملی وکیل + استعلام"""
+    await _fill_real_person(page, national_id, bot, user_id, role="وکیل")
 
 
 async def _download_check_images(bot: Bot, images: list, user_id: int) -> list:
@@ -2837,21 +2711,10 @@ async def _upload_check_files(page, doc_title: str, image_paths: list,
 async def _fill_extra_attachment_form(page, doc_title: str, prepared_paths: list,
                                       force_page_count: int = None) -> bool:
     """فرم پیوست‌های اضافی چک — «تصوير مدرک نمايندگي» برای مدرک نمایندگی،
-    وگرنه «ساير ضمائم» + عنوان دلخواه (الگوی upload_helpers).
-
-    ⭐ مسیر ثبت «مدرک نمایندگی» عیناً از الگوی _upload_proxy_document در
-    ezhharnameh_scenario.py برداشته شده است (طبق دستور کارفرما):
-      ۱. انتخاب «تصویر مدرک نمایندگی» از #attachmentType
-      ۲. #txtNo = 0
-      ۳. #txtName = «مدرک نمایندگی» (الزامی — بدون آن ردیف بدون عنوان
-         ذخیره می‌شود و editDocument ردیف را پیدا نمی‌کند)
-      ۴. تقویم = امروز
-      ۵. تعداد صفحات (#txt001 و #incAttach0 برای چند‌برگی)
-    """
+    وگرنه «ساير ضمائم» + عنوان دلخواه (الگوی upload_helpers)."""
     page_count = force_page_count if force_page_count else len(prepared_paths or [])
 
     if "نمایندگی" in doc_title or "نمايندگي" in doc_title:
-        # مرحله ۱: انتخاب «تصوير مدرک نمايندگي» از #attachmentType
         ok = await page.evaluate('''() => {
             const sel = document.querySelector('#attachmentType');
             if (!sel || sel.disabled) return false;
@@ -2862,114 +2725,16 @@ async def _fill_extra_attachment_form(page, doc_title: str, prepared_paths: list
                 sel.value = opt.value;
                 sel.dispatchEvent(new Event("input", { bubbles: true }));
                 sel.dispatchEvent(new Event("change", { bubbles: true }));
-                try {
-                    if (typeof angular !== 'undefined') {
-                        const el = angular.element(sel);
-                        const ctrl = el.controller('ngModel');
-                        if (ctrl) { ctrl.$setViewValue(opt.value); ctrl.$render(); }
-                        const scope = el.scope();
-                        if (scope) scope.$apply();
-                    }
-                } catch (e) {}
                 return true;
             }
             return false;
         }''')
-        if not ok:
-            logging.warning("[CHECK][منضمات] گزینه «تصوير مدرک نمايندگي» پیدا نشد")
-            return False
-        logging.info("[CHECK][منضمات] نوع پیوست «تصوير مدرک نمايندگي» انتخاب شد")
-        await asyncio.sleep(3)
-        await wait_for_angular_idle(page)
-        await asyncio.sleep(1)
-
-        # مرحله ۲: #txtNo = 0 (الگوی اظهارنامه)
-        await page.evaluate('''() => {
-            const inputs = Array.from(document.querySelectorAll('input#txtNo'));
-            if (inputs.length > 0) {
-                const inp = inputs[0];
-                inp.value = "0";
-                inp.dispatchEvent(new Event("input", { bubbles: true }));
-                inp.dispatchEvent(new Event("change", { bubbles: true }));
-                try {
-                    if (typeof angular !== 'undefined') {
-                        const el = angular.element(inp);
-                        const ctrl = el.controller('ngModel');
-                        if (ctrl) { ctrl.$setViewValue("0"); ctrl.$render(); }
-                        const scope = el.scope();
-                        if (scope) scope.$apply();
-                    }
-                } catch (e) {}
-            }
-        }''')
-        await asyncio.sleep(1)
-
-        # مرحله ۳: #txtName = «مدرک نمایندگی» (الزامی — الگوی اظهارنامه)
-        await page.evaluate('''() => {
-            const inputs = Array.from(document.querySelectorAll('input#txtName'));
-            if (inputs.length > 0) {
-                const inp = inputs[0];
-                inp.focus();
-                inp.value = "مدرک نمایندگی";
-                inp.dispatchEvent(new Event("input", { bubbles: true }));
-                inp.dispatchEvent(new Event("change", { bubbles: true }));
-                try {
-                    if (typeof angular !== 'undefined') {
-                        const el = angular.element(inp);
-                        const ctrl = el.controller('ngModel');
-                        if (ctrl) { ctrl.$setViewValue("مدرک نمایندگی"); ctrl.$render(); }
-                        const scope = el.scope();
-                        if (scope) scope.$apply();
-                    }
-                } catch (e) {}
-            }
-        }''')
-        await asyncio.sleep(1)
-
-        # مرحله ۴: تقویم = امروز (الگوی اظهارنامه)
-        await page.evaluate('''() => {
-            const calBtn = document.querySelector('button.btn-primary i.glyphicon-calendar');
-            if (calBtn) calBtn.closest('button').click();
-        }''')
-        await asyncio.sleep(2)
-        await page.evaluate('''() => {
-            const btns = Array.from(document.querySelectorAll('button'));
-            const todayBtn = btns.find(b => b.innerText && b.innerText.trim() === "امروز");
-            if (todayBtn) todayBtn.click();
-        }''')
-        await asyncio.sleep(1)
-
-        # مرحله ۵: تعداد صفحات — اگر ۱ فایل باشد اسکیپ #incAttach0
-        if page_count > 1:
-            await page.evaluate('''(val) => {
-                const inp = document.querySelector('#txt001');
-                if (inp && !(inp.disabled)) {
-                    inp.value = String(val);
-                    inp.dispatchEvent(new Event("input", { bubbles: true }));
-                    inp.dispatchEvent(new Event("change", { bubbles: true }));
-                }
-            }''', page_count)
-            await asyncio.sleep(1)
-            await page.evaluate('''() => {
-                const btn = document.querySelector('#incAttach0');
-                if (btn && !btn.disabled) btn.click();
-            }''')
+        if ok:
+            logging.info("[CHECK][منضمات] نوع پیوست «تصوير مدرک نمايندگي» انتخاب شد")
             await asyncio.sleep(3)
-        else:
-            logging.info(
-                f"[CHECK][منضمات] مدرک نمایندگی تک‌برگ ({page_count} فایل) — "
-                f"#txt001='1'، #incAttach0 اسکیپ شد")
-            await page.evaluate('''() => {
-                const inp = document.querySelector('#txt001');
-                if (inp) {
-                    inp.value = "1";
-                    inp.dispatchEvent(new Event("input", { bubbles: true }));
-                    inp.dispatchEvent(new Event("change", { bubbles: true }));
-                }
-            }''')
+            await wait_for_angular_idle(page)
             await asyncio.sleep(1)
-
-        return True
+        return ok
 
     return await _default_fill_other_attachment_form(page, doc_title, page_count)
 
