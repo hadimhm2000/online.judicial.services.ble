@@ -752,7 +752,34 @@ test_mode_doc_type_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📝 لایحه"), KeyboardButton(text="📋 اظهارنامه")],
         [KeyboardButton(text="⚖️ دعاوی اعتراضی"), KeyboardButton(text="⚖️ اعلام وکالت")],
+        [KeyboardButton(text="🏦 چک")],
         [KeyboardButton(text="❌ انصراف")],
+    ],
+    resize_keyboard=True
+)
+
+# ⭐ انتخاب زیرمجموعهٔ دعاوی اعتراضی (۷ نوع دعوی) در حالت تست — طبق
+# دستور کارفرما تا مدیر بتواند هرکدام را جداگانه تست کند. لیست دقیقاً با
+# tn_valid_types در test_mode_tn_case_type_handler (handlers.py) مطابقت
+# دارد.
+test_mode_tn_case_type_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="تجدیدنظرخواهی"), KeyboardButton(text="واخواهی")],
+        [KeyboardButton(text="فرجام خواهی"), KeyboardButton(text="اعاده دادرسی مدنی")],
+        [KeyboardButton(text="اعاده دادرسی کیفری"), KeyboardButton(text="اعتراض ثالث")],
+        [KeyboardButton(text="اعتراض به قرار دادسرا")],
+        [KeyboardButton(text="🔙 بازگشت")],
+    ],
+    resize_keyboard=True
+)
+
+# ⭐ انتخاب مسیر ثبت دادخواست چک (دادخواست بدوی / دعاوی حقوقی صلح) در
+# حالت تست — با تطبیق متن در test_mode_check_path_handler (handlers.py).
+test_mode_check_path_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="دادخواست بدوی")],
+        [KeyboardButton(text="دعاوی حقوقی (صلح)")],
+        [KeyboardButton(text="🔙 بازگشت")],
     ],
     resize_keyboard=True
 )
