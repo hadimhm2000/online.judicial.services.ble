@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import {
   Shield, Bell, RefreshCw, Play, Pause, Volume2, VolumeX, MessageSquare,
   FileSpreadsheet, Moon, Sun, Maximize2, Minimize2, Printer, Keyboard,
-  Wifi, WifiOff, Clock, Users,
+  Wifi, WifiOff, Clock, Users, Trash2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -23,6 +23,7 @@ export interface AdminHeaderProps {
   onOpenSheetsPanel: () => void;
   onOpenWorkingHours: () => void;
   onOpenExemptUsers: () => void;
+  onOpenResetData: () => void;
   isOnline: boolean;
   isFullscreen: boolean;
   onToggleFullscreen: () => void;
@@ -58,7 +59,7 @@ function PersianClock() {
 export default function AdminHeader({
   refreshing, onRefresh, autoRefresh, onToggleAutoRefresh,
   isMuted, onToggleMuted, activityCount, onOpenActivity,
-  onOpenBotSender, onOpenSheetsPanel, onOpenWorkingHours, onOpenExemptUsers,
+  onOpenBotSender, onOpenSheetsPanel, onOpenWorkingHours, onOpenExemptUsers, onOpenResetData,
   isOnline, isFullscreen, onToggleFullscreen, onPrint,
   showShortcuts, onSetShowShortcuts, theme, onToggleTheme,
 }: AdminHeaderProps) {
@@ -173,6 +174,16 @@ export default function AdminHeader({
                 title="کاربران معاف از پرداخت"
               >
                 <Users className="h-4 w-4" />
+              </Button>
+
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-9 w-9 p-0 text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/20"
+                onClick={onOpenResetData}
+                title="ریست کامل داده‌ها"
+              >
+                <Trash2 className="h-4 w-4" />
               </Button>
 
               {onToggleTheme && (

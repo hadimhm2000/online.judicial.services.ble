@@ -338,16 +338,22 @@ async def process_ealam_vakalaht_task(data: dict, bot: Bot):
             await _click_step_box(sana_page, "محاسبه و دريافت هزينه", bot, user_id)
             await resilient_sleep(sana_page, 8, bot, user_id)
 
-            court_total = await _calculate_cost_with_retry(sana_page, bot, user_id)
-            logging.info(f"[EALAM] court_total: {court_total}")
+            _ealam_cost_info = await _calculate_cost_with_retry(sana_page, bot, user_id)
+            court_total = _ealam_cost_info.get("final_total", 0)
+            raw_system_cost = _ealam_cost_info.get("raw_amount", 0) or court_total
+            logging.info(f"[EALAM] court_total (نهایی/مارکاپ‌خورده): {court_total}, raw_system_cost: {raw_system_cost}")
 
             # ── گرفتن شناسه پرداخت از بخش هزینه (فقط ذخیره در شیت + پیام به مدیر) ──
+            # ⭐ رفع باگ سود صفر: amount باید هزینهٔ خامِ سامانه باشد (پیش از
+            # فرمول مارکاپ دفتر)، نه court_total که مبلغ نهاییِ دریافتی از
+            # کاربر است — وگرنه در پنل «هزینهٔ سامانه» == «هزینه» می‌شود و
+            # سود همیشه صفر نمایش داده می‌شود.
             from payment_id_capture import capture_and_report_payment_ids
             await capture_and_report_payment_ids(
                 sana_page, bot, user_id,
                 service_name="اعلام وکالت",
                 tracking_code=lavayeh_bill_no or tracking_code,
-                amount=court_total,
+                amount=raw_system_cost,
                 exclude_values=[tracking_code, lavayeh_bill_no],
                 log_prefix="EALAM")
 
@@ -1160,25 +1166,36 @@ async def _click_preparation_with_retry(page, bot: Bot, user_id: int, max_retrie
     return False
 
 
-async def _calculate_cost_with_retry(page, bot: Bot, user_id: int, max_retries: int = 3) -> int:
+async def _calculate_cost_with_retry(page, bot: Bot, user_id: int, max_retries: int = 3) -> dict:
     """محاسبه هزینه اعلام وکالت — پارس جدول هزینه‌ها و محاسبه مبلغ کل.
 
     جدول هزینه شامل ردیف‌هایی با ستون مبلغ و یک ردیف «جمع کل هزینه»
     (با پس‌زمینه سبز) است.
 
     منطق محاسبه:
-      1. استخراج مبلغ جمع کل (costSum) از td.color-green
+      1. استخراج مبلغ جمع کل (costSum) از td.color-green — این همان «هزینهٔ
+         خام سامانه» است (مثل court_total خام لایحه/main_total اظهارنامه).
       2. استخراج مبالغ ردیف‌ها از td.color-red
       3. کم کردن ردیف ۷ (تمبر مالیاتی ماده 103) و ردیف ۸ (تمبر سهم صندوق) از جمع کل
       4. رند بالا به نزدیک‌ترین ۱۰,۰۰۰ ریال
-      5. اعمال فرمول کسر بر اساس بازه مبلغ:
+      5. اعمال فرمول کسر بر اساس بازه مبلغ (همان فرمول مارکاپ دفتر —
+         مشابه calculate_lavayeh_fee):
          - تا ۲,۰۰۰,۰۰۰ ریال → کسر ۱۰۰,۰۰۰ ریال
          - ۲,۰۰۰,۰۰۱ تا ۳,۰۰۰,۰۰۰ → کسر ۲۸۰,۰۰۰ ریال
          - بالای ۳,۰۰۰,۰۰۱ → کسر ۴۰۰,۰۰۰ ریال
-      6. مبلغ نهایی = مبلغ_رند + (مبلغ_رند − کسر)
+      6. مبلغ نهایی (final_total) = مبلغ_رند + (مبلغ_رند − کسر)
 
     اگر جدول بعد از ۳۰ ثانیه نمایش داده نشد، دکمه
     «محاسبه هزینه دادرسی و تعرفه خدمات» کلیک می‌شود.
+
+    ⭐ رفع باگ سود صفر: قبلاً این تابع فقط final_total (مبلغ نهاییِ
+    مارکاپ‌خورده) را برمی‌گرداند و همان مقدار هم به‌عنوان «هزینهٔ دریافتی
+    از کاربر» و هم به‌عنوان «هزینهٔ سامانه» (systemCost) در پنل ثبت
+    می‌شد — در نتیجه سود همیشه صفر محاسبه می‌شد، با اینکه فرمول مارکاپ
+    (مرحلهٔ ۵ و ۶ بالا) واقعاً از کاربر دریافت می‌شود. حالا هم مبلغ خام
+    (raw_amount = costSum، پیش از هرگونه فرمول/کسر) و هم مبلغ نهایی
+    برگردانده می‌شود تا فراخوان بتواند raw_amount را به‌عنوان هزینهٔ
+    سامانه و final_total را به‌عنوان مبلغ دریافتی از کاربر، جداگانه ثبت کند.
     """
     for attempt in range(max_retries):
         await _close_error_popup(page)
@@ -1299,16 +1316,16 @@ async def _calculate_cost_with_retry(page, bot: Bot, user_id: int, max_retries: 
             final_total = rounded + net  # = 2 * rounded - deduction
 
             logging.info(
-                f"[EALAM] محاسبه هزینه: adjusted={adjusted:,} -> rounded={rounded:,}, "
+                f"[EALAM] محاسبه هزینه: costSum(raw)={cost_sum:,}, adjusted={adjusted:,} -> rounded={rounded:,}, "
                 f"deduction={deduction:,}, net={net:,}, final_total={final_total:,}"
             )
 
-            return final_total
+            return {"raw_amount": cost_sum, "final_total": final_total}
 
         await asyncio.sleep(10)
 
     logging.error(f"[EALAM] استخراج مبلغ پس از {max_retries} تلاش ناموفق (user={user_id})")
-    return 0
+    return {"raw_amount": 0, "final_total": 0}
 
 
 async def _print_lavayeh(page, browser_context, bill_no: str, bot: Bot, user_id: int) -> str:
@@ -1318,46 +1335,75 @@ async def _print_lavayeh(page, browser_context, bill_no: str, bot: Bot, user_id:
     if not _code or _code.lower() == "none":
         _code = f"u{user_id}-{int(time.time())}"
     pdf_path = f"ealam_vakalaht_{_code}.pdf"
-    try:
-        async def click_print():
-            await page.evaluate('''() => {
-                const heads = Array.from(document.querySelectorAll('.box h5'));
-                const target = heads.find(el => el.innerText && (
-                    el.innerText.includes("چاپ اوليه") || el.innerText.includes("چاپ اولیه")
-                ));
-                if (target) {
-                    const box = target.closest('.box');
-                    if (box) box.click();
-                }
-            }''')
 
-        async with browser_context.expect_page(timeout=20000) as new_page_info:
-            await click_print()
+    async def click_print():
+        await page.evaluate('''() => {
+            const heads = Array.from(document.querySelectorAll('.box h5'));
+            const target = heads.find(el => el.innerText && (
+                el.innerText.includes("چاپ اوليه") || el.innerText.includes("چاپ اولیه")
+            ));
+            if (target) {
+                const box = target.closest('.box');
+                if (box) box.click();
+            }
+        }''')
 
-        print_page = await new_page_info.value
-        await print_page.wait_for_load_state("load", timeout=30000)
-        await asyncio.sleep(8)
-        await check_and_handle_expiry(print_page, bot, user_id, check_body_text=False)
-        await print_page.pdf(path=pdf_path, format="A4")
-        await print_page.close()
-        if _is_valid_pdf_file(pdf_path):
-            return pdf_path
-        logging.warning(f"[EALAM] PDF چاپ نامعتبر بود؛ فال‌بک صفحه اصلی... (user={user_id})")
-    except Exception as e:
-        logging.error(f"[EALAM] خطا در چاپ: {e}")
+    # ⭐ تا ۲ تلاش: اگر حین چاپ نشست منقضی شود، check_and_handle_expiry
+    # لاگین مجدد را انجام می‌دهد؛ اما چون print_page ممکن است به Offices/Index
+    # ریدایرکت شده باشد (نه سند واقعی)، تلاش دوم صفحه‌ی چاپ را از نو باز
+    # می‌کند تا PDF واقعی گرفته شود — نه بازگشت مستقیم به صفحه‌ی اصلی.
+    last_err = None
+    for attempt in range(1, 3):
+        print_page = None
+        try:
+            async with browser_context.expect_page(timeout=20000) as new_page_info:
+                await click_print()
 
+            print_page = await new_page_info.value
+            await print_page.wait_for_load_state("load", timeout=30000)
+            await asyncio.sleep(8)
+            session_expired = await check_and_handle_expiry(print_page, bot, user_id, check_body_text=False)
+            if session_expired:
+                # نشست تازه تمدید شد — همین print_page دیگر معتبر نیست؛
+                # آن را ببند و با تلاش بعدی از نو صفحه‌ی چاپ را باز کن.
+                try:
+                    await print_page.close()
+                except Exception:
+                    pass
+                print_page = None
+                if attempt < 2:
+                    continue
+            else:
+                await print_page.pdf(path=pdf_path, format="A4")
+                await print_page.close()
+                print_page = None
+                if _is_valid_pdf_file(pdf_path):
+                    return pdf_path
+                logging.warning(f"[EALAM] PDF چاپ نامعتبر بود؛ فال‌بک صفحه اصلی... (user={user_id})")
+        except Exception as e:
+            last_err = e
+            logging.error(f"[EALAM] خطا در چاپ (تلاش {attempt}/2): {e}")
+        finally:
+            if print_page is not None:
+                try:
+                    await print_page.close()
+                except Exception:
+                    pass
+
+    if not _is_valid_pdf_file(pdf_path):
         try:
             await page.pdf(path=pdf_path, format="A4")
         except Exception:
             pass
 
-        try:
-            from bug_reporter import report_bug
-            await report_bug(bot, where="click_print", error=e,
-                             user_id=user_id,
-                             page=getattr(runtime_state, "sana_page", None))
-        except Exception:
-            pass
+        if last_err is not None:
+            try:
+                from bug_reporter import report_bug
+                await report_bug(bot, where="click_print", error=last_err,
+                                 user_id=user_id,
+                                 page=getattr(runtime_state, "sana_page", None))
+            except Exception:
+                pass
 
     if not _is_valid_pdf_file(pdf_path):
         logging.error(f"[EALAM] تولید PDF اعلام وکالت ناموفق بود (user={user_id})")

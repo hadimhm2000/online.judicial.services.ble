@@ -510,7 +510,11 @@ async def _click_preparation(page, bot: Bot, user_id: int, max_retries: int = 3)
             # بررسی خطا
             error_text = await _get_error_text(page)
             if error_text and ("منقضی" in error_text or "ورود" in error_text):
-                await handle_session_expired(page, bot, user_id)
+                # ⭐ رفع باگ: ترتیب آرگومان‌ها اشتباه بود (امضای واقعی تابع:
+                # handle_session_expired(bot, user_id, page=None))؛ با ترتیب
+                # قبلی، page به‌جای bot پاس داده می‌شد و این مسیر به‌جای بازیابی
+                # نشست، با AttributeError کرش می‌کرد.
+                await handle_session_expired(bot, user_id, page=page)
                 continue
             return True
         except Exception as e:
@@ -593,20 +597,30 @@ async def _print_tajdid_nazar(page, browser_context, bill_no: str, bot: Bot, use
     import os
     import time
     pdf_path = ""
-    try:
-        clicked = await page.evaluate('''() => {
-            const btns = Array.from(document.querySelectorAll('button'));
-            const t = btns.find(b => b.innerText.includes("چاپ"));
-            if (t && !t.disabled) { t.click(); return true; }
-            return false;
-        }''')
-        if not clicked:
-            await safe_click_by_text(page, "چاپ", bot, user_id)
-
-        await asyncio.sleep(3)
-
-        new_page = await browser_context.new_page()
+    # ⭐ بررسی نشست پیش از چاپ — اگر منقضی بود، check_and_handle_expiry لاگین
+    # مجدد را انجام می‌دهد (روی صفحه‌ی اصلی page، در تب جداگانه) و سپس
+    # مراحل چاپ از نو روی همان page (اکنون معتبر) تکرار می‌شود.
+    last_err = None
+    for attempt in range(1, 3):
+        new_page = None
         try:
+            try:
+                await check_and_handle_expiry(page, bot, user_id, check_body_text=False)
+            except Exception:
+                pass
+
+            clicked = await page.evaluate('''() => {
+                const btns = Array.from(document.querySelectorAll('button'));
+                const t = btns.find(b => b.innerText.includes("چاپ"));
+                if (t && !t.disabled) { t.click(); return true; }
+                return false;
+            }''')
+            if not clicked:
+                await safe_click_by_text(page, "چاپ", bot, user_id)
+
+            await asyncio.sleep(3)
+
+            new_page = await browser_context.new_page()
             print_url = await page.evaluate('''() => {
                 const links = Array.from(document.querySelectorAll('a'));
                 const t = links.find(a => a.innerText && a.innerText.includes("چاپ"));
@@ -614,21 +628,94 @@ async def _print_tajdid_nazar(page, browser_context, bill_no: str, bot: Bot, use
             }''')
             if not print_url:
                 await new_page.close()
+                new_page = None
                 return ""
 
             await new_page.goto(print_url, wait_until="networkidle", timeout=30000)
             await asyncio.sleep(2)
 
+            # اگر لینک چاپ هم به لاگین ریدایرکت شد (نشست حین این مرحله
+            # منقضی شده)، تلاش دوم را با لاگین مجدد از سر بگیر.
+            session_expired = await check_and_handle_expiry(new_page, bot, user_id, check_body_text=False)
+            if session_expired:
+                await new_page.close()
+                new_page = None
+                if attempt < 2:
+                    continue
+                return ""
+
             pdf_path = f"tn_{bill_no}_{int(time.time())}.pdf"
             await new_page.pdf(path=pdf_path, format="A4", print_background=True)
+            return pdf_path
+
+        except Exception as e:
+            last_err = e
+            logging.error(f"[TN] خطا در چاپ PDF (تلاش {attempt}/2): {e}", exc_info=True)
         finally:
-            await new_page.close()
+            if new_page is not None:
+                try:
+                    await new_page.close()
+                except Exception:
+                    pass
 
-    except Exception as e:
-        logging.error(f"[TN] خطا در چاپ PDF: {e}", exc_info=True)
-        return ""
-
+    if last_err is not None:
+        logging.error(f"[TN] چاپ PDF پس از ۲ تلاش ناموفق بود: {last_err}")
     return pdf_path
+
+
+async def _fill_notice_date_time_robust(sana_page, judge_date: str) -> bool:
+    """پرکردن مقاوم فیلد «تاریخ تنظیم دادنامه/قرار» (name="NoticeDateTime").
+
+    ⭐ نکته (رفع باگ): بعد از کلیک «بازیابی» (#btnGetHst)، سامانه فیلد تاریخ
+    را با name="NoticeDateTime" دوباره می‌سازد. پرکردن ساده با
+    inp.value + دیسپچ رویداد کافی نیست — چون این فیلد persian-datepicker با
+    ng-valid-parse/jud-validator است و بدون digest واقعی AngularJS
+    (scope.$apply + ngModel controller) مقدار در مدل ثبت نمی‌شود و فیلد در
+    حالت ng-invalid-required (has-error) باقی می‌ماند و مانع از ادامه‌ی
+    مرحله می‌شود. این تابع باید در «کلیه‌ی قسمت‌های دعاوی اعتراضی» (هم
+    process_tajdid_nazar_task و هم pre_query_tn_persons) بعد از هر بار
+    کلیک «بازیابی» فراخوانی شود.
+    """
+    filled = await sana_page.evaluate(f'''() => {{
+        let inp = document.querySelector('input[name="NoticeDateTime"]');
+        if (!inp) {{
+            const inps = document.querySelectorAll('input[persian-datepicker-popup]');
+            if (inps.length > 0) inp = inps[0];
+        }}
+        if (!inp) return false;
+
+        inp.value = "{judge_date}";
+        inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
+        inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
+
+        try {{
+            if (typeof angular !== "undefined") {{
+                const scope = angular.element(inp).scope();
+                const ctrl = angular.element(inp).controller("ngModel");
+                if (ctrl) {{
+                    ctrl.$setViewValue("{judge_date}");
+                    ctrl.$render();
+                }}
+                if (scope) {{
+                    scope.$apply(() => {{
+                        const key = inp.getAttribute("ng-model");
+                        if (key) {{
+                            const parts = key.split(".");
+                            let obj = scope;
+                            for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
+                            obj[parts[parts.length - 1]] = "{judge_date}";
+                        }}
+                    }});
+                }}
+            }}
+        }} catch (e) {{}}
+
+        inp.blur();
+        return true;
+    }}''')
+    if not filled:
+        logging.warning("[TN] فیلد تاریخ دادنامه (NoticeDateTime) پس از استعلام پیدا نشد")
+    return bool(filled)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -813,59 +900,18 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                 const btn = document.querySelector('#btnGetHst');
                 if (btn) btn.click();
             }''')
-            await resilient_sleep(sana_page, 8, bot, user_id)
+            # ⭐ صبر ۱۰ ثانیه‌ای + توجه به نوار لودینگ/ریلود بالای صفحه پیش از
+            # ادامه (طبق درخواست: بعد از استعلام دادنامه، ۱۰ ثانیه صبر و به
+            # ریلود بالای صفحه — progress-bar آبی — توجه شود)
+            await resilient_sleep(sana_page, 10, bot, user_id)
+            await wait_for_horizontal_loading_bar(sana_page, bot, user_id, timeout=30)
 
             # پاپ‌آپ ثنا — کلیک خیر
             await _close_popup_sana(sana_page, bot, user_id)
 
             # تاریخ دادنامه (مجدداً در فرم جدید — پس از استعلام/بازیابی)
-            # نکته (رفع باگ): بعد از کلیک «بازیابی» (#btnGetHst)، سامانه فیلد
-            # تاریخ را با name="NoticeDateTime" دوباره می‌سازد. پر کردن قبلی
-            # فقط با inps[0].value + دیسپچ رویداد کافی نبود — چون این فیلد
-            # persian-datepicker با ng-valid-parse/jud-validator است و بدون
-            # digest واقعی AngularJS (scope.$apply + ngModel controller)
-            # مقدار در مدل ثبت نمی‌شد و فیلد در حالت ng-invalid-required
-            # (has-error) باقی می‌ماند و مانع از ادامهٔ مرحله می‌شد.
             await asyncio.sleep(2)
-            filled_notice_date = await sana_page.evaluate(f'''() => {{
-                let inp = document.querySelector('input[name="NoticeDateTime"]');
-                if (!inp) {{
-                    const inps = document.querySelectorAll('input[persian-datepicker-popup]');
-                    if (inps.length > 0) inp = inps[0];
-                }}
-                if (!inp) return false;
-
-                inp.value = "{judge_date}";
-                inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
-                inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
-
-                try {{
-                    if (typeof angular !== "undefined") {{
-                        const scope = angular.element(inp).scope();
-                        const ctrl = angular.element(inp).controller("ngModel");
-                        if (ctrl) {{
-                            ctrl.$setViewValue("{judge_date}");
-                            ctrl.$render();
-                        }}
-                        if (scope) {{
-                            scope.$apply(() => {{
-                                const key = inp.getAttribute("ng-model");
-                                if (key) {{
-                                    const parts = key.split(".");
-                                    let obj = scope;
-                                    for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
-                                    obj[parts[parts.length - 1]] = "{judge_date}";
-                                }}
-                            }});
-                        }}
-                    }}
-                }} catch (e) {{}}
-
-                inp.blur();
-                return true;
-            }}''')
-            if not filled_notice_date:
-                logging.warning("[TN] فیلد تاریخ دادنامه (NoticeDateTime) پس از استعلام پیدا نشد")
+            await _fill_notice_date_time_robust(sana_page, judge_date)
             await asyncio.sleep(1)
 
             # حکم یا قرار + مبلغ + اعسار (فقط برای غیر اعتراض به قرار دادسرا)
@@ -1339,10 +1385,22 @@ async def pre_query_tn_persons(data: dict, bot: Bot, step_name: str) -> list:
         const btn = document.querySelector('#btnGetHst');
         if (btn) btn.click();
     }''')
-    await resilient_sleep(sana_page, 8, bot, user_id)
+    # ⭐ صبر ۱۰ ثانیه‌ای + توجه به نوار لودینگ/ریلود بالای صفحه پیش از ادامه
+    # (همان رفتار در process_tajdid_nazar_task — «کلیه‌ی قسمت‌های دعاوی
+    # اعتراضی» باید یکسان عمل کنند)
+    await resilient_sleep(sana_page, 10, bot, user_id)
+    await wait_for_horizontal_loading_bar(sana_page, bot, user_id, timeout=30)
 
     # پاپ‌آپ ثنا — کلیک خیر
     await _close_popup_sana(sana_page, bot, user_id)
+
+    # تاریخ دادنامه (مجدداً در فرم جدید — پس از استعلام/بازیابی) — طبق
+    # درخواست: تاریخ تنظیم دادنامه باید در «کلیه‌ی قسمت‌های دعاوی اعتراضی»
+    # وارد شود، از جمله این مسیر (استعلام افراد پرونده) که قبلاً فاقد
+    # پرکردن مقاوم بعد از بازیابی بود.
+    await asyncio.sleep(2)
+    await _fill_notice_date_time_robust(sana_page, judge_date)
+    await asyncio.sleep(1)
 
     # ۷. کلیک روی step مورد نظر (تجدیدنظرخواه یا تجدیدنظرخوانده)
     await _click_step_label(sana_page, step_name, bot, user_id)

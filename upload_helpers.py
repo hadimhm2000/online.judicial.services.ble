@@ -68,7 +68,8 @@ from aiogram import Bot
 
 from browser_helpers import (
     resilient_sleep, check_and_handle_expiry, wait_for_angular_idle,
-    soft_click_if_exists, dismiss_expiry_popup)
+    soft_click_if_exists, dismiss_expiry_popup,
+    detect_concurrent_login_popup, check_concurrent_login_all_sections)
 
 # =========================================================
 # تنظیمات
@@ -547,28 +548,6 @@ async def wait_for_loading_bar(
 
     _log(prefix, f"تایم‌اوت نوار لودینگ ({timeout} ثانیه) — cycles_completed={cycles_completed}", 'warning')
     return False
-
-
-async def detect_concurrent_login_popup(page) -> bool:
-    """تشخیص پاپ‌آپ ورود همزمان (concurrent login)."""
-    is_concurrent = await page.evaluate('''() => {
-        const popup = document.querySelector('.sweet-alert.showSweetAlert');
-        if (!popup) return false;
-
-        const errorIcon = popup.querySelector('.sa-icon.sa-error');
-        if (!errorIcon) return false;
-        if (window.getComputedStyle(errorIcon).display === 'none') return false;
-
-        const popupText = popup.innerText || "";
-        const isConcurrent =
-            popupText.includes("رایانه ای دیگر") ||
-            popupText.includes("رایانه ای ديگر") ||
-            (popupText.includes("اعتبار ورود") && popupText.includes("منقضی")) ||
-            popupText.includes("منقضي شده");
-
-        return isConcurrent;
-    }''')
-    return bool(is_concurrent)
 
 
 async def get_and_close_error_popup_text(page) -> Optional[str]:
@@ -2512,20 +2491,7 @@ def build_incomplete_task_entry(
 # =========================================================
 # ۱۳. توابع کمکی عمومی برای تشخیص خطای ورود همزمان در تمام بخش‌ها
 # =========================================================
-
-async def check_concurrent_login_all_sections(page, bot: Bot, user_id: int, prefix: str = "GLOBAL") -> bool:
-    """
-    🔔 طبق فایل توضیحات (خط آخر):
-    «خطای ورود همزمان را به تمام بخش‌های لایحه و اعلام وکالت و اظهارنامه
-     و استعلامات و زیرمجموعه‌های بخش‌های در ثبت اضافه کن»
-
-    این تابع را می‌توان در هر نقطه از سناریوها فراخوانی کرد تا خطای
-    ورود همزمان تشخیص داده شود و به مدیر اطلاع داده شود.
-
-    بازگشت: True اگر خطای ورود همزمان تشخیص داده شد (و مدیریت شد).
-    """
-    if await detect_concurrent_login_popup(page):
-        _log(prefix, "🚨 خطای ورود همزمان تشخیص داده شد — اطلاع به مدیر برای لاگین مجدد", 'error')
-        await check_and_handle_expiry(page, bot, user_id)
-        return True
-    return False
+# ⭐ detect_concurrent_login_popup و check_concurrent_login_all_sections
+# دیگر اینجا تعریف نمی‌شوند — به browser_helpers.py منتقل شدند تا همه‌ی
+# بخش‌ها (نه فقط آپلود) از یک نسخه‌ی واحد استفاده کنند؛ در بالای فایل
+# import می‌شوند.

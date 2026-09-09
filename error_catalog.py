@@ -32,6 +32,10 @@ SIGN_ALREADY_SENT = "sign_already_sent"
 SIGN_SUCCESS = "sign_success"
 RECOVERY_SUCCESS = "recovery_success"
 
+# کدرهگیری معتبر است اما متعلق به نوع سند دیگری است (مثلاً اظهارنامه) و در
+# این فرم/بخش قابل بازیابی نیست
+WRONG_FORM_TRACKING_CODE = "wrong_form_tracking_code"
+
 UPLOAD_PAGE_COUNT = "upload_page_count"
 UPLOAD_FILE_SIZE = "upload_file_size"
 UPLOAD_FILE_TYPE = "upload_file_type"
@@ -82,6 +86,12 @@ CATALOG = [
     ]),
     (SIGN_ALREADY_SENT, [
         "10 دقیقه", "۱۰ دقیقه",
+    ]),
+    # ⚠️ باید پیش از RECOVERY_SUCCESS بررسی شود چون این پیام هم شامل واژه‌ی
+    # عمومی «بازیابی» است («... قابل بازیابی در این فرم نیست»)
+    (WRONG_FORM_TRACKING_CODE, [
+        "قابل بازیابی در این فرم نیست",
+        "قابل بازیابی در این فرم نمی باشد",
     ]),
     (RECOVERY_SUCCESS, [
         "بازیابی اظهارنامه با موفقیت", "بازیابی",
@@ -244,6 +254,7 @@ def describe(text) -> str:
         SIGN_ALREADY_SENT: "کد قبلاً ارسال شده",
         SIGN_SUCCESS: "امضای موفق",
         RECOVERY_SUCCESS: "بازیابی موفق",
+        WRONG_FORM_TRACKING_CODE: "کدرهگیری متعلق به فرم/نوع سند دیگر",
         UPLOAD_PAGE_COUNT: "خطای تعداد صفحات",
         UPLOAD_FILE_SIZE: "خطای حجم فایل",
         UPLOAD_FILE_TYPE: "خطای نوع فایل",
