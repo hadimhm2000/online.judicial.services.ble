@@ -768,6 +768,7 @@ async def _enter_code_and_sign(
     """
     attempt = 0
     expiry_retries = 0
+    last_popup_result = None  # ⭐ برای گزارش محافظه‌کارانه‌تر «max_attempts» پایین نگه داشته می‌شود
     while attempt < 3 and expiry_retries < 2:
         filled = await page.evaluate(f'''(args) => {{
             const idx = args.idx;
@@ -854,6 +855,7 @@ async def _enter_code_and_sign(
             continue
         else:
             await _close_any_popup(page)
+            last_popup_result = popup_result
             logging.warning(f"[EZHHAR_SIGN] امضای ردیف {row_idx} ناموفق: {popup_result} (تلاش {attempt+1})")
 
             clicked_sign = await _click_sign_section(page)
@@ -870,7 +872,16 @@ async def _enter_code_and_sign(
             await asyncio.sleep(6)
             attempt += 1
 
-    return {"success": False, "error": "max_attempts"}
+    # ⭐ رفع باگ «ناموفق کاذب»: قبلاً این نقطه فقط «max_attempts» برمی‌گرداند و
+    # متن واقعی آخرین پاپ‌آپ سیستم به‌کلی گم می‌شد — یعنی حتی اگر پیام سیستم
+    # چیزی خنثی/idempotent (نه یک خطای واقعی) بود، به کاربر/مدیر فقط «ناموفق»
+    # نشان داده می‌شد. حالا متن خام آخرین پاپ‌آپ (در صورت وجود) هم در
+    # raw_message برگردانده می‌شود تا در پیام به مدیر قابل بررسی باشد.
+    logging.error(
+        f"[EZHHAR_SIGN] امضای ردیف {row_idx} پس از {attempt} تلاش ناموفق ماند. "
+        f"آخرین پاپ‌آپ: {last_popup_result}"
+    )
+    return {"success": False, "error": "max_attempts", "raw_message": last_popup_result}
 
 
 async def _wait_for_sign_popup(page, bot: Bot = None, user_id: int = None, timeout_sec: int = 55) -> str:
@@ -902,6 +913,15 @@ async def _wait_for_sign_popup(page, bot: Bot = None, user_id: int = None, timeo
             const isErrorVisible = errorIcon &&
                 window.getComputedStyle(errorIcon).display !== "none";
 
+            // ⭐ رفع باگ «ناموفق کاذب»: امضا در سامانه ثنا ثبت نشده —
+            // «امضای شخص ... در سامانه ثنا درج نشده است» — این پیام هرگز در
+            // حالت موفق ظاهر نمی‌شود، پس صرف‌نظر از وضعیت آیکون (isErrorVisible)
+            // بررسی می‌شود؛ قبلاً این بررسی فقط داخل شاخهٔ isErrorVisible بود و
+            // اگر آیکون خطا به هر دلیل visible تشخیص داده نمی‌شد (مثلاً تاخیر در
+            // رندر CSS)، این حالت به‌جای «amضای ثبت‌نشده» به‌عنوان «ناموفق کلی»
+            // گزارش می‌شد. (مطابق الگوی lavayeh_sign_scenario.py::_wait_for_sign_popup)
+            if (text.includes("در سامانه ثنا درج نشده")) return "sana_not_registered";
+
             if (isSuccessVisible) return "success";
 
             // هشدار ولی واقعاً موفق — "امضاء « name » در صفحه ی چاپ درج شده است"
@@ -917,15 +937,16 @@ async def _wait_for_sign_popup(page, bot: Bot = None, user_id: int = None, timeo
                 if (text.includes("رمز موقت نادرست") || text.includes("نادرست")) {
                     return "wrong_code";
                 }
-                // تشخیص خطای "امضای شخص ... در سامانه ثنا درج نشده است"
-                if (text.includes("در سامانه ثنا درج نشده")) {
-                    return "sana_not_registered";
-                }
                 // تاخیر در اجرای سرویس — باید بستن پاپ‌آپ و تکرار همان مرحله
                 if (text.includes("تاخیر") || text.includes("تأخیر")) {
                     return "service_delay";
                 }
-                return "error";
+                // ⭐ محافظه‌کارتر شدن catch-all: به‌جای گزارش صرف «error»،
+                // متن واقعی پاپ‌آپ هم برگردانده می‌شود تا اگر پیامی بود که
+                // در دسته‌های بالا شناسایی نشد (مثلاً پیام موفقیت/idempotent
+                // ناشناخته‌ای که سامانه ثنا بعداً اضافه کند)، لاگ و پیام ادمین
+                // متن واقعی سیستم را نشان دهد، نه فقط برچسب مبهم «ناموفق».
+                return "error:" + text.slice(0, 300);
             }
             return null;
         }''')

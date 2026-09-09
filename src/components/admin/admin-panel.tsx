@@ -16,7 +16,7 @@ import {
   Search, Download, Filter,
   LayoutDashboard, FileCheck2, FileWarning, CreditCard, Send, AlertTriangle, ListChecks, XCircle, Activity,
   ChevronDown, ChevronLeft, CalendarDays, ArrowUp, Zap, ClipboardCheck, Check, Paperclip,
-  Settings, Users, FileSpreadsheet, Printer, Keyboard, Sun, Moon, MessageSquare,
+  Settings, Users, FileSpreadsheet, Printer, Keyboard, Sun, Moon, MessageSquare, Trash2, Clock,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
@@ -197,6 +197,7 @@ export default function AdminPanel() {
   const [batchConfirmDone, setBatchConfirmDone] = useState(false);
   const [workingHoursOpen, setWorkingHoursOpen] = useState(false);
   const [exemptUsersOpen, setExemptUsersOpen] = useState(false);
+  const [resetDataOpen, setResetDataOpen] = useState(false);
 
   useNotificationListener(
     stats?.failed || 0,
@@ -546,6 +547,7 @@ export default function AdminPanel() {
         onOpenSheetsPanel={() => setSheetsPanelOpen(true)}
         onOpenWorkingHours={() => setWorkingHoursOpen(true)}
         onOpenExemptUsers={() => setExemptUsersOpen(true)}
+        onOpenResetData={() => setResetDataOpen(true)}
         isOnline={isOnline}
         isFullscreen={isFullscreen}
         onToggleFullscreen={toggleFullscreen}
@@ -896,6 +898,8 @@ export default function AdminPanel() {
         sheetsPanelOpen={sheetsPanelOpen} onSheetsPanelClose={() => setSheetsPanelOpen(false)}
         workingHoursOpen={workingHoursOpen} onWorkingHoursClose={() => setWorkingHoursOpen(false)}
         exemptUsersOpen={exemptUsersOpen} onExemptUsersClose={() => setExemptUsersOpen(false)}
+        resetDataOpen={resetDataOpen} onResetDataClose={() => setResetDataOpen(false)}
+        onResetDataDone={() => { fetchStats(); fetchCases(); setSelectedIds(new Set()); }}
       />
 
       <PageDialogs
@@ -932,6 +936,7 @@ export default function AdminPanel() {
         { id: 'google-sheets', label: 'همگام‌سازی گوگل شیت', icon: FileSpreadsheet, group: 'تنظیمات', onSelect: () => setSheetsPanelOpen(true) },
         { id: 'working-hours', label: 'ساعات کاری', icon: Clock, group: 'تنظیمات', onSelect: () => setWorkingHoursOpen(true) },
         { id: 'exempt-users', label: 'کاربران معاف', icon: Users, group: 'تنظیمات', onSelect: () => setExemptUsersOpen(true) },
+        { id: 'reset-data', label: 'ریست کامل داده‌ها', icon: Trash2, group: 'تنظیمات', onSelect: () => setResetDataOpen(true) },
       ] as CommandAction[]} />
 
       {showBackToTop && (

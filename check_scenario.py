@@ -3260,45 +3260,74 @@ async def _print_check(page, browser_context, bill_no: str, bot: Bot, user_id: i
     را باید برای کاربر ارسال کرد. خطا و الگوهای چاپ از بخش اظهارنامه
     برداشته شده است (کلیک باکس → expect_page → PDF → بستن صفحهٔ جدید).
     """
+    from lavayeh_scenario import _is_valid_pdf_file
     pdf_path = f"check_{bill_no or user_id}_{int(time.time())}.pdf"
-    try:
-        async def click_print():
-            await page.evaluate('''() => {
-                const heads = Array.from(document.querySelectorAll('.box h5'));
-                const t = heads.find(el => el.innerText && (
-                    el.innerText.includes("چاپ اوليه") || el.innerText.includes("چاپ اولیه")
-                ));
-                if (t) {
-                    const box = t.closest('.box');
-                    if (box) box.click();
-                }
-            }''')
 
-        async with browser_context.expect_page(timeout=25000) as new_page_info:
-            await click_print()
+    async def click_print():
+        await page.evaluate('''() => {
+            const heads = Array.from(document.querySelectorAll('.box h5'));
+            const t = heads.find(el => el.innerText && (
+                el.innerText.includes("چاپ اوليه") || el.innerText.includes("چاپ اولیه")
+            ));
+            if (t) {
+                const box = t.closest('.box');
+                if (box) box.click();
+            }
+        }''')
 
-        print_page = await new_page_info.value
-        await print_page.wait_for_load_state("load", timeout=30000)
-        await asyncio.sleep(8)
-        # بررسی انقضا روی صفحهٔ چاپ — بدون ریسک ری‌استارت کل تسکِ ثبت‌شده
+    # ⭐ تا ۲ تلاش: اگر حین چاپ نشست منقضی شود، check_and_handle_expiry لاگین
+    # مجدد را انجام می‌دهد؛ چون print_page ممکن است به Offices/Index
+    # ریدایرکت شده باشد (نه سند واقعی)، تلاش دوم صفحه‌ی چاپ را از نو باز
+    # می‌کند تا PDF واقعی گرفته شود.
+    last_err = None
+    for attempt in range(1, 3):
+        print_page = None
         try:
-            await check_and_handle_expiry(print_page, bot, user_id, check_body_text=False)
-        except Exception:
-            pass
-        await print_page.pdf(path=pdf_path, format="A4")
-        logging.info(f"[CHECK] PDF چاپ اولیه ذخیره شد: {pdf_path}")
-        try:
-            await print_page.close()
-        except Exception:
-            pass
-        return pdf_path
+            async with browser_context.expect_page(timeout=25000) as new_page_info:
+                await click_print()
 
-    except Exception as e:
-        logging.error(f"[CHECK] خطا در چاپ PDF: {e}")
+            print_page = await new_page_info.value
+            await print_page.wait_for_load_state("load", timeout=30000)
+            await asyncio.sleep(8)
+            session_expired = False
+            try:
+                session_expired = await check_and_handle_expiry(print_page, bot, user_id, check_body_text=False)
+            except Exception:
+                pass
+            if session_expired:
+                try:
+                    await print_page.close()
+                except Exception:
+                    pass
+                print_page = None
+                if attempt < 2:
+                    continue
+            else:
+                await print_page.pdf(path=pdf_path, format="A4")
+                logging.info(f"[CHECK] PDF چاپ اولیه ذخیره شد: {pdf_path}")
+                try:
+                    await print_page.close()
+                except Exception:
+                    pass
+                print_page = None
+                if _is_valid_pdf_file(pdf_path):
+                    return pdf_path
+                logging.warning(f"[CHECK] PDF چاپ نامعتبر بود (تلاش {attempt}/2)")
+        except Exception as e:
+            last_err = e
+            logging.error(f"[CHECK] خطا در چاپ PDF (تلاش {attempt}/2): {e}")
+        finally:
+            if print_page is not None:
+                try:
+                    await print_page.close()
+                except Exception:
+                    pass
+
+    if last_err is not None:
         try:
             from bug_reporter import report_bug
-            await report_bug(bot, where="check_print", error=e,
+            await report_bug(bot, where="check_print", error=last_err,
                              user_id=user_id, page=page)
         except Exception:
             pass
-        return ""
+    return pdf_path if _is_valid_pdf_file(pdf_path) else ""

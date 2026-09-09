@@ -26,6 +26,7 @@ from aiogram.types import (
 import runtime_state
 from bale_file_sender import send_document_direct
 from config import ADMIN_ID, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, REGIONAL_VALUE_FEE
+from exempt_users import is_exempt_user
 from keyboards import back_only_kb, get_main_menu_kb
 from panel_sync import register_case_to_panel, update_case_in_panel
 from states import Form
@@ -212,6 +213,13 @@ async def process_land_use(message: Message, state: FSMContext, bot: Bot):
     # wait=True: به case_id برگشتی برای آپدیت‌های بعدی نیاز داریم —
     # (این تنها نقطه‌ای است که منتظر پنل می‌مانیم؛ بقیه عملیات پنل پس‌زمینه است)
     data_so_far = await state.get_data()
+    # ⭐ رفع باگ: هزینه/cost پرونده‌هایی که با آیدی ادمین ثبت می‌شوند باید
+    # همیشه صفر باشد — قبلاً fee همیشه با REGIONAL_VALUE_FEE ثبت می‌شد و فقط
+    # feeStatus بعداً روی MANUAL_APPROVED تنظیم می‌شد (نه خودِ مبلغ fee)، پس
+    # هزینه‌ی غیرصفر برای ادمین در پنل باقی می‌ماند. از exempt_users.is_exempt_user
+    # استفاده می‌شود تا هر سه منبع معافیت (ADMIN_ID، لیست هاردکد، جدول
+    # ExemptUser پنل) یکسان اعمال شوند — نه فقط مقایسه‌ی مستقیم ADMIN_ID.
+    is_exempt = await is_exempt_user(message.from_user.id)
     try:
         case = await register_case_to_panel(
             bale_user_id=message.from_user.id,
@@ -220,8 +228,8 @@ async def process_land_use(message: Message, state: FSMContext, bot: Bot):
             status="PENDING_PAYMENT",
             document_category="ارزش منطقه‌ای",
             province=data_so_far.get("rv_province", ""),
-            fee=REGIONAL_VALUE_FEE,
-            fee_status="UNPAID",
+            fee=0 if is_exempt else REGIONAL_VALUE_FEE,
+            fee_status="MANUAL_APPROVED" if is_exempt else "UNPAID",
             wait=True,
         )
         panel_case_id = case.get("id") if case else None
@@ -230,8 +238,8 @@ async def process_land_use(message: Message, state: FSMContext, bot: Bot):
     except Exception as panel_err:
         logger.warning(f"[RV] خطا در ثبت اولیه پرونده در پنل: {panel_err}")
 
-    # ═══ معافیت ادمین از پرداخت ═══
-    if message.from_user.id == ADMIN_ID:
+    # ═══ معافیت ادمین/کاربران معاف از پرداخت ═══
+    if is_exempt:
         await message.answer(
             "✅ *معافیت از پرداخت (ادمین)*\n\n"
             "در حال استعلام ارزش منطقه‌ای...",
@@ -315,13 +323,16 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
     area = data.get("rv_area", 0)
     land_use = data.get("rv_land_use", "مسکونی")
     panel_case_id = data.get("rv_panel_case_id")
-    is_admin_exempt_early = (user_id == ADMIN_ID)
+    is_admin_exempt_early = await is_exempt_user(user_id)
 
     try:
+        # ⭐ همراه با feeStatus، خودِ fee هم صفر می‌شود تا هزینه‌ی نمایش‌داده‌شده
+        # در پنل برای پرونده‌های ثبت‌شده با آیدی ادمین همیشه صفر بماند.
         await update_case_in_panel(
             panel_case_id,
             status="PROCESSING",
             feeStatus="MANUAL_APPROVED" if is_admin_exempt_early else "PAID",
+            fee=0 if is_admin_exempt_early else REGIONAL_VALUE_FEE,
         )
     except Exception as panel_err:
         logger.warning(f"[RV] خطا در آپدیت پرداخت پرونده در پنل: {panel_err}")
@@ -478,7 +489,7 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
         # ── اطلاع به ادمین ──
         try:
             import datetime
-            is_admin_exempt = (user_id == ADMIN_ID)
+            is_admin_exempt = await is_exempt_user(user_id)
             fee_line = "معاف از پرداخت (ادمین)" if is_admin_exempt else f"{REGIONAL_VALUE_FEE:,} تومان"
             title = "🆓 استعلام ارزش منطقه‌ای (معاف - ادمین)" if is_admin_exempt else "💰 پرداخت ارزش منطقه‌ای"
             await bot.send_message(

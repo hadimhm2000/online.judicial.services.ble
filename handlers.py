@@ -29,7 +29,8 @@ from sheets import append_to_sheet, log_event
 from api_direct import (
     fast_pre_check, FastCheckError, SessionExpiredError as FastSessionExpiredError,
     PetitionNotFoundError as FastPetitionNotFoundError,
-    InvalidTrackingCodeError as FastInvalidTrackingCodeError)
+    InvalidTrackingCodeError as FastInvalidTrackingCodeError,
+    WrongFormTrackingCodeError as FastWrongFormTrackingCodeError)
 from keyboards import (
     restart_kb, accept_rules_kb, flow_type_kb, get_flow_type_kb, get_main_menu_kb, main_menu_kb, doc_category_kb,
     attachments_kb, cart_kb, pay_kb, confirm_single_kb, confirm_cart_kb, bulk_inquiry_confirm_kb,
@@ -1168,6 +1169,86 @@ async def process_tracking_code(message: types.Message, state: FSMContext):
     await message.answer("مربوط به کدام دسته است؟", reply_markup=doc_category_kb)
     await state.set_state(Form.waiting_for_doc_category)
 
+@router.message(Form.waiting_for_corrected_tracking_code)
+async def process_corrected_tracking_code(message: types.Message, state: FSMContext):
+    """مصرف‌کننده‌ی فرصت رایگان اصلاح کدرهگیری بعد از خطای «کدرهگیری نامعتبر»
+    یا «کدرهگیری متعلق به فرم دیگر» — طی مهلت INVALID_TRACKING_RETRY_MINUTES
+    دقیقه‌ای، بدون نیاز به پرداخت مجدد (job از روی template_job بازسازی و
+    مستقیماً در صف قرار می‌گیرد، بدون عبور از مسیر فاکتور/پرداخت)."""
+    if not message.text:
+        return
+    user_id = message.from_user.id
+
+    if "انصراف" in message.text or message.text == "🔙 بازگشت":
+        runtime_state.invalid_tracking_retry.pop(user_id, None)
+        await message.answer(
+            "❌ فرصت اصلاح لغو شد.\nدر صورت نیاز، لطفاً مجدداً از منوی اصلی اقدام فرمایید.",
+            reply_markup=get_main_menu_kb(user_id)
+        )
+        await state.set_state(Form.main_menu)
+        return
+
+    info = runtime_state.invalid_tracking_retry.get(user_id)
+    if not info:
+        await message.answer(
+            "⚠️ فرصت اصلاح یافت نشد یا قبلاً استفاده شده است.\nلطفاً از منوی اصلی مجدداً اقدام فرمایید.",
+            reply_markup=get_main_menu_kb(user_id)
+        )
+        await state.set_state(Form.main_menu)
+        return
+
+    if datetime.datetime.now() > info["expires_at"]:
+        runtime_state.invalid_tracking_retry.pop(user_id, None)
+        await message.answer(
+            f"⏰ بازه‌ی {runtime_state.INVALID_TRACKING_RETRY_MINUTES} دقیقه‌ای فرصت رایگان به پایان رسیده است.\n"
+            f"برای ادامه لازم است مجدداً از منوی اصلی و با پرداخت هزینه اقدام فرمایید.",
+            reply_markup=get_main_menu_kb(user_id)
+        )
+        await state.set_state(Form.main_menu)
+        return
+
+    clean_code = message.text.translate(
+        str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
+    ).replace(" ", "").strip()
+    if not re.match(r'^[0-9]+$', clean_code):
+        await message.answer("⚠️ فرمت نامعتبر است. فقط کدرهگیری (عدد) ارسال کنید:")
+        return
+    if not _is_valid_tracking_code(clean_code):
+        await message.answer(
+            "⚠️ کد رهگیری نامعتبر است.\n"
+            "کد رهگیری باید ۱۶ رقم باشد و با یکی از سال‌های ۱۳۹۴ تا ۱۴۰۶ (یعنی اعداد ۱۳۹۴۲۲۰ الی ۱۴۰۶۲۲۰) شروع شود.\n"
+            "لطفاً کد را دوباره بررسی و ارسال فرمایید:"
+        )
+        return
+
+    template_job = dict(info.get("template_job") or {})
+    template_job["user_id"] = user_id
+    template_job["tracking_code"] = clean_code
+
+    remaining = info.get("remaining", 1) - 1
+    queue_position = runtime_state.job_queue.qsize()
+    queue_note = f"\n📊 موقعیت شما در صف: {queue_position + 1}" if queue_position > 0 else "\n▶️ پردازش بلافاصله آغاز می‌شود."
+
+    if remaining > 0:
+        info["remaining"] = remaining
+        runtime_state.invalid_tracking_retry[user_id] = info
+        await message.answer(
+            f"✅ کدرهگیری اصلاح‌شده دریافت شد و بدون پرداخت مجدد در صف پردازش قرار گرفت.\n"
+            f"📋 کدرهگیری: {clean_code}{queue_note}\n\n"
+            f"لطفاً کدرهگیری اصلاح‌شده‌ی بعدی را ارسال نمایید ({remaining} مورد باقی‌مانده):"
+        )
+    else:
+        runtime_state.invalid_tracking_retry.pop(user_id, None)
+        await message.answer(
+            f"✅ کدرهگیری اصلاح‌شده دریافت شد و بدون پرداخت هزینه‌ی مجدد در صف پردازش قرار گرفت.\n"
+            f"📋 کدرهگیری: {clean_code}{queue_note}",
+            reply_markup=restart_kb
+        )
+        await state.clear()
+
+    await runtime_state.job_queue.put(template_job)
+
+
 @router.message(Form.waiting_for_doc_category)
 async def process_doc_category(message: types.Message, state: FSMContext):
     category = message.text
@@ -1259,6 +1340,22 @@ async def process_attachments_opt(message: types.Message, state: FSMContext):
                 remaining = MAX_INQUIRY_ATTEMPTS - attempts
                 await message.answer(
                     f"❌ کدرهگیری یا نوع خدمت را اشتباه وارد نموده‌اید.\n\n"
+                    f"⚠️ لطفاً کدرهگیری و نوع سند خود را بررسی کنید.\n"
+                    f"(تلاش {attempts} از {MAX_INQUIRY_ATTEMPTS})")
+            return
+        except FastWrongFormTrackingCodeError as e:
+            attempts = _record_failed_inquiry(message.from_user.id)
+            if attempts >= MAX_INQUIRY_ATTEMPTS:
+                await message.answer(
+                    f"❌ {str(e)}\n\n"
+                    f"⚠️ *تعداد دفعات تلاش شما به حداکثر ({MAX_INQUIRY_ATTEMPTS} بار) رسیده است.*\n\n"
+                    f"لطفاً کدرهگیری و نوع سند (لایحه، اظهارنامه، شکواییه و ...) را به‌دقت بررسی فرمایید و مجدداً از منوی اصلی شروع کنید.",
+                    reply_markup=get_main_menu_kb(message.from_user.id))
+                await state.clear()
+            else:
+                remaining = MAX_INQUIRY_ATTEMPTS - attempts
+                await message.answer(
+                    f"❌ {str(e)}\n\n"
                     f"⚠️ لطفاً کدرهگیری و نوع سند خود را بررسی کنید.\n"
                     f"(تلاش {attempts} از {MAX_INQUIRY_ATTEMPTS})")
             return

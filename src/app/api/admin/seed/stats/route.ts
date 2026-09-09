@@ -2,6 +2,7 @@ import { db } from '@/lib/db';
 import { NextResponse } from 'next/server';
 
 // ⭐ v1.3 — محاسبهٔ سود
+// ⭐ v1.5 — رفع باگ سود صفر برای اعلام وکالت + فرمول اختصاصی اظهارنامه
 //
 // قاعدهٔ کارفرما:
 //   ۱) استعلام‌ها (INQUIRY / REGIONAL_VALUE) و خدمات بدون هزینهٔ سامانه
@@ -9,11 +10,18 @@ import { NextResponse } from 'next/server';
 //   ۲) سایر خدمات: سود = مبلغ اعلام‌شده به کاربر (fee) − هزینهٔ سامانه (systemCost).
 //      - systemCost برای پرونده‌های جدید دقیقاً از ربات (payment_id_capture) ثبت می‌شود.
 //      - برای پرونده‌های قدیمی، از فرمول‌های قیمت‌گذاری ربات برمی‌گردیم:
-//        * CHECK / TAJDID_NAZAR / EALAM_VAKALAHT: کاربر دقیقاً هزینهٔ سامانه را می‌پردازد
-//          (skip_fee_calc) → هزینهٔ سامانه = fee → سود ۰.
-//        * LAVAYEH / EZHHARNAMEH: fee = 2×roundUp(هزینهٔ سامانه) − کسرِ پلکانی
+//        * CHECK / TAJDID_NAZAR: کاربر دقیقاً هزینهٔ سامانه را می‌پردازد
+//          (skip_fee_calc، بدون فرمول مارکاپ) → هزینهٔ سامانه = fee → سود ۰.
+//        * LAVAYEH: fee = 2×roundUp1000(هزینهٔ سامانه) − کسرِ پلکانی
 //          (۱۰۰ / ۲۸۰ / ۴۰۰ هزار ریال) → با وارون‌سازی فرمول، هزینهٔ سامانه
 //          بازسازی می‌شود (خطای حداکثر <۱۰۰۰ ریال).
+//        * EZHHARNAMEH: فرمول متفاوتی دارد (net = mainTotal − ۳ ردیف
+//          کسرشونده؛ rounded = roundUp10k(net)؛ final = roundUp10k(rounded
+//          + ۴۵۰,۰۰۰ + mainTotal)) — استفاده از فرمول لایحه برای این سرویس
+//          نادرست است، بنابراین وارون‌سازی جداگانه‌ای دارد.
+//        * EALAM_VAKALAHT: از v1.5 دیگر pass-through نیست — ربات از همان
+//          فرمول کسرِ پلکانی لایحه (روی مبلغ خامِ سامانه) برای محاسبهٔ مبلغ
+//          نهایی استفاده می‌کند، پس وارون‌سازی مشابه لایحه به‌کار می‌رود.
 //
 // شرایط شمارش: مثل «درآمد» فقط پرونده‌های PAID / MANUAL_APPROVED.
 
@@ -29,11 +37,27 @@ const NO_SYSTEM_COST_SERVICES = new Set([
 ]);
 
 // سرویس‌هایی که کاربر دقیقاً هزینهٔ سامانه را می‌پردازد — سود ۰
+// ⭐ v1.5: EALAM_VAKALAHT از این لیست حذف شد — ربات از v1.5 مارکاپ واقعی
+// روی این سرویس اعمال می‌کند (رجوع کنید به ealam_vakalaht_scenario.py)،
+// بنابراین دیگر pass-through نیست.
 const PASS_THROUGH_SERVICES = new Set([
   'CHECK',
   'TAJDID_NAZAR',
-  'EALAM_VAKALAHT',
 ]);
+
+// وارون‌سازی فرمول کسرِ پلکانی لایحه/اعلام وکالت (روی مبلغ به تومان):
+//   fee_toman = 2×rounded_toman − ded_toman
+//   کسرهای پلکانی: ۱۰,۰۰۰ / ۲۸,۰۰۰ / ۴۰,۰۰۰ تومان (۱۰۰/۲۸۰/۴۰۰ هزار ریال)
+function invertLavayehStyleFormula(fee: number): number {
+  const r1 = (fee + 10_000) / 2;
+  if (r1 > 0 && r1 <= 200_000 && r1 % 100 === 0) return r1;
+  const r2 = (fee + 28_000) / 2;
+  if (r2 > 200_000 && r2 <= 300_000 && r2 % 100 === 0) return r2;
+  const r3 = (fee + 40_000) / 2;
+  if (r3 > 300_000 && r3 % 100 === 0) return r3;
+  // حالت‌های خاص (معاف/دستی): تقریب نصف مبلغ
+  return Math.round(fee / 2);
+}
 
 function estimateSystemCost(serviceType: string, fee: number, recordedCost: number | null): number {
   // ⭐ fee و systemCost از v1.4 به بعد هر دو به «تومان» هستند (مثل استعلام‌ها).
@@ -56,19 +80,27 @@ function estimateSystemCost(serviceType: string, fee: number, recordedCost: numb
     return fee;
   }
 
-  if (serviceType === 'LAVAYEH' || serviceType === 'EZHHARNAMEH') {
-    // وارون‌سازی فرمول (به تومان):
-    //   fee_rial = 2×rounded_rial − ded_rial
-    //   ⟹  fee_toman = 2×rounded_toman − ded_toman
-    //   کسرهای پلکانی: ۱۰,۰۰۰ / ۲۸,۰۰۰ / ۴۰,۰۰۰ تومان (۱۰۰/۲۸۰/۴۰۰ هزار ریال)
-    const r1 = (fee + 10_000) / 2;
-    if (r1 > 0 && r1 <= 200_000 && r1 % 100 === 0) return r1;
-    const r2 = (fee + 28_000) / 2;
-    if (r2 > 200_000 && r2 <= 300_000 && r2 % 100 === 0) return r2;
-    const r3 = (fee + 40_000) / 2;
-    if (r3 > 300_000 && r3 % 100 === 0) return r3;
-    // حالت‌های خاص (معاف/دستی): تقریب نصف مبلغ
-    return Math.round(fee / 2);
+  // LAVAYEH و EALAM_VAKALAHT هر دو دقیقاً از فرمول کسرِ پلکانی
+  // calculate_lavayeh_fee استفاده می‌کنند (رجوع کنید به config.py و
+  // ealam_vakalaht_scenario.py::_calculate_cost_with_retry).
+  if (serviceType === 'LAVAYEH' || serviceType === 'EALAM_VAKALAHT') {
+    return invertLavayehStyleFormula(fee);
+  }
+
+  if (serviceType === 'EZHHARNAMEH') {
+    // ⭐ فرمول اظهارنامه با لایحه فرق دارد.
+    // رجوع کنید به ezhharnameh_scenario.py::_calculate_cost():
+    //   net = mainTotal − excluded_sum (۳ ردیف کسرشونده)
+    //   rounded = roundUp10k(net)
+    //   final = roundUp10k(rounded + ۴۵۰,۰۰۰ + mainTotal)
+    // چون excluded_sum برای پرونده‌های قدیمی در دسترس نیست، این یک
+    // برآورد تقریبی است (با فرض excluded_sum ≈ ۰ و صرف‌نظر از رندها):
+    //   final ≈ ۲×mainTotal + ۴۵۰,۰۰۰  (ریال)  ⟹  mainTotal ≈ (final − ۴۵۰,۰۰۰) / ۲
+    // به تومان: mainTotal_toman ≈ (fee_toman − ۴۵,۰۰۰) / ۲
+    // خطای این برآورد می‌تواند از وارون‌سازی لایحه بیشتر باشد — برای
+    // پرونده‌های جدید systemCost همیشه دقیق از ربات ثبت می‌شود.
+    const approx = (fee - 45_000) / 2;
+    return approx > 0 ? Math.round(approx) : 0;
   }
 
   return 0;

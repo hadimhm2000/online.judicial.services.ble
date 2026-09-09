@@ -23,6 +23,7 @@ import aiohttp
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 import runtime_state
+import error_catalog
 from browser_helpers import force_click_by_text, is_login_redirect_url
 from config import FEES
 
@@ -50,6 +51,12 @@ class PetitionNotFoundError(FastCheckError):
 
 
 class InvalidTrackingCodeError(FastCheckError):
+    pass
+
+
+class WrongFormTrackingCodeError(FastCheckError):
+    """کدرهگیری معتبر است اما متعلق به نوع سند دیگری است و در این فرم
+    قابل بازیابی نیست (متن واقعی سامانه در پیام استثنا قرار می‌گیرد)."""
     pass
 
 
@@ -325,21 +332,29 @@ async def _do_page_check(tracking_code, category, subcategory, user_id, bot) -> 
         await _wait_for_loading(page, timeout=45)
         await _dismiss_error_and_retry(page)
 
-        # ── بررسی خطای «کد رهگیری معتبر نیست» ────────────────────
-        invalid_code_popup = await page.evaluate('''() => {
+        # ── بررسی خطای «کد رهگیری معتبر نیست» / «متعلق به فرم دیگر» ────
+        popup_text = await page.evaluate('''() => {
             const popup = document.querySelector('.sweet-alert.showSweetAlert');
-            if (popup) {
-                const t = popup.innerText || "";
-                if (t.includes("معتبر نیست")) return true;
-            }
-            return false;
+            if (!popup) return null;
+            const h2 = popup.querySelector('h2');
+            const p = popup.querySelector('p');
+            const clean = [h2 ? h2.innerText.trim() : '', p ? p.innerText.trim() : ''].filter(Boolean).join(' - ').trim();
+            return clean || (popup.innerText || '').trim() || null;
         }''')
-        if invalid_code_popup:
-            try:
-                await page.locator('.sweet-alert.showSweetAlert button.confirm').click(timeout=5000)
-            except Exception:
-                pass
-            raise InvalidTrackingCodeError("کد رهگیری یا نوع خدمت نامعتبر است")
+        if popup_text:
+            popup_category = error_catalog.classify(popup_text)
+            if popup_category == error_catalog.WRONG_FORM_TRACKING_CODE:
+                try:
+                    await page.locator('.sweet-alert.showSweetAlert button.confirm').click(timeout=5000)
+                except Exception:
+                    pass
+                raise WrongFormTrackingCodeError(popup_text)
+            if popup_category == error_catalog.VALIDATION:
+                try:
+                    await page.locator('.sweet-alert.showSweetAlert button.confirm').click(timeout=5000)
+                except Exception:
+                    pass
+                raise InvalidTrackingCodeError("کد رهگیری یا نوع خدمت نامعتبر است")
 
         # ── بررسی یافتن پرونده ───────────────────────────────────
         not_found = await page.evaluate('''() => {

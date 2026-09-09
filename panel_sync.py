@@ -316,7 +316,10 @@ async def _mark_ready_impl(case_id: str):
     await _update_case_impl(case_id, status="COMPLETED")
 
     url = f"{ADMIN_API_BASE}/admin/cases/{case_id}/ready"
-    data, err = await _panel_request("PUT", url, json={})
+    # ⭐ رفع باگ HTTP 405: روت /admin/cases/[id]/ready فقط POST را export
+    # می‌کند؛ فراخوانی قبلی با PUT همیشه با 405 رد می‌شد و پرونده‌های
+    # پرداخت‌شده هرگز وارد بخش «ارسال» پنل ادمین نمی‌شدند.
+    data, err = await _panel_request("POST", url, json={})
     if data is None:
         if err != "circuit_open":
             logger.warning(f"[PANEL_SYNC] خطا در انتقال Case {case_id} به ready-to-send: {err}")
