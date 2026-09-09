@@ -2229,43 +2229,74 @@ async def _calculate_cost(page, bot: Bot, user_id: int, max_retries: int = 3) ->
 
 
 async def _print_ezhharnameh(page, browser_context, bill_no: str, bot: Bot, user_id: int) -> str:
+    from lavayeh_scenario import _is_valid_pdf_file
     pdf_path = f"ezhharnameh_{bill_no}.pdf"
-    try:
-        async def click_print():
-            await page.evaluate('''() => {
-                const heads = Array.from(document.querySelectorAll('.box h5'));
-                const t = heads.find(el => el.innerText && (
-                    el.innerText.includes("چاپ اوليه") || el.innerText.includes("چاپ اولیه")
-                ));
-                if (t) {
-                    const box = t.closest('.box');
-                    if (box) box.click();
-                }
-            }''')
 
-        async with browser_context.expect_page(timeout=20000) as new_page_info:
-            await click_print()
+    async def click_print():
+        await page.evaluate('''() => {
+            const heads = Array.from(document.querySelectorAll('.box h5'));
+            const t = heads.find(el => el.innerText && (
+                el.innerText.includes("چاپ اوليه") || el.innerText.includes("چاپ اولیه")
+            ));
+            if (t) {
+                const box = t.closest('.box');
+                if (box) box.click();
+            }
+        }''')
 
-        print_page = await new_page_info.value
-        await print_page.wait_for_load_state("load", timeout=30000)
-        await asyncio.sleep(8)
-        await check_and_handle_expiry(print_page, bot, user_id, check_body_text=False)
-        await print_page.pdf(path=pdf_path, format="A4")
-        await print_page.close()
-    except Exception as e:
-        logging.error(f"[EZHHAR] خطا در چاپ: {e}")
+    # ⭐ تا ۲ تلاش: اگر حین چاپ نشست منقضی شود، check_and_handle_expiry لاگین
+    # مجدد را انجام می‌دهد؛ چون print_page ممکن است به Offices/Index
+    # ریدایرکت شده باشد (نه سند واقعی)، تلاش دوم صفحه‌ی چاپ را از نو باز
+    # می‌کند تا PDF واقعی گرفته شود.
+    last_err = None
+    for attempt in range(1, 3):
+        print_page = None
+        try:
+            async with browser_context.expect_page(timeout=20000) as new_page_info:
+                await click_print()
+
+            print_page = await new_page_info.value
+            await print_page.wait_for_load_state("load", timeout=30000)
+            await asyncio.sleep(8)
+            session_expired = await check_and_handle_expiry(print_page, bot, user_id, check_body_text=False)
+            if session_expired:
+                try:
+                    await print_page.close()
+                except Exception:
+                    pass
+                print_page = None
+                if attempt < 2:
+                    continue
+            else:
+                await print_page.pdf(path=pdf_path, format="A4")
+                await print_page.close()
+                print_page = None
+                if _is_valid_pdf_file(pdf_path):
+                    return pdf_path
+                logging.warning(f"[EZHHAR] PDF چاپ نامعتبر بود (تلاش {attempt}/2)... (user={user_id})")
+        except Exception as e:
+            last_err = e
+            logging.error(f"[EZHHAR] خطا در چاپ (تلاش {attempt}/2): {e}")
+        finally:
+            if print_page is not None:
+                try:
+                    await print_page.close()
+                except Exception:
+                    pass
+
+    if not _is_valid_pdf_file(pdf_path):
         try:
             await page.pdf(path=pdf_path, format="A4")
         except Exception:
             pass
-
-        try:
-            from bug_reporter import report_bug
-            await report_bug(bot, where="click_print", error=e,
-                             user_id=user_id,
-                             page=getattr(runtime_state, "sana_page", None))
-        except Exception:
-            pass
+        if last_err is not None:
+            try:
+                from bug_reporter import report_bug
+                await report_bug(bot, where="click_print", error=last_err,
+                                 user_id=user_id,
+                                 page=getattr(runtime_state, "sana_page", None))
+            except Exception:
+                pass
     return pdf_path
 
 

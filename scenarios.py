@@ -9,6 +9,7 @@ from aiogram import Bot
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 import runtime_state
+import error_catalog
 from bale_file_sender import send_document_direct
 from config import ADMIN_ID, DEBUG_LOG_REQUESTS, FEES, get_fee
 from sheets import log_event
@@ -240,22 +241,31 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
             page = None
             return await _process_pre_check_on_new_page(data, bot, _retry=True)
 
-        # ── بررسی خطای «کد رهگیری معتبر نیست» ────────────────────────
-        invalid_code_popup = await page.evaluate('''() => {
+        # ── بررسی خطای «کد رهگیری معتبر نیست» / «متعلق به فرم دیگر» ──────
+        popup_text = await page.evaluate('''() => {
             const popup = document.querySelector('.sweet-alert.showSweetAlert');
-            if (popup) {
-                const t = popup.innerText || "";
-                if (t.includes("معتبر نیست")) return true;
-            }
-            return false;
+            if (!popup) return null;
+            const h2 = popup.querySelector('h2');
+            const p = popup.querySelector('p');
+            const clean = [h2 ? h2.innerText.trim() : '', p ? p.innerText.trim() : ''].filter(Boolean).join(' - ').trim();
+            return clean || (popup.innerText || '').trim() || null;
         }''')
-        if invalid_code_popup:
-            try:
-                await page.locator('.sweet-alert.showSweetAlert button.confirm').click(timeout=5000)
-            except Exception:
-                pass
-            await bot.send_message(user_id, "❌ کدرهگیری یا نوع خدمت را اشتباه وارد نموده‌اید.")
-            return
+        if popup_text:
+            popup_category = error_catalog.classify(popup_text)
+            if popup_category == error_catalog.WRONG_FORM_TRACKING_CODE:
+                try:
+                    await page.locator('.sweet-alert.showSweetAlert button.confirm').click(timeout=5000)
+                except Exception:
+                    pass
+                await bot.send_message(user_id, f"❌ {popup_text}")
+                return
+            if popup_category == error_catalog.VALIDATION:
+                try:
+                    await page.locator('.sweet-alert.showSweetAlert button.confirm').click(timeout=5000)
+                except Exception:
+                    pass
+                await bot.send_message(user_id, "❌ کدرهگیری یا نوع خدمت را اشتباه وارد نموده‌اید.")
+                return
 
         # ── ۶. بررسی عدم یافتن پرونده ─────────────────────────────
         not_found = await page.evaluate('''() => {
@@ -945,22 +955,19 @@ async def _bulk_progress_note_result(bot: Bot, user_id: int, tracking_code: str,
     return True
 
 
-async def _handle_invalid_tracking_code(bot: Bot, user_id: int, data: dict, tracking_code: str, doc_name: str):
-    """مدیریت خطای «کد رهگیری نامعتبر است» که سامانه نشان می‌دهد —
-    هم برای استعلام تکی و هم برای هر آیتم از استعلام دسته‌جمعی (کارت/اکسل)."""
+async def _start_free_retry_window(bot: Bot, user_id: int, notice_text: str, data: dict, tracking_code: str, doc_name: str):
+    """فعال‌سازی مشترکِ فرصت رایگان اصلاح کدرهگیری (بدون پرداخت مجدد، به‌مدت
+    runtime_state.INVALID_TRACKING_RETRY_MINUTES دقیقه)، به‌همراه ارسال
+    notice_text به کاربر. هم برای خطای «کدرهگیری نامعتبر» و هم برای خطای
+    «کدرهگیری متعلق به فرم/نوع سند دیگر» استفاده می‌شود — هم برای استعلام
+    تکی و هم برای هر آیتم از استعلام دسته‌جمعی (کارت/اکسل)."""
     was_batch_item = await _bulk_progress_note_result(bot, user_id, tracking_code, doc_name, is_invalid=True)
     if was_batch_item:
         return
     # ── حالت تک‌موردی: بلافاصله به کاربر اطلاع بده و فرصت رایگان بده ──
     import datetime as _dt
     from states import Form
-    await bot.send_message(
-        user_id,
-        f"❌ کدرهگیری‌ای که وارد نموده‌اید اشتباه است.\n\n"
-        f"⏰ شما *{runtime_state.INVALID_TRACKING_RETRY_MINUTES} دقیقه* فرصت دارید تا بدون پرداخت هزینه‌ی مجدد، "
-        f"کدرهگیری صحیح را ارسال و دوباره استعلام بگیرید.\n\n"
-        f"لطفاً کدرهگیری جدید را ارسال نمایید:"
-    )
+    await bot.send_message(user_id, notice_text)
     runtime_state.invalid_tracking_retry[user_id] = {
         "expires_at": _dt.datetime.now() + _dt.timedelta(minutes=runtime_state.INVALID_TRACKING_RETRY_MINUTES),
         "remaining": 1,
@@ -971,6 +978,31 @@ async def _handle_invalid_tracking_code(bot: Bot, user_id: int, data: dict, trac
         await user_state.set_state(Form.waiting_for_corrected_tracking_code)
     except Exception as e:
         logging.error(f"[INQUIRY] خطا در تنظیم state اصلاح کدرهگیری: {e}")
+
+
+async def _handle_invalid_tracking_code(bot: Bot, user_id: int, data: dict, tracking_code: str, doc_name: str):
+    """مدیریت خطای «کد رهگیری نامعتبر است» که سامانه نشان می‌دهد —
+    هم برای استعلام تکی و هم برای هر آیتم از استعلام دسته‌جمعی (کارت/اکسل)."""
+    notice_text = (
+        f"❌ کدرهگیری‌ای که وارد نموده‌اید اشتباه است.\n\n"
+        f"⏰ شما *{runtime_state.INVALID_TRACKING_RETRY_MINUTES} دقیقه* فرصت دارید تا بدون پرداخت هزینه‌ی مجدد، "
+        f"کدرهگیری صحیح را ارسال و دوباره استعلام بگیرید.\n\n"
+        f"لطفاً کدرهگیری جدید را ارسال نمایید:"
+    )
+    await _start_free_retry_window(bot, user_id, notice_text, data, tracking_code, doc_name)
+
+
+async def _handle_wrong_form_tracking_code(bot: Bot, user_id: int, data: dict, tracking_code: str, doc_name: str, system_text: str):
+    """مدیریت خطای «این کد رهگیری مربوط به نوع سند دیگری است» — متن واقعی
+    سامانه عیناً برای کاربر ارسال می‌شود و همان فرصت رایگان اصلاح فعال
+    می‌شود (بدون پرداخت هزینه‌ی مجدد)."""
+    notice_text = (
+        f"❌ {system_text}\n\n"
+        f"⏰ شما *{runtime_state.INVALID_TRACKING_RETRY_MINUTES} دقیقه* فرصت دارید تا با کدرهگیری/نوع سند صحیح، "
+        f"بدون پرداخت هزینه‌ی مجدد دوباره درخواست خود را ثبت نمایید.\n\n"
+        f"لطفاً کدرهگیری صحیح را ارسال نمایید:"
+    )
+    await _start_free_retry_window(bot, user_id, notice_text, data, tracking_code, doc_name)
 
 
 async def process_task(data, bot: Bot):
@@ -1575,18 +1607,35 @@ async def process_task(data, bot: Bot):
                 await asyncio.sleep(3)
                 await wait_for_horizontal_loading_bar(sana_page, bot, user_id, timeout=60)
 
-                # ── بررسی خطای «کد رهگیری معتبر نیست» ────────────────────
+                # ── بررسی خطای «کد رهگیری معتبر نیست» / «متعلق به فرم دیگر» ──
                 # این چک باید قبل از بستن خودکار پاپ‌آپ‌ها (پایین‌تر) انجام شود،
                 # چون در غیر این صورت متن خطا قبل از خواندن، بسته می‌شود.
-                invalid_code_popup = await sana_page.evaluate('''() => {
+                popup_text = await sana_page.evaluate('''() => {
                     const popup = document.querySelector('.sweet-alert.showSweetAlert');
-                    if (popup) {
-                        const t = popup.innerText || "";
-                        if (t.includes("معتبر نیست")) return true;
-                    }
-                    return false;
+                    if (!popup) return null;
+                    const h2 = popup.querySelector('h2');
+                    const p = popup.querySelector('p');
+                    const clean = [h2 ? h2.innerText.trim() : '', p ? p.innerText.trim() : ''].filter(Boolean).join(' - ').trim();
+                    return clean || (popup.innerText || '').trim() || null;
                 }''')
-                if invalid_code_popup:
+                popup_category = error_catalog.classify(popup_text) if popup_text else error_catalog.UNKNOWN
+                if popup_text and popup_category == error_catalog.WRONG_FORM_TRACKING_CODE:
+                    try:
+                        await sana_page.locator('.sweet-alert.showSweetAlert button.confirm').click(timeout=5000)
+                    except Exception:
+                        pass
+                    # اطلاع به مدیر
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"⚠️ [INQUIRY_FAIL] کاربر {user_id} — کدرهگیری متعلق به فرم دیگر — کد: `{tracking_code}` — نوع: {doc_name}\n"
+                            f"متن سامانه: {popup_text}"
+                        )
+                    except Exception:
+                        pass
+                    await _handle_wrong_form_tracking_code(bot, user_id, data, tracking_code, doc_name, popup_text)
+                    return
+                if popup_text and popup_category == error_catalog.VALIDATION:
                     try:
                         await sana_page.locator('.sweet-alert.showSweetAlert button.confirm').click(timeout=5000)
                     except Exception:
@@ -1655,17 +1704,31 @@ async def process_task(data, bot: Bot):
                                 }
                             }''')
 
-                        async with browser_context.expect_page(timeout=15000) as new_page_info:
-                            await click_print_box()
-
-                        print_page = await new_page_info.value
-                        await print_page.wait_for_load_state()
-                        await resilient_sleep(print_page, 8, bot, user_id)
-                        await check_and_handle_expiry(print_page, bot, user_id, check_body_text=False)
-
+                        # ⭐ تا ۲ تلاش: اگر حین چاپ نشست منقضی شود،
+                        # check_and_handle_expiry لاگین مجدد را انجام می‌دهد؛
+                        # چون print_page ممکن است به Offices/Index ریدایرکت
+                        # شده باشد (نه سند واقعی)، تلاش دوم صفحه‌ی چاپ را از
+                        # نو باز می‌کند تا PDF واقعی گرفته شود.
                         pdf_path = f"report_{tracking_code}.pdf"
-                        await print_page.pdf(path=pdf_path, format="A4")
-                        await print_page.close()
+                        for _print_attempt in range(1, 3):
+                            print_page = None
+                            async with browser_context.expect_page(timeout=15000) as new_page_info:
+                                await click_print_box()
+
+                            print_page = await new_page_info.value
+                            await print_page.wait_for_load_state()
+                            await resilient_sleep(print_page, 8, bot, user_id)
+                            _session_expired = await check_and_handle_expiry(print_page, bot, user_id, check_body_text=False)
+                            if _session_expired:
+                                try:
+                                    await print_page.close()
+                                except Exception:
+                                    pass
+                                if _print_attempt < 2:
+                                    continue
+                            await print_page.pdf(path=pdf_path, format="A4")
+                            await print_page.close()
+                            break
 
                         if need_attachments:
                             saved_attachments.append((pdf_path, f"📄 استعلام کد پیگیری: `{tracking_code}`"))
@@ -2379,6 +2442,15 @@ async def _process_ezhharnameh_submit_sign(data: dict, bot: Bot):
                 await on_ezhhar_sign_sana_not_registered(bot, user_id, "امضای شخص در سامانه ثنا درج نشده است", user_state)
                 await bot.send_message(ADMIN_ID, f"❌ [EZHHAR_SIGN] امضا در ثنا ثبت نیست — کاربر {user_id}.")
             else:
+                # ⭐ رفع باگ «ناموفق کاذب»: متن خام آخرین پاپ‌آپ سیستم (در صورت
+                # وجود) هم برای مدیر ارسال می‌شود تا اگر واقعاً موفق بوده ولی
+                # به‌درستی دسته‌بندی نشده، از روی متن واقعی سیستم قابل تشخیص باشد.
+                raw_msg = result.get("raw_message") or "—"
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"⚠️ [EZHHAR_SIGN] امضای اظهارنامه کاربر {user_id} با وضعیت نامشخص پایان یافت "
+                    f"(ردیف {row_idx}).\nآخرین پیام سامانه: {raw_msg}"
+                )
                 await on_ezhhar_sign_submit_failure(bot, user_id, user_state)
 
     except Exception as e:

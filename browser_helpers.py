@@ -412,6 +412,28 @@ async def check_and_handle_expiry(page, bot: Bot, user_id: int, check_body_text:
 
     return False
 
+
+async def check_concurrent_login_all_sections(page, bot: Bot, user_id: int, prefix: str = "GLOBAL") -> bool:
+    """
+    🔔 طبق فایل توضیحات: «خطای ورود همزمان را به تمام بخش‌های لایحه و
+    اعلام وکالت و اظهارنامه و استعلامات و زیرمجموعه‌های بخش‌های در ثبت
+    اضافه کن» — از جمله ناوبری امضا و چاپ در تمام بخش‌ها.
+
+    این تابع wrapper «تشخیص + مدیریت خودکار» (check + handle) است — نسخه‌ی
+    ساده‌شده‌ی check_and_handle_expiry مخصوص جایی که فقط پاپ‌آپ ورود همزمان
+    مطرح است (نه بررسی مدال/متن صفحه). می‌توان آن را از هر نقطه از هر
+    سناریو (امضا، چاپ، استعلام و ...) فراخوانی کرد.
+
+    بازگشت: True اگر خطای ورود همزمان تشخیص داده شد (و مدیریت/لاگین مجدد
+    آغاز شد).
+    """
+    if await detect_concurrent_login_popup(page):
+        logging.error(f"[{prefix}] 🚨 خطای ورود همزمان تشخیص داده شد — اطلاع به مدیر برای لاگین مجدد")
+        await check_and_handle_expiry(page, bot, user_id)
+        return True
+    return False
+
+
 async def check_and_handle_load_error(page):
     """بررسی خطاهای لود صفحه"""
     has_load_error = await page.evaluate('''() => {

@@ -13,6 +13,7 @@ const BotMessageSender = React.lazy(() => import('@/components/admin/bot-message
 const GoogleSheetsPanel = React.lazy(() => import('@/components/admin/google-sheets-panel'));
 const WorkingHoursDialog = React.lazy(() => import('@/components/admin/working-hours-dialog'));
 const ExemptUsersDialog = React.lazy(() => import('@/components/admin/exempt-users-dialog'));
+const ResetDataDialog = React.lazy(() => import('@/components/admin/reset-data-dialog'));
 
 function LoadingFallback() {
   return <div className="animate-pulse h-8 w-48 rounded-lg bg-muted" />;
@@ -64,6 +65,10 @@ interface LazyPanelsProps {
   // Exempt users
   exemptUsersOpen: boolean;
   onExemptUsersClose: () => void;
+  // Reset data
+  resetDataOpen: boolean;
+  onResetDataClose: () => void;
+  onResetDataDone: () => void;
 }
 
 export default function LazyPanels({
@@ -76,6 +81,7 @@ export default function LazyPanels({
   sheetsPanelOpen, onSheetsPanelClose,
   workingHoursOpen, onWorkingHoursClose,
   exemptUsersOpen, onExemptUsersClose,
+  resetDataOpen, onResetDataClose, onResetDataDone,
 }: LazyPanelsProps) {
   return (
     <>
@@ -151,6 +157,14 @@ export default function LazyPanels({
         <ExemptUsersDialog
           open={exemptUsersOpen}
           onOpenChange={(open) => { if (!open) onExemptUsersClose(); }}
+        />
+      </Suspense>
+
+      <Suspense fallback={<LoadingFallback />}>
+        <ResetDataDialog
+          open={resetDataOpen}
+          onOpenChange={(open) => { if (!open) onResetDataClose(); }}
+          onDone={onResetDataDone}
         />
       </Suspense>
     </>
