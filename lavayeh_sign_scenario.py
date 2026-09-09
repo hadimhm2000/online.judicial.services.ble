@@ -27,6 +27,7 @@ import runtime_state
 from browser_helpers import (
     check_and_handle_expiry,
     goto_url_with_retry,
+    handle_session_expired,
     human_delay,
     resilient_sleep,
     safe_click_by_text,
@@ -106,67 +107,110 @@ async def navigate_to_sign_page(
                 await safe_click_by_text(sana_page, sub_menu_text, bot, user_id)
             await resilient_sleep(sana_page, 5, bot, user_id)
 
-        # ── ۳. انتخاب radio #rdbGetPetition (value=2) ───────────────────
-        # نکته (رفع باگ): همان الگوی اثبات‌شده در api_direct.py._do_page_check
-        # برای همین فیلد — قبل از کلیک منتظر می‌مانیم رادیو واقعاً visible
-        # باشد؛ صبر ثابت ۱ ثانیه (روش قبلی) گاهی زودتر از رندر Angular اجرا
-        # می‌شد و همین باعث خالی ماندن #billNo در ادامه بود.
+        # ── ۳. تشخیص الگوی فیلد صفحه: رادیو+billNo (لایحه) یا مستقیم
+        #    txtPetitionNo (اظهارنامه/چک) ─────────────────────────────────
+        # نکته مهم (رفع باگ): صفحاتی که با مسیر منوی «ارایه و پیگیری
+        # دادخواست» یا «دعاوی دادگاههای صلح» باز می‌شوند (چک) رادیو
+        # #rdbGetPetition و فیلد #billNo ندارند؛ به‌جای آن‌ها مستقیماً
+        # فیلد #txtPetitionNo (دقیقاً مثل اظهارنامه) و دکمه
+        # #btnGetJSSPetition را دارند. قبلاً این تابع همیشه فرض می‌کرد
+        # رادیو+billNo وجود دارد که باعث می‌شد کد رهگیری چک هرگز وارد نشود.
+        use_direct_petition_field = False
         try:
-            await sana_page.wait_for_selector(
-                '#rdbGetPetition', state='visible', timeout=10000
-            )
+            has_radio = await sana_page.evaluate('''() => {
+                return !!document.querySelector('#rdbGetPetition');
+            }''')
         except Exception:
-            logging.warning("[SIGN] رادیوباتن #rdbGetPetition ظاهر نشد (timeout ۱۰s)")
+            has_radio = False
 
-        await sana_page.evaluate('''() => {
-            const radio = document.querySelector('#rdbGetPetition');
-            if (radio) {
-                radio.checked = true;
-                radio.click();
-                // فعال‌سازی digest AngularJS برای به‌روزرسانی ng-model
-                if (window.angular) {
-                    try {
-                        const scope = angular.element(radio).scope();
-                        if (scope) scope.$apply();
-                    } catch(e) {}
+        if not has_radio:
+            try:
+                has_petition_field = await sana_page.wait_for_selector(
+                    '#txtPetitionNo', state='visible', timeout=5000
+                )
+                use_direct_petition_field = bool(has_petition_field)
+            except Exception:
+                use_direct_petition_field = False
+
+        if use_direct_petition_field:
+            # ── الگوی مستقیم (اظهارنامه/چک): #txtPetitionNo + #btnGetJSSPetition ──
+            await _fill_input(sana_page, "#txtPetitionNo", tracking_code)
+            await resilient_sleep(sana_page, 1, bot, user_id)
+
+            search_clicked = await sana_page.evaluate('''() => {
+                const btn = document.querySelector('#btnGetJSSPetition');
+                if (btn) { btn.click(); return true; }
+                const btns = Array.from(document.querySelectorAll('button'));
+                const s = btns.find(b => b.innerText && b.innerText.includes("جستجو"));
+                if (s) { s.click(); return true; }
+                return false;
+            }''')
+            if not search_clicked:
+                logging.error("[SIGN] دکمه #btnGetJSSPetition (الگوی مستقیم) پیدا نشد")
+                return False
+
+            await asyncio.sleep(3)
+            await wait_for_horizontal_loading_bar(sana_page, bot, user_id, timeout=60)
+            await _close_any_popup(sana_page)
+            await resilient_sleep(sana_page, 3, bot, user_id)
+        else:
+            # ── الگوی رادیو+billNo (لایحه) ──────────────────────────────
+            try:
+                await sana_page.wait_for_selector(
+                    '#rdbGetPetition', state='visible', timeout=10000
+                )
+            except Exception:
+                logging.warning("[SIGN] رادیوباتن #rdbGetPetition ظاهر نشد (timeout ۱۰s)")
+
+            await sana_page.evaluate('''() => {
+                const radio = document.querySelector('#rdbGetPetition');
+                if (radio) {
+                    radio.checked = true;
+                    radio.click();
+                    // فعال‌سازی digest AngularJS برای به‌روزرسانی ng-model
+                    if (window.angular) {
+                        try {
+                            const scope = angular.element(radio).scope();
+                            if (scope) scope.$apply();
+                        } catch(e) {}
+                    }
+                    return true;
                 }
-                return true;
-            }
-            // fallback: radio با value=2
-            const radios = Array.from(document.querySelectorAll('input[type="radio"][name*="rdbSelectPetitionType"]'));
-            const r = radios.find(r => r.value === "2");
-            if (r) { r.click(); return true; }
-            return false;
-        }''')
-        await asyncio.sleep(1)
+                // fallback: radio با value=2
+                const radios = Array.from(document.querySelectorAll('input[type="radio"][name*="rdbSelectPetitionType"]'));
+                const r = radios.find(r => r.value === "2");
+                if (r) { r.click(); return true; }
+                return false;
+            }''')
+            await asyncio.sleep(1)
 
-        # ── ۴. وارد کردن کد رهگیری در #billNo ───────────────────────────
-        # همان‌طور که در api_direct.py._do_page_check انجام می‌شود، قبل از
-        # fill حتماً منتظر ظاهر/visible شدن واقعی فیلد می‌مانیم.
-        try:
-            await sana_page.wait_for_selector('#billNo', state='visible', timeout=15000)
-        except Exception:
-            logging.warning("[SIGN] فیلد #billNo پس از انتخاب رادیو ظاهر نشد (timeout ۱۵s)")
+            # ── وارد کردن کد رهگیری در #billNo ───────────────────────────
+            # همان‌طور که در api_direct.py._do_page_check انجام می‌شود، قبل از
+            # fill حتماً منتظر ظاهر/visible شدن واقعی فیلد می‌مانیم.
+            try:
+                await sana_page.wait_for_selector('#billNo', state='visible', timeout=15000)
+            except Exception:
+                logging.warning("[SIGN] فیلد #billNo پس از انتخاب رادیو ظاهر نشد (timeout ۱۵s)")
 
-        await _fill_input(sana_page, "#billNo", tracking_code)
-        await resilient_sleep(sana_page, 1, bot, user_id)
+            await _fill_input(sana_page, "#billNo", tracking_code)
+            await resilient_sleep(sana_page, 1, bot, user_id)
 
-        # ── ۵. کلیک جستجو #btnGetJSSBill ─────────────────────────────────
-        await sana_page.evaluate('''() => {
-            const btn = document.querySelector('#btnGetJSSBill');
-            if (btn) { btn.click(); return; }
-            // fallback
-            const btns = Array.from(document.querySelectorAll('button'));
-            const s = btns.find(b => b.innerText && b.innerText.includes("جستجو"));
-            if (s) s.click();
-        }''')
+            # ── کلیک جستجو #btnGetJSSBill ─────────────────────────────────
+            await sana_page.evaluate('''() => {
+                const btn = document.querySelector('#btnGetJSSBill');
+                if (btn) { btn.click(); return; }
+                // fallback
+                const btns = Array.from(document.querySelectorAll('button'));
+                const s = btns.find(b => b.innerText && b.innerText.includes("جستجو"));
+                if (s) s.click();
+            }''')
 
-        # ── ۶. صبر ۳۰ ثانیه تا بارگذاری صفحه جدید ─────────────────────
-        await asyncio.sleep(30)
+            # ── صبر ۳۰ ثانیه تا بارگذاری صفحه جدید ─────────────────────
+            await asyncio.sleep(30)
 
-        # بستن هر پاپ‌آپ خطایی
-        await _close_any_popup(sana_page)
-        await resilient_sleep(sana_page, 2, bot, user_id)
+            # بستن هر پاپ‌آپ خطایی
+            await _close_any_popup(sana_page)
+            await resilient_sleep(sana_page, 2, bot, user_id)
 
         # ── ۷. کلیک «اخذ امضای الکترونیک» ──────────────────────────────
         # نکته مهم: اگر این کد رهگیری قبلاً در همین نشست به مرحله امضا رفته
@@ -200,7 +244,7 @@ async def navigate_to_sign_page(
         # ── ۸. بررسی جدول امضا — اگر نبود، ریلود و تلاش مجدد ─────────
         table_exists = await sana_page.evaluate('''() => {
             const rows = Array.from(document.querySelectorAll(
-                'table tbody tr[ng-repeat*="theBillPersonSignableList"]'
+                'table tbody tr[ng-repeat*="PersonSignableList"]'
             ));
             return rows.length > 0;
         }''')
@@ -250,7 +294,7 @@ async def get_signable_persons(
     try:
         persons_info = await sana_page.evaluate('''() => {
             const rows = Array.from(document.querySelectorAll(
-                'table tbody tr[ng-repeat*="theBillPersonSignableList"]'
+                'table tbody tr[ng-repeat*="PersonSignableList"]'
             ));
             return rows.map((tr, idx) => {
                 // نام شخص — توجه: ستون «نوع اخذ امضاء» هم همین کلاس‌ها را دارد
@@ -322,7 +366,7 @@ async def _check_lavayeh_sign_table_exists(page) -> bool:
     """بررسی وجود جدول امضا برای لایحه در صفحه فعلی"""
     return await page.evaluate('''() => {
         const rows = Array.from(document.querySelectorAll(
-            'table tbody tr[ng-repeat*="theBillPersonSignableList"]'
+            'table tbody tr[ng-repeat*="PersonSignableList"]'
         ));
         return rows.length > 0;
     }''')
@@ -363,7 +407,7 @@ async def send_sign_code_for_person(
     for attempt in range(3):
         clicked = await sana_page.evaluate(f'''(idx) => {{
             const rows = Array.from(document.querySelectorAll(
-                'table tbody tr[ng-repeat*="theBillPersonSignableList"]'
+                'table tbody tr[ng-repeat*="PersonSignableList"]'
             ));
             if (rows.length <= idx) return false;
             const btn = rows[idx].querySelector('button[ng-click*="sendTempPassword"]');
@@ -377,7 +421,7 @@ async def send_sign_code_for_person(
             continue
 
         # انتظار برای پاپ‌آپ
-        popup_result = await _wait_for_popup_result(sana_page, timeout_sec=55)
+        popup_result = await _wait_for_popup_result(sana_page, bot, user_id, timeout_sec=55)
 
         if popup_result == "success":
             await _close_any_popup(sana_page)
@@ -388,6 +432,10 @@ async def send_sign_code_for_person(
             await _close_any_popup(sana_page)
             logging.info(f"[SIGN] کد قبلاً ارسال شده برای ردیف {row_idx}")
             return True
+
+        elif popup_result == "session_expired_handled":
+            logging.info(f"[SIGN] نشست پس از انقضا تمدید شد — تلاش مجدد ارسال کد ردیف {row_idx}")
+            continue
 
         else:
             await _close_any_popup(sana_page)
@@ -421,7 +469,7 @@ async def submit_sign_code_for_person(
             const idx = args.idx;
             const code = args.code;
             const rows = Array.from(document.querySelectorAll(
-                'table tbody tr[ng-repeat*="theBillPersonSignableList"]'
+                'table tbody tr[ng-repeat*="PersonSignableList"]'
             ));
             if (rows.length <= idx) return false;
             const inp = rows[idx].querySelector('input[id^="txtTempPassword"]');
@@ -455,7 +503,7 @@ async def submit_sign_code_for_person(
         # کلیک دکمه «امضاء ثنا»
         clicked = await sana_page.evaluate(f'''(idx) => {{
             const rows = Array.from(document.querySelectorAll(
-                'table tbody tr[ng-repeat*="theBillPersonSignableList"]'
+                'table tbody tr[ng-repeat*="PersonSignableList"]'
             ));
             if (rows.length <= idx) return false;
             const btn = rows[idx].querySelector(
@@ -475,7 +523,7 @@ async def submit_sign_code_for_person(
             continue
 
         # انتظار برای نتیجه
-        popup_result = await _wait_for_sign_popup(sana_page, timeout_sec=55)
+        popup_result = await _wait_for_sign_popup(sana_page, bot, user_id, timeout_sec=55)
 
         if popup_result == "success":
             await _close_any_popup(sana_page)
@@ -489,6 +537,9 @@ async def submit_sign_code_for_person(
             await _close_any_popup(sana_page)
             logging.warning(f"[SIGN] امضا در سامانه ثنا ثبت نشده — ردیف {row_idx}")
             return {"success": False, "error": "sana_not_registered"}
+        elif popup_result == "session_expired_handled":
+            logging.info(f"[SIGN] نشست پس از انقضا تمدید شد — تلاش مجدد تایید کد ردیف {row_idx}")
+            continue
         else:
             await _close_any_popup(sana_page)
             logging.warning(f"[SIGN] امضای ردیف {row_idx} ناموفق: {popup_result} (تلاش {attempt+1})")
@@ -573,21 +624,23 @@ async def _close_any_popup(page) -> bool:
     return closed
 
 
-async def _wait_for_popup_result(page, timeout_sec: int = 55) -> str:
+async def _wait_for_popup_result(page, bot: Bot = None, user_id: int = None, timeout_sec: int = 55) -> str:
     """
     منتظر می‌ماند تا پاپ‌آپ نتیجه ارسال کد ظاهر شود.
     Returns:
-        "success"      — ارسال موفق
-        "already_sent" — قبلاً ارسال شده
-        "error"        — هر خطای دیگر
-        "timeout"      — timeout
+        "success"                 — ارسال موفق
+        "already_sent"            — قبلاً ارسال شده
+        "session_expired_handled" — نشست منقضی بود، لاگین مجدد مدیر انجام شد
+        "error"                   — هر خطای دیگر
+        "timeout"                 — timeout
     """
     for _ in range(timeout_sec * 2):
         result = await page.evaluate('''() => {
             const popup = document.querySelector('.sweet-alert.showSweetAlert');
             if (!popup) return null;
             const h2 = popup.querySelector('h2');
-            const text = h2 ? h2.innerText.trim() : "";
+            const p = popup.querySelector('p');
+            const text = ((h2 ? h2.innerText : "") + " " + (p ? p.innerText : "")).trim();
             const successIcon = popup.querySelector('.sa-icon.sa-success');
             const errorIcon = popup.querySelector('.sa-icon.sa-error');
             const isSuccessVisible = successIcon &&
@@ -600,6 +653,12 @@ async def _wait_for_popup_result(page, timeout_sec: int = 55) -> str:
                 return "success";
             }
             if (isErrorVisible) {
+                if (text.includes("رایانه ای دیگر") || text.includes("رایانه ای ديگر") ||
+                    text.includes("ورود قبلی") || text.includes("ورود قبلي") ||
+                    (text.includes("اعتبار ورود") && text.includes("منقضی")) ||
+                    text.includes("منقضي شده")) {
+                    return "session_expired";
+                }
                 if (text.includes("10 دقیقه") || text.includes("۱۰ دقیقه")) {
                     return "already_sent";
                 }
@@ -607,6 +666,12 @@ async def _wait_for_popup_result(page, timeout_sec: int = 55) -> str:
             }
             return null;
         }''')
+        if result == "session_expired":
+            if bot is not None and user_id is not None:
+                logging.warning("[SIGN] پاپ‌آپ ورود همزمان در مرحله ارسال کد شناسایی شد — لاگین مجدد مدیر...")
+                await handle_session_expired(bot, user_id, page=page)
+                return "session_expired_handled"
+            return "error"
         if result:
             return result
         await asyncio.sleep(0.5)
@@ -614,23 +679,25 @@ async def _wait_for_popup_result(page, timeout_sec: int = 55) -> str:
     return "timeout"
 
 
-async def _wait_for_sign_popup(page, timeout_sec: int = 55) -> str:
+async def _wait_for_sign_popup(page, bot: Bot = None, user_id: int = None, timeout_sec: int = 55) -> str:
     """
     منتظر پاپ‌آپ نتیجه امضا می‌ماند.
-    Returns: "success" | "wrong_code" | "sana_not_registered" | "error" | "timeout"
+    Returns: "success" | "wrong_code" | "sana_not_registered" | "session_expired_handled" | "error" | "timeout"
 
     پیام‌های مورد انتظار:
       - موفق (آیکون سبز): "امضاء با موفقیت در صفحه چاپ درج گردید"
       - موفق (آیکون زرد/هشدار): "امضاء « name » در صفحه ی چاپ درج شده است"
       - خطا (آیکون قرمز): "خطای سرویس ثنا   : رمز موقت نادرست است"
       - امضا ثبت‌نشده در ثنا: "امضای شخص ... در سامانه ثنا درج نشده است"
+      - نشست منقضی: «با این شناسه ... ورود به سامانه در صفحه یا رایانه ای دیگر ...»
     """
     for _ in range(timeout_sec * 2):
         result = await page.evaluate('''() => {
             const popup = document.querySelector('.sweet-alert.showSweetAlert');
             if (!popup) return null;
             const h2 = popup.querySelector('h2');
-            const text = h2 ? h2.innerText.trim() : "";
+            const p = popup.querySelector('p');
+            const text = ((h2 ? h2.innerText : "") + " " + (p ? p.innerText : "")).trim();
             const successIcon = popup.querySelector('.sa-icon.sa-success');
             const warningIcon = popup.querySelector('.sa-icon.sa-warning');
             const errorIcon = popup.querySelector('.sa-icon.sa-error');
@@ -652,8 +719,14 @@ async def _wait_for_sign_popup(page, timeout_sec: int = 55) -> str:
             // هشدار ولی واقعاً موفق — "امضاء « name » در صفحه ی چاپ درج شده است"
             if (isWarningVisible && text.includes("درج شده")) return "success";
 
-            // خطا — رمز موقت نادرست
+            // خطا — رمز موقت نادرست یا انقضای نشست
             if (isErrorVisible) {
+                if (text.includes("رایانه ای دیگر") || text.includes("رایانه ای ديگر") ||
+                    text.includes("ورود قبلی") || text.includes("ورود قبلي") ||
+                    (text.includes("اعتبار ورود") && text.includes("منقضی")) ||
+                    text.includes("منقضي شده")) {
+                    return "session_expired";
+                }
                 if (text.includes("رمز موقت نادرست") || text.includes("نادرست")) {
                     return "wrong_code";
                 }
@@ -661,6 +734,12 @@ async def _wait_for_sign_popup(page, timeout_sec: int = 55) -> str:
             }
             return null;
         }''')
+        if result == "session_expired":
+            if bot is not None and user_id is not None:
+                logging.warning("[SIGN] پاپ‌آپ ورود همزمان در مرحله تایید کد شناسایی شد — لاگین مجدد مدیر...")
+                await handle_session_expired(bot, user_id, page=page)
+                return "session_expired_handled"
+            return "error"
         if result:
             return result
         await asyncio.sleep(0.5)

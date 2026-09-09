@@ -818,16 +818,54 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
             # پاپ‌آپ ثنا — کلیک خیر
             await _close_popup_sana(sana_page, bot, user_id)
 
-            # تاریخ دادنامه (مجدداً در فرم جدید)
+            # تاریخ دادنامه (مجدداً در فرم جدید — پس از استعلام/بازیابی)
+            # نکته (رفع باگ): بعد از کلیک «بازیابی» (#btnGetHst)، سامانه فیلد
+            # تاریخ را با name="NoticeDateTime" دوباره می‌سازد. پر کردن قبلی
+            # فقط با inps[0].value + دیسپچ رویداد کافی نبود — چون این فیلد
+            # persian-datepicker با ng-valid-parse/jud-validator است و بدون
+            # digest واقعی AngularJS (scope.$apply + ngModel controller)
+            # مقدار در مدل ثبت نمی‌شد و فیلد در حالت ng-invalid-required
+            # (has-error) باقی می‌ماند و مانع از ادامهٔ مرحله می‌شد.
             await asyncio.sleep(2)
-            await sana_page.evaluate(f'''() => {{
-                const inps = document.querySelectorAll('input[persian-datepicker-popup]');
-                if (inps.length > 0) {{
-                    inps[0].value = "{judge_date}";
-                    inps[0].dispatchEvent(new Event("input", {{ bubbles: true }}));
-                    inps[0].dispatchEvent(new Event("change", {{ bubbles: true }}));
+            filled_notice_date = await sana_page.evaluate(f'''() => {{
+                let inp = document.querySelector('input[name="NoticeDateTime"]');
+                if (!inp) {{
+                    const inps = document.querySelectorAll('input[persian-datepicker-popup]');
+                    if (inps.length > 0) inp = inps[0];
                 }}
+                if (!inp) return false;
+
+                inp.value = "{judge_date}";
+                inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
+                inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
+
+                try {{
+                    if (typeof angular !== "undefined") {{
+                        const scope = angular.element(inp).scope();
+                        const ctrl = angular.element(inp).controller("ngModel");
+                        if (ctrl) {{
+                            ctrl.$setViewValue("{judge_date}");
+                            ctrl.$render();
+                        }}
+                        if (scope) {{
+                            scope.$apply(() => {{
+                                const key = inp.getAttribute("ng-model");
+                                if (key) {{
+                                    const parts = key.split(".");
+                                    let obj = scope;
+                                    for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
+                                    obj[parts[parts.length - 1]] = "{judge_date}";
+                                }}
+                            }});
+                        }}
+                    }}
+                }} catch (e) {{}}
+
+                inp.blur();
+                return true;
             }}''')
+            if not filled_notice_date:
+                logging.warning("[TN] فیلد تاریخ دادنامه (NoticeDateTime) پس از استعلام پیدا نشد")
             await asyncio.sleep(1)
 
             # حکم یا قرار + مبلغ + اعسار (فقط برای غیر اعتراض به قرار دادسرا)

@@ -1661,7 +1661,7 @@ async def process_task(data, bot: Bot):
                         print_page = await new_page_info.value
                         await print_page.wait_for_load_state()
                         await resilient_sleep(print_page, 8, bot, user_id)
-                        await check_and_handle_expiry(print_page, bot, user_id)
+                        await check_and_handle_expiry(print_page, bot, user_id, check_body_text=False)
 
                         pdf_path = f"report_{tracking_code}.pdf"
                         await print_page.pdf(path=pdf_path, format="A4")
@@ -2542,6 +2542,44 @@ async def _browser_watchdog(bot: Bot, interval_seconds: int = 20):
             logging.error(f"[WATCHDOG] خطا در بررسی سلامت مرورگر: {e}")
 
 
+async def _get_next_job():
+    """
+    منتظر می‌ماند تا یک تسک از صف اولویت‌دار (priority_job_queue — تایید
+    کد امضا) یا صف عادی (job_queue) برسد. اگر هر دو هم‌زمان تسک داشته
+    باشند، تسک صف اولویت‌دار اول برگردانده می‌شود؛ چون کسی که کد امضای
+    موقت را از سامانه دریافت و ارسال کرده، مهلت محدودی دارد و باید فوراً
+    (جلوتر از بقیه‌ی تسک‌های در صف عادی مثل ناوبری/استعلام) پردازش شود.
+
+    Returns: (data, source_queue) — source_queue همان صفی است که آیتم از
+    آن گرفته شده؛ برای put/task_done درست در ادامه لازم است.
+    """
+    priority_get = asyncio.ensure_future(runtime_state.priority_job_queue.get())
+    normal_get = asyncio.ensure_future(runtime_state.job_queue.get())
+    try:
+        done, pending = await asyncio.wait(
+            {priority_get, normal_get}, return_when=asyncio.FIRST_COMPLETED
+        )
+    except asyncio.CancelledError:
+        priority_get.cancel()
+        normal_get.cancel()
+        raise
+
+    if priority_get in done:
+        if normal_get in done:
+            # هر دو هم‌زمان آماده بودند — تسک عادی را از دست نمی‌دهیم،
+            # به همان صف برمی‌گردانیمش تا در دور بعدی پردازش شود.
+            try:
+                runtime_state.job_queue.put_nowait(normal_get.result())
+            except Exception:
+                pass
+        else:
+            normal_get.cancel()
+        return priority_get.result(), runtime_state.priority_job_queue
+    else:
+        priority_get.cancel()
+        return normal_get.result(), runtime_state.job_queue
+
+
 async def browser_worker(bot: Bot):
     runtime_state.playwright_instance = await async_playwright().start()
     try:
@@ -2553,16 +2591,18 @@ async def browser_worker(bot: Bot):
         # ── حلقه‌ی اصلی با حفاظت در برابر کرش ──
         while True:
             data = None
+            source_queue = runtime_state.job_queue
             try:
-                data = await runtime_state.job_queue.get()
+                data, source_queue = await _get_next_job()
 
                 # بررسی سلامت مرورگر قبل از پردازش؛ اگر بسته بود، بدون
                 # ری‌استارت ربات دوباره بازش کن و بعد همین تسک را پردازش کن
                 if not await ensure_browser_alive(bot):
-                    # بازسازی ناموفق بود؛ تسک را به انتهای صف برگردان تا از
-                    # بین نرود و بعداً (وقتی مرورگر درست شد) دوباره تلاش شود
-                    await runtime_state.job_queue.put(data)
-                    runtime_state.job_queue.task_done()
+                    # بازسازی ناموفق بود؛ تسک را به همان صفی که از آن آمده
+                    # برگردان تا از بین نرود و بعداً (وقتی مرورگر درست شد)
+                    # دوباره تلاش شود
+                    await source_queue.put(data)
+                    source_queue.task_done()
                     await asyncio.sleep(10)
                     continue
 
@@ -2581,7 +2621,7 @@ async def browser_worker(bot: Bot):
                     else:
                         raise
 
-                runtime_state.job_queue.task_done()
+                source_queue.task_done()
             except KeyboardInterrupt:
                 logging.warning("[WORKER] KeyboardIntercept دریافت شد — خروج.")
                 break
@@ -2613,7 +2653,7 @@ async def browser_worker(bot: Bot):
                 except Exception:
                     pass
                 try:
-                    runtime_state.job_queue.task_done()
+                    source_queue.task_done()
                 except ValueError:
                     pass
     finally:

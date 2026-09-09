@@ -3282,7 +3282,7 @@ async def _print_check(page, browser_context, bill_no: str, bot: Bot, user_id: i
         await asyncio.sleep(8)
         # بررسی انقضا روی صفحهٔ چاپ — بدون ریسک ری‌استارت کل تسکِ ثبت‌شده
         try:
-            await check_and_handle_expiry(print_page, bot, user_id)
+            await check_and_handle_expiry(print_page, bot, user_id, check_body_text=False)
         except Exception:
             pass
         await print_page.pdf(path=pdf_path, format="A4")

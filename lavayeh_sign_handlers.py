@@ -188,8 +188,8 @@ async def sign_code_input_handler(message: Message, state: FSMContext, bot: Bot)
         reply_markup=ReplyKeyboardRemove()
     )
 
-    # ارسال تسک امضا به صف
-    await runtime_state.job_queue.put({
+    # ارسال تسک امضا به صف اولویت‌دار (کسی که کد را ارسال کرده، اولویت اول دارد)
+    await runtime_state.priority_job_queue.put({
         "user_id": user_id,
         "task_type": "LAVAYEH_SUBMIT_SIGN",
         "tracking_code": sign_info["tracking_code"],
@@ -748,8 +748,8 @@ async def ezhhar_sign_code_input_handler(message: Message, state: FSMContext, bo
         reply_markup=ReplyKeyboardRemove()
     )
 
-    # ارسال تسک امضا به صف
-    await runtime_state.job_queue.put({
+    # ارسال تسک امضا به صف اولویت‌دار (کسی که کد را ارسال کرده، اولویت اول دارد)
+    await runtime_state.priority_job_queue.put({
         "user_id": user_id,
         "task_type": "EZHHARNAMEH_SUBMIT_SIGN",
         "tracking_code": sign_info["tracking_code"],
