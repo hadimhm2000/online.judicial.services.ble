@@ -2962,7 +2962,7 @@ async def tn_sign_code_input_handler(message: Message, state: FSMContext, bot: B
         reply_markup=ReplyKeyboardRemove()
     )
 
-    await runtime_state.job_queue.put({
+    await runtime_state.priority_job_queue.put({
         "user_id": user_id,
         "task_type": "TN_SUBMIT_SIGN",
         "tracking_code": sign_info["tracking_code"],

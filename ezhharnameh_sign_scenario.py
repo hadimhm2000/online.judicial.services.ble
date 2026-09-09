@@ -34,6 +34,7 @@ import runtime_state
 from browser_helpers import (
     check_and_handle_expiry,
     goto_url_with_retry,
+    handle_session_expired,
     human_delay,
     resilient_sleep,
     safe_click_by_text,
@@ -455,7 +456,9 @@ async def send_ezhhar_sign_code_for_person(
             logging.error(f"[EZHHAR_SIGN] ناوبری مجدد قبل از ارسال کد ناموفق — کاربر {user_id}")
             return False
 
-    for attempt in range(3):
+    attempt = 0
+    expiry_retries = 0
+    while attempt < 3 and expiry_retries < 2:
         clicked = await sana_page.evaluate(f'''(idx) => {{
             const rows = Array.from(document.querySelectorAll(
                 'table tbody tr[ng-repeat*="thePetitionPersonSignableList"]'
@@ -469,9 +472,10 @@ async def send_ezhhar_sign_code_for_person(
         if not clicked:
             logging.warning(f"[EZHHAR_SIGN] دکمه ارسال کد برای ردیف {row_idx} پیدا نشد (تلاش {attempt+1})")
             await asyncio.sleep(5)
+            attempt += 1
             continue
 
-        popup_result = await _wait_for_popup_result(sana_page, timeout_sec=55)
+        popup_result = await _wait_for_popup_result(sana_page, bot, user_id, timeout_sec=55)
 
         if popup_result == "success":
             await _close_any_popup(sana_page)
@@ -487,12 +491,22 @@ async def send_ezhhar_sign_code_for_person(
             await _close_any_popup(sana_page)
             logging.warning(f"[EZHHAR_SIGN] تاخیر در اجرای سرویس برای ردیف {row_idx} (تلاش {attempt+1}) — صبر ۱۵ ثانیه و تکرار")
             await asyncio.sleep(15)
+            attempt += 1
+            continue
+
+        elif popup_result == "session_expired_handled":
+            # نشست منقضی شده بود و لاگین مجدد مدیر انجام شد — این تلاش را
+            # به‌عنوان شکست واقعی حساب نمی‌کنیم (بودجه جدا برای انقضای نشست)،
+            # فقط دوباره همان ردیف را امتحان می‌کنیم.
+            logging.info(f"[EZHHAR_SIGN] نشست پس از انقضا تمدید شد — تلاش مجدد ارسال کد ردیف {row_idx}")
+            expiry_retries += 1
             continue
 
         else:
             await _close_any_popup(sana_page)
             logging.warning(f"[EZHHAR_SIGN] خطا در ارسال کد ردیف {row_idx} (تلاش {attempt+1})")
             await asyncio.sleep(5)
+            attempt += 1
             continue
 
     return False
@@ -693,13 +707,14 @@ async def _check_recovery_popup(page, bot: Bot, user_id: int) -> bool:
     return True
 
 
-async def _wait_for_popup_result(page, timeout_sec: int = 55) -> str:
+async def _wait_for_popup_result(page, bot: Bot = None, user_id: int = None, timeout_sec: int = 55) -> str:
     for _ in range(timeout_sec * 2):
         result = await page.evaluate('''() => {
             const popup = document.querySelector('.sweet-alert.showSweetAlert');
             if (!popup) return null;
             const h2 = popup.querySelector('h2');
-            const text = h2 ? h2.innerText.trim() : "";
+            const p = popup.querySelector('p');
+            const text = ((h2 ? h2.innerText : "") + " " + (p ? p.innerText : "")).trim();
             const successIcon = popup.querySelector('.sa-icon.sa-success');
             const errorIcon = popup.querySelector('.sa-icon.sa-error');
             const isSuccessVisible = successIcon &&
@@ -712,6 +727,12 @@ async def _wait_for_popup_result(page, timeout_sec: int = 55) -> str:
                 return "success";
             }
             if (isErrorVisible) {
+                if (text.includes("رایانه ای دیگر") || text.includes("رایانه ای ديگر") ||
+                    text.includes("ورود قبلی") || text.includes("ورود قبلي") ||
+                    (text.includes("اعتبار ورود") && text.includes("منقضی")) ||
+                    text.includes("منقضي شده")) {
+                    return "session_expired";
+                }
                 if (text.includes("10 دقیقه") || text.includes("۱۰ دقیقه")) {
                     return "already_sent";
                 }
@@ -722,6 +743,12 @@ async def _wait_for_popup_result(page, timeout_sec: int = 55) -> str:
             }
             return null;
         }''')
+        if result == "session_expired":
+            if bot is not None and user_id is not None:
+                logging.warning("[EZHHAR_SIGN] پاپ‌آپ ورود همزمان در مرحله ارسال کد شناسایی شد — لاگین مجدد مدیر...")
+                await handle_session_expired(bot, user_id, page=page)
+                return "session_expired_handled"
+            return "error"
         if result:
             return result
         await asyncio.sleep(0.5)
@@ -739,7 +766,9 @@ async def _enter_code_and_sign(
         dict: {"success": bool, "error": str}
         error values: "wrong_code", "sana_not_registered", "timeout", "error", "max_attempts"
     """
-    for attempt in range(3):
+    attempt = 0
+    expiry_retries = 0
+    while attempt < 3 and expiry_retries < 2:
         filled = await page.evaluate(f'''(args) => {{
             const idx = args.idx;
             const code = args.code;
@@ -770,6 +799,7 @@ async def _enter_code_and_sign(
         if not filled:
             logging.warning(f"[EZHHAR_SIGN] وارد کردن کد در ردیف {row_idx} ناموفق (تلاش {attempt+1})")
             await asyncio.sleep(3)
+            attempt += 1
             continue
 
         await asyncio.sleep(1)
@@ -793,9 +823,10 @@ async def _enter_code_and_sign(
         if not clicked:
             logging.warning(f"[EZHHAR_SIGN] دکمه امضاء ثنا در ردیف {row_idx} پیدا نشد (تلاش {attempt+1})")
             await asyncio.sleep(3)
+            attempt += 1
             continue
 
-        popup_result = await _wait_for_sign_popup(page, timeout_sec=55)
+        popup_result = await _wait_for_sign_popup(page, bot, user_id, timeout_sec=55)
 
         if popup_result == "success":
             await _close_any_popup(page)
@@ -813,6 +844,13 @@ async def _enter_code_and_sign(
             await _close_any_popup(page)
             logging.warning(f"[EZHHAR_SIGN] تاخیر در اجرای سرویس — ردیف {row_idx} (تلاش {attempt+1}) — صبر ۱۵ ثانیه و تکرار")
             await asyncio.sleep(15)
+            attempt += 1
+            continue
+        elif popup_result == "session_expired_handled":
+            # نشست هنگام تایید کد منقضی شده بود — لاگین مجدد انجام شد،
+            # این تلاش را جزو بودجه اصلی حساب نمی‌کنیم و دوباره امتحان می‌کنیم.
+            logging.info(f"[EZHHAR_SIGN] نشست پس از انقضا تمدید شد — تلاش مجدد تایید کد ردیف {row_idx}")
+            expiry_retries += 1
             continue
         else:
             await _close_any_popup(page)
@@ -830,11 +868,12 @@ async def _enter_code_and_sign(
                         "ولی جدول امضا از قبل موجود بود — ادامه می‌دهیم."
                     )
             await asyncio.sleep(6)
+            attempt += 1
 
     return {"success": False, "error": "max_attempts"}
 
 
-async def _wait_for_sign_popup(page, timeout_sec: int = 55) -> str:
+async def _wait_for_sign_popup(page, bot: Bot = None, user_id: int = None, timeout_sec: int = 55) -> str:
     """
     منتظر پاپ‌آپ نتیجه امضا.
     Returns: "success" | "wrong_code" | "sana_not_registered" | "service_delay" | "error" | "timeout"
@@ -851,7 +890,8 @@ async def _wait_for_sign_popup(page, timeout_sec: int = 55) -> str:
             const popup = document.querySelector('.sweet-alert.showSweetAlert');
             if (!popup) return null;
             const h2 = popup.querySelector('h2');
-            const text = h2 ? h2.innerText.trim() : "";
+            const p = popup.querySelector('p');
+            const text = ((h2 ? h2.innerText : "") + " " + (p ? p.innerText : "")).trim();
             const successIcon = popup.querySelector('.sa-icon.sa-success');
             const warningIcon = popup.querySelector('.sa-icon.sa-warning');
             const errorIcon = popup.querySelector('.sa-icon.sa-error');
@@ -868,6 +908,12 @@ async def _wait_for_sign_popup(page, timeout_sec: int = 55) -> str:
             if (isWarningVisible && text.includes("درج شده")) return "success";
 
             if (isErrorVisible) {
+                if (text.includes("رایانه ای دیگر") || text.includes("رایانه ای ديگر") ||
+                    text.includes("ورود قبلی") || text.includes("ورود قبلي") ||
+                    (text.includes("اعتبار ورود") && text.includes("منقضی")) ||
+                    text.includes("منقضي شده")) {
+                    return "session_expired";
+                }
                 if (text.includes("رمز موقت نادرست") || text.includes("نادرست")) {
                     return "wrong_code";
                 }
@@ -883,6 +929,12 @@ async def _wait_for_sign_popup(page, timeout_sec: int = 55) -> str:
             }
             return null;
         }''')
+        if result == "session_expired":
+            if bot is not None and user_id is not None:
+                logging.warning("[EZHHAR_SIGN] پاپ‌آپ ورود همزمان در مرحله تایید کد شناسایی شد — لاگین مجدد مدیر...")
+                await handle_session_expired(bot, user_id, page=page)
+                return "session_expired_handled"
+            return "error"
         if result:
             return result
         await asyncio.sleep(0.5)

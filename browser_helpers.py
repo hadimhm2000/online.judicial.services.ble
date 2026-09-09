@@ -314,7 +314,7 @@ async def wait_for_angular_idle(page):
     except Exception as e:
         logging.warning(f"Error waiting for angular idle: {e}")
 
-async def check_and_handle_expiry(page, bot: Bot, user_id: int):
+async def check_and_handle_expiry(page, bot: Bot, user_id: int, check_body_text: bool = True):
     """بررسی انقضای نشست
 
     پاپ‌آپ‌های شناسایی‌شده:
@@ -322,6 +322,14 @@ async def check_and_handle_expiry(page, bot: Bot, user_id: int):
       - مدال «ورود قبلی منقضی» / «رایانه ای دیگر» (سشن منقضی‌شده)
       - ریدایرکت به صفحه لاگین
       - انحراف GetLegalPersonType
+
+    check_body_text: اگر False باشد، بررسی متن کلی صفحه (بخش ۳) انجام
+      نمی‌شود. برای صفحات چاپ/استعلام (print_page) که متن کامل سند
+      حقوقی/قضایی را دارند حتماً باید False باشد — چون این اسناد به
+      احتمال زیاد حاوی کلماتی مثل «اعتبار»، «ورود» یا «منقضی» به‌صورت
+      کاملاً بی‌ربط به نشست هستند و بررسی سراسری متن می‌تواند غلط‌مثبت
+      (false positive) ایجاد کند و کاربر را بدون هیچ خطای واقعی سامانه
+      با پیام «لاگین مجدد» مواجه کند.
     """
     if "GetLegalPersonType" in page.url:
         logging.warning("⚠️ انحراف به GetLegalPersonType شناسایی شد!")
@@ -338,7 +346,7 @@ async def check_and_handle_expiry(page, bot: Bot, user_id: int):
         await handle_session_expired(bot, user_id, page=page)
         return True
 
-    is_expired = await page.evaluate('''() => {
+    is_expired = await page.evaluate('''(checkBodyText) => {
         // ── ۱. بررسی مدال تمدید نشست: «X از ساعت ورود شما می‌گذرد» ──
         const modal = document.querySelector('.modal-dialog, .modal.fade.in, .modal-content');
         if (modal) {
@@ -357,34 +365,42 @@ async def check_and_handle_expiry(page, bot: Bot, user_id: int):
         // ── ۲. بررسی sweet-alert خطای سشن ──
         const sweetPopup = document.querySelector('.sweet-alert.showSweetAlert');
         if (sweetPopup) {
+            const errorIcon = sweetPopup.querySelector('.sa-icon.sa-error');
+            const isErrorVisible = errorIcon &&
+                window.getComputedStyle(errorIcon).display !== 'none';
             const popupText = sweetPopup.innerText || "";
-            if (popupText.includes("منقضی") || popupText.includes("منقضي") ||
+            if (isErrorVisible && (
+                popupText.includes("منقضی") || popupText.includes("منقضي") ||
                 popupText.includes("رایانه ای دیگر") || popupText.includes("رایانه ای ديگر") ||
                 popupText.includes("ورود قبلی") || popupText.includes("ورود قبلي") ||
-                popupText.includes("اعتبار ورود") || popupText.includes("خطای دسترسی کاربر")) {
+                popupText.includes("اعتبار ورود") || popupText.includes("خطای دسترسی کاربر"))) {
                 return "session_sweet_alert";
             }
         }
 
-        // ── ۳. بررسی متن کلی صفحه ──
-        const text = document.body ? document.body.innerText : "";
-        const hasExpiryText = text.includes("منقضی") || text.includes("منقضي") ||
-                              text.includes("رایانه ای دیگر") || text.includes("رایانه ای ديگر") ||
-                              text.includes("ورود قبلی") || text.includes("ورود قبلي") ||
-                              text.includes("خطای دسترسی کاربر") || text.includes("نشست شما") ||
-                              text.includes("اعتبار ورود") ||
-                              text.includes("از ساعت ورود شما می‌گذرد") ||
-                              text.includes("اصل اولویت و احراز هویت");
+        // ── ۳. بررسی متن کلی صفحه (فقط اگر checkBodyText=true) ──
+        // این بررسی روی صفحات چاپ/استعلام (متن کامل سند حقوقی) انجام
+        // نمی‌شود چون می‌تواند غلط‌مثبت ایجاد کند.
+        if (checkBodyText) {
+            const text = document.body ? document.body.innerText : "";
+            const hasExpiryText = text.includes("منقضی") || text.includes("منقضي") ||
+                                  text.includes("رایانه ای دیگر") || text.includes("رایانه ای ديگر") ||
+                                  text.includes("ورود قبلی") || text.includes("ورود قبلي") ||
+                                  text.includes("خطای دسترسی کاربر") || text.includes("نشست شما") ||
+                                  text.includes("اعتبار ورود") ||
+                                  text.includes("از ساعت ورود شما می‌گذرد") ||
+                                  text.includes("اصل اولویت و احراز هویت");
+            if (hasExpiryText) return "session_body_text";
+        }
 
         // ── ۴. بررسی ریدایرکت به صفحه لاگین ──
         const isLoginPage = document.querySelector(
             '#txtUsername, #txtPassword, input[name="txtUsername"], input[placeholder*="کد ملی"]'
         ) !== null;
 
-        if (hasExpiryText) return "session_body_text";
         if (isLoginPage) return "login_redirect";
         return null;
-    }''')
+    }''', check_body_text)
     
     if is_expired:
         logging.warning(f"⚠️ انقضای/اعلان نشست شناسایی شد (نوع: {is_expired}) — شروع فرآیند لاگین مجدد مدیر...")

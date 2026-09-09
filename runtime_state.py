@@ -13,6 +13,12 @@ import asyncio
 import os
 
 job_queue: asyncio.Queue = asyncio.Queue()
+
+# ⭐ صف اولویت‌دار برای «تایید کد امضا» — وقتی کاربری کد موقتی را که سامانه
+# فرستاده تایپ و ارسال می‌کند (مهلت معمولاً فقط چند دقیقه است)، این تسک
+# باید فوراً و جلوتر از بقیه‌ی تسک‌های صف عادی (ناوبری/استعلام و ...)
+# پردازش شود تا کد قبل از انقضا در سامانه ثبت گردد.
+priority_job_queue: asyncio.Queue = asyncio.Queue()
 login_event: asyncio.Event = asyncio.Event()
 
 # نمونه‌ی زنده‌ی Dispatcher — در بدو اجرا داخل bot.py مقداردهی می‌شود.
