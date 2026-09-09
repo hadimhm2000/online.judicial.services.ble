@@ -1337,7 +1337,7 @@ async def _print_lavayeh(page, browser_context, bill_no: str, bot: Bot, user_id:
         print_page = await new_page_info.value
         await print_page.wait_for_load_state("load", timeout=30000)
         await asyncio.sleep(8)
-        await check_and_handle_expiry(print_page, bot, user_id)
+        await check_and_handle_expiry(print_page, bot, user_id, check_body_text=False)
         await print_page.pdf(path=pdf_path, format="A4")
         await print_page.close()
         if _is_valid_pdf_file(pdf_path):
