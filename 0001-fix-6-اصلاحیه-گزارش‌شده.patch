@@ -1,0 +1,2009 @@
+From 98edea55e683cc92c7e32292cc1fae6840a36fcd Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 9 Sep 2026 16:48:57 +0000
+Subject: [PATCH] =?UTF-8?q?fix:=20=D8=A7=D8=B9=D9=85=D8=A7=D9=84=20=DB=B6?=
+ =?UTF-8?q?=20=D8=A7=D8=B5=D9=84=D8=A7=D8=AD=DB=8C=D9=87=20=DA=AF=D8=B2?=
+ =?UTF-8?q?=D8=A7=D8=B1=D8=B4=E2=80=8C=D8=B4=D8=AF=D9=87=20(=D9=85=D9=87?=
+ =?UTF-8?q?=D9=84=D8=AA=20=D8=B1=D9=87=DA=AF=DB=8C=D8=B1=DB=8C=D8=8C=20?=
+ =?UTF-8?q?=D8=AE=D8=B7=D8=A7=DB=8C=20=D9=81=D8=B1=D9=85=20=D8=A7=D8=B4?=
+ =?UTF-8?q?=D8=AA=D8=A8=D8=A7=D9=87=D8=8C=20=D9=86=D8=B4=D8=B3=D8=AA=20?=
+ =?UTF-8?q?=D9=85=D9=86=D9=82=D8=B6=DB=8C=20=D8=AF=D8=B1=20=DA=86=D8=A7?=
+ =?UTF-8?q?=D9=BE=D8=8C=20=D8=AA=D8=A7=D8=B1=DB=8C=D8=AE=20=D8=AF=D8=A7?=
+ =?UTF-8?q?=D8=AF=D9=86=D8=A7=D9=85=D9=87=D8=8C=20=D9=BE=D9=86=D9=84=20?=
+ =?UTF-8?q?=D8=A7=D8=AF=D9=85=DB=8C=D9=86)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- مهلت رایگان ۴۵ دقیقه‌ای برای کد رهگیری نامعتبر تکمیل شد (state گمشده + handler)
+- خطای «کد رهگیری متعلق به اظهارنامه است» تشخیص داده می‌شود و همان مهلت ۴۵ دقیقه‌ای اعمال می‌شود
+- رفع باگ ترتیب آرگومان در handle_session_expired (تجدیدنظر)
+- تمام ۶ تابع چاپ اکنون در صورت انقضای نشست، تب را بسته و پس از لاگین مجدد دوباره تلاش می‌کنند
+- پرکردن قوی NoticeDateTime + انتظار progress bar در هر دو مسیر تجدیدنظر یکسان شد
+- پنل ادمین: ریست کامل داده‌ها (Case و وابسته‌ها)، رفع HTTP 405 در انتقال به «ارسال»، هزینه صفر برای پرونده‌های معاف/ادمین
+- رفع باگ سود صفر: مارکاپ واقعی اعلام وکالت اکنون در systemCost/fee به‌درستی جدا ثبت می‌شود؛ فرمول اختصاصی اظهارنامه در محاسبه سود پنل
+- رفع گزارش کاذب «ناموفق» در امضای اظهارنامه (تشخیص «ثبت نشده در ثنا» مستقل از آیکون + نمایش متن خام سیستم به مدیر)
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01WnpiDQQCagNT75dF1YRr3d
+---
+ api_direct.py                              |  41 +++--
+ browser_helpers.py                         |  22 +++
+ check_scenario.py                          |  93 ++++++----
+ ealam_vakalaht_scenario.py                 | 132 +++++++++-----
+ error_catalog.py                           |  11 ++
+ ezhharnameh_scenario.py                    |  89 ++++++----
+ ezhharnameh_sign_scenario.py               |  33 +++-
+ handlers.py                                |  99 ++++++++++-
+ panel_sync.py                              |   5 +-
+ regional_value_handlers.py                 |  23 ++-
+ runtime_state.py                           |   7 +-
+ scenarios.py                               | 156 ++++++++++++-----
+ src/app/api/admin/reset/route.ts           |  48 ++++++
+ src/app/api/admin/seed/stats/route.ts      |  66 +++++--
+ src/app/api/admin/stats/route.ts           |  66 +++++--
+ src/components/admin/admin-header.tsx      |  15 +-
+ src/components/admin/admin-panel.tsx       |   7 +-
+ src/components/admin/lazy-panels.tsx       |  14 ++
+ src/components/admin/reset-data-dialog.tsx | 114 +++++++++++++
+ states.py                                  |   1 +
+ tajdid_nazar_scenario.py                   | 190 ++++++++++++++-------
+ upload_helpers.py                          |  46 +----
+ 22 files changed, 959 insertions(+), 319 deletions(-)
+ create mode 100644 src/app/api/admin/reset/route.ts
+ create mode 100644 src/components/admin/reset-data-dialog.tsx
+
+diff --git a/api_direct.py b/api_direct.py
+index a295560..8e5b092 100644
+--- a/api_direct.py
++++ b/api_direct.py
+@@ -23,6 +23,7 @@ import aiohttp
+ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+ 
+ import runtime_state
++import error_catalog
+ from browser_helpers import force_click_by_text, is_login_redirect_url
+ from config import FEES
+ 
+@@ -53,6 +54,12 @@ class InvalidTrackingCodeError(FastCheckError):
+     pass
+ 
+ 
++class WrongFormTrackingCodeError(FastCheckError):
++    """کدرهگیری معتبر است اما متعلق به نوع سند دیگری است و در این فرم
++    قابل بازیابی نیست (متن واقعی سامانه در پیام استثنا قرار می‌گیرد)."""
++    pass
++
++
+ class EndpointsNotDiscovered(FastCheckError):
+     pass
+ 
+@@ -325,21 +332,29 @@ async def _do_page_check(tracking_code, category, subcategory, user_id, bot) ->
+         await _wait_for_loading(page, timeout=45)
+         await _dismiss_error_and_retry(page)
+ 
+-        # ── بررسی خطای «کد رهگیری معتبر نیست» ────────────────────
+-        invalid_code_popup = await page.evaluate('''() => {
++        # ── بررسی خطای «کد رهگیری معتبر نیست» / «متعلق به فرم دیگر» ────
++        popup_text = await page.evaluate('''() => {
+             const popup = document.querySelector('.sweet-alert.showSweetAlert');
+-            if (popup) {
+-                const t = popup.innerText || "";
+-                if (t.includes("معتبر نیست")) return true;
+-            }
+-            return false;
++            if (!popup) return null;
++            const h2 = popup.querySelector('h2');
++            const p = popup.querySelector('p');
++            const clean = [h2 ? h2.innerText.trim() : '', p ? p.innerText.trim() : ''].filter(Boolean).join(' - ').trim();
++            return clean || (popup.innerText || '').trim() || null;
+         }''')
+-        if invalid_code_popup:
+-            try:
+-                await page.locator('.sweet-alert.showSweetAlert button.confirm').click(timeout=5000)
+-            except Exception:
+-                pass
+-            raise InvalidTrackingCodeError("کد رهگیری یا نوع خدمت نامعتبر است")
++        if popup_text:
++            popup_category = error_catalog.classify(popup_text)
++            if popup_category == error_catalog.WRONG_FORM_TRACKING_CODE:
++                try:
++                    await page.locator('.sweet-alert.showSweetAlert button.confirm').click(timeout=5000)
++                except Exception:
++                    pass
++                raise WrongFormTrackingCodeError(popup_text)
++            if popup_category == error_catalog.VALIDATION:
++                try:
++                    await page.locator('.sweet-alert.showSweetAlert button.confirm').click(timeout=5000)
++                except Exception:
++                    pass
++                raise InvalidTrackingCodeError("کد رهگیری یا نوع خدمت نامعتبر است")
+ 
+         # ── بررسی یافتن پرونده ───────────────────────────────────
+         not_found = await page.evaluate('''() => {
+diff --git a/browser_helpers.py b/browser_helpers.py
+index 0528d57..2572fad 100644
+--- a/browser_helpers.py
++++ b/browser_helpers.py
+@@ -412,6 +412,28 @@ async def check_and_handle_expiry(page, bot: Bot, user_id: int, check_body_text:
+ 
+     return False
+ 
++
++async def check_concurrent_login_all_sections(page, bot: Bot, user_id: int, prefix: str = "GLOBAL") -> bool:
++    """
++    🔔 طبق فایل توضیحات: «خطای ورود همزمان را به تمام بخش‌های لایحه و
++    اعلام وکالت و اظهارنامه و استعلامات و زیرمجموعه‌های بخش‌های در ثبت
++    اضافه کن» — از جمله ناوبری امضا و چاپ در تمام بخش‌ها.
++
++    این تابع wrapper «تشخیص + مدیریت خودکار» (check + handle) است — نسخه‌ی
++    ساده‌شده‌ی check_and_handle_expiry مخصوص جایی که فقط پاپ‌آپ ورود همزمان
++    مطرح است (نه بررسی مدال/متن صفحه). می‌توان آن را از هر نقطه از هر
++    سناریو (امضا، چاپ، استعلام و ...) فراخوانی کرد.
++
++    بازگشت: True اگر خطای ورود همزمان تشخیص داده شد (و مدیریت/لاگین مجدد
++    آغاز شد).
++    """
++    if await detect_concurrent_login_popup(page):
++        logging.error(f"[{prefix}] 🚨 خطای ورود همزمان تشخیص داده شد — اطلاع به مدیر برای لاگین مجدد")
++        await check_and_handle_expiry(page, bot, user_id)
++        return True
++    return False
++
++
+ async def check_and_handle_load_error(page):
+     """بررسی خطاهای لود صفحه"""
+     has_load_error = await page.evaluate('''() => {
+diff --git a/check_scenario.py b/check_scenario.py
+index bf294cb..68cfaae 100644
+--- a/check_scenario.py
++++ b/check_scenario.py
+@@ -3260,45 +3260,74 @@ async def _print_check(page, browser_context, bill_no: str, bot: Bot, user_id: i
+     را باید برای کاربر ارسال کرد. خطا و الگوهای چاپ از بخش اظهارنامه
+     برداشته شده است (کلیک باکس → expect_page → PDF → بستن صفحهٔ جدید).
+     """
++    from lavayeh_scenario import _is_valid_pdf_file
+     pdf_path = f"check_{bill_no or user_id}_{int(time.time())}.pdf"
+-    try:
+-        async def click_print():
+-            await page.evaluate('''() => {
+-                const heads = Array.from(document.querySelectorAll('.box h5'));
+-                const t = heads.find(el => el.innerText && (
+-                    el.innerText.includes("چاپ اوليه") || el.innerText.includes("چاپ اولیه")
+-                ));
+-                if (t) {
+-                    const box = t.closest('.box');
+-                    if (box) box.click();
+-                }
+-            }''')
+ 
+-        async with browser_context.expect_page(timeout=25000) as new_page_info:
+-            await click_print()
++    async def click_print():
++        await page.evaluate('''() => {
++            const heads = Array.from(document.querySelectorAll('.box h5'));
++            const t = heads.find(el => el.innerText && (
++                el.innerText.includes("چاپ اوليه") || el.innerText.includes("چاپ اولیه")
++            ));
++            if (t) {
++                const box = t.closest('.box');
++                if (box) box.click();
++            }
++        }''')
+ 
+-        print_page = await new_page_info.value
+-        await print_page.wait_for_load_state("load", timeout=30000)
+-        await asyncio.sleep(8)
+-        # بررسی انقضا روی صفحهٔ چاپ — بدون ریسک ری‌استارت کل تسکِ ثبت‌شده
+-        try:
+-            await check_and_handle_expiry(print_page, bot, user_id, check_body_text=False)
+-        except Exception:
+-            pass
+-        await print_page.pdf(path=pdf_path, format="A4")
+-        logging.info(f"[CHECK] PDF چاپ اولیه ذخیره شد: {pdf_path}")
++    # ⭐ تا ۲ تلاش: اگر حین چاپ نشست منقضی شود، check_and_handle_expiry لاگین
++    # مجدد را انجام می‌دهد؛ چون print_page ممکن است به Offices/Index
++    # ریدایرکت شده باشد (نه سند واقعی)، تلاش دوم صفحه‌ی چاپ را از نو باز
++    # می‌کند تا PDF واقعی گرفته شود.
++    last_err = None
++    for attempt in range(1, 3):
++        print_page = None
+         try:
+-            await print_page.close()
+-        except Exception:
+-            pass
+-        return pdf_path
++            async with browser_context.expect_page(timeout=25000) as new_page_info:
++                await click_print()
+ 
+-    except Exception as e:
+-        logging.error(f"[CHECK] خطا در چاپ PDF: {e}")
++            print_page = await new_page_info.value
++            await print_page.wait_for_load_state("load", timeout=30000)
++            await asyncio.sleep(8)
++            session_expired = False
++            try:
++                session_expired = await check_and_handle_expiry(print_page, bot, user_id, check_body_text=False)
++            except Exception:
++                pass
++            if session_expired:
++                try:
++                    await print_page.close()
++                except Exception:
++                    pass
++                print_page = None
++                if attempt < 2:
++                    continue
++            else:
++                await print_page.pdf(path=pdf_path, format="A4")
++                logging.info(f"[CHECK] PDF چاپ اولیه ذخیره شد: {pdf_path}")
++                try:
++                    await print_page.close()
++                except Exception:
++                    pass
++                print_page = None
++                if _is_valid_pdf_file(pdf_path):
++                    return pdf_path
++                logging.warning(f"[CHECK] PDF چاپ نامعتبر بود (تلاش {attempt}/2)")
++        except Exception as e:
++            last_err = e
++            logging.error(f"[CHECK] خطا در چاپ PDF (تلاش {attempt}/2): {e}")
++        finally:
++            if print_page is not None:
++                try:
++                    await print_page.close()
++                except Exception:
++                    pass
++
++    if last_err is not None:
+         try:
+             from bug_reporter import report_bug
+-            await report_bug(bot, where="check_print", error=e,
++            await report_bug(bot, where="check_print", error=last_err,
+                              user_id=user_id, page=page)
+         except Exception:
+             pass
+-        return ""
++    return pdf_path if _is_valid_pdf_file(pdf_path) else ""
+diff --git a/ealam_vakalaht_scenario.py b/ealam_vakalaht_scenario.py
+index 366fbbc..6ff3d82 100644
+--- a/ealam_vakalaht_scenario.py
++++ b/ealam_vakalaht_scenario.py
+@@ -338,16 +338,22 @@ async def process_ealam_vakalaht_task(data: dict, bot: Bot):
+             await _click_step_box(sana_page, "محاسبه و دريافت هزينه", bot, user_id)
+             await resilient_sleep(sana_page, 8, bot, user_id)
+ 
+-            court_total = await _calculate_cost_with_retry(sana_page, bot, user_id)
+-            logging.info(f"[EALAM] court_total: {court_total}")
++            _ealam_cost_info = await _calculate_cost_with_retry(sana_page, bot, user_id)
++            court_total = _ealam_cost_info.get("final_total", 0)
++            raw_system_cost = _ealam_cost_info.get("raw_amount", 0) or court_total
++            logging.info(f"[EALAM] court_total (نهایی/مارکاپ‌خورده): {court_total}, raw_system_cost: {raw_system_cost}")
+ 
+             # ── گرفتن شناسه پرداخت از بخش هزینه (فقط ذخیره در شیت + پیام به مدیر) ──
++            # ⭐ رفع باگ سود صفر: amount باید هزینهٔ خامِ سامانه باشد (پیش از
++            # فرمول مارکاپ دفتر)، نه court_total که مبلغ نهاییِ دریافتی از
++            # کاربر است — وگرنه در پنل «هزینهٔ سامانه» == «هزینه» می‌شود و
++            # سود همیشه صفر نمایش داده می‌شود.
+             from payment_id_capture import capture_and_report_payment_ids
+             await capture_and_report_payment_ids(
+                 sana_page, bot, user_id,
+                 service_name="اعلام وکالت",
+                 tracking_code=lavayeh_bill_no or tracking_code,
+-                amount=court_total,
++                amount=raw_system_cost,
+                 exclude_values=[tracking_code, lavayeh_bill_no],
+                 log_prefix="EALAM")
+ 
+@@ -1160,25 +1166,36 @@ async def _click_preparation_with_retry(page, bot: Bot, user_id: int, max_retrie
+     return False
+ 
+ 
+-async def _calculate_cost_with_retry(page, bot: Bot, user_id: int, max_retries: int = 3) -> int:
++async def _calculate_cost_with_retry(page, bot: Bot, user_id: int, max_retries: int = 3) -> dict:
+     """محاسبه هزینه اعلام وکالت — پارس جدول هزینه‌ها و محاسبه مبلغ کل.
+ 
+     جدول هزینه شامل ردیف‌هایی با ستون مبلغ و یک ردیف «جمع کل هزینه»
+     (با پس‌زمینه سبز) است.
+ 
+     منطق محاسبه:
+-      1. استخراج مبلغ جمع کل (costSum) از td.color-green
++      1. استخراج مبلغ جمع کل (costSum) از td.color-green — این همان «هزینهٔ
++         خام سامانه» است (مثل court_total خام لایحه/main_total اظهارنامه).
+       2. استخراج مبالغ ردیف‌ها از td.color-red
+       3. کم کردن ردیف ۷ (تمبر مالیاتی ماده 103) و ردیف ۸ (تمبر سهم صندوق) از جمع کل
+       4. رند بالا به نزدیک‌ترین ۱۰,۰۰۰ ریال
+-      5. اعمال فرمول کسر بر اساس بازه مبلغ:
++      5. اعمال فرمول کسر بر اساس بازه مبلغ (همان فرمول مارکاپ دفتر —
++         مشابه calculate_lavayeh_fee):
+          - تا ۲,۰۰۰,۰۰۰ ریال → کسر ۱۰۰,۰۰۰ ریال
+          - ۲,۰۰۰,۰۰۱ تا ۳,۰۰۰,۰۰۰ → کسر ۲۸۰,۰۰۰ ریال
+          - بالای ۳,۰۰۰,۰۰۱ → کسر ۴۰۰,۰۰۰ ریال
+-      6. مبلغ نهایی = مبلغ_رند + (مبلغ_رند − کسر)
++      6. مبلغ نهایی (final_total) = مبلغ_رند + (مبلغ_رند − کسر)
+ 
+     اگر جدول بعد از ۳۰ ثانیه نمایش داده نشد، دکمه
+     «محاسبه هزینه دادرسی و تعرفه خدمات» کلیک می‌شود.
++
++    ⭐ رفع باگ سود صفر: قبلاً این تابع فقط final_total (مبلغ نهاییِ
++    مارکاپ‌خورده) را برمی‌گرداند و همان مقدار هم به‌عنوان «هزینهٔ دریافتی
++    از کاربر» و هم به‌عنوان «هزینهٔ سامانه» (systemCost) در پنل ثبت
++    می‌شد — در نتیجه سود همیشه صفر محاسبه می‌شد، با اینکه فرمول مارکاپ
++    (مرحلهٔ ۵ و ۶ بالا) واقعاً از کاربر دریافت می‌شود. حالا هم مبلغ خام
++    (raw_amount = costSum، پیش از هرگونه فرمول/کسر) و هم مبلغ نهایی
++    برگردانده می‌شود تا فراخوان بتواند raw_amount را به‌عنوان هزینهٔ
++    سامانه و final_total را به‌عنوان مبلغ دریافتی از کاربر، جداگانه ثبت کند.
+     """
+     for attempt in range(max_retries):
+         await _close_error_popup(page)
+@@ -1299,16 +1316,16 @@ async def _calculate_cost_with_retry(page, bot: Bot, user_id: int, max_retries:
+             final_total = rounded + net  # = 2 * rounded - deduction
+ 
+             logging.info(
+-                f"[EALAM] محاسبه هزینه: adjusted={adjusted:,} -> rounded={rounded:,}, "
++                f"[EALAM] محاسبه هزینه: costSum(raw)={cost_sum:,}, adjusted={adjusted:,} -> rounded={rounded:,}, "
+                 f"deduction={deduction:,}, net={net:,}, final_total={final_total:,}"
+             )
+ 
+-            return final_total
++            return {"raw_amount": cost_sum, "final_total": final_total}
+ 
+         await asyncio.sleep(10)
+ 
+     logging.error(f"[EALAM] استخراج مبلغ پس از {max_retries} تلاش ناموفق (user={user_id})")
+-    return 0
++    return {"raw_amount": 0, "final_total": 0}
+ 
+ 
+ async def _print_lavayeh(page, browser_context, bill_no: str, bot: Bot, user_id: int) -> str:
+@@ -1318,47 +1335,76 @@ async def _print_lavayeh(page, browser_context, bill_no: str, bot: Bot, user_id:
+     if not _code or _code.lower() == "none":
+         _code = f"u{user_id}-{int(time.time())}"
+     pdf_path = f"ealam_vakalaht_{_code}.pdf"
+-    try:
+-        async def click_print():
+-            await page.evaluate('''() => {
+-                const heads = Array.from(document.querySelectorAll('.box h5'));
+-                const target = heads.find(el => el.innerText && (
+-                    el.innerText.includes("چاپ اوليه") || el.innerText.includes("چاپ اولیه")
+-                ));
+-                if (target) {
+-                    const box = target.closest('.box');
+-                    if (box) box.click();
+-                }
+-            }''')
+ 
+-        async with browser_context.expect_page(timeout=20000) as new_page_info:
+-            await click_print()
+-
+-        print_page = await new_page_info.value
+-        await print_page.wait_for_load_state("load", timeout=30000)
+-        await asyncio.sleep(8)
+-        await check_and_handle_expiry(print_page, bot, user_id, check_body_text=False)
+-        await print_page.pdf(path=pdf_path, format="A4")
+-        await print_page.close()
+-        if _is_valid_pdf_file(pdf_path):
+-            return pdf_path
+-        logging.warning(f"[EALAM] PDF چاپ نامعتبر بود؛ فال‌بک صفحه اصلی... (user={user_id})")
+-    except Exception as e:
+-        logging.error(f"[EALAM] خطا در چاپ: {e}")
++    async def click_print():
++        await page.evaluate('''() => {
++            const heads = Array.from(document.querySelectorAll('.box h5'));
++            const target = heads.find(el => el.innerText && (
++                el.innerText.includes("چاپ اوليه") || el.innerText.includes("چاپ اولیه")
++            ));
++            if (target) {
++                const box = target.closest('.box');
++                if (box) box.click();
++            }
++        }''')
+ 
++    # ⭐ تا ۲ تلاش: اگر حین چاپ نشست منقضی شود، check_and_handle_expiry
++    # لاگین مجدد را انجام می‌دهد؛ اما چون print_page ممکن است به Offices/Index
++    # ریدایرکت شده باشد (نه سند واقعی)، تلاش دوم صفحه‌ی چاپ را از نو باز
++    # می‌کند تا PDF واقعی گرفته شود — نه بازگشت مستقیم به صفحه‌ی اصلی.
++    last_err = None
++    for attempt in range(1, 3):
++        print_page = None
+         try:
+-            await page.pdf(path=pdf_path, format="A4")
+-        except Exception:
+-            pass
++            async with browser_context.expect_page(timeout=20000) as new_page_info:
++                await click_print()
++
++            print_page = await new_page_info.value
++            await print_page.wait_for_load_state("load", timeout=30000)
++            await asyncio.sleep(8)
++            session_expired = await check_and_handle_expiry(print_page, bot, user_id, check_body_text=False)
++            if session_expired:
++                # نشست تازه تمدید شد — همین print_page دیگر معتبر نیست؛
++                # آن را ببند و با تلاش بعدی از نو صفحه‌ی چاپ را باز کن.
++                try:
++                    await print_page.close()
++                except Exception:
++                    pass
++                print_page = None
++                if attempt < 2:
++                    continue
++            else:
++                await print_page.pdf(path=pdf_path, format="A4")
++                await print_page.close()
++                print_page = None
++                if _is_valid_pdf_file(pdf_path):
++                    return pdf_path
++                logging.warning(f"[EALAM] PDF چاپ نامعتبر بود؛ فال‌بک صفحه اصلی... (user={user_id})")
++        except Exception as e:
++            last_err = e
++            logging.error(f"[EALAM] خطا در چاپ (تلاش {attempt}/2): {e}")
++        finally:
++            if print_page is not None:
++                try:
++                    await print_page.close()
++                except Exception:
++                    pass
+ 
++    if not _is_valid_pdf_file(pdf_path):
+         try:
+-            from bug_reporter import report_bug
+-            await report_bug(bot, where="click_print", error=e,
+-                             user_id=user_id,
+-                             page=getattr(runtime_state, "sana_page", None))
++            await page.pdf(path=pdf_path, format="A4")
+         except Exception:
+             pass
+ 
++        if last_err is not None:
++            try:
++                from bug_reporter import report_bug
++                await report_bug(bot, where="click_print", error=last_err,
++                                 user_id=user_id,
++                                 page=getattr(runtime_state, "sana_page", None))
++            except Exception:
++                pass
++
+     if not _is_valid_pdf_file(pdf_path):
+         logging.error(f"[EALAM] تولید PDF اعلام وکالت ناموفق بود (user={user_id})")
+         try:
+diff --git a/error_catalog.py b/error_catalog.py
+index 5bf4571..1880513 100644
+--- a/error_catalog.py
++++ b/error_catalog.py
+@@ -32,6 +32,10 @@ SIGN_ALREADY_SENT = "sign_already_sent"
+ SIGN_SUCCESS = "sign_success"
+ RECOVERY_SUCCESS = "recovery_success"
+ 
++# کدرهگیری معتبر است اما متعلق به نوع سند دیگری است (مثلاً اظهارنامه) و در
++# این فرم/بخش قابل بازیابی نیست
++WRONG_FORM_TRACKING_CODE = "wrong_form_tracking_code"
++
+ UPLOAD_PAGE_COUNT = "upload_page_count"
+ UPLOAD_FILE_SIZE = "upload_file_size"
+ UPLOAD_FILE_TYPE = "upload_file_type"
+@@ -83,6 +87,12 @@ CATALOG = [
+     (SIGN_ALREADY_SENT, [
+         "10 دقیقه", "۱۰ دقیقه",
+     ]),
++    # ⚠️ باید پیش از RECOVERY_SUCCESS بررسی شود چون این پیام هم شامل واژه‌ی
++    # عمومی «بازیابی» است («... قابل بازیابی در این فرم نیست»)
++    (WRONG_FORM_TRACKING_CODE, [
++        "قابل بازیابی در این فرم نیست",
++        "قابل بازیابی در این فرم نمی باشد",
++    ]),
+     (RECOVERY_SUCCESS, [
+         "بازیابی اظهارنامه با موفقیت", "بازیابی",
+     ]),
+@@ -244,6 +254,7 @@ def describe(text) -> str:
+         SIGN_ALREADY_SENT: "کد قبلاً ارسال شده",
+         SIGN_SUCCESS: "امضای موفق",
+         RECOVERY_SUCCESS: "بازیابی موفق",
++        WRONG_FORM_TRACKING_CODE: "کدرهگیری متعلق به فرم/نوع سند دیگر",
+         UPLOAD_PAGE_COUNT: "خطای تعداد صفحات",
+         UPLOAD_FILE_SIZE: "خطای حجم فایل",
+         UPLOAD_FILE_TYPE: "خطای نوع فایل",
+diff --git a/ezhharnameh_scenario.py b/ezhharnameh_scenario.py
+index 1134d90..2112fd0 100644
+--- a/ezhharnameh_scenario.py
++++ b/ezhharnameh_scenario.py
+@@ -2229,43 +2229,74 @@ async def _calculate_cost(page, bot: Bot, user_id: int, max_retries: int = 3) ->
+ 
+ 
+ async def _print_ezhharnameh(page, browser_context, bill_no: str, bot: Bot, user_id: int) -> str:
++    from lavayeh_scenario import _is_valid_pdf_file
+     pdf_path = f"ezhharnameh_{bill_no}.pdf"
+-    try:
+-        async def click_print():
+-            await page.evaluate('''() => {
+-                const heads = Array.from(document.querySelectorAll('.box h5'));
+-                const t = heads.find(el => el.innerText && (
+-                    el.innerText.includes("چاپ اوليه") || el.innerText.includes("چاپ اولیه")
+-                ));
+-                if (t) {
+-                    const box = t.closest('.box');
+-                    if (box) box.click();
+-                }
+-            }''')
+ 
+-        async with browser_context.expect_page(timeout=20000) as new_page_info:
+-            await click_print()
++    async def click_print():
++        await page.evaluate('''() => {
++            const heads = Array.from(document.querySelectorAll('.box h5'));
++            const t = heads.find(el => el.innerText && (
++                el.innerText.includes("چاپ اوليه") || el.innerText.includes("چاپ اولیه")
++            ));
++            if (t) {
++                const box = t.closest('.box');
++                if (box) box.click();
++            }
++        }''')
+ 
+-        print_page = await new_page_info.value
+-        await print_page.wait_for_load_state("load", timeout=30000)
+-        await asyncio.sleep(8)
+-        await check_and_handle_expiry(print_page, bot, user_id, check_body_text=False)
+-        await print_page.pdf(path=pdf_path, format="A4")
+-        await print_page.close()
+-    except Exception as e:
+-        logging.error(f"[EZHHAR] خطا در چاپ: {e}")
++    # ⭐ تا ۲ تلاش: اگر حین چاپ نشست منقضی شود، check_and_handle_expiry لاگین
++    # مجدد را انجام می‌دهد؛ چون print_page ممکن است به Offices/Index
++    # ریدایرکت شده باشد (نه سند واقعی)، تلاش دوم صفحه‌ی چاپ را از نو باز
++    # می‌کند تا PDF واقعی گرفته شود.
++    last_err = None
++    for attempt in range(1, 3):
++        print_page = None
+         try:
+-            await page.pdf(path=pdf_path, format="A4")
+-        except Exception:
+-            pass
++            async with browser_context.expect_page(timeout=20000) as new_page_info:
++                await click_print()
++
++            print_page = await new_page_info.value
++            await print_page.wait_for_load_state("load", timeout=30000)
++            await asyncio.sleep(8)
++            session_expired = await check_and_handle_expiry(print_page, bot, user_id, check_body_text=False)
++            if session_expired:
++                try:
++                    await print_page.close()
++                except Exception:
++                    pass
++                print_page = None
++                if attempt < 2:
++                    continue
++            else:
++                await print_page.pdf(path=pdf_path, format="A4")
++                await print_page.close()
++                print_page = None
++                if _is_valid_pdf_file(pdf_path):
++                    return pdf_path
++                logging.warning(f"[EZHHAR] PDF چاپ نامعتبر بود (تلاش {attempt}/2)... (user={user_id})")
++        except Exception as e:
++            last_err = e
++            logging.error(f"[EZHHAR] خطا در چاپ (تلاش {attempt}/2): {e}")
++        finally:
++            if print_page is not None:
++                try:
++                    await print_page.close()
++                except Exception:
++                    pass
+ 
++    if not _is_valid_pdf_file(pdf_path):
+         try:
+-            from bug_reporter import report_bug
+-            await report_bug(bot, where="click_print", error=e,
+-                             user_id=user_id,
+-                             page=getattr(runtime_state, "sana_page", None))
++            await page.pdf(path=pdf_path, format="A4")
+         except Exception:
+             pass
++        if last_err is not None:
++            try:
++                from bug_reporter import report_bug
++                await report_bug(bot, where="click_print", error=last_err,
++                                 user_id=user_id,
++                                 page=getattr(runtime_state, "sana_page", None))
++            except Exception:
++                pass
+     return pdf_path
+ 
+ 
+diff --git a/ezhharnameh_sign_scenario.py b/ezhharnameh_sign_scenario.py
+index 6f2b904..a34f0a9 100644
+--- a/ezhharnameh_sign_scenario.py
++++ b/ezhharnameh_sign_scenario.py
+@@ -768,6 +768,7 @@ async def _enter_code_and_sign(
+     """
+     attempt = 0
+     expiry_retries = 0
++    last_popup_result = None  # ⭐ برای گزارش محافظه‌کارانه‌تر «max_attempts» پایین نگه داشته می‌شود
+     while attempt < 3 and expiry_retries < 2:
+         filled = await page.evaluate(f'''(args) => {{
+             const idx = args.idx;
+@@ -854,6 +855,7 @@ async def _enter_code_and_sign(
+             continue
+         else:
+             await _close_any_popup(page)
++            last_popup_result = popup_result
+             logging.warning(f"[EZHHAR_SIGN] امضای ردیف {row_idx} ناموفق: {popup_result} (تلاش {attempt+1})")
+ 
+             clicked_sign = await _click_sign_section(page)
+@@ -870,7 +872,16 @@ async def _enter_code_and_sign(
+             await asyncio.sleep(6)
+             attempt += 1
+ 
+-    return {"success": False, "error": "max_attempts"}
++    # ⭐ رفع باگ «ناموفق کاذب»: قبلاً این نقطه فقط «max_attempts» برمی‌گرداند و
++    # متن واقعی آخرین پاپ‌آپ سیستم به‌کلی گم می‌شد — یعنی حتی اگر پیام سیستم
++    # چیزی خنثی/idempotent (نه یک خطای واقعی) بود، به کاربر/مدیر فقط «ناموفق»
++    # نشان داده می‌شد. حالا متن خام آخرین پاپ‌آپ (در صورت وجود) هم در
++    # raw_message برگردانده می‌شود تا در پیام به مدیر قابل بررسی باشد.
++    logging.error(
++        f"[EZHHAR_SIGN] امضای ردیف {row_idx} پس از {attempt} تلاش ناموفق ماند. "
++        f"آخرین پاپ‌آپ: {last_popup_result}"
++    )
++    return {"success": False, "error": "max_attempts", "raw_message": last_popup_result}
+ 
+ 
+ async def _wait_for_sign_popup(page, bot: Bot = None, user_id: int = None, timeout_sec: int = 55) -> str:
+@@ -902,6 +913,15 @@ async def _wait_for_sign_popup(page, bot: Bot = None, user_id: int = None, timeo
+             const isErrorVisible = errorIcon &&
+                 window.getComputedStyle(errorIcon).display !== "none";
+ 
++            // ⭐ رفع باگ «ناموفق کاذب»: امضا در سامانه ثنا ثبت نشده —
++            // «امضای شخص ... در سامانه ثنا درج نشده است» — این پیام هرگز در
++            // حالت موفق ظاهر نمی‌شود، پس صرف‌نظر از وضعیت آیکون (isErrorVisible)
++            // بررسی می‌شود؛ قبلاً این بررسی فقط داخل شاخهٔ isErrorVisible بود و
++            // اگر آیکون خطا به هر دلیل visible تشخیص داده نمی‌شد (مثلاً تاخیر در
++            // رندر CSS)، این حالت به‌جای «amضای ثبت‌نشده» به‌عنوان «ناموفق کلی»
++            // گزارش می‌شد. (مطابق الگوی lavayeh_sign_scenario.py::_wait_for_sign_popup)
++            if (text.includes("در سامانه ثنا درج نشده")) return "sana_not_registered";
++
+             if (isSuccessVisible) return "success";
+ 
+             // هشدار ولی واقعاً موفق — "امضاء « name » در صفحه ی چاپ درج شده است"
+@@ -917,15 +937,16 @@ async def _wait_for_sign_popup(page, bot: Bot = None, user_id: int = None, timeo
+                 if (text.includes("رمز موقت نادرست") || text.includes("نادرست")) {
+                     return "wrong_code";
+                 }
+-                // تشخیص خطای "امضای شخص ... در سامانه ثنا درج نشده است"
+-                if (text.includes("در سامانه ثنا درج نشده")) {
+-                    return "sana_not_registered";
+-                }
+                 // تاخیر در اجرای سرویس — باید بستن پاپ‌آپ و تکرار همان مرحله
+                 if (text.includes("تاخیر") || text.includes("تأخیر")) {
+                     return "service_delay";
+                 }
+-                return "error";
++                // ⭐ محافظه‌کارتر شدن catch-all: به‌جای گزارش صرف «error»،
++                // متن واقعی پاپ‌آپ هم برگردانده می‌شود تا اگر پیامی بود که
++                // در دسته‌های بالا شناسایی نشد (مثلاً پیام موفقیت/idempotent
++                // ناشناخته‌ای که سامانه ثنا بعداً اضافه کند)، لاگ و پیام ادمین
++                // متن واقعی سیستم را نشان دهد، نه فقط برچسب مبهم «ناموفق».
++                return "error:" + text.slice(0, 300);
+             }
+             return null;
+         }''')
+diff --git a/handlers.py b/handlers.py
+index fa071cb..8350693 100644
+--- a/handlers.py
++++ b/handlers.py
+@@ -29,7 +29,8 @@ from sheets import append_to_sheet, log_event
+ from api_direct import (
+     fast_pre_check, FastCheckError, SessionExpiredError as FastSessionExpiredError,
+     PetitionNotFoundError as FastPetitionNotFoundError,
+-    InvalidTrackingCodeError as FastInvalidTrackingCodeError)
++    InvalidTrackingCodeError as FastInvalidTrackingCodeError,
++    WrongFormTrackingCodeError as FastWrongFormTrackingCodeError)
+ from keyboards import (
+     restart_kb, accept_rules_kb, flow_type_kb, get_flow_type_kb, get_main_menu_kb, main_menu_kb, doc_category_kb,
+     attachments_kb, cart_kb, pay_kb, confirm_single_kb, confirm_cart_kb, bulk_inquiry_confirm_kb,
+@@ -1168,6 +1169,86 @@ async def process_tracking_code(message: types.Message, state: FSMContext):
+     await message.answer("مربوط به کدام دسته است؟", reply_markup=doc_category_kb)
+     await state.set_state(Form.waiting_for_doc_category)
+ 
++@router.message(Form.waiting_for_corrected_tracking_code)
++async def process_corrected_tracking_code(message: types.Message, state: FSMContext):
++    """مصرف‌کننده‌ی فرصت رایگان اصلاح کدرهگیری بعد از خطای «کدرهگیری نامعتبر»
++    یا «کدرهگیری متعلق به فرم دیگر» — طی مهلت INVALID_TRACKING_RETRY_MINUTES
++    دقیقه‌ای، بدون نیاز به پرداخت مجدد (job از روی template_job بازسازی و
++    مستقیماً در صف قرار می‌گیرد، بدون عبور از مسیر فاکتور/پرداخت)."""
++    if not message.text:
++        return
++    user_id = message.from_user.id
++
++    if "انصراف" in message.text or message.text == "🔙 بازگشت":
++        runtime_state.invalid_tracking_retry.pop(user_id, None)
++        await message.answer(
++            "❌ فرصت اصلاح لغو شد.\nدر صورت نیاز، لطفاً مجدداً از منوی اصلی اقدام فرمایید.",
++            reply_markup=get_main_menu_kb(user_id)
++        )
++        await state.set_state(Form.main_menu)
++        return
++
++    info = runtime_state.invalid_tracking_retry.get(user_id)
++    if not info:
++        await message.answer(
++            "⚠️ فرصت اصلاح یافت نشد یا قبلاً استفاده شده است.\nلطفاً از منوی اصلی مجدداً اقدام فرمایید.",
++            reply_markup=get_main_menu_kb(user_id)
++        )
++        await state.set_state(Form.main_menu)
++        return
++
++    if datetime.datetime.now() > info["expires_at"]:
++        runtime_state.invalid_tracking_retry.pop(user_id, None)
++        await message.answer(
++            f"⏰ بازه‌ی {runtime_state.INVALID_TRACKING_RETRY_MINUTES} دقیقه‌ای فرصت رایگان به پایان رسیده است.\n"
++            f"برای ادامه لازم است مجدداً از منوی اصلی و با پرداخت هزینه اقدام فرمایید.",
++            reply_markup=get_main_menu_kb(user_id)
++        )
++        await state.set_state(Form.main_menu)
++        return
++
++    clean_code = message.text.translate(
++        str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
++    ).replace(" ", "").strip()
++    if not re.match(r'^[0-9]+$', clean_code):
++        await message.answer("⚠️ فرمت نامعتبر است. فقط کدرهگیری (عدد) ارسال کنید:")
++        return
++    if not _is_valid_tracking_code(clean_code):
++        await message.answer(
++            "⚠️ کد رهگیری نامعتبر است.\n"
++            "کد رهگیری باید ۱۶ رقم باشد و با یکی از سال‌های ۱۳۹۴ تا ۱۴۰۶ (یعنی اعداد ۱۳۹۴۲۲۰ الی ۱۴۰۶۲۲۰) شروع شود.\n"
++            "لطفاً کد را دوباره بررسی و ارسال فرمایید:"
++        )
++        return
++
++    template_job = dict(info.get("template_job") or {})
++    template_job["user_id"] = user_id
++    template_job["tracking_code"] = clean_code
++
++    remaining = info.get("remaining", 1) - 1
++    queue_position = runtime_state.job_queue.qsize()
++    queue_note = f"\n📊 موقعیت شما در صف: {queue_position + 1}" if queue_position > 0 else "\n▶️ پردازش بلافاصله آغاز می‌شود."
++
++    if remaining > 0:
++        info["remaining"] = remaining
++        runtime_state.invalid_tracking_retry[user_id] = info
++        await message.answer(
++            f"✅ کدرهگیری اصلاح‌شده دریافت شد و بدون پرداخت مجدد در صف پردازش قرار گرفت.\n"
++            f"📋 کدرهگیری: {clean_code}{queue_note}\n\n"
++            f"لطفاً کدرهگیری اصلاح‌شده‌ی بعدی را ارسال نمایید ({remaining} مورد باقی‌مانده):"
++        )
++    else:
++        runtime_state.invalid_tracking_retry.pop(user_id, None)
++        await message.answer(
++            f"✅ کدرهگیری اصلاح‌شده دریافت شد و بدون پرداخت هزینه‌ی مجدد در صف پردازش قرار گرفت.\n"
++            f"📋 کدرهگیری: {clean_code}{queue_note}",
++            reply_markup=restart_kb
++        )
++        await state.clear()
++
++    await runtime_state.job_queue.put(template_job)
++
++
+ @router.message(Form.waiting_for_doc_category)
+ async def process_doc_category(message: types.Message, state: FSMContext):
+     category = message.text
+@@ -1262,6 +1343,22 @@ async def process_attachments_opt(message: types.Message, state: FSMContext):
+                     f"⚠️ لطفاً کدرهگیری و نوع سند خود را بررسی کنید.\n"
+                     f"(تلاش {attempts} از {MAX_INQUIRY_ATTEMPTS})")
+             return
++        except FastWrongFormTrackingCodeError as e:
++            attempts = _record_failed_inquiry(message.from_user.id)
++            if attempts >= MAX_INQUIRY_ATTEMPTS:
++                await message.answer(
++                    f"❌ {str(e)}\n\n"
++                    f"⚠️ *تعداد دفعات تلاش شما به حداکثر ({MAX_INQUIRY_ATTEMPTS} بار) رسیده است.*\n\n"
++                    f"لطفاً کدرهگیری و نوع سند (لایحه، اظهارنامه، شکواییه و ...) را به‌دقت بررسی فرمایید و مجدداً از منوی اصلی شروع کنید.",
++                    reply_markup=get_main_menu_kb(message.from_user.id))
++                await state.clear()
++            else:
++                remaining = MAX_INQUIRY_ATTEMPTS - attempts
++                await message.answer(
++                    f"❌ {str(e)}\n\n"
++                    f"⚠️ لطفاً کدرهگیری و نوع سند خود را بررسی کنید.\n"
++                    f"(تلاش {attempts} از {MAX_INQUIRY_ATTEMPTS})")
++            return
+         except FastSessionExpiredError:
+             logger.warning("[FAST-CHECK] نشست منقضی — فال‌بک به صف مرورگر")
+         except FastCheckError as e:
+diff --git a/panel_sync.py b/panel_sync.py
+index 2f7333f..a08f1f4 100644
+--- a/panel_sync.py
++++ b/panel_sync.py
+@@ -316,7 +316,10 @@ async def _mark_ready_impl(case_id: str):
+     await _update_case_impl(case_id, status="COMPLETED")
+ 
+     url = f"{ADMIN_API_BASE}/admin/cases/{case_id}/ready"
+-    data, err = await _panel_request("PUT", url, json={})
++    # ⭐ رفع باگ HTTP 405: روت /admin/cases/[id]/ready فقط POST را export
++    # می‌کند؛ فراخوانی قبلی با PUT همیشه با 405 رد می‌شد و پرونده‌های
++    # پرداخت‌شده هرگز وارد بخش «ارسال» پنل ادمین نمی‌شدند.
++    data, err = await _panel_request("POST", url, json={})
+     if data is None:
+         if err != "circuit_open":
+             logger.warning(f"[PANEL_SYNC] خطا در انتقال Case {case_id} به ready-to-send: {err}")
+diff --git a/regional_value_handlers.py b/regional_value_handlers.py
+index 758f17d..43a7355 100644
+--- a/regional_value_handlers.py
++++ b/regional_value_handlers.py
+@@ -26,6 +26,7 @@ from aiogram.types import (
+ import runtime_state
+ from bale_file_sender import send_document_direct
+ from config import ADMIN_ID, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, REGIONAL_VALUE_FEE
++from exempt_users import is_exempt_user
+ from keyboards import back_only_kb, get_main_menu_kb
+ from panel_sync import register_case_to_panel, update_case_in_panel
+ from states import Form
+@@ -212,6 +213,13 @@ async def process_land_use(message: Message, state: FSMContext, bot: Bot):
+     # wait=True: به case_id برگشتی برای آپدیت‌های بعدی نیاز داریم —
+     # (این تنها نقطه‌ای است که منتظر پنل می‌مانیم؛ بقیه عملیات پنل پس‌زمینه است)
+     data_so_far = await state.get_data()
++    # ⭐ رفع باگ: هزینه/cost پرونده‌هایی که با آیدی ادمین ثبت می‌شوند باید
++    # همیشه صفر باشد — قبلاً fee همیشه با REGIONAL_VALUE_FEE ثبت می‌شد و فقط
++    # feeStatus بعداً روی MANUAL_APPROVED تنظیم می‌شد (نه خودِ مبلغ fee)، پس
++    # هزینه‌ی غیرصفر برای ادمین در پنل باقی می‌ماند. از exempt_users.is_exempt_user
++    # استفاده می‌شود تا هر سه منبع معافیت (ADMIN_ID، لیست هاردکد، جدول
++    # ExemptUser پنل) یکسان اعمال شوند — نه فقط مقایسه‌ی مستقیم ADMIN_ID.
++    is_exempt = await is_exempt_user(message.from_user.id)
+     try:
+         case = await register_case_to_panel(
+             bale_user_id=message.from_user.id,
+@@ -220,8 +228,8 @@ async def process_land_use(message: Message, state: FSMContext, bot: Bot):
+             status="PENDING_PAYMENT",
+             document_category="ارزش منطقه‌ای",
+             province=data_so_far.get("rv_province", ""),
+-            fee=REGIONAL_VALUE_FEE,
+-            fee_status="UNPAID",
++            fee=0 if is_exempt else REGIONAL_VALUE_FEE,
++            fee_status="MANUAL_APPROVED" if is_exempt else "UNPAID",
+             wait=True,
+         )
+         panel_case_id = case.get("id") if case else None
+@@ -230,8 +238,8 @@ async def process_land_use(message: Message, state: FSMContext, bot: Bot):
+     except Exception as panel_err:
+         logger.warning(f"[RV] خطا در ثبت اولیه پرونده در پنل: {panel_err}")
+ 
+-    # ═══ معافیت ادمین از پرداخت ═══
+-    if message.from_user.id == ADMIN_ID:
++    # ═══ معافیت ادمین/کاربران معاف از پرداخت ═══
++    if is_exempt:
+         await message.answer(
+             "✅ *معافیت از پرداخت (ادمین)*\n\n"
+             "در حال استعلام ارزش منطقه‌ای...",
+@@ -315,13 +323,16 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
+     area = data.get("rv_area", 0)
+     land_use = data.get("rv_land_use", "مسکونی")
+     panel_case_id = data.get("rv_panel_case_id")
+-    is_admin_exempt_early = (user_id == ADMIN_ID)
++    is_admin_exempt_early = await is_exempt_user(user_id)
+ 
+     try:
++        # ⭐ همراه با feeStatus، خودِ fee هم صفر می‌شود تا هزینه‌ی نمایش‌داده‌شده
++        # در پنل برای پرونده‌های ثبت‌شده با آیدی ادمین همیشه صفر بماند.
+         await update_case_in_panel(
+             panel_case_id,
+             status="PROCESSING",
+             feeStatus="MANUAL_APPROVED" if is_admin_exempt_early else "PAID",
++            fee=0 if is_admin_exempt_early else REGIONAL_VALUE_FEE,
+         )
+     except Exception as panel_err:
+         logger.warning(f"[RV] خطا در آپدیت پرداخت پرونده در پنل: {panel_err}")
+@@ -478,7 +489,7 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
+         # ── اطلاع به ادمین ──
+         try:
+             import datetime
+-            is_admin_exempt = (user_id == ADMIN_ID)
++            is_admin_exempt = await is_exempt_user(user_id)
+             fee_line = "معاف از پرداخت (ادمین)" if is_admin_exempt else f"{REGIONAL_VALUE_FEE:,} تومان"
+             title = "🆓 استعلام ارزش منطقه‌ای (معاف - ادمین)" if is_admin_exempt else "💰 پرداخت ارزش منطقه‌ای"
+             await bot.send_message(
+diff --git a/runtime_state.py b/runtime_state.py
+index 5d71091..60726b5 100644
+--- a/runtime_state.py
++++ b/runtime_state.py
+@@ -239,16 +239,17 @@ inquiry_attempts: dict = {}
+ disrupted_users: dict = {}
+ 
+ # =========================================================
+-# فرصت رایگان اصلاح «کد رهگیری نامعتبر» (۳۰ دقیقه، بدون پرداخت مجدد)
++# فرصت رایگان اصلاح «کد رهگیری نامعتبر / کد رهگیری متعلق به فرم دیگر»
++# (۴۵ دقیقه، بدون پرداخت مجدد)
+ # =========================================================
+ # کلید: user_id (int)
+ # مقدار: {
+-#   "expires_at": datetime,     — پایان مهلت ۳۰ دقیقه‌ای
++#   "expires_at": datetime,     — پایان مهلت ۴۵ دقیقه‌ای
+ #   "remaining": int,           — تعداد اصلاحات رایگان باقی‌مانده
+ #   "template_job": dict,       — نمونه‌ی job اصلی (برای کپی need_attachments/full_name و ...)
+ # }
+ invalid_tracking_retry: dict = {}
+-INVALID_TRACKING_RETRY_MINUTES = 30
++INVALID_TRACKING_RETRY_MINUTES = 45
+ 
+ # =========================================================
+ # پیگیری پیشرفت استعلام‌های دسته‌جمعی (برای گزارش نهایی کدهای نامعتبر)
+diff --git a/scenarios.py b/scenarios.py
+index fe1e635..c137552 100644
+--- a/scenarios.py
++++ b/scenarios.py
+@@ -9,6 +9,7 @@ from aiogram import Bot
+ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+ 
+ import runtime_state
++import error_catalog
+ from bale_file_sender import send_document_direct
+ from config import ADMIN_ID, DEBUG_LOG_REQUESTS, FEES, get_fee
+ from sheets import log_event
+@@ -240,22 +241,31 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
+             page = None
+             return await _process_pre_check_on_new_page(data, bot, _retry=True)
+ 
+-        # ── بررسی خطای «کد رهگیری معتبر نیست» ────────────────────────
+-        invalid_code_popup = await page.evaluate('''() => {
++        # ── بررسی خطای «کد رهگیری معتبر نیست» / «متعلق به فرم دیگر» ──────
++        popup_text = await page.evaluate('''() => {
+             const popup = document.querySelector('.sweet-alert.showSweetAlert');
+-            if (popup) {
+-                const t = popup.innerText || "";
+-                if (t.includes("معتبر نیست")) return true;
+-            }
+-            return false;
++            if (!popup) return null;
++            const h2 = popup.querySelector('h2');
++            const p = popup.querySelector('p');
++            const clean = [h2 ? h2.innerText.trim() : '', p ? p.innerText.trim() : ''].filter(Boolean).join(' - ').trim();
++            return clean || (popup.innerText || '').trim() || null;
+         }''')
+-        if invalid_code_popup:
+-            try:
+-                await page.locator('.sweet-alert.showSweetAlert button.confirm').click(timeout=5000)
+-            except Exception:
+-                pass
+-            await bot.send_message(user_id, "❌ کدرهگیری یا نوع خدمت را اشتباه وارد نموده‌اید.")
+-            return
++        if popup_text:
++            popup_category = error_catalog.classify(popup_text)
++            if popup_category == error_catalog.WRONG_FORM_TRACKING_CODE:
++                try:
++                    await page.locator('.sweet-alert.showSweetAlert button.confirm').click(timeout=5000)
++                except Exception:
++                    pass
++                await bot.send_message(user_id, f"❌ {popup_text}")
++                return
++            if popup_category == error_catalog.VALIDATION:
++                try:
++                    await page.locator('.sweet-alert.showSweetAlert button.confirm').click(timeout=5000)
++                except Exception:
++                    pass
++                await bot.send_message(user_id, "❌ کدرهگیری یا نوع خدمت را اشتباه وارد نموده‌اید.")
++                return
+ 
+         # ── ۶. بررسی عدم یافتن پرونده ─────────────────────────────
+         not_found = await page.evaluate('''() => {
+@@ -945,22 +955,19 @@ async def _bulk_progress_note_result(bot: Bot, user_id: int, tracking_code: str,
+     return True
+ 
+ 
+-async def _handle_invalid_tracking_code(bot: Bot, user_id: int, data: dict, tracking_code: str, doc_name: str):
+-    """مدیریت خطای «کد رهگیری نامعتبر است» که سامانه نشان می‌دهد —
+-    هم برای استعلام تکی و هم برای هر آیتم از استعلام دسته‌جمعی (کارت/اکسل)."""
++async def _start_free_retry_window(bot: Bot, user_id: int, notice_text: str, data: dict, tracking_code: str, doc_name: str):
++    """فعال‌سازی مشترکِ فرصت رایگان اصلاح کدرهگیری (بدون پرداخت مجدد، به‌مدت
++    runtime_state.INVALID_TRACKING_RETRY_MINUTES دقیقه)، به‌همراه ارسال
++    notice_text به کاربر. هم برای خطای «کدرهگیری نامعتبر» و هم برای خطای
++    «کدرهگیری متعلق به فرم/نوع سند دیگر» استفاده می‌شود — هم برای استعلام
++    تکی و هم برای هر آیتم از استعلام دسته‌جمعی (کارت/اکسل)."""
+     was_batch_item = await _bulk_progress_note_result(bot, user_id, tracking_code, doc_name, is_invalid=True)
+     if was_batch_item:
+         return
+     # ── حالت تک‌موردی: بلافاصله به کاربر اطلاع بده و فرصت رایگان بده ──
+     import datetime as _dt
+     from states import Form
+-    await bot.send_message(
+-        user_id,
+-        f"❌ کدرهگیری‌ای که وارد نموده‌اید اشتباه است.\n\n"
+-        f"⏰ شما *{runtime_state.INVALID_TRACKING_RETRY_MINUTES} دقیقه* فرصت دارید تا بدون پرداخت هزینه‌ی مجدد، "
+-        f"کدرهگیری صحیح را ارسال و دوباره استعلام بگیرید.\n\n"
+-        f"لطفاً کدرهگیری جدید را ارسال نمایید:"
+-    )
++    await bot.send_message(user_id, notice_text)
+     runtime_state.invalid_tracking_retry[user_id] = {
+         "expires_at": _dt.datetime.now() + _dt.timedelta(minutes=runtime_state.INVALID_TRACKING_RETRY_MINUTES),
+         "remaining": 1,
+@@ -973,6 +980,31 @@ async def _handle_invalid_tracking_code(bot: Bot, user_id: int, data: dict, trac
+         logging.error(f"[INQUIRY] خطا در تنظیم state اصلاح کدرهگیری: {e}")
+ 
+ 
++async def _handle_invalid_tracking_code(bot: Bot, user_id: int, data: dict, tracking_code: str, doc_name: str):
++    """مدیریت خطای «کد رهگیری نامعتبر است» که سامانه نشان می‌دهد —
++    هم برای استعلام تکی و هم برای هر آیتم از استعلام دسته‌جمعی (کارت/اکسل)."""
++    notice_text = (
++        f"❌ کدرهگیری‌ای که وارد نموده‌اید اشتباه است.\n\n"
++        f"⏰ شما *{runtime_state.INVALID_TRACKING_RETRY_MINUTES} دقیقه* فرصت دارید تا بدون پرداخت هزینه‌ی مجدد، "
++        f"کدرهگیری صحیح را ارسال و دوباره استعلام بگیرید.\n\n"
++        f"لطفاً کدرهگیری جدید را ارسال نمایید:"
++    )
++    await _start_free_retry_window(bot, user_id, notice_text, data, tracking_code, doc_name)
++
++
++async def _handle_wrong_form_tracking_code(bot: Bot, user_id: int, data: dict, tracking_code: str, doc_name: str, system_text: str):
++    """مدیریت خطای «این کد رهگیری مربوط به نوع سند دیگری است» — متن واقعی
++    سامانه عیناً برای کاربر ارسال می‌شود و همان فرصت رایگان اصلاح فعال
++    می‌شود (بدون پرداخت هزینه‌ی مجدد)."""
++    notice_text = (
++        f"❌ {system_text}\n\n"
++        f"⏰ شما *{runtime_state.INVALID_TRACKING_RETRY_MINUTES} دقیقه* فرصت دارید تا با کدرهگیری/نوع سند صحیح، "
++        f"بدون پرداخت هزینه‌ی مجدد دوباره درخواست خود را ثبت نمایید.\n\n"
++        f"لطفاً کدرهگیری صحیح را ارسال نمایید:"
++    )
++    await _start_free_retry_window(bot, user_id, notice_text, data, tracking_code, doc_name)
++
++
+ async def process_task(data, bot: Bot):
+     sana_page = runtime_state.sana_page
+     browser_context = runtime_state.browser_context
+@@ -1575,18 +1607,35 @@ async def process_task(data, bot: Bot):
+                 await asyncio.sleep(3)
+                 await wait_for_horizontal_loading_bar(sana_page, bot, user_id, timeout=60)
+ 
+-                # ── بررسی خطای «کد رهگیری معتبر نیست» ────────────────────
++                # ── بررسی خطای «کد رهگیری معتبر نیست» / «متعلق به فرم دیگر» ──
+                 # این چک باید قبل از بستن خودکار پاپ‌آپ‌ها (پایین‌تر) انجام شود،
+                 # چون در غیر این صورت متن خطا قبل از خواندن، بسته می‌شود.
+-                invalid_code_popup = await sana_page.evaluate('''() => {
++                popup_text = await sana_page.evaluate('''() => {
+                     const popup = document.querySelector('.sweet-alert.showSweetAlert');
+-                    if (popup) {
+-                        const t = popup.innerText || "";
+-                        if (t.includes("معتبر نیست")) return true;
+-                    }
+-                    return false;
++                    if (!popup) return null;
++                    const h2 = popup.querySelector('h2');
++                    const p = popup.querySelector('p');
++                    const clean = [h2 ? h2.innerText.trim() : '', p ? p.innerText.trim() : ''].filter(Boolean).join(' - ').trim();
++                    return clean || (popup.innerText || '').trim() || null;
+                 }''')
+-                if invalid_code_popup:
++                popup_category = error_catalog.classify(popup_text) if popup_text else error_catalog.UNKNOWN
++                if popup_text and popup_category == error_catalog.WRONG_FORM_TRACKING_CODE:
++                    try:
++                        await sana_page.locator('.sweet-alert.showSweetAlert button.confirm').click(timeout=5000)
++                    except Exception:
++                        pass
++                    # اطلاع به مدیر
++                    try:
++                        await bot.send_message(
++                            ADMIN_ID,
++                            f"⚠️ [INQUIRY_FAIL] کاربر {user_id} — کدرهگیری متعلق به فرم دیگر — کد: `{tracking_code}` — نوع: {doc_name}\n"
++                            f"متن سامانه: {popup_text}"
++                        )
++                    except Exception:
++                        pass
++                    await _handle_wrong_form_tracking_code(bot, user_id, data, tracking_code, doc_name, popup_text)
++                    return
++                if popup_text and popup_category == error_catalog.VALIDATION:
+                     try:
+                         await sana_page.locator('.sweet-alert.showSweetAlert button.confirm').click(timeout=5000)
+                     except Exception:
+@@ -1655,17 +1704,31 @@ async def process_task(data, bot: Bot):
+                                 }
+                             }''')
+ 
+-                        async with browser_context.expect_page(timeout=15000) as new_page_info:
+-                            await click_print_box()
+-
+-                        print_page = await new_page_info.value
+-                        await print_page.wait_for_load_state()
+-                        await resilient_sleep(print_page, 8, bot, user_id)
+-                        await check_and_handle_expiry(print_page, bot, user_id, check_body_text=False)
+-
++                        # ⭐ تا ۲ تلاش: اگر حین چاپ نشست منقضی شود،
++                        # check_and_handle_expiry لاگین مجدد را انجام می‌دهد؛
++                        # چون print_page ممکن است به Offices/Index ریدایرکت
++                        # شده باشد (نه سند واقعی)، تلاش دوم صفحه‌ی چاپ را از
++                        # نو باز می‌کند تا PDF واقعی گرفته شود.
+                         pdf_path = f"report_{tracking_code}.pdf"
+-                        await print_page.pdf(path=pdf_path, format="A4")
+-                        await print_page.close()
++                        for _print_attempt in range(1, 3):
++                            print_page = None
++                            async with browser_context.expect_page(timeout=15000) as new_page_info:
++                                await click_print_box()
++
++                            print_page = await new_page_info.value
++                            await print_page.wait_for_load_state()
++                            await resilient_sleep(print_page, 8, bot, user_id)
++                            _session_expired = await check_and_handle_expiry(print_page, bot, user_id, check_body_text=False)
++                            if _session_expired:
++                                try:
++                                    await print_page.close()
++                                except Exception:
++                                    pass
++                                if _print_attempt < 2:
++                                    continue
++                            await print_page.pdf(path=pdf_path, format="A4")
++                            await print_page.close()
++                            break
+ 
+                         if need_attachments:
+                             saved_attachments.append((pdf_path, f"📄 استعلام کد پیگیری: `{tracking_code}`"))
+@@ -2379,6 +2442,15 @@ async def _process_ezhharnameh_submit_sign(data: dict, bot: Bot):
+                 await on_ezhhar_sign_sana_not_registered(bot, user_id, "امضای شخص در سامانه ثنا درج نشده است", user_state)
+                 await bot.send_message(ADMIN_ID, f"❌ [EZHHAR_SIGN] امضا در ثنا ثبت نیست — کاربر {user_id}.")
+             else:
++                # ⭐ رفع باگ «ناموفق کاذب»: متن خام آخرین پاپ‌آپ سیستم (در صورت
++                # وجود) هم برای مدیر ارسال می‌شود تا اگر واقعاً موفق بوده ولی
++                # به‌درستی دسته‌بندی نشده، از روی متن واقعی سیستم قابل تشخیص باشد.
++                raw_msg = result.get("raw_message") or "—"
++                await bot.send_message(
++                    ADMIN_ID,
++                    f"⚠️ [EZHHAR_SIGN] امضای اظهارنامه کاربر {user_id} با وضعیت نامشخص پایان یافت "
++                    f"(ردیف {row_idx}).\nآخرین پیام سامانه: {raw_msg}"
++                )
+                 await on_ezhhar_sign_submit_failure(bot, user_id, user_state)
+ 
+     except Exception as e:
+diff --git a/src/app/api/admin/reset/route.ts b/src/app/api/admin/reset/route.ts
+new file mode 100644
+index 0000000..b40d0cb
+--- /dev/null
++++ b/src/app/api/admin/reset/route.ts
+@@ -0,0 +1,48 @@
++import { db } from '@/lib/db';
++import { NextRequest, NextResponse } from 'next/server';
++
++// ⭐ ریست کامل داده‌ها — فقط پرونده‌ها (Case) و رکوردهای وابسته به آن‌ها
++// (ActivityLog, AdminAction, CaseNote) پاک می‌شوند. WorkingHour, BotMessage
++// و ExemptUser دست‌نخورده باقی می‌مانند (طبق تصمیم صریح مالک پروژه).
++//
++// عملیات غیرقابل‌بازگشت است — برای جلوگیری از فراخوانی تصادفی، باید در
++// بدنه‌ی درخواست دقیقاً { "confirm": "RESET" } ارسال شود.
++export async function POST(request: NextRequest) {
++  try {
++    const body = await request.json().catch(() => ({}));
++    const { confirm } = body as { confirm?: string };
++
++    if (confirm !== 'RESET') {
++      return NextResponse.json(
++        { error: 'برای تایید عملیات، مقدار confirm باید دقیقاً "RESET" باشد.' },
++        { status: 400 }
++      );
++    }
++
++    const [deletedActivityLogs, deletedAdminActions, deletedCaseNotes, deletedCases] =
++      await db.$transaction([
++        // ActivityLog با onDelete: SetNull به Case متصل است — با حذف Case
++        // خودکار پاک نمی‌شود، پس باید صریحاً حذف شود.
++        db.activityLog.deleteMany(),
++        // AdminAction و CaseNote با onDelete: Cascade تعریف شده‌اند و با حذف
++        // Case خودکار پاک می‌شوند؛ اینجا هم صریح حذف می‌شوند تا ترتیب و
++        // شمارش دقیق در پاسخ مشخص باشد.
++        db.adminAction.deleteMany(),
++        db.caseNote.deleteMany(),
++        db.case.deleteMany(),
++      ]);
++
++    return NextResponse.json({
++      message: 'تمام پرونده‌ها و سوابق مرتبط با موفقیت پاک شدند.',
++      deleted: {
++        cases: deletedCases.count,
++        activityLogs: deletedActivityLogs.count,
++        adminActions: deletedAdminActions.count,
++        caseNotes: deletedCaseNotes.count,
++      },
++    });
++  } catch (error) {
++    console.error('Reset data error:', error);
++    return NextResponse.json({ error: 'خطا در ریست داده‌ها' }, { status: 500 });
++  }
++}
+diff --git a/src/app/api/admin/seed/stats/route.ts b/src/app/api/admin/seed/stats/route.ts
+index db38288..819fdea 100644
+--- a/src/app/api/admin/seed/stats/route.ts
++++ b/src/app/api/admin/seed/stats/route.ts
+@@ -2,6 +2,7 @@ import { db } from '@/lib/db';
+ import { NextResponse } from 'next/server';
+ 
+ // ⭐ v1.3 — محاسبهٔ سود
++// ⭐ v1.5 — رفع باگ سود صفر برای اعلام وکالت + فرمول اختصاصی اظهارنامه
+ //
+ // قاعدهٔ کارفرما:
+ //   ۱) استعلام‌ها (INQUIRY / REGIONAL_VALUE) و خدمات بدون هزینهٔ سامانه
+@@ -9,11 +10,18 @@ import { NextResponse } from 'next/server';
+ //   ۲) سایر خدمات: سود = مبلغ اعلام‌شده به کاربر (fee) − هزینهٔ سامانه (systemCost).
+ //      - systemCost برای پرونده‌های جدید دقیقاً از ربات (payment_id_capture) ثبت می‌شود.
+ //      - برای پرونده‌های قدیمی، از فرمول‌های قیمت‌گذاری ربات برمی‌گردیم:
+-//        * CHECK / TAJDID_NAZAR / EALAM_VAKALAHT: کاربر دقیقاً هزینهٔ سامانه را می‌پردازد
+-//          (skip_fee_calc) → هزینهٔ سامانه = fee → سود ۰.
+-//        * LAVAYEH / EZHHARNAMEH: fee = 2×roundUp(هزینهٔ سامانه) − کسرِ پلکانی
++//        * CHECK / TAJDID_NAZAR: کاربر دقیقاً هزینهٔ سامانه را می‌پردازد
++//          (skip_fee_calc، بدون فرمول مارکاپ) → هزینهٔ سامانه = fee → سود ۰.
++//        * LAVAYEH: fee = 2×roundUp1000(هزینهٔ سامانه) − کسرِ پلکانی
+ //          (۱۰۰ / ۲۸۰ / ۴۰۰ هزار ریال) → با وارون‌سازی فرمول، هزینهٔ سامانه
+ //          بازسازی می‌شود (خطای حداکثر <۱۰۰۰ ریال).
++//        * EZHHARNAMEH: فرمول متفاوتی دارد (net = mainTotal − ۳ ردیف
++//          کسرشونده؛ rounded = roundUp10k(net)؛ final = roundUp10k(rounded
++//          + ۴۵۰,۰۰۰ + mainTotal)) — استفاده از فرمول لایحه برای این سرویس
++//          نادرست است، بنابراین وارون‌سازی جداگانه‌ای دارد.
++//        * EALAM_VAKALAHT: از v1.5 دیگر pass-through نیست — ربات از همان
++//          فرمول کسرِ پلکانی لایحه (روی مبلغ خامِ سامانه) برای محاسبهٔ مبلغ
++//          نهایی استفاده می‌کند، پس وارون‌سازی مشابه لایحه به‌کار می‌رود.
+ //
+ // شرایط شمارش: مثل «درآمد» فقط پرونده‌های PAID / MANUAL_APPROVED.
+ 
+@@ -29,12 +37,28 @@ const NO_SYSTEM_COST_SERVICES = new Set([
+ ]);
+ 
+ // سرویس‌هایی که کاربر دقیقاً هزینهٔ سامانه را می‌پردازد — سود ۰
++// ⭐ v1.5: EALAM_VAKALAHT از این لیست حذف شد — ربات از v1.5 مارکاپ واقعی
++// روی این سرویس اعمال می‌کند (رجوع کنید به ealam_vakalaht_scenario.py)،
++// بنابراین دیگر pass-through نیست.
+ const PASS_THROUGH_SERVICES = new Set([
+   'CHECK',
+   'TAJDID_NAZAR',
+-  'EALAM_VAKALAHT',
+ ]);
+ 
++// وارون‌سازی فرمول کسرِ پلکانی لایحه/اعلام وکالت (روی مبلغ به تومان):
++//   fee_toman = 2×rounded_toman − ded_toman
++//   کسرهای پلکانی: ۱۰,۰۰۰ / ۲۸,۰۰۰ / ۴۰,۰۰۰ تومان (۱۰۰/۲۸۰/۴۰۰ هزار ریال)
++function invertLavayehStyleFormula(fee: number): number {
++  const r1 = (fee + 10_000) / 2;
++  if (r1 > 0 && r1 <= 200_000 && r1 % 100 === 0) return r1;
++  const r2 = (fee + 28_000) / 2;
++  if (r2 > 200_000 && r2 <= 300_000 && r2 % 100 === 0) return r2;
++  const r3 = (fee + 40_000) / 2;
++  if (r3 > 300_000 && r3 % 100 === 0) return r3;
++  // حالت‌های خاص (معاف/دستی): تقریب نصف مبلغ
++  return Math.round(fee / 2);
++}
++
+ function estimateSystemCost(serviceType: string, fee: number, recordedCost: number | null): number {
+   // ⭐ fee و systemCost از v1.4 به بعد هر دو به «تومان» هستند (مثل استعلام‌ها).
+   //   - ربات همهٔ feeها را قبل از ارسال به پنل به تومان تبدیل می‌کند
+@@ -56,19 +80,27 @@ function estimateSystemCost(serviceType: string, fee: number, recordedCost: numb
+     return fee;
+   }
+ 
+-  if (serviceType === 'LAVAYEH' || serviceType === 'EZHHARNAMEH') {
+-    // وارون‌سازی فرمول (به تومان):
+-    //   fee_rial = 2×rounded_rial − ded_rial
+-    //   ⟹  fee_toman = 2×rounded_toman − ded_toman
+-    //   کسرهای پلکانی: ۱۰,۰۰۰ / ۲۸,۰۰۰ / ۴۰,۰۰۰ تومان (۱۰۰/۲۸۰/۴۰۰ هزار ریال)
+-    const r1 = (fee + 10_000) / 2;
+-    if (r1 > 0 && r1 <= 200_000 && r1 % 100 === 0) return r1;
+-    const r2 = (fee + 28_000) / 2;
+-    if (r2 > 200_000 && r2 <= 300_000 && r2 % 100 === 0) return r2;
+-    const r3 = (fee + 40_000) / 2;
+-    if (r3 > 300_000 && r3 % 100 === 0) return r3;
+-    // حالت‌های خاص (معاف/دستی): تقریب نصف مبلغ
+-    return Math.round(fee / 2);
++  // LAVAYEH و EALAM_VAKALAHT هر دو دقیقاً از فرمول کسرِ پلکانی
++  // calculate_lavayeh_fee استفاده می‌کنند (رجوع کنید به config.py و
++  // ealam_vakalaht_scenario.py::_calculate_cost_with_retry).
++  if (serviceType === 'LAVAYEH' || serviceType === 'EALAM_VAKALAHT') {
++    return invertLavayehStyleFormula(fee);
++  }
++
++  if (serviceType === 'EZHHARNAMEH') {
++    // ⭐ فرمول اظهارنامه با لایحه فرق دارد.
++    // رجوع کنید به ezhharnameh_scenario.py::_calculate_cost():
++    //   net = mainTotal − excluded_sum (۳ ردیف کسرشونده)
++    //   rounded = roundUp10k(net)
++    //   final = roundUp10k(rounded + ۴۵۰,۰۰۰ + mainTotal)
++    // چون excluded_sum برای پرونده‌های قدیمی در دسترس نیست، این یک
++    // برآورد تقریبی است (با فرض excluded_sum ≈ ۰ و صرف‌نظر از رندها):
++    //   final ≈ ۲×mainTotal + ۴۵۰,۰۰۰  (ریال)  ⟹  mainTotal ≈ (final − ۴۵۰,۰۰۰) / ۲
++    // به تومان: mainTotal_toman ≈ (fee_toman − ۴۵,۰۰۰) / ۲
++    // خطای این برآورد می‌تواند از وارون‌سازی لایحه بیشتر باشد — برای
++    // پرونده‌های جدید systemCost همیشه دقیق از ربات ثبت می‌شود.
++    const approx = (fee - 45_000) / 2;
++    return approx > 0 ? Math.round(approx) : 0;
+   }
+ 
+   return 0;
+diff --git a/src/app/api/admin/stats/route.ts b/src/app/api/admin/stats/route.ts
+index db38288..819fdea 100644
+--- a/src/app/api/admin/stats/route.ts
++++ b/src/app/api/admin/stats/route.ts
+@@ -2,6 +2,7 @@ import { db } from '@/lib/db';
+ import { NextResponse } from 'next/server';
+ 
+ // ⭐ v1.3 — محاسبهٔ سود
++// ⭐ v1.5 — رفع باگ سود صفر برای اعلام وکالت + فرمول اختصاصی اظهارنامه
+ //
+ // قاعدهٔ کارفرما:
+ //   ۱) استعلام‌ها (INQUIRY / REGIONAL_VALUE) و خدمات بدون هزینهٔ سامانه
+@@ -9,11 +10,18 @@ import { NextResponse } from 'next/server';
+ //   ۲) سایر خدمات: سود = مبلغ اعلام‌شده به کاربر (fee) − هزینهٔ سامانه (systemCost).
+ //      - systemCost برای پرونده‌های جدید دقیقاً از ربات (payment_id_capture) ثبت می‌شود.
+ //      - برای پرونده‌های قدیمی، از فرمول‌های قیمت‌گذاری ربات برمی‌گردیم:
+-//        * CHECK / TAJDID_NAZAR / EALAM_VAKALAHT: کاربر دقیقاً هزینهٔ سامانه را می‌پردازد
+-//          (skip_fee_calc) → هزینهٔ سامانه = fee → سود ۰.
+-//        * LAVAYEH / EZHHARNAMEH: fee = 2×roundUp(هزینهٔ سامانه) − کسرِ پلکانی
++//        * CHECK / TAJDID_NAZAR: کاربر دقیقاً هزینهٔ سامانه را می‌پردازد
++//          (skip_fee_calc، بدون فرمول مارکاپ) → هزینهٔ سامانه = fee → سود ۰.
++//        * LAVAYEH: fee = 2×roundUp1000(هزینهٔ سامانه) − کسرِ پلکانی
+ //          (۱۰۰ / ۲۸۰ / ۴۰۰ هزار ریال) → با وارون‌سازی فرمول، هزینهٔ سامانه
+ //          بازسازی می‌شود (خطای حداکثر <۱۰۰۰ ریال).
++//        * EZHHARNAMEH: فرمول متفاوتی دارد (net = mainTotal − ۳ ردیف
++//          کسرشونده؛ rounded = roundUp10k(net)؛ final = roundUp10k(rounded
++//          + ۴۵۰,۰۰۰ + mainTotal)) — استفاده از فرمول لایحه برای این سرویس
++//          نادرست است، بنابراین وارون‌سازی جداگانه‌ای دارد.
++//        * EALAM_VAKALAHT: از v1.5 دیگر pass-through نیست — ربات از همان
++//          فرمول کسرِ پلکانی لایحه (روی مبلغ خامِ سامانه) برای محاسبهٔ مبلغ
++//          نهایی استفاده می‌کند، پس وارون‌سازی مشابه لایحه به‌کار می‌رود.
+ //
+ // شرایط شمارش: مثل «درآمد» فقط پرونده‌های PAID / MANUAL_APPROVED.
+ 
+@@ -29,12 +37,28 @@ const NO_SYSTEM_COST_SERVICES = new Set([
+ ]);
+ 
+ // سرویس‌هایی که کاربر دقیقاً هزینهٔ سامانه را می‌پردازد — سود ۰
++// ⭐ v1.5: EALAM_VAKALAHT از این لیست حذف شد — ربات از v1.5 مارکاپ واقعی
++// روی این سرویس اعمال می‌کند (رجوع کنید به ealam_vakalaht_scenario.py)،
++// بنابراین دیگر pass-through نیست.
+ const PASS_THROUGH_SERVICES = new Set([
+   'CHECK',
+   'TAJDID_NAZAR',
+-  'EALAM_VAKALAHT',
+ ]);
+ 
++// وارون‌سازی فرمول کسرِ پلکانی لایحه/اعلام وکالت (روی مبلغ به تومان):
++//   fee_toman = 2×rounded_toman − ded_toman
++//   کسرهای پلکانی: ۱۰,۰۰۰ / ۲۸,۰۰۰ / ۴۰,۰۰۰ تومان (۱۰۰/۲۸۰/۴۰۰ هزار ریال)
++function invertLavayehStyleFormula(fee: number): number {
++  const r1 = (fee + 10_000) / 2;
++  if (r1 > 0 && r1 <= 200_000 && r1 % 100 === 0) return r1;
++  const r2 = (fee + 28_000) / 2;
++  if (r2 > 200_000 && r2 <= 300_000 && r2 % 100 === 0) return r2;
++  const r3 = (fee + 40_000) / 2;
++  if (r3 > 300_000 && r3 % 100 === 0) return r3;
++  // حالت‌های خاص (معاف/دستی): تقریب نصف مبلغ
++  return Math.round(fee / 2);
++}
++
+ function estimateSystemCost(serviceType: string, fee: number, recordedCost: number | null): number {
+   // ⭐ fee و systemCost از v1.4 به بعد هر دو به «تومان» هستند (مثل استعلام‌ها).
+   //   - ربات همهٔ feeها را قبل از ارسال به پنل به تومان تبدیل می‌کند
+@@ -56,19 +80,27 @@ function estimateSystemCost(serviceType: string, fee: number, recordedCost: numb
+     return fee;
+   }
+ 
+-  if (serviceType === 'LAVAYEH' || serviceType === 'EZHHARNAMEH') {
+-    // وارون‌سازی فرمول (به تومان):
+-    //   fee_rial = 2×rounded_rial − ded_rial
+-    //   ⟹  fee_toman = 2×rounded_toman − ded_toman
+-    //   کسرهای پلکانی: ۱۰,۰۰۰ / ۲۸,۰۰۰ / ۴۰,۰۰۰ تومان (۱۰۰/۲۸۰/۴۰۰ هزار ریال)
+-    const r1 = (fee + 10_000) / 2;
+-    if (r1 > 0 && r1 <= 200_000 && r1 % 100 === 0) return r1;
+-    const r2 = (fee + 28_000) / 2;
+-    if (r2 > 200_000 && r2 <= 300_000 && r2 % 100 === 0) return r2;
+-    const r3 = (fee + 40_000) / 2;
+-    if (r3 > 300_000 && r3 % 100 === 0) return r3;
+-    // حالت‌های خاص (معاف/دستی): تقریب نصف مبلغ
+-    return Math.round(fee / 2);
++  // LAVAYEH و EALAM_VAKALAHT هر دو دقیقاً از فرمول کسرِ پلکانی
++  // calculate_lavayeh_fee استفاده می‌کنند (رجوع کنید به config.py و
++  // ealam_vakalaht_scenario.py::_calculate_cost_with_retry).
++  if (serviceType === 'LAVAYEH' || serviceType === 'EALAM_VAKALAHT') {
++    return invertLavayehStyleFormula(fee);
++  }
++
++  if (serviceType === 'EZHHARNAMEH') {
++    // ⭐ فرمول اظهارنامه با لایحه فرق دارد.
++    // رجوع کنید به ezhharnameh_scenario.py::_calculate_cost():
++    //   net = mainTotal − excluded_sum (۳ ردیف کسرشونده)
++    //   rounded = roundUp10k(net)
++    //   final = roundUp10k(rounded + ۴۵۰,۰۰۰ + mainTotal)
++    // چون excluded_sum برای پرونده‌های قدیمی در دسترس نیست، این یک
++    // برآورد تقریبی است (با فرض excluded_sum ≈ ۰ و صرف‌نظر از رندها):
++    //   final ≈ ۲×mainTotal + ۴۵۰,۰۰۰  (ریال)  ⟹  mainTotal ≈ (final − ۴۵۰,۰۰۰) / ۲
++    // به تومان: mainTotal_toman ≈ (fee_toman − ۴۵,۰۰۰) / ۲
++    // خطای این برآورد می‌تواند از وارون‌سازی لایحه بیشتر باشد — برای
++    // پرونده‌های جدید systemCost همیشه دقیق از ربات ثبت می‌شود.
++    const approx = (fee - 45_000) / 2;
++    return approx > 0 ? Math.round(approx) : 0;
+   }
+ 
+   return 0;
+diff --git a/src/components/admin/admin-header.tsx b/src/components/admin/admin-header.tsx
+index 9132665..2c9a5b7 100644
+--- a/src/components/admin/admin-header.tsx
++++ b/src/components/admin/admin-header.tsx
+@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
+ import {
+   Shield, Bell, RefreshCw, Play, Pause, Volume2, VolumeX, MessageSquare,
+   FileSpreadsheet, Moon, Sun, Maximize2, Minimize2, Printer, Keyboard,
+-  Wifi, WifiOff, Clock, Users,
++  Wifi, WifiOff, Clock, Users, Trash2,
+ } from 'lucide-react';
+ import { cn } from '@/lib/utils';
+ 
+@@ -23,6 +23,7 @@ export interface AdminHeaderProps {
+   onOpenSheetsPanel: () => void;
+   onOpenWorkingHours: () => void;
+   onOpenExemptUsers: () => void;
++  onOpenResetData: () => void;
+   isOnline: boolean;
+   isFullscreen: boolean;
+   onToggleFullscreen: () => void;
+@@ -58,7 +59,7 @@ function PersianClock() {
+ export default function AdminHeader({
+   refreshing, onRefresh, autoRefresh, onToggleAutoRefresh,
+   isMuted, onToggleMuted, activityCount, onOpenActivity,
+-  onOpenBotSender, onOpenSheetsPanel, onOpenWorkingHours, onOpenExemptUsers,
++  onOpenBotSender, onOpenSheetsPanel, onOpenWorkingHours, onOpenExemptUsers, onOpenResetData,
+   isOnline, isFullscreen, onToggleFullscreen, onPrint,
+   showShortcuts, onSetShowShortcuts, theme, onToggleTheme,
+ }: AdminHeaderProps) {
+@@ -175,6 +176,16 @@ export default function AdminHeader({
+                 <Users className="h-4 w-4" />
+               </Button>
+ 
++              <Button
++                variant="ghost"
++                size="sm"
++                className="h-9 w-9 p-0 text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/20"
++                onClick={onOpenResetData}
++                title="ریست کامل داده‌ها"
++              >
++                <Trash2 className="h-4 w-4" />
++              </Button>
++
+               {onToggleTheme && (
+                 <Button
+                   variant="ghost"
+diff --git a/src/components/admin/admin-panel.tsx b/src/components/admin/admin-panel.tsx
+index 8380eb8..e84f42e 100644
+--- a/src/components/admin/admin-panel.tsx
++++ b/src/components/admin/admin-panel.tsx
+@@ -16,7 +16,7 @@ import {
+   Search, Download, Filter,
+   LayoutDashboard, FileCheck2, FileWarning, CreditCard, Send, AlertTriangle, ListChecks, XCircle, Activity,
+   ChevronDown, ChevronLeft, CalendarDays, ArrowUp, Zap, ClipboardCheck, Check, Paperclip,
+-  Settings, Users, FileSpreadsheet, Printer, Keyboard, Sun, Moon, MessageSquare,
++  Settings, Users, FileSpreadsheet, Printer, Keyboard, Sun, Moon, MessageSquare, Trash2, Clock,
+ } from 'lucide-react';
+ import { toast } from 'sonner';
+ import { cn } from '@/lib/utils';
+@@ -197,6 +197,7 @@ export default function AdminPanel() {
+   const [batchConfirmDone, setBatchConfirmDone] = useState(false);
+   const [workingHoursOpen, setWorkingHoursOpen] = useState(false);
+   const [exemptUsersOpen, setExemptUsersOpen] = useState(false);
++  const [resetDataOpen, setResetDataOpen] = useState(false);
+ 
+   useNotificationListener(
+     stats?.failed || 0,
+@@ -546,6 +547,7 @@ export default function AdminPanel() {
+         onOpenSheetsPanel={() => setSheetsPanelOpen(true)}
+         onOpenWorkingHours={() => setWorkingHoursOpen(true)}
+         onOpenExemptUsers={() => setExemptUsersOpen(true)}
++        onOpenResetData={() => setResetDataOpen(true)}
+         isOnline={isOnline}
+         isFullscreen={isFullscreen}
+         onToggleFullscreen={toggleFullscreen}
+@@ -896,6 +898,8 @@ export default function AdminPanel() {
+         sheetsPanelOpen={sheetsPanelOpen} onSheetsPanelClose={() => setSheetsPanelOpen(false)}
+         workingHoursOpen={workingHoursOpen} onWorkingHoursClose={() => setWorkingHoursOpen(false)}
+         exemptUsersOpen={exemptUsersOpen} onExemptUsersClose={() => setExemptUsersOpen(false)}
++        resetDataOpen={resetDataOpen} onResetDataClose={() => setResetDataOpen(false)}
++        onResetDataDone={() => { fetchStats(); fetchCases(); setSelectedIds(new Set()); }}
+       />
+ 
+       <PageDialogs
+@@ -932,6 +936,7 @@ export default function AdminPanel() {
+         { id: 'google-sheets', label: 'همگام‌سازی گوگل شیت', icon: FileSpreadsheet, group: 'تنظیمات', onSelect: () => setSheetsPanelOpen(true) },
+         { id: 'working-hours', label: 'ساعات کاری', icon: Clock, group: 'تنظیمات', onSelect: () => setWorkingHoursOpen(true) },
+         { id: 'exempt-users', label: 'کاربران معاف', icon: Users, group: 'تنظیمات', onSelect: () => setExemptUsersOpen(true) },
++        { id: 'reset-data', label: 'ریست کامل داده‌ها', icon: Trash2, group: 'تنظیمات', onSelect: () => setResetDataOpen(true) },
+       ] as CommandAction[]} />
+ 
+       {showBackToTop && (
+diff --git a/src/components/admin/lazy-panels.tsx b/src/components/admin/lazy-panels.tsx
+index b938887..d94184a 100644
+--- a/src/components/admin/lazy-panels.tsx
++++ b/src/components/admin/lazy-panels.tsx
+@@ -13,6 +13,7 @@ const BotMessageSender = React.lazy(() => import('@/components/admin/bot-message
+ const GoogleSheetsPanel = React.lazy(() => import('@/components/admin/google-sheets-panel'));
+ const WorkingHoursDialog = React.lazy(() => import('@/components/admin/working-hours-dialog'));
+ const ExemptUsersDialog = React.lazy(() => import('@/components/admin/exempt-users-dialog'));
++const ResetDataDialog = React.lazy(() => import('@/components/admin/reset-data-dialog'));
+ 
+ function LoadingFallback() {
+   return <div className="animate-pulse h-8 w-48 rounded-lg bg-muted" />;
+@@ -64,6 +65,10 @@ interface LazyPanelsProps {
+   // Exempt users
+   exemptUsersOpen: boolean;
+   onExemptUsersClose: () => void;
++  // Reset data
++  resetDataOpen: boolean;
++  onResetDataClose: () => void;
++  onResetDataDone: () => void;
+ }
+ 
+ export default function LazyPanels({
+@@ -76,6 +81,7 @@ export default function LazyPanels({
+   sheetsPanelOpen, onSheetsPanelClose,
+   workingHoursOpen, onWorkingHoursClose,
+   exemptUsersOpen, onExemptUsersClose,
++  resetDataOpen, onResetDataClose, onResetDataDone,
+ }: LazyPanelsProps) {
+   return (
+     <>
+@@ -153,6 +159,14 @@ export default function LazyPanels({
+           onOpenChange={(open) => { if (!open) onExemptUsersClose(); }}
+         />
+       </Suspense>
++
++      <Suspense fallback={<LoadingFallback />}>
++        <ResetDataDialog
++          open={resetDataOpen}
++          onOpenChange={(open) => { if (!open) onResetDataClose(); }}
++          onDone={onResetDataDone}
++        />
++      </Suspense>
+     </>
+   );
+ }
+diff --git a/src/components/admin/reset-data-dialog.tsx b/src/components/admin/reset-data-dialog.tsx
+new file mode 100644
+index 0000000..5322964
+--- /dev/null
++++ b/src/components/admin/reset-data-dialog.tsx
+@@ -0,0 +1,114 @@
++'use client';
++
++import React, { useState } from 'react';
++import {
++  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
++} from '@/components/ui/dialog';
++import { Button } from '@/components/ui/button';
++import { Input } from '@/components/ui/input';
++import { Label } from '@/components/ui/label';
++import { Trash2, Loader2, AlertTriangle } from 'lucide-react';
++import { toast } from 'sonner';
++
++interface ResetDataDialogProps {
++  open: boolean;
++  onOpenChange: (open: boolean) => void;
++  onDone?: () => void;
++}
++
++// ⭐ ریست کامل داده‌ها — فقط پرونده‌ها (Case) و سوابق مستقیماً وابسته به آن‌ها
++// (ActivityLog, AdminAction, CaseNote) پاک می‌شوند. ساعات کاری، کاربران معاف
++// و پیام‌های ربات دست‌نخورده باقی می‌مانند. عملیات غیرقابل‌بازگشت است، پس
++// کاربر باید عبارت «RESET» را تایپ کند تا دکمه فعال شود.
++export default function ResetDataDialog({ open, onOpenChange, onDone }: ResetDataDialogProps) {
++  const [confirmText, setConfirmText] = useState('');
++  const [resetting, setResetting] = useState(false);
++
++  const canReset = confirmText.trim().toUpperCase() === 'RESET';
++
++  const handleReset = async () => {
++    if (!canReset) return;
++    setResetting(true);
++    try {
++      const res = await fetch('/api/admin/reset', {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({ confirm: 'RESET' }),
++      });
++      const data = await res.json();
++      if (res.ok) {
++        toast.success(
++          `تمام داده‌ها پاک شد — ${new Intl.NumberFormat('fa-IR').format(data.deleted?.cases ?? 0)} پرونده حذف شد`
++        );
++        setConfirmText('');
++        onOpenChange(false);
++        onDone?.();
++      } else {
++        toast.error(data.error || 'خطا در ریست داده‌ها');
++      }
++    } catch {
++      toast.error('خطا در ارتباط با سرور');
++    } finally {
++      setResetting(false);
++    }
++  };
++
++  return (
++    <Dialog open={open} onOpenChange={(v) => { if (!resetting) { onOpenChange(v); if (!v) setConfirmText(''); } }}>
++      <DialogContent className="max-w-sm p-0 dialog-premium" dir="rtl">
++        <DialogHeader className="p-5 pb-0">
++          <div className="flex items-center gap-3">
++            <div className="h-10 w-10 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center animate-float">
++              <AlertTriangle className="h-5 w-5 text-red-600" />
++            </div>
++            <div>
++              <DialogTitle className="text-base font-bold">ریست کامل داده‌ها</DialogTitle>
++              <DialogDescription className="text-xs text-muted-foreground mt-1">
++                این عمل تمام پرونده‌ها و سوابق مرتبط را برای همیشه پاک می‌کند و
++                غیرقابل بازگشت است.
++              </DialogDescription>
++            </div>
++          </div>
++        </DialogHeader>
++        <div className="p-5 space-y-3">
++          <div className="bg-red-50/80 dark:bg-red-950/20 rounded-lg p-3 border border-red-200 dark:border-red-800 space-y-1">
++            <p className="text-xs text-red-700 dark:text-red-400">
++              پاک می‌شود: تمام پرونده‌ها، یادداشت‌ها، اقدامات ادمین و تاریخچه فعالیت.
++            </p>
++            <p className="text-xs text-muted-foreground">
++              دست‌نخورده می‌ماند: ساعات کاری، کاربران معاف، پیام‌های ربات.
++            </p>
++          </div>
++          <div className="space-y-1.5">
++            <Label className="text-xs">
++              برای تایید، عبارت <span className="font-mono font-bold" dir="ltr">RESET</span> را تایپ کنید
++            </Label>
++            <Input
++              value={confirmText}
++              onChange={(e) => setConfirmText(e.target.value)}
++              placeholder="RESET"
++              className="h-9 text-xs font-mono"
++              dir="ltr"
++              disabled={resetting}
++            />
++          </div>
++        </div>
++        <DialogFooter className="p-5 pt-0 gap-2">
++          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={resetting}>انصراف</Button>
++          <Button
++            className="bg-red-600 hover:bg-red-700"
++            onClick={handleReset}
++            disabled={!canReset || resetting}
++          >
++            {resetting ? (
++              <Loader2 className="h-4 w-4 ml-2 animate-spin" />
++            ) : (
++              <Trash2 className="h-4 w-4 ml-2" />
++            )}
++            پاک کردن همه چیز
++          </Button>
++        </DialogFooter>
++      </DialogContent>
++    </Dialog>
++  );
++}
+diff --git a/states.py b/states.py
+index 842bd13..82007d8 100644
+--- a/states.py
++++ b/states.py
+@@ -6,6 +6,7 @@ class Form(StatesGroup):
+     waiting_for_flow_type = State()
+     main_menu = State()
+     waiting_for_tracking_code = State()
++    waiting_for_corrected_tracking_code = State()  # فرصت رایگان اصلاح کدرهگیری نامعتبر/نادرست (۴۵ دقیقه)
+     waiting_for_phone_number = State()
+     waiting_for_national_id = State()
+     waiting_for_doc_category = State()
+diff --git a/tajdid_nazar_scenario.py b/tajdid_nazar_scenario.py
+index 18982bc..5e7dfa3 100644
+--- a/tajdid_nazar_scenario.py
++++ b/tajdid_nazar_scenario.py
+@@ -510,7 +510,11 @@ async def _click_preparation(page, bot: Bot, user_id: int, max_retries: int = 3)
+             # بررسی خطا
+             error_text = await _get_error_text(page)
+             if error_text and ("منقضی" in error_text or "ورود" in error_text):
+-                await handle_session_expired(page, bot, user_id)
++                # ⭐ رفع باگ: ترتیب آرگومان‌ها اشتباه بود (امضای واقعی تابع:
++                # handle_session_expired(bot, user_id, page=None))؛ با ترتیب
++                # قبلی، page به‌جای bot پاس داده می‌شد و این مسیر به‌جای بازیابی
++                # نشست، با AttributeError کرش می‌کرد.
++                await handle_session_expired(bot, user_id, page=page)
+                 continue
+             return True
+         except Exception as e:
+@@ -593,20 +597,30 @@ async def _print_tajdid_nazar(page, browser_context, bill_no: str, bot: Bot, use
+     import os
+     import time
+     pdf_path = ""
+-    try:
+-        clicked = await page.evaluate('''() => {
+-            const btns = Array.from(document.querySelectorAll('button'));
+-            const t = btns.find(b => b.innerText.includes("چاپ"));
+-            if (t && !t.disabled) { t.click(); return true; }
+-            return false;
+-        }''')
+-        if not clicked:
+-            await safe_click_by_text(page, "چاپ", bot, user_id)
++    # ⭐ بررسی نشست پیش از چاپ — اگر منقضی بود، check_and_handle_expiry لاگین
++    # مجدد را انجام می‌دهد (روی صفحه‌ی اصلی page، در تب جداگانه) و سپس
++    # مراحل چاپ از نو روی همان page (اکنون معتبر) تکرار می‌شود.
++    last_err = None
++    for attempt in range(1, 3):
++        new_page = None
++        try:
++            try:
++                await check_and_handle_expiry(page, bot, user_id, check_body_text=False)
++            except Exception:
++                pass
++
++            clicked = await page.evaluate('''() => {
++                const btns = Array.from(document.querySelectorAll('button'));
++                const t = btns.find(b => b.innerText.includes("چاپ"));
++                if (t && !t.disabled) { t.click(); return true; }
++                return false;
++            }''')
++            if not clicked:
++                await safe_click_by_text(page, "چاپ", bot, user_id)
+ 
+-        await asyncio.sleep(3)
++            await asyncio.sleep(3)
+ 
+-        new_page = await browser_context.new_page()
+-        try:
++            new_page = await browser_context.new_page()
+             print_url = await page.evaluate('''() => {
+                 const links = Array.from(document.querySelectorAll('a'));
+                 const t = links.find(a => a.innerText && a.innerText.includes("چاپ"));
+@@ -614,23 +628,96 @@ async def _print_tajdid_nazar(page, browser_context, bill_no: str, bot: Bot, use
+             }''')
+             if not print_url:
+                 await new_page.close()
++                new_page = None
+                 return ""
+ 
+             await new_page.goto(print_url, wait_until="networkidle", timeout=30000)
+             await asyncio.sleep(2)
+ 
++            # اگر لینک چاپ هم به لاگین ریدایرکت شد (نشست حین این مرحله
++            # منقضی شده)، تلاش دوم را با لاگین مجدد از سر بگیر.
++            session_expired = await check_and_handle_expiry(new_page, bot, user_id, check_body_text=False)
++            if session_expired:
++                await new_page.close()
++                new_page = None
++                if attempt < 2:
++                    continue
++                return ""
++
+             pdf_path = f"tn_{bill_no}_{int(time.time())}.pdf"
+             await new_page.pdf(path=pdf_path, format="A4", print_background=True)
+-        finally:
+-            await new_page.close()
++            return pdf_path
+ 
+-    except Exception as e:
+-        logging.error(f"[TN] خطا در چاپ PDF: {e}", exc_info=True)
+-        return ""
++        except Exception as e:
++            last_err = e
++            logging.error(f"[TN] خطا در چاپ PDF (تلاش {attempt}/2): {e}", exc_info=True)
++        finally:
++            if new_page is not None:
++                try:
++                    await new_page.close()
++                except Exception:
++                    pass
+ 
++    if last_err is not None:
++        logging.error(f"[TN] چاپ PDF پس از ۲ تلاش ناموفق بود: {last_err}")
+     return pdf_path
+ 
+ 
++async def _fill_notice_date_time_robust(sana_page, judge_date: str) -> bool:
++    """پرکردن مقاوم فیلد «تاریخ تنظیم دادنامه/قرار» (name="NoticeDateTime").
++
++    ⭐ نکته (رفع باگ): بعد از کلیک «بازیابی» (#btnGetHst)، سامانه فیلد تاریخ
++    را با name="NoticeDateTime" دوباره می‌سازد. پرکردن ساده با
++    inp.value + دیسپچ رویداد کافی نیست — چون این فیلد persian-datepicker با
++    ng-valid-parse/jud-validator است و بدون digest واقعی AngularJS
++    (scope.$apply + ngModel controller) مقدار در مدل ثبت نمی‌شود و فیلد در
++    حالت ng-invalid-required (has-error) باقی می‌ماند و مانع از ادامه‌ی
++    مرحله می‌شود. این تابع باید در «کلیه‌ی قسمت‌های دعاوی اعتراضی» (هم
++    process_tajdid_nazar_task و هم pre_query_tn_persons) بعد از هر بار
++    کلیک «بازیابی» فراخوانی شود.
++    """
++    filled = await sana_page.evaluate(f'''() => {{
++        let inp = document.querySelector('input[name="NoticeDateTime"]');
++        if (!inp) {{
++            const inps = document.querySelectorAll('input[persian-datepicker-popup]');
++            if (inps.length > 0) inp = inps[0];
++        }}
++        if (!inp) return false;
++
++        inp.value = "{judge_date}";
++        inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
++        inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
++
++        try {{
++            if (typeof angular !== "undefined") {{
++                const scope = angular.element(inp).scope();
++                const ctrl = angular.element(inp).controller("ngModel");
++                if (ctrl) {{
++                    ctrl.$setViewValue("{judge_date}");
++                    ctrl.$render();
++                }}
++                if (scope) {{
++                    scope.$apply(() => {{
++                        const key = inp.getAttribute("ng-model");
++                        if (key) {{
++                            const parts = key.split(".");
++                            let obj = scope;
++                            for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
++                            obj[parts[parts.length - 1]] = "{judge_date}";
++                        }}
++                    }});
++                }}
++            }}
++        }} catch (e) {{}}
++
++        inp.blur();
++        return true;
++    }}''')
++    if not filled:
++        logging.warning("[TN] فیلد تاریخ دادنامه (NoticeDateTime) پس از استعلام پیدا نشد")
++    return bool(filled)
++
++
+ # ══════════════════════════════════════════════════════════════════════════════
+ # تابع اصلی پردازش تسک
+ # ══════════════════════════════════════════════════════════════════════════════
+@@ -813,59 +900,18 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
+                 const btn = document.querySelector('#btnGetHst');
+                 if (btn) btn.click();
+             }''')
+-            await resilient_sleep(sana_page, 8, bot, user_id)
++            # ⭐ صبر ۱۰ ثانیه‌ای + توجه به نوار لودینگ/ریلود بالای صفحه پیش از
++            # ادامه (طبق درخواست: بعد از استعلام دادنامه، ۱۰ ثانیه صبر و به
++            # ریلود بالای صفحه — progress-bar آبی — توجه شود)
++            await resilient_sleep(sana_page, 10, bot, user_id)
++            await wait_for_horizontal_loading_bar(sana_page, bot, user_id, timeout=30)
+ 
+             # پاپ‌آپ ثنا — کلیک خیر
+             await _close_popup_sana(sana_page, bot, user_id)
+ 
+             # تاریخ دادنامه (مجدداً در فرم جدید — پس از استعلام/بازیابی)
+-            # نکته (رفع باگ): بعد از کلیک «بازیابی» (#btnGetHst)، سامانه فیلد
+-            # تاریخ را با name="NoticeDateTime" دوباره می‌سازد. پر کردن قبلی
+-            # فقط با inps[0].value + دیسپچ رویداد کافی نبود — چون این فیلد
+-            # persian-datepicker با ng-valid-parse/jud-validator است و بدون
+-            # digest واقعی AngularJS (scope.$apply + ngModel controller)
+-            # مقدار در مدل ثبت نمی‌شد و فیلد در حالت ng-invalid-required
+-            # (has-error) باقی می‌ماند و مانع از ادامهٔ مرحله می‌شد.
+             await asyncio.sleep(2)
+-            filled_notice_date = await sana_page.evaluate(f'''() => {{
+-                let inp = document.querySelector('input[name="NoticeDateTime"]');
+-                if (!inp) {{
+-                    const inps = document.querySelectorAll('input[persian-datepicker-popup]');
+-                    if (inps.length > 0) inp = inps[0];
+-                }}
+-                if (!inp) return false;
+-
+-                inp.value = "{judge_date}";
+-                inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
+-                inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
+-
+-                try {{
+-                    if (typeof angular !== "undefined") {{
+-                        const scope = angular.element(inp).scope();
+-                        const ctrl = angular.element(inp).controller("ngModel");
+-                        if (ctrl) {{
+-                            ctrl.$setViewValue("{judge_date}");
+-                            ctrl.$render();
+-                        }}
+-                        if (scope) {{
+-                            scope.$apply(() => {{
+-                                const key = inp.getAttribute("ng-model");
+-                                if (key) {{
+-                                    const parts = key.split(".");
+-                                    let obj = scope;
+-                                    for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
+-                                    obj[parts[parts.length - 1]] = "{judge_date}";
+-                                }}
+-                            }});
+-                        }}
+-                    }}
+-                }} catch (e) {{}}
+-
+-                inp.blur();
+-                return true;
+-            }}''')
+-            if not filled_notice_date:
+-                logging.warning("[TN] فیلد تاریخ دادنامه (NoticeDateTime) پس از استعلام پیدا نشد")
++            await _fill_notice_date_time_robust(sana_page, judge_date)
+             await asyncio.sleep(1)
+ 
+             # حکم یا قرار + مبلغ + اعسار (فقط برای غیر اعتراض به قرار دادسرا)
+@@ -1339,11 +1385,23 @@ async def pre_query_tn_persons(data: dict, bot: Bot, step_name: str) -> list:
+         const btn = document.querySelector('#btnGetHst');
+         if (btn) btn.click();
+     }''')
+-    await resilient_sleep(sana_page, 8, bot, user_id)
++    # ⭐ صبر ۱۰ ثانیه‌ای + توجه به نوار لودینگ/ریلود بالای صفحه پیش از ادامه
++    # (همان رفتار در process_tajdid_nazar_task — «کلیه‌ی قسمت‌های دعاوی
++    # اعتراضی» باید یکسان عمل کنند)
++    await resilient_sleep(sana_page, 10, bot, user_id)
++    await wait_for_horizontal_loading_bar(sana_page, bot, user_id, timeout=30)
+ 
+     # پاپ‌آپ ثنا — کلیک خیر
+     await _close_popup_sana(sana_page, bot, user_id)
+ 
++    # تاریخ دادنامه (مجدداً در فرم جدید — پس از استعلام/بازیابی) — طبق
++    # درخواست: تاریخ تنظیم دادنامه باید در «کلیه‌ی قسمت‌های دعاوی اعتراضی»
++    # وارد شود، از جمله این مسیر (استعلام افراد پرونده) که قبلاً فاقد
++    # پرکردن مقاوم بعد از بازیابی بود.
++    await asyncio.sleep(2)
++    await _fill_notice_date_time_robust(sana_page, judge_date)
++    await asyncio.sleep(1)
++
+     # ۷. کلیک روی step مورد نظر (تجدیدنظرخواه یا تجدیدنظرخوانده)
+     await _click_step_label(sana_page, step_name, bot, user_id)
+     await resilient_sleep(sana_page, 5, bot, user_id)
+diff --git a/upload_helpers.py b/upload_helpers.py
+index 4acc652..57a3e5d 100644
+--- a/upload_helpers.py
++++ b/upload_helpers.py
+@@ -68,7 +68,8 @@ from aiogram import Bot
+ 
+ from browser_helpers import (
+     resilient_sleep, check_and_handle_expiry, wait_for_angular_idle,
+-    soft_click_if_exists, dismiss_expiry_popup)
++    soft_click_if_exists, dismiss_expiry_popup,
++    detect_concurrent_login_popup, check_concurrent_login_all_sections)
+ 
+ # =========================================================
+ # تنظیمات
+@@ -549,28 +550,6 @@ async def wait_for_loading_bar(
+     return False
+ 
+ 
+-async def detect_concurrent_login_popup(page) -> bool:
+-    """تشخیص پاپ‌آپ ورود همزمان (concurrent login)."""
+-    is_concurrent = await page.evaluate('''() => {
+-        const popup = document.querySelector('.sweet-alert.showSweetAlert');
+-        if (!popup) return false;
+-
+-        const errorIcon = popup.querySelector('.sa-icon.sa-error');
+-        if (!errorIcon) return false;
+-        if (window.getComputedStyle(errorIcon).display === 'none') return false;
+-
+-        const popupText = popup.innerText || "";
+-        const isConcurrent =
+-            popupText.includes("رایانه ای دیگر") ||
+-            popupText.includes("رایانه ای ديگر") ||
+-            (popupText.includes("اعتبار ورود") && popupText.includes("منقضی")) ||
+-            popupText.includes("منقضي شده");
+-
+-        return isConcurrent;
+-    }''')
+-    return bool(is_concurrent)
+-
+-
+ async def get_and_close_error_popup_text(page) -> Optional[str]:
+     """دریافت متن خطای پاپ‌آپ و بستن آن (فقط پاپ‌آپ‌های خطا)."""
+     text = await page.evaluate('''() => {
+@@ -2512,20 +2491,7 @@ def build_incomplete_task_entry(
+ # =========================================================
+ # ۱۳. توابع کمکی عمومی برای تشخیص خطای ورود همزمان در تمام بخش‌ها
+ # =========================================================
+-
+-async def check_concurrent_login_all_sections(page, bot: Bot, user_id: int, prefix: str = "GLOBAL") -> bool:
+-    """
+-    🔔 طبق فایل توضیحات (خط آخر):
+-    «خطای ورود همزمان را به تمام بخش‌های لایحه و اعلام وکالت و اظهارنامه
+-     و استعلامات و زیرمجموعه‌های بخش‌های در ثبت اضافه کن»
+-
+-    این تابع را می‌توان در هر نقطه از سناریوها فراخوانی کرد تا خطای
+-    ورود همزمان تشخیص داده شود و به مدیر اطلاع داده شود.
+-
+-    بازگشت: True اگر خطای ورود همزمان تشخیص داده شد (و مدیریت شد).
+-    """
+-    if await detect_concurrent_login_popup(page):
+-        _log(prefix, "🚨 خطای ورود همزمان تشخیص داده شد — اطلاع به مدیر برای لاگین مجدد", 'error')
+-        await check_and_handle_expiry(page, bot, user_id)
+-        return True
+-    return False
++# ⭐ detect_concurrent_login_popup و check_concurrent_login_all_sections
++# دیگر اینجا تعریف نمی‌شوند — به browser_helpers.py منتقل شدند تا همه‌ی
++# بخش‌ها (نه فقط آپلود) از یک نسخه‌ی واحد استفاده کنند؛ در بالای فایل
++# import می‌شوند.
+-- 
+2.43.0
+
