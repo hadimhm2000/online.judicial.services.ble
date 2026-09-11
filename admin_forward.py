@@ -32,9 +32,25 @@ MAX_CHUNK = 3500
 
 
 def _chunk_text(text: str, max_chunk: int = MAX_CHUNK):
+    """شکستن متن به تکه‌های حداکثر max_chunk کاراکتر.
+
+    ⭐ رفع باگ «message is too long» (گزارش ۱۴۰۵/۰۶): قبلاً فقط روی خط‌های
+    '\n' شکسته می‌شد — اگر «یک خط» بلندتر از حد باشد (مثلاً متن طولانی
+    شرح دادخواست/اظهارنامه که در dump یکی از فیلدها خط واحد است)، همان
+    خط خودش یک تکه بیش از حد سقف تلگرام (۴۰۹۶) می‌شد و ارسال به ادمین
+    با Bad Request: message is too long شکست می‌خورد. حالا خطوط بلند
+    به‌صورت خام نیز به تکه‌های max_chunk تکه می‌شوند.
+    """
     chunks = []
     current = ""
     for line in text.split("\n"):
+        # خط تک و بلند — شکستن خام به تکه‌های max_chunk
+        while len(line) > max_chunk:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(line[:max_chunk])
+            line = line[max_chunk:]
         if len(current) + len(line) + 1 > max_chunk:
             if current:
                 chunks.append(current)
@@ -46,12 +62,31 @@ def _chunk_text(text: str, max_chunk: int = MAX_CHUNK):
     return chunks
 
 
+async def _send_chunk_resilient(bot: Bot, admin_id: int, chunk: str, depth: int = 0):
+    """ارسال یک تکه — با فال‌بک نصف‌کردن در صورت «message is too long».
+
+    سپر نهایی: اگر به هر دلیلی (سقف کمتر سرویس، شمارش متفاوت کاراکتر
+    یونیکد و ...) تکه باز هم بلند بود، به دو نیم شکسته و جدا ارسال
+    می‌شود تا کپی درخواست کاربر هرگز گم نشود.
+    """
+    try:
+        await bot.send_message(admin_id, chunk)
+    except Exception as e:
+        msg = str(e).lower()
+        if ("too long" in msg or "message is too long" in msg) and len(chunk) > 500 and depth < 5:
+            mid = len(chunk) // 2
+            await _send_chunk_resilient(bot, admin_id, chunk[:mid], depth + 1)
+            await _send_chunk_resilient(bot, admin_id, chunk[mid:], depth + 1)
+        else:
+            raise
+
+
 async def send_text_dump_to_admin(bot: Bot, admin_id: int, header: str, body: str):
     """متن کامل را (با شکستن به چند پیام در صورت طولانی بودن) برای ادمین می‌فرستد."""
     full = f"{header}\n\n{body}"
     for chunk in _chunk_text(full):
         try:
-            await bot.send_message(admin_id, chunk)
+            await _send_chunk_resilient(bot, admin_id, chunk)
         except Exception as e:
             logger.error(f"[ADMIN-FORWARD] خطا در ارسال متن به ادمین: {e}", exc_info=True)
 

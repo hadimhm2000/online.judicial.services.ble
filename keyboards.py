@@ -926,8 +926,13 @@ tn_amount_confirm_kb = ReplyKeyboardMarkup(
 )
 
 
-def create_tn_appellant_person_type_kb(exclude: list = None):
-    """کیبورد نوع شخص تجدیدنظرخواه — همان قوانین اظهارکننده اظهارنامه"""
+def create_tn_appellant_person_type_kb(exclude: list = None, case_type: str = None):
+    """کیبورد نوع شخص تجدیدنظرخواه — همان قوانین اظهارکننده اظهارنامه
+
+    ⚠ برای «اعتراض ثالث»، گزینه «استعلام افراد موجود در پرونده» در بخش
+    «معترض ثالث» حذف می‌شود — معترض ثالث باید همیشه کدملی را دستی وارد کند
+    (طبق دستور کارفرما). این محدودیت فقط شامل این نوع دعوی/بخش است.
+    """
     exclude = exclude or []
     available = [p for p in ["شخص حقیقی", "شخص حقوقی", "وکیل"] if p not in exclude]
     keyboard = []
@@ -936,7 +941,8 @@ def create_tn_appellant_person_type_kb(exclude: list = None):
         if i + 1 < len(available):
             row.append(KeyboardButton(text=available[i + 1]))
         keyboard.append(row)
-    keyboard.append([KeyboardButton(text="🔍 استعلام افراد موجود در پرونده")])
+    if case_type != "اعتراض ثالث":
+        keyboard.append([KeyboardButton(text="🔍 استعلام افراد موجود در پرونده")])
     keyboard.append([KeyboardButton(text="✅ اتمام و ادامه")])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
@@ -966,6 +972,32 @@ def create_tn_reasons_kb(remaining_reasons: list, selected: list = None):
         row = [KeyboardButton(text=remaining_reasons[i])]
         if i + 1 < len(remaining_reasons):
             row.append(KeyboardButton(text=remaining_reasons[i + 1]))
+        keyboard.append(row)
+    keyboard.append([KeyboardButton(text="✅ خیر، ادامه مراحل")])
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+
+def create_tn_reason_numbers_kb(remaining_indices: list):
+    """کیبورد شماره‌ای برای انتخاب جهات اعاده دادرسی — طبق سند راهنما:
+
+    «گزینه شماره ها در ربات برایش نمایش میدهی که انتخاب کند ... و شماره
+     قبلی که وارد کرده است در این بخش نمایش نمیدهی»
+
+    دکمه‌ها شماره جهات باقیمانده هستند (شماره قبلی‌ها نمایش داده نمی‌شوند).
+    """
+    fa_digits = "۰۱۲۳۴۵۶۷۸۹"
+
+    def to_fa(n: int) -> str:
+        return "".join(fa_digits[int(d)] for d in str(n))
+
+    keyboard = []
+    row = []
+    for i in (remaining_indices or []):
+        row.append(KeyboardButton(text=to_fa(i + 1)))
+        if len(row) == 4:
+            keyboard.append(row)
+            row = []
+    if row:
         keyboard.append(row)
     keyboard.append([KeyboardButton(text="✅ خیر، ادامه مراحل")])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)

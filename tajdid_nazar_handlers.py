@@ -59,9 +59,18 @@ from keyboards import (
     tn_reason_more_kb, tn_amount_confirm_kb,
     create_tn_appellant_person_type_kb,
     create_tn_appellee_person_type_kb,
-    create_tn_reasons_kb,
+    create_tn_reason_numbers_kb,
     create_tn_edit_kb,
     tn_sign_ready_kb, tn_sign_resend_kb, tn_sign_later_kb, tn_sign_try_again_kb)
+
+# ⭐ منبع واحد حقیقت جهات — همان لیست کامل/رسمی سناریو (ایندکس چک‌باکس chk{idx}).
+# ⚠ باگ نسخه قبلی: هندلر لیست کوتاه‌شده و سناریو کلیدهای متفاوت داشت →
+# جهات هرگز در سامانه انتخاب نمی‌شد. حالا هر دو فایل از همین لیست استفاده می‌کنند.
+from tajdid_nazar_scenario import (
+    EADAH_MADANI_GROUNDS,
+    EADAH_KIFRI_GROUNDS,
+    get_grounds_list,
+)
 
 tajdid_nazar_router = Router()
 logger = logging.getLogger(__name__)
@@ -127,25 +136,9 @@ def _escape_md(text: str) -> str:
     return text
 
 
-EADAH_MADANI_REASONS = [
-    "موضوع حكم مورد ادعاي خواهان نبوده",
-    "تضاد در مفاد حكم ناشي از استناد به اصول/مواد متضاد",
-    "تضاد حكم صادره با حكم ديگر در همان دعوا",
-    "حيله و تقلب طرف مقابل در دادرسی",
-    "اسناد جديد بعد از صدور حكم به دست آمده",
-    "حكم به ميزان بيشتر از خواسته صادر شده",
-    "اسناد مستند حكم جعلي ثابت شده",
-]
-
-EADAH_KIFRI_REASONS = [
-    "متهم به قتل محكوم و سپس زنده بودن محرز شود",
-    "محكوميت چند نفر به جرم واحد",
-    "تضاد مفاد دو حكم بي‌گناهي",
-    "احكام متفاوت درباره شخص به اتهام واحد",
-    "جعليت اسناد يا خلاف واقع بودن شهادت",
-    "واقعه جديد يا ادله جديد بر بي‌گناهي",
-    "عمل ارتكابي جرم نباشد يا مجازات بيش از مقرر",
-]
+# سازگاری با نام‌های قبلی (نمایش/پیش‌نمایش) — محتوای کامل رسمی
+EADAH_MADANI_REASONS = EADAH_MADANI_GROUNDS
+EADAH_KIFRI_REASONS = EADAH_KIFRI_GROUNDS
 
 
 def _get_labels(case_type: str) -> dict:
@@ -402,7 +395,7 @@ async def tn_province_handler(message: Message, state: FSMContext):
             f"✅ استان *{matched_province}* ثبت شد.\n\n"
             f"*مرحله ۶:* لطفاً *نوع شخصیت {appellant_label}* را انتخاب فرمایید:\n\n"
             f"⚠️ توجه: اگر *وکیل* را انتخاب می‌کنید، باید حداقل یک *شخص حقیقی یا حقوقی* نیز اضافه کنید.",
-            reply_markup=create_tn_appellant_person_type_kb())
+            reply_markup=create_tn_appellant_person_type_kb(case_type=data.get("case_type", "")))
         await state.set_state(Form.tn_appellant_person_type)
     else:
         labels = data.get("tn_labels", {})
@@ -448,7 +441,7 @@ async def tn_order_no_handler(message: Message, state: FSMContext):
         f"✅ شماره قرار `{order_no}` ثبت شد.\n\n"
         f"*مرحله ۶:* لطفاً *نوع شخصیت {appellant_label}* را انتخاب فرمایید:\n\n"
         f"⚠️ توجه: اگر *وکیل* را انتخاب می‌کنید، باید حداقل یک *شخص حقیقی یا حقوقی* نیز اضافه کنید.",
-        reply_markup=create_tn_appellant_person_type_kb())
+        reply_markup=create_tn_appellant_person_type_kb(case_type=data.get("case_type", "")))
     await state.set_state(Form.tn_appellant_person_type)
 
 
@@ -547,7 +540,7 @@ async def tn_insolvency_handler(message: Message, state: FSMContext):
         f"✅ ثبت شد.\n\n"
         f"*مرحله ۸:* لطفاً *نوع شخصیت {appellant_label}* را انتخاب فرمایید:\n\n"
         f"⚠️ توجه: اگر *وکیل* را انتخاب می‌کنید، باید حداقل یک *شخص حقیقی یا حقوقی* نیز اضافه کنید.",
-        reply_markup=create_tn_appellant_person_type_kb())
+        reply_markup=create_tn_appellant_person_type_kb(case_type=data.get("case_type", "")))
     await state.set_state(Form.tn_appellant_person_type)
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -566,7 +559,7 @@ async def tn_appellant_person_type_handler(message: Message, state: FSMContext, 
         if not appellants and not data.get("tn_appellant_query_mode"):
             await message.answer(
                 f"⚠️ حداقل یک {appellant_label} باید اضافه شود.",
-                reply_markup=create_tn_appellant_person_type_kb())
+                reply_markup=create_tn_appellant_person_type_kb(case_type=data.get("case_type", "")))
             return
 
         # بررسی: اگر وکیل داشتیم، باید حقیقی یا حقوقی هم داشته باشیم
@@ -579,7 +572,7 @@ async def tn_appellant_person_type_handler(message: Message, state: FSMContext, 
                 f"⚠️ *توجه مهم:*\n\n"
                 f"چون *وکیل* اضافه کرده‌اید، باید حداقل یک *شخص حقیقی یا حقوقی* نیز وجود داشته باشد.\n\n"
                 f"لطفاً نوع شخص دیگری انتخاب کنید:",
-                reply_markup=create_tn_appellant_person_type_kb(exclude=used_types))
+                reply_markup=create_tn_appellant_person_type_kb(exclude=used_types, case_type=data.get("case_type", "")))
             return
 
         # بررسی حالت ویرایش
@@ -630,7 +623,9 @@ async def tn_appellant_person_type_handler(message: Message, state: FSMContext, 
         return
 
     # ── گزینه استعلام افراد موجود در پرونده ──────────────────
-    if text == "🔍 استعلام افراد موجود در پرونده":
+    # ⚠ برای «اعتراض ثالث» این گزینه در بخش معترض ثالث غیرفعال است —
+    # کدملی باید همیشه دستی وارد شود.
+    if text == "🔍 استعلام افراد موجود در پرونده" and data.get("case_type", "") != "اعتراض ثالث":
         await _handle_query_persons(message, state, bot, "appellant")
         return
 
@@ -638,7 +633,7 @@ async def tn_appellant_person_type_handler(message: Message, state: FSMContext, 
         await message.answer(
             "⚠️ لطفاً یکی از گزینه‌های موجود را انتخاب کنید:",
             reply_markup=create_tn_appellant_person_type_kb(
-                exclude=used_types if appellants else []
+                exclude=used_types if appellants else [], case_type=data.get("case_type", "")
             ))
         return
 
@@ -668,7 +663,7 @@ async def tn_appellant_company_id_handler(message: Message, state: FSMContext):
         await message.answer(
             f"👤 لطفاً نوع شخص را انتخاب کنید:",
             reply_markup=create_tn_appellant_person_type_kb(
-                exclude=used_types if appellants else []
+                exclude=used_types if appellants else [], case_type=data.get("case_type", "")
             ))
         await state.set_state(Form.tn_appellant_person_type)
         return
@@ -724,7 +719,7 @@ async def tn_appellant_national_id_handler(message: Message, state: FSMContext):
         await message.answer(
             f"👤 لطفاً *نوع شخصیت {appellant_label}* را انتخاب فرمایید:",
             reply_markup=create_tn_appellant_person_type_kb(
-                exclude=used_types if appellants else []
+                exclude=used_types if appellants else [], case_type=data.get("case_type", "")
             ))
         await state.set_state(Form.tn_appellant_person_type)
         return
@@ -761,7 +756,7 @@ async def tn_appellant_national_id_handler(message: Message, state: FSMContext):
     await message.answer(
         f"✅ *{person_type}* با کدملی `{nat_id}` ثبت شد.\n\n"
         f"آیا {appellant_label} دیگری نیز وجود دارد؟",
-        reply_markup=create_tn_appellant_person_type_kb())
+        reply_markup=create_tn_appellant_person_type_kb(case_type=data.get("case_type", "")))
     await state.set_state(Form.tn_appellant_more)
 
 
@@ -779,7 +774,7 @@ async def tn_appellant_more_handler(message: Message, state: FSMContext, bot: Bo
         if not appellants and not data.get("tn_appellant_query_mode"):
             await message.answer(
                 f"⚠️ حداقل یک {appellant_label} باید اضافه شود.",
-                reply_markup=create_tn_appellant_person_type_kb())
+                reply_markup=create_tn_appellant_person_type_kb(case_type=data.get("case_type", "")))
             return
 
         has_lawyer = any(p.get("person_type") == "وکیل" for p in appellants)
@@ -791,7 +786,7 @@ async def tn_appellant_more_handler(message: Message, state: FSMContext, bot: Bo
                 "⚠️ *توجه مهم:*\n\n"
                 "چون *وکیل* اضافه کرده‌اید، باید حداقل یک *شخص حقیقی یا حقوقی* نیز وجود داشته باشد.\n\n"
                 "لطفاً نوع شخص دیگری انتخاب کنید:",
-                reply_markup=create_tn_appellant_person_type_kb(exclude=used_types))
+                reply_markup=create_tn_appellant_person_type_kb(exclude=used_types, case_type=data.get("case_type", "")))
             return
 
         # بررسی حالت ویرایش
@@ -821,13 +816,15 @@ async def tn_appellant_more_handler(message: Message, state: FSMContext, bot: Bo
         await message.answer(
             f"👤 لطفاً *نوع شخصیت {appellant_label}* را انتخاب فرمایید:",
             reply_markup=create_tn_appellant_person_type_kb(
-                exclude=used_types if appellants else []
+                exclude=used_types if appellants else [], case_type=data.get("case_type", "")
             ))
         await state.set_state(Form.tn_appellant_person_type)
         return
 
     # ── گزینه استعلام افراد موجود در پرونده ──────────────────
-    if text == "🔍 استعلام افراد موجود در پرونده":
+    # ⚠ برای «اعتراض ثالث» این گزینه در بخش معترض ثالث غیرفعال است —
+    # کدملی باید همیشه دستی وارد شود.
+    if text == "🔍 استعلام افراد موجود در پرونده" and data.get("case_type", "") != "اعتراض ثالث":
         await _handle_query_persons(message, state, bot, "appellant")
         return
 
@@ -835,7 +832,7 @@ async def tn_appellant_more_handler(message: Message, state: FSMContext, bot: Bo
         await message.answer(
             "⚠️ لطفاً یکی از گزینه‌های موجود را انتخاب کنید:",
             reply_markup=create_tn_appellant_person_type_kb(
-                exclude=used_types if appellants else []
+                exclude=used_types if appellants else [], case_type=data.get("case_type", "")
             ))
         return
 
@@ -898,7 +895,7 @@ async def tn_appellee_person_type_handler(message: Message, state: FSMContext, b
             f"👤 لطفاً *نوع شخصیت {appellant_label}* را انتخاب فرمایید:\n\n"
             f"آیا {appellant_label} دیگری نیز وجود دارد؟",
             reply_markup=create_tn_appellant_person_type_kb(
-                exclude=used_appellant_types if appellants else []
+                exclude=used_appellant_types if appellants else [], case_type=data.get("case_type", "")
             ))
         await state.set_state(Form.tn_appellant_more)
         return
@@ -1169,6 +1166,18 @@ async def tn_text_handler(message: Message, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
     chat_id = message.chat.id
 
+    # ⭐ اصلاحیه باگ دکمه بازگشت (الگوی اظهارنامه): قبلاً «🔙 بازگشت» به‌عنوان
+    # متن دادخواست جمع‌آوری می‌شد و بعد از ۳ ثانیه به مرحله بعد (مدارک)
+    # می‌رفت — یعنی بازگشت اصلاً کار نمی‌کرد و متنِ دکمه ثبت می‌شد!
+    # حالا: بازگشت به انتخاب روش ورود متن (تایپ مستقیم / فایل ورد).
+    if (message.text or "").strip() == "🔙 بازگشت":
+        await message.answer(
+            "*مرحله ۱۱:* لطفاً روش ورود *شرح متن* را انتخاب فرمایید:\n\n"
+            "⚠️ *توجه:* متن پس از ارسال قابل ویرایش نمی‌باشد.",
+            reply_markup=text_input_method_kb)
+        await state.set_state(Form.tn_text_choice)
+        return
+
     # ── پشتیبانی فایل ورد ──────────────────────────────────────
     if message.document and message.document.file_name and message.document.file_name.lower().endswith(".docx"):
         from text_collector import process_docx_input
@@ -1333,8 +1342,8 @@ async def tn_receive_image(message: Message, state: FSMContext, bot: Bot):
         ],
         resize_keyboard=True)
     await message.reply(
-        f"✅ تصویر شماره *{len(images)}* دریافت شد.\\n"
-        f"مجموع تصاویر: *{len(images)} تصویر*\\n\\n"
+        f"✅ تصویر شماره *{len(images)}* دریافت شد.\n"
+        f"مجموع تصاویر: *{len(images)} تصویر*\n\n"
         "می‌توانید تصاویر بیشتری ارسال کنید یا یکی از گزینه‌های زیر را انتخاب کنید:",
         reply_markup=manage_kb)
 
@@ -1363,7 +1372,7 @@ async def tn_finish_images(message: Message, state: FSMContext):
         tn_images=[])
 
     await message.answer(
-        f"✅ مدرک *{title}* با *{len(images)} تصویر* ثبت شد.\\n\\n"
+        f"✅ مدرک *{title}* با *{len(images)} تصویر* ثبت شد.\n\n"
         "آیا مدرک دیگری نیز می‌خواهید ارسال کنید؟",
         reply_markup=lavayeh_attachment_more_kb)
     await state.set_state(Form.tn_attachment_more)
@@ -1402,7 +1411,7 @@ async def tn_delete_image(message: Message, state: FSMContext, bot: Bot):
     if not images:
         await message.answer("⚠️ لیست تصاویر خالی است.")
         return
-    await message.answer("🗑 *حذف تصویر:*\\n\\nعکس‌های ارسالی:")
+    await message.answer("🗑 *حذف تصویر:*\n\nعکس‌های ارسالی:")
     for i, file_id in enumerate(images):
         await bot.send_photo(message.chat.id, photo=file_id, caption=f"تصویر شماره {i + 1}")
     await message.answer(
@@ -1435,7 +1444,7 @@ async def tn_images_text_fallback(message: Message, state: FSMContext):
                         ],
                         resize_keyboard=True)
                     await message.answer(
-                        f"✅ تصویر شماره *{idx + 1}* حذف شد.\\n"
+                        f"✅ تصویر شماره *{idx + 1}* حذف شد.\n"
                         f"تعداد تصاویر باقی‌مانده: *{len(images)} تصویر*",
                         reply_markup=manage_kb)
                 else:
@@ -1470,14 +1479,23 @@ async def tn_attachment_more_handler(message: Message, state: FSMContext):
 async def _ask_tn_extra_text(message: Message, state: FSMContext):
     data = await state.get_data()
     case_type = data.get("case_type", "")
-    if _needs_reasons(case_type):
-        # برای اعاده دادرسی، اول جهات بعد توضیحات
+    # ⭐ اصلاحیه باگ حلقه جهات: فقط وقتی جهات هنوز انتخاب نشده‌اند، اول جهات
+    # پرسیده می‌شود. قبلاً این تابع برای اعاده دادرسی «همیشه» دوباره
+    # _ask_tn_reasons را صدا می‌زد؛ نتیجه:
+    #   - بعد از انتخاب جهات و زدن «خیر»، کاربر به همان قسمت جهات برمی‌گشت
+    #     (گزینه «خیر و ادامه مراحل» کار نمی‌کرد).
+    #   - وقتی همه جهات انتخاب شده بود: _ask_tn_reasons → _ask_tn_extra_text
+    #     → _ask_tn_reasons → ... بازگشت بی‌نهایت و ارسال صدها پیام
+    #     «تمام جهات انتخاب شده‌اند».
+    # حالا: اگر tn_reasons قبلاً پر شده، مستقیم سراغ توضیحات جداگانه می‌رویم.
+    if _needs_reasons(case_type) and not data.get("tn_reasons"):
+        # برای اعاده دادرسی، اول جهات بعد توضیحات (فقط بار اول)
         await _ask_tn_reasons(message, state)
     else:
         await message.answer(
             "💡 در صورتی که *توضیحات جداگانه‌ای* می‌خواهید به مقام قضائی ارائه دهید\n"
             "یا درخواست استعلام یا موارد دیگری دارید، در قسمت زیر تایپ بفرمایید.\n\n"
-            "در غیر اینصورت گزینه «رد کردن» را انتخاب کنید:",
+            "در غیر اینصورت گزینه «رد شدن» را انتخاب کنید:",
             reply_markup=tn_extra_text_kb)
         await state.set_state(Form.tn_extra_text)
 
@@ -1486,7 +1504,9 @@ async def _ask_tn_extra_text(message: Message, state: FSMContext):
 async def tn_extra_text_handler(message: Message, state: FSMContext, bot: Bot):
     text = (message.text or "").strip()
 
-    if text == "⏭ رد کردن":
+    # ⭐ اصلاحیه: متن دکمه کیبورد «⏭ رد شدن» است ولی قبلاً فقط «⏭ رد کردن»
+    # چک می‌شد — دکمه به‌عنوان توضیحات ذخیره می‌شد! (هر دو پذیرفته می‌شود)
+    if text in ("⏭ رد شدن", "⏭ رد کردن"):
         await state.update_data(tn_extra_text="")
         await _go_to_tn_preview(message, state)
         return
@@ -1516,23 +1536,57 @@ async def tn_extra_text_handler(message: Message, state: FSMContext, bot: Bot):
 # ══════════════════════════════════════════════════════════════════════════════
 # مرحله اضافی — جهات (فقط اعاده دادرسی مدنی/کیفری)
 # ══════════════════════════════════════════════════════════════════════════════
+# ⭐ بازنویسی طبق سند راهنما — انتخاب شماره‌ای:
+#   «این نوشته ها را در ربات تلگرام باید برای کاربر بفرستی و شماره گذاری کنی
+#    و بگویی که شماره های مورد نظر خود را انتخاب کنید و گزینه شماره ها در
+#    ربات برایش نمایش میدهی که انتخاب کند و هرموردی که انتخاب کرد، ازش سوال
+#    میپرسی که ایا مورد دیگه ای جهت انتخاب دارید یا خیر؟ و گزینه خیر را در
+#    این مرحله قرار میدهی و شماره قبلی که وارد کرده است در این بخش نمایش
+#    نمیدهی و به همین ترتیب تا گزینه خیر را بزند»
+#
+# فرمت ذخیره‌سازی: tn_reasons = [{"index": int, "text": str}, ...]
+# (ایندکس = همین جایگاه در لیست رسمی = ایندکس چک‌باکس chk{idx} در سامانه)
+
+
+def _get_selected_reason_indices(data: dict) -> list:
+    """ایندکس‌های جهات انتخاب‌شده از state (فرمت dict یا str قدیمی)."""
+    selected = data.get("tn_reasons", [])
+    indices = []
+    for r in selected:
+        if isinstance(r, dict) and isinstance(r.get("index"), int):
+            indices.append(r["index"])
+    return indices
+
+
 async def _ask_tn_reasons(message: Message, state: FSMContext):
     data = await state.get_data()
     case_type = data.get("case_type", "")
-    all_reasons = _get_reasons_list(case_type)
-    selected = data.get("tn_reasons", [])
-    remaining = [r for r in all_reasons if r not in selected]
+    grounds = get_grounds_list(case_type)
+    selected_idx = _get_selected_reason_indices(data)
+    remaining = [i for i in range(len(grounds)) if i not in selected_idx]
 
     if not remaining:
-        # همه جهات انتخاب شده
+        # همه جهات انتخاب شده — مستقیم ادامه
+        await message.answer("✅ *تمام جهات انتخاب شده‌اند.*")
         await _ask_tn_extra_text(message, state)
         return
 
+    # پیام شماره‌گذاری‌شده همه جهات (انتخاب‌شده‌ها تیک می‌خورند)
+    lines = []
+    for i, g in enumerate(grounds):
+        mark = " ✅" if i in selected_idx else ""
+        lines.append(f"_{i + 1}._ {g}{mark}")
+    grounds_text = "\n".join(lines)
+
+    selected_count = len(selected_idx)
+    count_note = f"\n\n📌 _(جهات انتخاب‌شده تاکنون: {selected_count} مورد)_" if selected_count else ""
+
     await message.answer(
         f"⚖️ *جهات درخواست {case_type}:*\n\n"
-        f"لطفاً یکی از جهات زیر را انتخاب فرمایید:\n\n"
-        f"_(جهات انتخاب‌شده: {len(selected)} مورد)_",
-        reply_markup=create_tn_reasons_kb(remaining, selected))
+        f"{grounds_text}\n"
+        f"{count_note}\n\n"
+        f"شماره مورد نظر خود را انتخاب کنید:",
+        reply_markup=create_tn_reason_numbers_kb(remaining))
     await state.set_state(Form.tn_reason_select)
 
 
@@ -1541,15 +1595,18 @@ async def tn_reason_select_handler(message: Message, state: FSMContext):
     text = (message.text or "").strip()
     data = await state.get_data()
     case_type = data.get("case_type", "")
-    all_reasons = _get_reasons_list(case_type)
+    grounds = get_grounds_list(case_type)
     selected = data.get("tn_reasons", [])
+    selected_idx = _get_selected_reason_indices(data)
 
-    if text == "✅ اتمام انتخاب جهات":
-        await _ask_tn_extra_text(message, state)
-        return
-
-    # دکمه ادامه مراحل در کیبورد انتخاب جهات
-    if text.startswith("✅ خیر") or "ادامه مراحل" in text:
+    # گزینه خیر / اتمام
+    if text.startswith("✅ خیر") or text == "خیر" or "ادامه مراحل" in text or "اتمام" in text:
+        if not selected:
+            await message.answer(
+                "⚠️ لطفاً حداقل یک جهت را انتخاب فرمایید:",
+                reply_markup=create_tn_reason_numbers_kb(
+                    [i for i in range(len(grounds)) if i not in selected_idx]))
+            return
         await _ask_tn_extra_text(message, state)
         return
 
@@ -1557,49 +1614,57 @@ async def tn_reason_select_handler(message: Message, state: FSMContext):
         await _ask_tn_extra_text(message, state)
         return
 
-    # پیدا کردن جهتی که کاربر انتخاب کرد
-    matched_reason = None
-    for r in all_reasons:
-        if text in r or r in text:
-            matched_reason = r
-            break
-
-    if not matched_reason or matched_reason in selected:
+    # پارس شماره (فارسی یا انگلیسی)
+    num_str = _to_en(text).replace(".", "").replace("-", "")
+    if not num_str.isdigit():
         await message.answer(
-            "⚠️ لطفاً یکی از جهات موجود را انتخاب فرمایید:",
-            reply_markup=create_tn_reasons_kb(
-                [r for r in all_reasons if r not in selected], selected
-            ))
+            "⚠️ لطفاً *شماره* جهت مورد نظر را انتخاب یا تایپ کنید:",
+            reply_markup=create_tn_reason_numbers_kb(
+                [i for i in range(len(grounds)) if i not in selected_idx]))
         return
 
-    selected.append(matched_reason)
+    choice = int(num_str) - 1  # شماره نمایش = ایندکس + ۱
+    if choice < 0 or choice >= len(grounds) or choice in selected_idx:
+        await message.answer(
+            "⚠️ این شماره معتبر نیست یا قبلاً انتخاب شده است.\n"
+            "لطفاً یکی از شماره‌های موجود را انتخاب کنید:",
+            reply_markup=create_tn_reason_numbers_kb(
+                [i for i in range(len(grounds)) if i not in selected_idx]))
+        return
+
+    # ثبت جهت انتخاب‌شده
+    selected.append({"index": choice, "text": grounds[choice]})
     await state.update_data(tn_reasons=selected)
 
-    remaining = [r for r in all_reasons if r not in selected]
+    remaining = [i for i in range(len(grounds)) if i not in selected_idx + [choice]]
 
-    if not remaining:
-        await message.answer(
-            f"✅ همه جهات انتخاب شدند.\n\n"
-            f"آیا جهات دیگری وجود دارد؟",
-            reply_markup=tn_reason_more_kb)
-        await state.set_state(Form.tn_more_reasons)
-    else:
-        await message.answer(
-            f"✅ جهتی ثبت شد. (مجموع: {len(selected)} مورد)\n\n"
-            f"آیا جهت دیگری نیز وجود دارد؟",
-            reply_markup=tn_reason_more_kb)
-        await state.set_state(Form.tn_more_reasons)
+    # «هرموردی که انتخاب کرد، ازش سوال میپرسی که ایا مورد دیگه ای جهت
+    #  انتخاب دارید یا خیر؟ و گزینه خیر را در این مرحله قرار میدهی»
+    await message.answer(
+        f"✅ جهت زیر ثبت شد:\n\n_{choice + 1}._ {grounds[choice]}\n\n"
+        f"_(مجموع: {len(selected)} مورد)_\n\n"
+        f"آیا مورد دیگری جهت انتخاب دارید؟",
+        reply_markup=tn_reason_more_kb)
+    await state.set_state(Form.tn_more_reasons)
 
 
 @tajdid_nazar_router.message(Form.tn_more_reasons)
 async def tn_more_reasons_handler(message: Message, state: FSMContext):
     text = (message.text or "").strip()
+    data = await state.get_data()
+    case_type = data.get("case_type", "")
+    grounds = get_grounds_list(case_type)
+    selected_idx = _get_selected_reason_indices(data)
 
-    if text.startswith("➕ بله") or text == "بله" or "مورد دیگری" in text:
+    if text.startswith("➕ بله") or text == "بله" or "مورد دیگری" in text or "مورد دیگه" in text:
+        if not [i for i in range(len(grounds)) if i not in selected_idx]:
+            await message.answer("✅ *تمام جهات انتخاب شده‌اند.*")
+            await _ask_tn_extra_text(message, state)
+            return
         await _ask_tn_reasons(message, state)
         return
 
-    if text.startswith("✅ خیر") or text == "خیر" or "ادامه مراحل" in text or text == "✅ اتمام انتخاب جهات":
+    if text.startswith("✅ خیر") or text == "خیر" or "ادامه مراحل" in text or "اتمام" in text:
         await _ask_tn_extra_text(message, state)
         return
 
@@ -1700,6 +1765,11 @@ async def _handle_query_persons(message: Message, state: FSMContext, bot: Bot, s
             "tn_file_no": data.get("tn_file_no", ""),
             "tn_judge_date": data.get("tn_judge_date", ""),
             "tn_province": data.get("tn_province", ""),
+            # ⭐ فرم بعد از بازیابی (قرار/مبلغ/اعسار) باید مانند ثبت اصلی پر شود
+            # تا حالت فرم معتبر بماند و step اشخاص قابل پیمایش باشد.
+            "tn_doc_type": data.get("tn_doc_type", "حکم"),
+            "tn_amount": data.get("tn_amount", 0),
+            "tn_insolvency": data.get("tn_insolvency", False),
             "user_id": user_id,
         }
         names = await pre_query_tn_persons(query_data, bot, step_name)
@@ -1711,7 +1781,7 @@ async def _handle_query_persons(message: Message, state: FSMContext, bot: Bot, s
             if section == "appellant":
                 await message.answer(
                     f"👤 لطفاً *نوع شخصیت {section_label}* را انتخاب فرمایید:",
-                    reply_markup=create_tn_appellant_person_type_kb())
+                    reply_markup=create_tn_appellant_person_type_kb(case_type=data.get("case_type", "")))
                 await state.set_state(Form.tn_appellant_person_type)
             else:
                 await message.answer(
@@ -1746,12 +1816,12 @@ async def _handle_query_persons(message: Message, state: FSMContext, bot: Bot, s
     except TajdidFatalError as e:
         logger.error(f"[TN] خطای استعلام افراد: {e}")
         await message.answer(
-            f"❌ خطا در استعلام: {e}\\n\\n"
+            f"❌ خطا در استعلام: {e}\n\n"
             "لطفاً از روش ورود دستی کدملی استفاده فرمایید:")
         if section == "appellant":
             await message.answer(
                 f"👤 لطفاً *نوع شخصیت {section_label}* را انتخاب فرمایید:",
-                reply_markup=create_tn_appellant_person_type_kb())
+                reply_markup=create_tn_appellant_person_type_kb(case_type=data.get("case_type", "")))
             await state.set_state(Form.tn_appellant_person_type)
         else:
             await message.answer(
@@ -1765,7 +1835,7 @@ async def _handle_query_persons(message: Message, state: FSMContext, bot: Bot, s
         if section == "appellant":
             await message.answer(
                 f"👤 لطفاً *نوع شخصیت {section_label}* را انتخاب فرمایید:",
-                reply_markup=create_tn_appellant_person_type_kb())
+                reply_markup=create_tn_appellant_person_type_kb(case_type=data.get("case_type", "")))
             await state.set_state(Form.tn_appellant_person_type)
         else:
             await message.answer(
@@ -1902,7 +1972,7 @@ async def _handle_person_select_callback(callback: CallbackQuery, state: FSMCont
                 user_id,
                 f"👤 لطفاً *نوع شخصیت {section_label}* را انتخاب فرمایید:\n\n"
                 f"💡 در صورتی که کدملی افراد پرونده را ندارید، گزینه استعلام افراد موجود در پرونده را انتخاب کنید",
-                reply_markup=create_tn_appellant_person_type_kb())
+                reply_markup=create_tn_appellant_person_type_kb(case_type=data.get("case_type", "")))
             await state.set_state(Form.tn_appellant_person_type)
         else:
             section_label = labels.get("appellee", "تجدیدنظرخوانده")
@@ -2121,9 +2191,9 @@ def build_tn_preview(data: dict) -> str:
     attachments = data.get("tn_attachments", [])
     reasons = data.get("tn_reasons", [])
 
-    appellants_text = "\\n".join([_person_line(p, i + 1) for i, p in enumerate(appellants)]) or "  (ندارد)"
-    appellees_text = "\\n".join([_person_line(p, i + 1) for i, p in enumerate(appellees)]) or "  (ندارد)"
-    witnesses_text = "\\n".join(
+    appellants_text = "\n".join([_person_line(p, i + 1) for i, p in enumerate(appellants)]) or "  (ندارد)"
+    appellees_text = "\n".join([_person_line(p, i + 1) for i, p in enumerate(appellees)]) or "  (ندارد)"
+    witnesses_text = "\n".join(
         [f"  {i + 1}. کدملی: `{w.get('national_id', '')}`" for i, w in enumerate(witnesses)]
     ) or "  (ندارد)"
 
@@ -2135,19 +2205,24 @@ def build_tn_preview(data: dict) -> str:
     for i, att in enumerate(attachments, 1):
         n = len(att.get("images", []))
         total_imgs += n
-        att_text += f"  {i}. {_escape_md(att.get('title', 'مستندات'))} — {n} تصویر\\n"
+        att_text += f"  {i}. {_escape_md(att.get('title', 'مستندات'))} — {n} تصویر\n"
     if not att_text:
-        att_text = "  (بدون مدرک)\\n"
+        att_text = "  (بدون مدرک)\n"
 
     reasons_text = ""
     if reasons:
-        reasons_text = "\\n".join([f"  {i + 1}. {_escape_md(r)}" for i, r in enumerate(reasons)])
-        reasons_text = f"\\n⚖️ *جهات:*\\n{reasons_text}\\n"
+        # فرمت جدید: [{"index": int, "text": str}] — سازگار با str قدیمی
+        reason_lines = []
+        for i, r in enumerate(reasons, 1):
+            r_text = r.get("text", "") if isinstance(r, dict) else str(r)
+            reason_lines.append(f"  {i}. {_escape_md(r_text)}")
+        reasons_text = "\n".join(reason_lines)
+        reasons_text = f"\n⚖️ *جهات: *\n{reasons_text}\n"
 
     extra_text_line = ""
     if extra_text:
         extra_preview = extra_text[:150] + "..." if len(extra_text) > 150 else extra_text
-        extra_text_line = f"\\n📝 *توضیحات جداگانه:*\\n  {_escape_md(extra_preview)}\\n"
+        extra_text_line = f"\n📝 *توضیحات جداگانه:*\n  {_escape_md(extra_preview)}\n"
 
     is_prosec = _is_prosecutor_objection(case_type)
     amount_str = f"{_fmt(amount)} ریال" if amount > 0 else "خیر"
@@ -2155,42 +2230,56 @@ def build_tn_preview(data: dict) -> str:
 
     if is_prosec:
         info_section = (
-            f"📋 *اطلاعات قرار:*\\n"
-            f"  شماره قرار: `{judge_no}`\\n"
-            f"  شماره پرونده: `{file_no}`\\n"
-            f"  تاریخ: `{judge_date}`\\n"
-            f"  استان: {province}\\n"
+            f"📋 *اطلاعات قرار:*\n"
+            f"  شماره قرار: `{judge_no}`\n"
+            f"  شماره پرونده: `{file_no}`\n"
+            f"  تاریخ: `{judge_date}`\n"
+            f"  استان: {province}\n"
         )
     else:
         info_section = (
-            f"📋 *اطلاعات دادنامه:*\\n"
-            f"  شماره دادنامه: `{judge_no}`\\n"
-            f"  شماره پرونده: `{file_no}`\\n"
-            f"  تاریخ: `{judge_date}`\\n"
-            f"  استان: {province}\\n"
-            f"  نوع: *{doc_type}*\\n"
-            f"  مبلغ: {amount_str}\\n"
-            f"  اعسار: {insolvency_str}\\n"
+            f"📋 *اطلاعات دادنامه:*\n"
+            f"  شماره دادنامه: `{judge_no}`\n"
+            f"  شماره پرونده: `{file_no}`\n"
+            f"  تاریخ: `{judge_date}`\n"
+            f"  استان: {province}\n"
+            f"  نوع: *{doc_type}*\n"
+            f"  مبلغ: {amount_str}\n"
+            f"  اعسار: {insolvency_str}\n"
         )
 
-    appellee_section = "" if is_prosec else f"\\n👥 *{appellee_label}(ها):*\\n{appellees_text}\\n"
+    appellee_section = "" if is_prosec else f"\n👥 *{appellee_label}(ها):*\n{appellees_text}\n"
 
     return (
-        f"⚖️ *پیش‌نمایش {case_type}:*\\n\\n"
-        f"{info_section}\\n"
-        f"👤 *{appellant_label}(ها):*\\n{appellants_text}\\n\\n"
-        f"{appellee_section}\\n"
-        f"👁 *{witness_label}(ها):*\\n{witnesses_text}\\n\\n"
-        f"📄 *شرح متن:*\\n  {text_preview}\\n"
+        f"⚖️ *پیش‌نمایش {case_type}:*\n\n"
+        f"{info_section}\n"
+        f"👤 *{appellant_label}(ها):*\n{appellants_text}\n\n"
+        f"{appellee_section}\n"
+        f"👁 *{witness_label}(ها):*\n{witnesses_text}\n\n"
+        f"📄 *شرح متن:*\n  {text_preview}\n"
         f"{extra_text_line}"
-        f"🖼 *مدارک ({total_imgs} تصویر در {len(attachments)} عنوان):*\\n{att_text}"
+        f"🖼 *مدارک ({total_imgs} تصویر در {len(attachments)} عنوان):*\n{att_text}"
         f"{reasons_text}"
-        f"\\nآیا اطلاعات فوق صحیح است؟"
+        f"\nآیا اطلاعات فوق صحیح است؟"
     )
 
 
 async def _go_to_tn_preview(message: Message, state: FSMContext):
     data = await state.get_data()
+
+    # ⭐ اصلاحیه (الزامی بودن شرح متن): وارد کردن متن (تایپ مستقیم یا فایل
+    # ورد) در بخش متن برای تمام انواع دعوا الزامی است — اگر متنی وارد نشده،
+    # هرگز به پیش‌نمایش/مرحله بعد نمی‌رویم و کاربر به انتخاب روش ورود متن
+    # برمی‌گردد. این گارد همه مسیرها (از جمله ویرایش‌ها) را پوشش می‌دهد.
+    if not (data.get("tn_text") or "").strip():
+        await message.answer(
+            "⚠️ *وارد کردن شرح متن الزامی است.*\n\n"
+            "متن از طریق *تایپ مستقیم* یا *ارسال فایل ورد (.docx)* قابل ارسال است.\n"
+            "لطفاً روش ورود شرح متن را انتخاب فرمایید:",
+            reply_markup=text_input_method_kb)
+        await state.set_state(Form.tn_text_choice)
+        return
+
     preview = build_tn_preview(data)
     data = await state.get_data()
     labels = data.get("tn_labels", {})
@@ -2357,7 +2446,7 @@ async def tn_edit_choice_handler(message: Message, state: FSMContext):
         await message.answer(
             f"👤 لیست {appellant_label} پاک شد.\n"
             f"لطفاً مجدداً *نوع شخصیت {appellant_label}* را انتخاب فرمایید:",
-            reply_markup=create_tn_appellant_person_type_kb())
+            reply_markup=create_tn_appellant_person_type_kb(case_type=data.get("case_type", "")))
         await state.set_state(Form.tn_appellant_person_type)
         return
 
@@ -2449,7 +2538,7 @@ async def tn_fix_national_id_callback(callback: CallbackQuery, state: FSMContext
 
     try:
         await callback.message.edit_text(
-            callback.message.text + "\\n\\n✏️ _در انتظار شناسه ملی جدید..._")
+            callback.message.text + "\n\n✏️ _در انتظار شناسه ملی جدید..._")
     except Exception:
         pass
 
@@ -2475,7 +2564,7 @@ async def tn_delete_request_callback(callback: CallbackQuery, state: FSMContext,
 
     try:
         await callback.message.edit_text(
-            callback.message.text + "\\n\\n🗑 _درخواست حذف شد._")
+            callback.message.text + "\n\n🗑 _درخواست حذف شد._")
     except Exception:
         pass
 
