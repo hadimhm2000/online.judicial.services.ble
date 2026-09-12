@@ -653,9 +653,16 @@ async def click_edit_document_for_title(
     ⭐ تفاوت با نسخه قبلی:
       ۱. متن سلول‌ها و عنوان جست‌وجو هر دو نرمال‌سازی فارسی/عربی می‌شوند
          (ي/ی، ك/ک، أ/آ، ة/ه، نیم‌فاصله) — ریشه باگ «ردیف در جدول ظاهر نشد».
-      ۲. اگر عنوان پیدا نشد ولی pre_save_row_count داده شده بود و تعداد ردیف‌ها
-         نسبت به قبل از ذخیره دقیقاً افزایش یافته، ردیف تازه‌اضافه‌شده (آخرین ردیف
-         دارای دکمه ویرایش فعال) به‌عنوان فال‌بک کلیک می‌شود.
+      ۲. 🔥 رفع باگ ردیف تکراری (گزارش کارفرما ۱۴۰۵/۰۶): وقتی چند ردیف
+         با «یک عنوان» در جدول هست (مثلاً دو ردیف «مستندات»)، قبلاً همیشه
+         «اولین» ردیف کلیک می‌شد — یعنی برای پیوست دوم، به‌اشتباه ردیف
+         پیوست اول ویرایش می‌شد! حالا:
+           - اگر pre_save_row_count داده شده و تعداد ردیف‌ها نسبت به قبل
+             از ذخیره افزایش یافته → ردیف «تازه‌اضافه‌شده» (آخرین ردیف دارای
+             دکمه ویرایش فعال) کلیک می‌شود — این ردیف قطعاً متعلق به همین
+             ذخیره است.
+           - در غیر این صورت جست‌وجوی عنوان «از آخر به اول» انجام می‌شود تا
+             در ردیف‌های هم‌عنوان، جدیدترین ردیف انتخاب شود.
       ۳. در صورت شکست، متن واقعی ردیف‌های جدول برای دیاگنوستیک لاگ می‌شود.
     """
     # نرمال‌سازی همه واریانت‌ها (هم فارسی هم عربی هر دو شکل را پوشش می‌دهد)
@@ -669,6 +676,7 @@ async def click_edit_document_for_title(
 
     found_btn = False
     used_fallback = False
+    found_via_new_row = False
     for i in range(table_wait_timeout * 2):
         if i % 10 == 0 and bot and user_id:
             had_expiry = await check_and_handle_expiry(page, bot, user_id)
@@ -676,10 +684,42 @@ async def click_edit_document_for_title(
                 _log(prefix, "نشست حین انتظار جدول پیوست‌ها تمدید شد")
                 await asyncio.sleep(2)
 
+        # 🔥 اولویت ۱ — اگر تعداد ردیف‌ها نسبت به قبل از ذخیره افزایش یافته،
+        # ردیف تازه‌اضافه‌شده (آخرین ردیف با دکمه ویرایش فعال) قطعاً ردیف
+        # همین پیوست است — حتی اگر عنوانش با جدول مطابقت نداشته باشد.
+        if pre_save_row_count is not None:
+            new_row = await page.evaluate('''(preCount) => {
+                const rows = Array.from(document.querySelectorAll('table tbody tr'));
+                if (rows.length <= preCount) return null;
+                for (let i = rows.length - 1; i >= 0; i--) {
+                    const editBtn = rows[i].querySelector('button[ng-click*="editDocument"]');
+                    if (editBtn && !editBtn.disabled) {
+                        editBtn.setAttribute('data-target-edit', '1');
+                        return {
+                            rowCount: rows.length,
+                            rowText: (rows[i].innerText || '').slice(0, 120)
+                        };
+                    }
+                }
+                return null;
+            }''', int(pre_save_row_count))
+            if new_row:
+                found_btn = True
+                used_fallback = True
+                found_via_new_row = True
+                _log(prefix,
+                     f"⭐ ردیف تازه‌اضافه‌شده برای [{title}] انتخاب شد "
+                     f"(ردیف‌ها: {pre_save_row_count}→{new_row['rowCount']}) — "
+                     f"متن ردیف: «{new_row['rowText']}»")
+                break
+
+        # 🔥 اولویت ۲ — جست‌وجوی عنوان «از آخر به اول» (جدیدترین ردیف
+        # هم‌عنوان؛ قبلاً از اول جست‌وجو می‌شد و ردیف پیوست قبلی کلیک می‌شد)
         result = await page.evaluate('''(variants) => {
             ''' + JS_NORMALIZE_FN + '''
-            const rows = document.querySelectorAll('table tbody tr');
-            for (const row of rows) {
+            const rows = Array.from(document.querySelectorAll('table tbody tr'));
+            for (let r = rows.length - 1; r >= 0; r--) {
+                const row = rows[r];
                 const cells = row.querySelectorAll('td');
                 for (const cell of cells) {
                     const text = _normFa(cell.innerText || '');
@@ -688,7 +728,7 @@ async def click_edit_document_for_title(
                             const editBtn = row.querySelector('button[ng-click*="editDocument"]');
                             if (editBtn && !editBtn.disabled) {
                                 editBtn.setAttribute('data-target-edit', '1');
-                                return { found: true, rowCount: rows.length, cellText: text };
+                                return { found: true, rowCount: rows.length, rowIdx: r, cellText: text };
                             }
                             return { found: false, reason: 'no_button', rowCount: rows.length, cellText: text };
                         }
@@ -699,7 +739,8 @@ async def click_edit_document_for_title(
         }''', title_variants)
 
         if result.get("found"):
-            _log(prefix, f"ردیف [{title}] در جدول پیدا شد ({result['rowCount']} ردیف کل)")
+            _log(prefix, f"ردیف [{title}] در جدول پیدا شد (ردیف {result.get('rowIdx', 0) + 1} از "
+                        f"{result['rowCount']} ردیف — از آخر به اول جست‌وجو شد)")
             found_btn = True
             break
         elif result.get("reason") == "no_button":
@@ -707,32 +748,25 @@ async def click_edit_document_for_title(
             return False
         await asyncio.sleep(0.5)
 
-    # ── فال‌بک: ردیف تازه‌اضافه‌شده (بر اساس افزایش تعداد ردیف) ──
-    if not found_btn and pre_save_row_count is not None:
-        fb = await page.evaluate('''(preCount) => {
-            ''' + JS_NORMALIZE_FN + '''
+    # ── فال‌بک (بدون pre_save_row_count): ردیف آخر دارای دکمه ویرایش فعال ──
+    if not found_btn and pre_save_row_count is None:
+        fb = await page.evaluate('''() => {
             const rows = Array.from(document.querySelectorAll('table tbody tr'));
-            if (rows.length <= preCount) return null;
-            // از انتها به ابتدا — ردیف جدید معمولاً آخر اضافه می‌شود
             for (let i = rows.length - 1; i >= 0; i--) {
                 const editBtn = rows[i].querySelector('button[ng-click*="editDocument"]');
                 if (editBtn && !editBtn.disabled) {
                     editBtn.setAttribute('data-target-edit', '1');
-                    return {
-                        rowCount: rows.length,
-                        rowText: _normFa(rows[i].innerText || '').slice(0, 120)
-                    };
+                    return { rowCount: rows.length };
                 }
             }
             return null;
-        }''', int(pre_save_row_count))
+        }''')
         if fb:
             found_btn = True
             used_fallback = True
             _log(prefix,
-                 f"⭐ فال‌بک: عنوان [{title}] در جدول مطابقت نداشت ولی ردیف جدید "
-                 f"شناسایی شد (ردیف‌ها: {pre_save_row_count}→{fb['rowCount']}) — "
-                 f"متن ردیف: «{fb['rowText']}»")
+                 f"⭐ فال‌بک: آخرین ردیف دارای دکمه ویرایش برای [{title}] انتخاب شد "
+                 f"({fb['rowCount']} ردیف کل)")
 
     if not found_btn:
         _log(prefix, f"ردیف [{title}] در جدول ظاهر نشد", 'warning')
@@ -883,7 +917,10 @@ async def delete_document_row_by_title(page, title: str, prefix: str = "UPLOAD")
         const normTitle = _normFa("{escaped}");
         const rows = Array.from(document.querySelectorAll('table tbody tr, .table tbody tr'));
         let targetRow = null;
-        for (const row of rows) {{
+        // 🔥 از آخر به اول — اگر چند ردیف هم‌عنوان باشد (مثل دو ردیف
+        // «مستندات»)، ردیف جدیدتر (آخرین) حذف می‌شود نه ردیف پیوست قبلی
+        for (let r = rows.length - 1; r >= 0; r--) {{
+            const row = rows[r];
             const cells = row.querySelectorAll('td');
             for (const cell of cells) {{
                 if (_normFa(cell.innerText || '').includes(normTitle)) {{
@@ -971,7 +1008,9 @@ async def full_delete_attachment_row(
             ''' + JS_NORMALIZE_FN + f'''
             const normTitle = _normFa("{escaped}");
             const rows = Array.from(document.querySelectorAll('table tbody tr, .table tbody tr'));
-            for (const row of rows) {{
+            // 🔥 از آخر به اول — با چند ردیف هم‌عنوان، ردیف جدیدتر ویرایش می‌شود
+            for (let r = rows.length - 1; r >= 0; r--) {{
+                const row = rows[r];
                 const cells = row.querySelectorAll('td');
                 for (const cell of cells) {{
                     if (_normFa(cell.innerText || '').includes(normTitle)) {{

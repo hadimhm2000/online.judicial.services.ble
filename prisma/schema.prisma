@@ -57,6 +57,10 @@ model Case {
   sentToUserAt    DateTime?
   sentViaBot      Boolean  @default(false)
 
+  // ⭐ v1.4 — وضعیت امضای الکترونیک (ربات پس از درج موفق امضا true می‌کند)
+  hasSignature    Boolean  @default(false)
+  signedAt        DateTime?
+
   // ⭐ v1.3 — شناسه پرداخت سامانه قضایی (استخراج از بخش هزینه توسط ربات)
   paymentId       String?  // شناسه پرداخت ۱۸رقمی سامانه (مثل 140520260315135806)
   systemCost      Int?     // هزینه سامانه قضایی (ریال) — مبنای محاسبه سود

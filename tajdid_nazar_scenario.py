@@ -254,12 +254,30 @@ TN_COST_FORMULA_LABELS = [
 ]
 TN_COST_SMS_SURCHARGE = 50  # ریال — «و در اخر به اضافه 50 میکنی»
 
+# ⭐ فرمول اختصاصی اعاده دادرسی مدنی/کیفری (دستور کارفرما ۱۴۰۵/۰۶):
+#   - مبلغ سامانه (جمع کل هزینه) — همان عدد جدول، بدون تغییر
+#   - سود ما = جمع ردیف ۳ تا ۶ جدول + ۵۰۰,۰۰۰ ریال
+#   - مبلغ نهایی = مبلغ سامانه + سود ما → «رند به بالا» → اعلام به کاربر
+EADAH_PROFIT_SURCHARGE = 500000      # ریال
+EADAH_PROFIT_ROW_RANGE = (3, 6)      # ردیف‌های ۳ تا ۶ جدول هزینه (۱-indexed)
+EADAH_CASE_TYPES = ("اعاده دادرسی مدنی", "اعاده دادرسی کیفری")
+
 
 def round_up_to_ten_thousand(amount: int) -> int:
     """رند به بالا به نزدیک‌ترین ۱۰,۰۰۰ ریال (همان الگوی اظهارنامه)."""
     if amount <= 0:
         return 0
     return ((amount + 9999) // 10000) * 10000
+
+
+def round_up_to_thousand(amount: int) -> int:
+    """رند به بالا به نزدیک‌ترین ۱,۰۰۰ ریال — مخصوص فرمول اعاده دادرسی.
+
+    مطابق مثال کارفرما: ۵,۰۰۱,۸۹۸ ریال → ۵,۰۰۲,۰۰۰ ریال.
+    """
+    if amount <= 0:
+        return 0
+    return ((amount + 999) // 1000) * 1000
 
 
 def _text_to_editor_html(text: str) -> str:
@@ -839,6 +857,41 @@ async def _fill_input_value(page, selector: str, value: str, prefix: str = "TN")
     }''', {"selector": selector, "value": value})
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# نرمال‌سازی تاریخ شمسی سمت سناریو (ایمنی مضاعف — داده‌های قدیمی/دستی)
+# ═════════════════════════════════════════════════════════════════════════════
+
+_FA_AR_SCENARIO = str.maketrans(
+    "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
+    "01234567890123456789"
+)
+
+
+def _normalize_judge_date_for_site(date_str: str) -> str:
+    """تبدیل تاریخ دادنامه به فرمت استاندارد سامانه (اعداد انگلیسی + ممیز).
+
+    تاریخ ورودی از کاربر (مثل «۱۴۰۳/۰۹/۱۵» یا «1403-09-15») به فرمت
+    «1403/09/15» تبدیل می‌شود تا validator فیلد NoticeDateTime سامانه
+    آن را بپذیرد. اگر ساختار تاریخ معتبر نبود، همان ورودی برمی‌گردد
+    (اعتبارسنجی اصلی در هندلر ربات انجام شده است).
+    """
+    s = (date_str or "").strip().translate(_FA_AR_SCENARIO)
+    s = s.replace("\u200c", "").replace("\u200f", "").replace(" ", "")
+    for sep in ("-", "—", "."):
+        s = s.replace(sep, "/")
+    parts = [p for p in s.split("/") if p != ""]
+    if len(parts) == 3 and all(p.isdigit() for p in parts):
+        y, m, d = parts
+        if len(y) == 2:
+            y = "14" + y
+        if len(m) == 1:
+            m = "0" + m
+        if len(d) == 1:
+            d = "0" + d
+        return f"{y}/{m}/{d}"
+    return date_str or ""
+
+
 async def _fill_notice_date_time_robust(page, judge_date: str) -> bool:
     """پرکردن مقاوم فیلد «تاریخ تنظیم دادنامه/قرار» (name="NoticeDateTime").
 
@@ -846,47 +899,99 @@ async def _fill_notice_date_time_robust(page, judge_date: str) -> bool:
     با jud-validator است — بدون digest واقعی AngularJS مقدار در مدل ثبت
     نمی‌شود و فیلد در حالت ng-invalid-required می‌ماند و مانع ادامه می‌شود.
     باید در «کلیه قسمت‌های دعاوی اعتراضی» بعد از هر بار بازیابی فراخوانی شود.
+
+    ⭐ بازنویسی (۱۴۰۵/۰۶):
+      - تاریخ قبل از پرکردن نرمال‌سازی می‌شود (اعداد انگلیسی + ممیز).
+      - با retry و «انتظار برای ظاهر شدن فیلد» پر می‌شود (فرم بعد از
+        بازیابی با تأخیر رندر می‌شود).
+      - بعد از هر تلاش، صحت مقدار و رفع ng-invalid-required بررسی می‌شود.
+      - رویدادهای input/change/keyup/blur هم dispatch می‌شوند تا
+        jud-validator و persian-datepicker مقدار را ببینند.
     """
-    filled = await page.evaluate('''(judgeDate) => {
-        let inp = document.querySelector('input[name="NoticeDateTime"]');
-        if (!inp) {
-            const inps = document.querySelectorAll('input[persian-datepicker-popup]');
-            if (inps.length > 0) inp = inps[0];
-        }
-        if (!inp) return false;
+    judge_date = _normalize_judge_date_for_site(judge_date)
+    if not judge_date:
+        logging.warning("[TN] تاریخ دادنامه برای NoticeDateTime خالی است")
+        return False
 
-        inp.value = judgeDate;
-        inp.dispatchEvent(new Event("input", { bubbles: true }));
-        inp.dispatchEvent(new Event("change", { bubbles: true }));
-
-        try {
-            if (typeof angular !== "undefined") {
-                const scope = angular.element(inp).scope();
-                const ctrl = angular.element(inp).controller("ngModel");
-                if (ctrl) {
-                    ctrl.$setViewValue(judgeDate);
-                    ctrl.$render();
-                }
-                if (scope) {
-                    scope.$apply(() => {
-                        const key = inp.getAttribute("ng-model");
-                        if (key) {
-                            const parts = key.split(".");
-                            let obj = scope;
-                            for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
-                            obj[parts[parts.length - 1]] = judgeDate;
-                        }
-                    });
-                }
+    for attempt in range(1, 6):
+        filled = await page.evaluate('''(judgeDate) => {
+            let inp = document.querySelector('input[name="NoticeDateTime"]');
+            if (!inp) {
+                const inps = document.querySelectorAll('input[persian-datepicker-popup]');
+                if (inps.length > 0) inp = inps[0];
             }
-        } catch (e) {}
+            if (!inp || inp.disabled) return {ok: false, reason: 'not_found'};
 
-        inp.blur();
-        return true;
-    }''', judge_date)
-    if not filled:
-        logging.warning("[TN] فیلد تاریخ دادنامه (NoticeDateTime) پس از استعلام پیدا نشد")
-    return bool(filled)
+            const setVal = (v) => {
+                inp.focus();
+                try {
+                    const proto = Object.getPrototypeOf(inp);
+                    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                    if (desc && desc.set) desc.set.call(inp, v);
+                    else inp.value = v;
+                } catch (e) { inp.value = v; }
+                inp.dispatchEvent(new Event('input', {bubbles: true}));
+                inp.dispatchEvent(new Event('change', {bubbles: true}));
+                inp.dispatchEvent(new KeyboardEvent('keyup', {bubbles: true}));
+            };
+
+            setVal(judgeDate);
+
+            try {
+                if (typeof angular !== "undefined") {
+                    const el = angular.element(inp);
+                    const ctrl = el.controller("ngModel");
+                    if (ctrl) {
+                        ctrl.$setViewValue(judgeDate);
+                        ctrl.$render();
+                    }
+                    const scope = el.scope();
+                    if (scope) {
+                        scope.$apply(() => {
+                            const key = inp.getAttribute("ng-model");
+                            if (key) {
+                                const parts = key.split(".");
+                                let obj = scope;
+                                for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
+                                obj[parts[parts.length - 1]] = judgeDate;
+                            }
+                        });
+                    }
+                }
+            } catch (e) {}
+
+            inp.blur();
+            inp.dispatchEvent(new Event('blur', {bubbles: true}));
+
+            const stillInvalid = inp.classList.contains('ng-invalid-required') ||
+                inp.classList.contains('ng-invalid-date');
+            return {
+                ok: true,
+                value: inp.value,
+                invalid: stillInvalid,
+                hasErrorClass: inp.classList.contains('has-error')
+            };
+        }''', judge_date)
+
+        if filled and filled.get("ok"):
+            value = filled.get("value", "")
+            invalid = filled.get("invalid", False)
+            if value == judge_date and not invalid:
+                logging.info(
+                    f"[TN] فیلد NoticeDateTime با «{value}» پر و معتبر شد (تلاش {attempt})")
+                return True
+            logging.info(
+                f"[TN] NoticeDateTime تلاش {attempt}: value={value!r} "
+                f"invalid={invalid} — retry...")
+        else:
+            logging.info(
+                f"[TN] فیلد NoticeDateTime هنوز رندر نشده (تلاش {attempt}) — retry...")
+
+        await asyncio.sleep(2)
+
+    logging.warning(
+        "[TN] فیلد تاریخ دادنامه (NoticeDateTime) پس از ۵ تلاش پر/معتبر نشد")
+    return False
 
 
 async def _click_get_hst(page) -> bool:
@@ -924,28 +1029,73 @@ async def _confirm_retrieve_popup(page, wait_sec: float = 1.0, tries: int = 12) 
 
 
 async def _wait_retrieve_loading(page, bot: Bot, user_id: int, timeout: int = 90):
-    """انتظار برای پایان لودینگ بازیابی (progress-bar stripes + نوار افقی).
+    """انتظار برای پایان کامل لودینگ بازیابی + بررسی پاپ‌آپ.
 
-    «این مرحله بعضی مواقع سریع است و بعضی مواقع ممکن است طول بکشد، باید
-    منتظر لودینگ باشی و هرموقع لودینگ محو شد به معنای این است که میتوانی
-    ادامه مراحل را بروی»
+    ⭐ بازنویسی طبق دستور کارفرما (۱۴۰۵/۰۶):
+      «وقتی اطلاعات دادنامه را استعلام می‌گیری حتماً به لودینگ سایت توجه
+       کن که وقتی تمام شد و پاپ‌آپی ظاهر نشد، برو سراغ پر کردن سایر
+       موارد» — یعنی:
+       ۱. نوار لودینگ سامانه (progress-bar-striped/animated — نوار آبی
+          width-full) باید کاملاً «محو» شود (بررسی مرئی‌بودن، نه فقط detach).
+       ۲. blockUI/لودرهای افقی هم باید تمام شوند.
+       ۳. اگر بعد از پایان لودینگ پاپ‌آپی باز است، متنش برگردانده می‌شود
+          تا فراخوان‌کننده قبل از پر کردن فیلدها آن را مدیریت کند.
     """
     # ۱. انتظار کوتاه برای «شروع» لودینگ (شاید با تأخیر ظاهر شود)
     try:
         await page.wait_for_selector(
-            '.progress-bar-striped, .progress-bar-animated',
+            '.progress-bar-striped, .progress-bar-animated, .progress-bar.active',
             state='visible', timeout=8000)
     except PlaywrightTimeoutError:
         pass  # لودینگ سریع تمام شده یا بدون stripes
-    # ۲. انتظار برای «محو شدن کامل» progress-bar
+
+    # ۲. انتظار برای «محو شدن کامل» نوار لودینگ — بررسی دوره‌ای مرئی‌بودن
+    #    (نوار ممکن است در DOM بماند ولی hidden شود؛ فقط detach کافی نیست)
     try:
-        await page.wait_for_selector(
-            '.progress-bar-striped, .progress-bar-animated',
-            state='detached', timeout=30000)
+        await page.wait_for_function(
+            '''() => {
+                const bars = Array.from(document.querySelectorAll(
+                    '.progress-bar-striped, .progress-bar-animated, ' +
+                    '.progress-bar.active, .progress-bar.width-full, .blockUI, .blockOverlay'));
+                const visible = bars.filter(el => {
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0 &&
+                        window.getComputedStyle(el).display !== 'none' &&
+                        window.getComputedStyle(el).visibility !== 'hidden';
+                });
+                return visible.length === 0;
+            }''', timeout=60000)
     except PlaywrightTimeoutError:
-        pass
-    # ۳. نوار لودینگ افقی بالای صفحه (helper مشترک — متن خطا یا SESSION_EXPIRED برمی‌گرداند)
-    return await wait_for_horizontal_loading_bar(page, bot, user_id, timeout=timeout)
+        logging.warning("[TN] لودینگ بازیابی بعد از ۶۰ ثانیه هنوز مرئی است — ادامه با احتیاط")
+
+    # ۳. نوار لودینگ افقی بالای صفحه + pending request های AngularJS
+    #    (متن خطا یا SESSION_EXPIRED برمی‌گرداند)
+    result = await wait_for_horizontal_loading_bar(page, bot, user_id, timeout=timeout)
+
+    # ۴. بررسی پاپ‌آپ بعد از اتمام لودینگ — «اگر پاپ‌آپی ظاهر نشد»
+    #    می‌توان به پر کردن سایر موارد رفت؛ وگرنه متن آن برگردانده می‌شود.
+    if not result:
+        popup_after_loading = await page.evaluate('''() => {
+            const popup = document.querySelector('.sweet-alert.showSweetAlert');
+            if (!popup) return null;
+            const style = window.getComputedStyle(popup);
+            if (style.display === 'none' || style.visibility === 'hidden') return null;
+            const h2 = popup.querySelector('h2');
+            const p = popup.querySelector('p');
+            const text = [h2 ? h2.innerText : '', p ? p.innerText : '']
+                .filter(Boolean).join(' - ').trim();
+            const successIcon = popup.querySelector('.sa-icon.sa-success');
+            const isSuccess = successIcon &&
+                window.getComputedStyle(successIcon).display !== 'none';
+            return text ? {text, is_success: !!isSuccess} : {text: "پاپ‌آپ بدون متن", is_success: false};
+        }''')
+        if popup_after_loading and not popup_after_loading.get("is_success"):
+            logging.warning(
+                f"[TN] پاپ‌آپ بعد از لودینگ بازیابی باز است: "
+                f"{popup_after_loading.get('text', '')[:150]}")
+            return popup_after_loading.get("text", "خطای نامشخص")
+
+    return result
 
 
 async def _handle_post_retrieve_error(page, error_text: str, bot: Bot, user_id: int) -> bool:
@@ -1052,6 +1202,17 @@ async def _retrieve_judgment(page, bot: Bot, user_id: int, max_retries: int = 3)
         # بررسی موفقیت
         if await _is_judgment_retrieved(page):
             logging.info(f"[TN] بازیابی دادنامه موفق (تلاش {attempt})")
+
+            # ⭐ طبق دستور کارفرما: بعد از اتمام لودینگ، اگر پاپ‌آپی باز
+            # مانده (حتی موفقیت) باید بسته شود تا «سایر موارد» پر شوند.
+            await _close_success_popup(page)
+            await _close_popup(page)
+            # پایدارسازی فرم رندرشده بعد از بازیابی (AngularJS digest)
+            try:
+                await wait_for_angular_idle(page)
+            except Exception:
+                pass
+            await asyncio.sleep(2)
             return True
 
         logging.warning(f"[TN] نشانه موفقیت بازیابی یافت نشد — تلاش {attempt}")
@@ -1186,7 +1347,9 @@ async def _fill_judge_info_step(page, data: dict, bot: Bot, user_id: int,
     case_type = data.get("case_type", "")
     judge_no = data.get("tn_judge_no", "")
     file_no = data.get("tn_file_no", "")
-    judge_date = data.get("tn_judge_date", "")
+    # ⭐ نرمال‌سازی تاریخ دادنامه — عدد انگلیسی + ممیز (فرمت validator سامانه).
+    # این همان تاریخ در فیلد NoticeDateTime (فیلد پایین) هم وارد می‌شود.
+    judge_date = _normalize_judge_date_for_site(data.get("tn_judge_date", ""))
     province = data.get("tn_province", "")
     doc_type = data.get("tn_doc_type", "حکم")
     amount = data.get("tn_amount", 0) or 0
@@ -1241,8 +1404,16 @@ async def _fill_judge_info_step(page, data: dict, bot: Bot, user_id: int,
             "شماره دادنامه/پرونده/تاریخ/استان را بررسی کنید.")
 
     # ۶. پس از بازیابی — تاریخ مجدداً (فرم جدید)
+    # «در فیلد زیر نیز همان تاریخ دادنامه را وارد کن» (NoticeDateTime)
     await asyncio.sleep(2)
-    await _fill_notice_date_time_robust(page, judge_date)
+    notice_filled = await _fill_notice_date_time_robust(page, judge_date)
+    if not notice_filled:
+        # یک نوبت کوتاه صبر و تلاش مجدد — فرم گاهی با تأخیر رندر می‌شود
+        await asyncio.sleep(3)
+        notice_filled = await _fill_notice_date_time_robust(page, judge_date)
+        if not notice_filled:
+            logging.warning(
+                "[TN] فیلد NoticeDateTime معتبر نشد — ادامه با مقدار پرشده")
     await asyncio.sleep(1)
 
     if not is_prosecutor:
@@ -1812,15 +1983,22 @@ async def _click_preparation(page, bot: Bot, user_id: int, max_retries: int = 3)
 # «هزینه» — جدول هزینه + فرمول محاسبه (طبق سند راهنما)
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def _calculate_cost(page, bot: Bot, user_id: int, max_retries: int = 3) -> dict:
+async def _calculate_cost(page, bot: Bot, user_id: int, max_retries: int = 3,
+                          case_type: str = "") -> dict:
     """محاسبه هزینه دعاوی اعتراضی — پارس جدول + فرمول سند راهنما.
 
-    فرمول:
+    فرمول عمومی:
       ۱. عدد «جمع کل هزینه» جدول (td سبز) یادداشت می‌شود
       ۲. جمع ۵ ردیف: اوراق دادخواست + افزودن پیوست + ثبت اطلاعات اشخاص
          + تنظیم دادخواست + خدمات الکترونیک قضایی
       ۳. + ۵۰ ریال
       ۴. + جمع کل → رند به بالا (۱۰,۰۰۰ ریال)
+
+    ⭐ فرمول اختصاصی اعاده دادرسی مدنی/کیفری (دستور کارفرما ۱۴۰۵/۰۶):
+      - مبلغ سامانه = جمع کل هزینه (بدون تغییر)
+      - سود ما = جمع ردیف ۳ تا ۶ + ۵۰۰,۰۰۰ ریال
+      - مبلغ نهایی = مبلغ سامانه + سود ما → رند به بالا
+      (ردیف از ستون «ردیف» جدول خوانده می‌شود؛ اگر نبود، جایگاه ردیف)
 
     اگر جدول نمایش داده نشد:
       - خطای ورود همزمان → مدیر مطلع می‌شود (لاگین مجدد)
@@ -1904,7 +2082,7 @@ async def _calculate_cost(page, bot: Bot, user_id: int, max_retries: int = 3) ->
                 }
             }
 
-            // ردیف‌ها: [برچسب، مبلغ]
+            // ردیف‌ها: [شماره ردیف، برچسب، مبلغ]
             const labels = [];
             const rows = Array.from(document.querySelectorAll('table tr'));
             for (const row of rows) {
@@ -1913,7 +2091,10 @@ async def _calculate_cost(page, bot: Bot, user_id: int, max_retries: int = 3) ->
                     const label = tds[1].innerText.trim();
                     const amount = tds[2].innerText.trim().replace(/,/g, '').replace(/،/g, '').replace(/\\s/g, '');
                     if (label && /^[0-9]+$/.test(amount) && parseInt(amount) > 0) {
-                        labels.push({label, amount: parseInt(amount)});
+                        // شماره ردیف از ستون اول (اگر عدد باشد)
+                        const rowNoText = (tds[0].innerText || '').trim().replace(/\\s/g, '');
+                        const rowNo = /^[0-9]+$/.test(rowNoText) ? parseInt(rowNoText) : null;
+                        labels.push({label, amount: parseInt(amount), rowNo: rowNo});
                     }
                 }
             }
@@ -1950,6 +2131,43 @@ async def _calculate_cost(page, bot: Bot, user_id: int, max_retries: int = 3) ->
                 return (_normalize_fa(s)
                         .replace(" ", ""))
 
+            # ⭐ اعاده دادرسی مدنی/کیفری — فرمول اختصاصی کارفرما:
+            # سود = جمع ردیف ۳ تا ۶ + ۵۰۰,۰۰۰ ریال
+            if case_type in EADAH_CASE_TYPES:
+                row_lo, row_hi = EADAH_PROFIT_ROW_RANGE
+                profit_rows = []
+                for pos, item in enumerate(labels, start=1):
+                    row_no = item.get("rowNo") or pos  # ستون ردیف؛ وگرنه جایگاه
+                    if row_lo <= row_no <= row_hi:
+                        profit_rows.append(item)
+                profit_sum = sum(item.get("amount", 0) for item in profit_rows)
+                profit_total = profit_sum + EADAH_PROFIT_SURCHARGE
+                raw_total = main_total + profit_total
+                # ⭐ رند به بالا «هزارتومانی» مطابق مثال کارفرما (۵,۰۰۱,۸۹۸ → ۵,۰۰۲,۰۰۰)
+                final_total = round_up_to_thousand(raw_total)
+
+                logging.info(
+                    f"[TN] محاسبه هزینه اعاده دادرسی ({case_type}): "
+                    f"مبلغ سامانه={main_total:,} + سود=({profit_sum:,} "
+                    f"({len(profit_rows)} ردیف: ردیف {row_lo} تا {row_hi}) + "
+                    f"{EADAH_PROFIT_SURCHARGE:,})={profit_total:,} → "
+                    f"جمع={raw_total:,} → رند بالا: {final_total:,}")
+
+                return {
+                    "cost_sum": cost_data.get("costSum", 0),
+                    "main_total": main_total,          # مبلغ سامانه
+                    "system_total": main_total,         # مبلغ سامانه
+                    "profit_sum": profit_sum,           # جمع ردیف ۳-۶
+                    "profit_total": profit_total,       # سود ما
+                    "formula_sum": profit_sum,
+                    "matched_rows": profit_rows,
+                    "raw_total": raw_total,
+                    "final_total": final_total,
+                    "labels": labels,
+                    "is_eadah_formula": True,
+                }
+
+            # ── فرمول عمومی بقیه انواع دعوی ──
             formula_sum = 0
             matched_rows = []
             for item in labels:
@@ -1978,6 +2196,7 @@ async def _calculate_cost(page, bot: Bot, user_id: int, max_retries: int = 3) ->
                 "raw_total": raw_total,
                 "final_total": final_total,
                 "labels": labels,
+                "is_eadah_formula": False,
             }
 
         # جدول هنوز نیست — تلاش مجدد با فاصله
@@ -2703,11 +2922,14 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
             await _click_step_box(sana_page, "محاسبه و دريافت هزينه", bot, user_id)
             await resilient_sleep(sana_page, 8, bot, user_id)
 
-            cost_info = await _calculate_cost(sana_page, bot, user_id)
+            cost_info = await _calculate_cost(
+                sana_page, bot, user_id, case_type=case_type)
             final_total = cost_info.get("final_total", 0)
             cost_error = cost_info.get("cost_error", False)
             logging.info(f"[TN] cost_info: main={cost_info.get('main_total')}, "
-                         f"final={final_total}, error={cost_error}")
+                         f"final={final_total}, error={cost_error}, "
+                         f"eadah_formula={cost_info.get('is_eadah_formula', False)}, "
+                         f"profit={cost_info.get('profit_total', 0)}")
 
             # شناسه پرداخت — ذخیره در شیت + پیام به مدیر (الگوی اظهارنامه)
             try:
@@ -2767,16 +2989,22 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                         national_ids=appellant_nat_ids,
                         case_type=case_type,
                         file_no=file_no,
-                        tn_persons=appellants)
+                        tn_persons=appellants,
+                        cost_info=cost_info)
                     await bot.send_message(
                         ADMIN_ID,
                         f"✅ [TN] ثبت {case_type} کاربر {user_id} موفق. "
                         f"کد: {bill_no} — هزینه نهایی: {final_total:,} ریال")
                 else:
                     # چاپ ناموفق — دست‌کم مبلغ را اعلام کن
+                    fee_msg = f"💰 *هزینه دادرسی: {final_total:,} ریال*"
+                    if cost_info.get("is_eadah_formula"):
+                        fee_msg += (
+                            f"\n_(مبلغ سامانه: {cost_info.get('main_total', 0):,} ریال + "
+                            f"سود خدمات: {cost_info.get('profit_total', 0):,} ریال — رند به بالا)_")
                     await bot.send_message(
                         user_id,
-                        f"💰 *هزینه دادرسی: {final_total:,} ریال*\n\n"
+                        f"{fee_msg}\n\n"
                         f"⚠️ چاپ نسخه پرونده با خطا مواجه شد؛ لطفاً با پشتیبانی تماس بگیرید.\n"
                         f"کد رهگیری: `{bill_no}`")
                     try:
@@ -2898,7 +3126,7 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
 # استعلام افراد پرونده (حالت استعلام در ربات)
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def pre_query_tn_persons(data: dict, bot: Bot, step_name: str) -> list:
+async def pre_query_tn_persons(data: dict, bot: Bot, step_name) -> list:
     """استعلام افراد موجود در پرونده از سامانه.
 
     ۱. ناوبری به فرم دعوا (منو → نوع دعوی → باکس ثبت مخصوص همان نوع —
@@ -2911,6 +3139,18 @@ async def pre_query_tn_persons(data: dict, bot: Bot, step_name: str) -> list:
     ⭐ اصلاحیه: کل استعلام با تلاش مجدد (×۲) انجام می‌شود — خطای گذرای
     سامانه (رندر کند، ریست ناوبری، ...) دیگر کل استعلام را نمی‌کشد.
 
+    ⭐ اصلاحیه کارفرما (۱۴۰۵/۰۶) — اعاده دادرسی مدنی/کیفری:
+      «صرفاً برای اعاده دادرسی (مدنی و کیفری)، وقتی کاربر گزینه استعلام
+       افراد پرونده را می‌زند، هم برو در بخش محکوم‌علیه و هم برو به بخش
+       طرف اعاده دادرسی و تمام نام‌های این دو بخش را به کاربر نمایش بده
+       تا انتخاب کند» — برای این دو نوع دعوی step_name می‌تواند لیست دو
+      step باشد و نتیجه ادغام/یکتا می‌شود:
+        اعاده دادرسی مدنی  → [متقاضي اعاده دادرسي, طرف اعاده دادرسي]
+        اعاده دادرسی کیفری → [محكوم عليه, طرف اعاده دادرسي]
+
+    Args:
+        step_name: نام یک step (str) یا لیستی از step ها برای ادغام نتایج
+
     Returns: [{"index": int, "name": str}, ...]
     """
     sana_page = runtime_state.sana_page
@@ -2922,11 +3162,30 @@ async def pre_query_tn_persons(data: dict, bot: Bot, step_name: str) -> list:
     case_type = data.get("case_type", "")
     is_prosecutor = case_type == "اعتراض به قرار دادسرا"
 
+    # نرمال‌سازی ورودی — str یا list[str]
+    if isinstance(step_name, str):
+        step_names = [step_name]
+    else:
+        step_names = list(step_name or [])
+
+    # ⭐ اعاده دادرسی مدنی/کیفری — هر دو بخش (محکوم‌علیه/متقاضي + طرف اعاده)
+    if case_type in ("اعاده دادرسی مدنی", "اعاده دادرسی کیفری") and len(step_names) == 1:
+        combined = []
+        appellant_step = APPELLANT_STEP_MAP.get(case_type)
+        appellee_step = APPELLEE_STEP_MAP.get(case_type)
+        for s in (appellant_step, appellee_step):
+            if s and s not in combined:
+                combined.append(s)
+        if combined:
+            step_names = combined
+            logging.info(
+                f"[TN] استعلام دو بخشی برای {case_type}: {step_names}")
+
     last_error = None
     for attempt in range(2):
         try:
             return await _pre_query_tn_persons_once(
-                sana_page, bot, user_id, case_type, is_prosecutor, step_name, data)
+                sana_page, bot, user_id, case_type, is_prosecutor, step_names, data)
         except TajdidFatalError:
             raise  # خطای قطعی (بدون مرورگر و ...) — retry بی‌فایده
         except TajdidSanaQueryError:
@@ -2947,8 +3206,12 @@ async def pre_query_tn_persons(data: dict, bot: Bot, step_name: str) -> list:
 
 async def _pre_query_tn_persons_once(
         sana_page, bot: Bot, user_id, case_type, is_prosecutor,
-        step_name: str, data: dict) -> list:
-    """یک دور کامل استعلام افراد (بدون retry — فقط منطق)."""
+        step_names: list, data: dict) -> list:
+    """یک دور کامل استعلام افراد (بدون retry — فقط منطق).
+
+    step_names: لیست step هایی که نام‌هایشان استخراج و «ادغام/یکتا» می‌شود
+    (برای بقیه انواع دعوی فقط یک عضو دارد).
+    """
 
     # ۱. ناوبری به فرم
     ok = await _goto_case_form(sana_page, bot, user_id, case_type)
@@ -2976,12 +3239,26 @@ async def _pre_query_tn_persons_once(
     await _fill_judge_info_step(
         sana_page, data, bot, user_id, is_prosecutor=is_prosecutor)
 
-    # ۴. ورود به step مورد نظر
-    await _click_step_label(sana_page, step_name, bot, user_id)
-    await resilient_sleep(sana_page, 5, bot, user_id)
+    # ۴+۵. ورود به هر step و استخراج نام‌ها + ادغام/یکتا
+    merged_names = []
+    seen_norm = set()
 
-    # ۵. استخراج نام‌ها
-    names = await _extract_persons_from_navlist(sana_page)
+    for s_name in step_names:
+        await _click_step_label(sana_page, s_name, bot, user_id)
+        await resilient_sleep(sana_page, 5, bot, user_id)
 
-    logging.info(f"[TN] استعلام افراد پرونده: {len(names)} نفر یافت شد (step={step_name})")
-    return names
+        names = await _extract_persons_from_navlist(sana_page)
+        logging.info(
+            f"[TN] استعلام افراد پرونده (step={s_name}): {len(names)} نفر")
+
+        for n in names:
+            norm = _normalize_fa(n.get("name", "")).replace(" ", "")
+            if not norm or norm in seen_norm:
+                continue  # حذف تکراری‌ها (نام مشترک دو بخش)
+            seen_norm.add(norm)
+            merged_names.append({"index": len(merged_names), "name": n["name"]})
+
+    logging.info(
+        f"[TN] استعلام افراد پرونده — مجموع یکتا: {len(merged_names)} نفر "
+        f"(steps={step_names})")
+    return merged_names
