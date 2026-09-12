@@ -29,7 +29,27 @@ async def register_inquiry_to_panel(
     پرداخت‌شده هرگز وارد «درآمد» و «سود» پنل نمی‌شدند و در کارت «پرداخت
     نشده» انباشته می‌شدند. طبق قاعدهٔ سود («هر مبلغی که بابت استعلام‌ها
     پرداخت شده مستقیماً وارد سود شود»)، ثبت با PAID انجام می‌شود.
+
+    ⭐ v1.6 — معافیت ادمین (معاف از هزینه):
+      استعلام‌هایی که با آیدی ادمین/کاربران معاف ثبت می‌شوند، هزینهٔ واقعی
+      ندارند (پرداختی انجام نشده)؛ پس نباید هیچ مبلغی در پنل ثبت کنند —
+      وگرنه درآمد/سود پنل به‌اشتباه باد می‌کند. برای این کاربران:
+      fee=0 و feeStatus=MANUAL_APPROVED ثبت می‌شود.
+      (مسیرهای معاف در handlers.py هم payment_fee واقعی را به صف می‌فرستند؛
+      اینجا همان نقطهٔ نهاییِ throttle است که همهٔ مسیرها را پوشش می‌دهد.)
     """
+    try:
+        from exempt_users import is_exempt_user
+        is_exempt = await is_exempt_user(user_id)
+    except Exception as _ex:
+        logger.warning(f"بررسی معافیت کاربر {user_id} ناموفق (فرض: معاف نیست): {_ex}")
+        is_exempt = False
+
+    final_fee = 0 if is_exempt else int(fee or 0)
+    final_summary = result_summary
+    if is_exempt:
+        final_summary = (result_summary or "استعلام") + " — معاف از پرداخت (بدون مبلغ)"
+
     return await _register_case_to_panel_sync(
         bale_user_id=str(user_id),
         full_name=full_name,
@@ -38,9 +58,9 @@ async def register_inquiry_to_panel(
         tracking_code=tracking_code,
         document_category=doc_category,
         sub_category=doc_subcategory,
-        fee=fee,
-        fee_status="PAID",
-        result_summary=result_summary,
+        fee=final_fee,
+        fee_status="MANUAL_APPROVED" if is_exempt else "PAID",
+        result_summary=final_summary,
     )
 from keyboards import admin_login_kb, confirm_single_kb, confirm_cart_kb
 from browser_helpers import (
@@ -1225,6 +1245,7 @@ async def process_task(data, bot: Bot):
                         await register_failed_inquiry_to_panel(
                             user_id=user_id, full_name=data.get('full_name', ''),
                             tracking_code=phone_number, doc_category="شماره تماس",
+                            fee=data.get('payment_fee', 0),
                             error_details=alert_message, error_step="sana_alert",
                         )
                     except Exception as panel_err:
@@ -1239,6 +1260,7 @@ async def process_task(data, bot: Bot):
                         await register_failed_inquiry_to_panel(
                             user_id=user_id, full_name=data.get('full_name', ''),
                             tracking_code=phone_number, doc_category="شماره تماس",
+                            fee=data.get('payment_fee', 0),
                             error_details="موردی یافت نشد", error_step="no_results",
                         )
                     except Exception as panel_err:
@@ -1265,6 +1287,7 @@ async def process_task(data, bot: Bot):
                             await register_failed_inquiry_to_panel(
                                 user_id=user_id, full_name=data.get('full_name', ''),
                                 tracking_code=phone_number, doc_category="شماره تماس",
+                                fee=data.get('payment_fee', 0),
                                 error_details="موردی یافت نشد (تلاش دوم)", error_step="no_results",
                             )
                         except Exception as panel_err:
@@ -1281,6 +1304,7 @@ async def process_task(data, bot: Bot):
                         await register_failed_inquiry_to_panel(
                             user_id=user_id, full_name=data.get('full_name', ''),
                             tracking_code=phone_number, doc_category="شماره تماس",
+                            fee=data.get('payment_fee', 0),
                             error_details="جدول نتایج ظاهر نشد (تایم‌اوت)", error_step="table_timeout",
                         )
                     except Exception as panel_err:
@@ -1321,6 +1345,7 @@ async def process_task(data, bot: Bot):
                         await register_failed_inquiry_to_panel(
                             user_id=user_id, full_name=data.get('full_name', ''),
                             tracking_code=phone_number, doc_category="شماره تماس",
+                            fee=data.get('payment_fee', 0),
                             error_details="موردی یافت نشد", error_step="no_persons_extracted",
                         )
                     except Exception as panel_err:
@@ -1430,6 +1455,7 @@ async def process_task(data, bot: Bot):
                             full_name=data.get('full_name', ''),
                             tracking_code=national_id,
                             doc_category="کد ملی",
+                            fee=data.get('payment_fee', 0),
                             error_details="کدملی فاقد ثبت‌نام ثنا",
                             error_step="lookup_not_found",
                         )
@@ -1460,6 +1486,7 @@ async def process_task(data, bot: Bot):
                             full_name=data.get('full_name', ''),
                             tracking_code=national_id,
                             doc_category="کد ملی",
+                            fee=data.get('payment_fee', 0),
                             error_details="استخراج اطلاعات پروفایل ناموفق بود (ساختار صفحه یافت نشد)",
                             error_step="profile_extraction",
                         )
@@ -1759,6 +1786,7 @@ async def process_task(data, bot: Bot):
                                 user_id=user_id, full_name=data.get('full_name', ''),
                                 tracking_code=tracking_code, doc_category=category,
                                 doc_subcategory=subcategory,
+                                fee=data.get('payment_fee', 0),
                                 error_details=str(print_err), error_step="print_document",
                             )
                         except Exception as panel_err:

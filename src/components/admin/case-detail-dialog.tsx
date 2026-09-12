@@ -27,6 +27,7 @@ import {
   Trash2,
   Pin,
   PinOff,
+  PenLine,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { CaseItem } from './cases-table';
@@ -484,6 +485,15 @@ export default function CaseDetailDialog({
                 <div className="absolute right-[14px] top-6 bottom-6 w-px bg-gradient-to-b from-emerald-300 via-sky-300 to-transparent dark:from-emerald-600 dark:via-sky-600" />
                 <div className="space-y-1">
                   <TimelineItem label="ثبت درخواست" time={caseItem.createdAt} icon={FileText} dotColor="bg-emerald-500" />
+                  {caseItem.signedAt && (
+                    <TimelineItem
+                      label="امضای الکترونیک"
+                      time={caseItem.signedAt}
+                      icon={PenLine}
+                      color="text-violet-500"
+                      dotColor="bg-violet-500"
+                    />
+                  )}
                   {caseItem.readyToSendAt && (
                     <TimelineItem label="آماده ارسال" time={caseItem.readyToSendAt} icon={Send} dotColor="bg-sky-500" />
                   )}

@@ -37,6 +37,7 @@ panel_sync.py — ثبت رویدادها در پنل ادمین (Next.js API) �
   ۶) پنل خودش Case تکراری را تشخیص می‌دهد (_duplicate) پس retry امن است.
 """
 import asyncio
+import datetime
 import logging
 import time
 
@@ -333,9 +334,34 @@ async def find_case_in_panel(bale_user_id: int | str, service_type: str, trackin
     """
     جستجوی یک Case موجود در پنل با baleUserId + serviceType + trackingCode.
     برای upsert_case_to_panel استفاده می‌شود. در صورت عدم وجود یا خطا None برمی‌گرداند.
+
+    ⭐ v1.6 — فالبک کد رهگیری خالی:
+      قبلاً اگر tracking_code خالی بود (مثلا پرونده ثبت‌شده با «فاکتور دستی
+      مدیر» یا ثبتِ بدون شماره بایگانی)، همین‌طور بی‌صدا None برمی‌گشت و
+      پروندهٔ پرداخت‌شده هرگز وارد «آماده ارسال» نمی‌شد.
+      حالا در این حالت، آخرین Case همان کاربر با همان نوع سرویس
+      (ترجیحاً وضعیت PROCESSING) برگردانده می‌شود.
     """
     if not tracking_code:
-        return None
+        # فالبک: جستجوی کیس‌های همین کاربر با همین نوع سرویس (بدون کد رهگیری)
+        url = f"{ADMIN_API_BASE}/admin/cases"
+        params = {"search": str(bale_user_id), "serviceType": service_type, "limit": "50"}
+        data, err = await _panel_request("GET", url, params=params)
+        if data is None:
+            return None
+        candidates = [
+            c for c in data.get("cases", [])
+            if c.get("baleUserId") == str(bale_user_id)
+            and c.get("serviceType") == service_type
+        ]
+        if not candidates:
+            return None
+        # اولویت: PROCESSING (همین فلوی جاری) > جدیدترین
+        processing = [c for c in candidates if c.get("status") == "PROCESSING"]
+        pool = processing or candidates
+        pool.sort(key=lambda c: c.get("createdAt") or "", reverse=True)
+        return pool[0]
+
     url = f"{ADMIN_API_BASE}/admin/cases"
     params = {"search": str(tracking_code), "serviceType": service_type, "limit": "50"}
 
@@ -373,7 +399,9 @@ async def _upsert_case_impl(
         }
         if fee_status is not None:
             update_fields["feeStatus"] = fee_status
-        if fee:
+        # ⭐ v1.6: fee وقتی هم آپدیت شود که 0 باشد (مسیر معافیت) — به‌شرطی که
+        # fee_status هم در حال آپدیت است؛ تا رکورد قبلیِ با مبلغ اشتباه صفر شود.
+        if fee or fee_status is not None:
             update_fields["fee"] = fee
         return await _update_case_impl(existing["id"], **update_fields)
 
@@ -401,10 +429,67 @@ async def _mark_ready_by_tracking_impl(bale_user_id, service_type, tracking_code
     if not case:
         logger.warning(
             f"[PANEL_SYNC] پرونده‌ای برای ready-to-send پیدا نشد: "
-            f"user={bale_user_id} type={service_type} tracking={tracking_code}"
+            f"user={bale_user_id} type={service_type} tracking={tracking_code or '(خالی)'}"
         )
         return None
     return await _mark_ready_impl(case["id"])
+
+
+# ── ⭐ v1.6 — وضعیت امضای الکترونیک ─────────────────────────────────────
+async def _mark_signed_impl(case_id: str):
+    """ثبت موفقیت امضای الکترونیک روی یک Case — نسخه داخلی.
+
+    PUT /admin/cases با hasSignature=true و signedAt=<الان>.
+    (روت PUT پنل همهٔ فیلدها را spread می‌کند؛ پس ارسال این دو فیلد کافی است.)
+    """
+    if not case_id:
+        logger.warning("[PANEL_SYNC] mark_signed بدون case_id صدا زده شد؛ نادیده گرفته شد.")
+        return None
+
+    payload = {
+        "id": case_id,
+        "hasSignature": True,
+        "signedAt": datetime.datetime.now().isoformat(),
+    }
+    data, err = await _panel_request("PUT", f"{ADMIN_API_BASE}/admin/cases", json=payload)
+    if data is None:
+        if err != "circuit_open":
+            logger.warning(f"[PANEL_SYNC] خطا در ثبت امضای Case {case_id}: {err}")
+        return None
+
+    logger.info(f"[PANEL_SYNC] امضای Case ثبت شد (hasSignature=true): id={case_id}")
+    return data
+
+
+async def mark_case_signed(case_id: str):
+    """ثبت موفقیت امضای الکترونیک روی یک Case — غیرمسدودکننده (پس‌زمینه)."""
+    if not case_id:
+        logger.warning("[PANEL_SYNC] mark_case_signed بدون case_id صدا زده شد؛ نادیده گرفته شد.")
+        return None
+    _schedule_panel_job(_mark_signed_impl(case_id))
+    return None
+
+
+async def mark_case_signed_by_tracking(bale_user_id: int | str, service_type: str, tracking_code: str):
+    """مثل mark_case_signed ولی با baleUserId+serviceType+trackingCode —
+    غیرمسدودکننده (پس‌زمینه).
+
+    اگر tracking_code خالی باشد، از فالبک find_case_in_panel (آخرین کیس
+    PROCESSING همان کاربر/سرویس) استفاده می‌شود.
+    """
+    _schedule_panel_job(_mark_signed_by_tracking_impl(bale_user_id, service_type, tracking_code))
+    return None
+
+
+async def _mark_signed_by_tracking_impl(bale_user_id, service_type, tracking_code):
+    case = await find_case_in_panel(bale_user_id, service_type, tracking_code)
+    if not case:
+        logger.warning(
+            f"[PANEL_SYNC] پرونده‌ای برای ثبت امضا پیدا نشد: "
+            f"user={bale_user_id} type={service_type} tracking={tracking_code or '(خالی)'}"
+        )
+        return None
+    return await _mark_signed_impl(case["id"])
 
 
 # ── API عمومی — پیش‌فرض: غیرمسدودکننده (پس‌زمینه) ──────────────────────
@@ -499,9 +584,12 @@ async def mark_case_ready_to_send_by_tracking(bale_user_id: int | str, service_t
     """
     مثل mark_case_ready_to_send ولی با baleUserId+serviceType+trackingCode —
     غیرمسدودکننده (پس‌زمینه).
+
+    ⭐ v1.6: اگر tracking_code خالی باشد، به‌جای بی‌صدا رد شدن، از فالبک
+    find_case_in_panel (آخرین Case ثبت‌شدهٔ همین کاربر با همین نوع سرویس)
+    استفاده می‌شود — تا پرونده‌های بدون کد رهگیری (مثلا فاکتور دستی مدیر)
+    هم وارد «آماده ارسال» شوند.
     """
-    if not tracking_code:
-        return None
     _schedule_panel_job(_mark_ready_by_tracking_impl(bale_user_id, service_type, tracking_code))
     return None
 
@@ -549,11 +637,36 @@ async def register_failed_inquiry_to_panel(
     tracking_code: str,
     doc_category: str,
     doc_subcategory: str | None = None,
+    fee: int = 0,
     error_details: str | None = None,
     error_step: str | None = None):
     """
     ثبت یک استعلام ناموفق در پنل ادمین با وضعیت FAILED — غیرمسدودکننده.
+
+    ⭐ v1.6 — هزینهٔ استعلام‌های ناموفق هم ثبت می‌شود:
+      هزینهٔ استعلام «قبل از ثبت در سامانه» از کاربر دریافت می‌شود؛ پس حتی
+      وقتی ثبت سامانه (ثبت در اخرا/ثنا) شکست می‌خورد، مبلغ گرفته‌شده باید
+      در پنل وارد شود تا درآمد/سود درست بماند. قبلاً این تابع همیشه
+      fee=0 و feeStatus=UNPAID ثابت می‌زد و پولِ پرداخت‌شدهٔ کاربر گم می‌شد.
+
+      - کاربر عادی:  fee = مبلغ پرداختی (payment_fee)، feeStatus = PAID
+      - کاربر معاف (ادمین): fee = 0، feeStatus = MANUAL_APPROVED
+        (طبق قاعدهٔ کارفرما: رکورد معاف نباید هیچ مبلغی در پنل داشته باشد)
     """
+    try:
+        from exempt_users import is_exempt_user
+        is_exempt = await is_exempt_user(user_id)
+    except Exception as _ex:
+        logger.warning(f"[PANEL_SYNC] بررسی معافیت ناموفق (فرض: معاف نیست): {_ex}")
+        is_exempt = False
+
+    final_fee = 0 if is_exempt else int(fee or 0)
+    # کاربر معاف → MANUAL_APPROVED (بدون مبلغ)؛ وگرنه اگر هزینه گرفته شده PAID
+    final_fee_status = (
+        "MANUAL_APPROVED" if is_exempt
+        else ("PAID" if final_fee > 0 else "UNPAID")
+    )
+
     return await register_case_to_panel(
         bale_user_id=str(user_id),
         full_name=full_name,
@@ -562,8 +675,8 @@ async def register_failed_inquiry_to_panel(
         tracking_code=tracking_code,
         document_category=doc_category,
         sub_category=doc_subcategory,
-        fee=0,
-        fee_status="UNPAID",
+        fee=final_fee,
+        fee_status=final_fee_status,
         error_details=error_details,
         error_step=error_step)
 

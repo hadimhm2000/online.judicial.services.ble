@@ -867,7 +867,7 @@ async def admin_fee_successful_payment(message: Message, state: FSMContext, bot:
 
     # ۴) ثبت در پنل ادمین
     try:
-        from panel_sync import upsert_case_to_panel
+        from panel_sync import upsert_case_to_panel, mark_case_ready_to_send_by_tracking
         await upsert_case_to_panel(
             bale_user_id=user_id,
             full_name=message.from_user.full_name,
@@ -888,6 +888,11 @@ async def admin_fee_successful_payment(message: Message, state: FSMContext, bot:
                 "پرداخت فاکتور دستی مدیر انجام شد؛ در انتظار امضای الکترونیک"
             ),
         )
+        # ⭐ v1.6 — طبق سیاست کارفرما: هر آیتم غیر استعلامیِ پرداخت‌شده باید
+        # بلافاصله وارد «آماده ارسال» (موارد ارسالی) پنل شود — حتی قبل از
+        # امضا. قبلا فاکتور دستی مدیر ثبت می‌شد ولی هرگز علامت‌گذاری نمی‌شد.
+        if svc not in ("INQUIRY", "ADMIN_SEND"):
+            await mark_case_ready_to_send_by_tracking(user_id, svc, tracking_code)
     except Exception as e:
         logger.warning(f"[ADMIN-FEE] خطا در ثبت پرونده در پنل: {e}")
 
@@ -1144,7 +1149,36 @@ async def panel_message_successful_payment(message: Message, state: FSMContext, 
         logger.error(f"[PANEL-MSG-PAY] خطا در اطلاع‌رسانی به ادمین: {e}", exc_info=True)
 
     # ── ۵) شروع خودکار «روند درج امضا» برای نوع سند انتخابی ──
-    if not (panel_ok and has_sign):
+    # ⭐ v1.6 — پیش از آن، پرونده در پنل ثبت و بلافاصله وارد «آماده ارسال»
+    # (موارد ارسالی) می‌شود — طبق سیاست کارفرما هر آیتم غیر استعلامیِ
+    # پرداخت‌شده باید همان لحظه در لیست ارسالی دیده شود؛ فلگ امضا بعداً
+    # پس از تکمیل «روند درج امضا» زده می‌شود (mark_case_signed_by_tracking).
+    if not panel_ok:
+        # پنل در دسترس نیست؛ ثبت Case هم بی‌فایده است (همان پنل پایین است)
+        await state.clear()
+        return
+
+    has_sign = svc not in PANEL_MESSAGE_NO_SIGN_SERVICES
+    if has_sign:
+        try:
+            from panel_sync import upsert_case_to_panel, mark_case_ready_to_send_by_tracking
+            await upsert_case_to_panel(
+                bale_user_id=user_id,
+                full_name=message.from_user.full_name,
+                service_type=svc,
+                status="PROCESSING",
+                tracking_code=tracking_code or None,
+                document_category=doc_label or svc,
+                # amount_rial ریال است؛ فیلد fee پنل «تومان» است
+                fee=amount_rial // 10,
+                fee_status="PAID",
+                result_summary="پرداخت فاکتور پیام پنل انجام شد؛ در انتظار امضای الکترونیک",
+            )
+            await mark_case_ready_to_send_by_tracking(user_id, svc, tracking_code)
+        except Exception as panel_err:
+            logger.warning(f"[PANEL-MSG-PAY] خطا در ثبت پرونده پیام پنل در پنل: {panel_err}")
+
+    if not has_sign:
         await state.clear()
         return
 

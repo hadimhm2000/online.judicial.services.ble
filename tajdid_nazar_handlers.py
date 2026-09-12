@@ -42,7 +42,7 @@ from states import Form
 from bale_file_sender import send_document_direct
 from config import ADMIN_ID, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE
 from exempt_users import is_exempt_user
-from panel_sync import upsert_case_to_panel, mark_case_ready_to_send_by_tracking
+from panel_sync import upsert_case_to_panel, mark_case_ready_to_send_by_tracking, mark_case_signed_by_tracking
 from sheets import log_event
 from keyboards import (
     back_only_kb, restart_kb,
@@ -86,6 +86,101 @@ _FA_AR = str.maketrans(
 
 def _to_en(text: str) -> str:
     return text.translate(_FA_AR).replace(" ", "").strip()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# نرمال‌سازی/اعتبارسنجی تاریخ شمسی (فرمت اجباری YYYY/MM/DD با ممیز)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_FA_MONTHS = {
+    "فروردین": 1, "ارديبهشت": 2, "اردیبهشت": 2, "خرداد": 3,
+    "تير": 4, "تیر": 4, "مرداد": 5, "شهريور": 6, "شهریور": 6,
+    "مهر": 7, "آبان": 8, "آذر": 9, "دي": 10, "دی": 10,
+    "بهمن": 11, "اسفند": 12,
+}
+
+
+def normalize_jalali_date(raw: str):
+    """نرمال‌سازی تاریخ شمسی به فرمت استاندارد «YYYY/MM/DD» با ممیز.
+
+    طبق درخواست کارفرما:
+      - تاریخ حتماً باید با ممیز (/) باشد.
+      - اگر کاربر عدد فارسی/عربی وارد کرد، به انگلیسی تبدیل می‌شود.
+      - جداکننده‌های -, ., و فاصله هم به / تبدیل می‌شوند (پذیرش سهولت ورودی).
+      - ماه‌های نامی (فروردین، ...) هم پذیرفته و به عدد تبدیل می‌شود.
+      - خارج از فرمت → (False, "") و پیام خطا برای کاربر.
+
+    Returns:
+        (True, "1403/09/15") یا (False, "")
+    """
+    if not raw or not str(raw).strip():
+        return False, ""
+
+    # ۱) تبدیل ارقام فارسی/عربی به انگلیسی + پاک‌سازی فاصله‌ها/صفرهای عرض (ZWNJ)
+    text = str(raw).strip()
+    text = text.translate(_FA_AR)
+    text = text.replace("\u200c", "").replace("\u200f", "")
+    # جداکننده‌های رایج دیگر → «/»
+    for sep in ("-", "—", ".", "\\", "|"):
+        text = text.replace(sep, "/")
+
+    # ۲) ماه نامی؟ (مثل «1403 شهریور 15» یا «15 شهریور 1403»)
+    parts = [p.strip() for p in text.split("/") if p.strip()]
+    if any(not p.isdigit() for p in parts):
+        # تلاش برای تبدیل ماه نامی
+        tokens = re.split(r"[\s/]+", str(raw).strip())
+        tokens = [t for t in tokens if t]
+        if len(tokens) == 3:
+            nums = []
+            for t in tokens:
+                t_en = t.translate(_FA_AR)
+                if t_en.isdigit():
+                    nums.append(int(t_en))
+                else:
+                    month = _FA_MONTHS.get(t_en) or _FA_MONTHS.get(t)
+                    if month:
+                        nums.append(month)
+                    else:
+                        return False, ""
+            # تشخیص سال (>=1300)، ماه (1-12)، روز (1-31)
+            year = next((n for n in nums if 1200 <= n <= 1600), None)
+            others = [n for n in nums if n != year] if year is not None else nums
+            if year is not None and len(others) == 2:
+                month, day = (others if others[0] <= 12 else (others[1], others[0]))
+                if 1 <= month <= 12 and 1 <= day <= 31:
+                    return True, f"{year:04d}/{month:02d}/{day:02d}"
+        return False, ""
+
+    # ۳) فقط رقم — فرمت باید ۳ بخش باشد
+    if len(parts) != 3:
+        return False, ""
+
+    year_s, month_s, day_s = parts
+    # سال: ۴ رقم (پذیرش ۲ رقمی برای ۱۴xx → گسترش)
+    if len(year_s) == 2:
+        year_s = "14" + year_s
+    if not (len(year_s) == 4 and year_s.isdigit()):
+        return False, ""
+    year = int(year_s)
+
+    # ماه/روز: ۱ یا ۲ رقم
+    if not (1 <= len(month_s) <= 2 and month_s.isdigit()):
+        return False, ""
+    if not (1 <= len(day_s) <= 2 and day_s.isdigit()):
+        return False, ""
+    month = int(month_s)
+    day = int(day_s)
+
+    # بازه‌های منطقی شمسی
+    if not (1300 <= year <= 1500):
+        return False, ""
+    if not (1 <= month <= 12):
+        return False, ""
+    max_day = 31 if month <= 6 else (30 if month <= 11 else 29)
+    if not (1 <= day <= max_day):
+        return False, ""
+
+    return True, f"{year:04d}/{month:02d}/{day:02d}"
 
 
 def _validate_judge_no(code: str, label: str = "دادنامه"):
@@ -161,6 +256,24 @@ def _is_prosecutor_objection(case_type: str) -> bool:
     return case_type == "اعتراض به قرار دادسرا"
 def _needs_reasons(case_type: str) -> bool:
     return case_type in ("اعاده دادرسی مدنی", "اعاده دادرسی کیفری")
+
+
+def _is_eadah_case(case_type: str) -> bool:
+    """آیا نوع دعوی از انواع اعاده دادرسی (مدنی/کیفری) است؟"""
+    return case_type in ("اعاده دادرسی مدنی", "اعاده دادرسی کیفری")
+
+
+# ⛔ عنوان مدرک اجباری برای اعاده دادرسی مدنی/کیفری (دستور کارفرما ۱۴۰۵/۰۶):
+# «حتما برای منضمات، تصویر دادنامه مورد اعاده را کاربر ارسال کند و اگر
+#  ارسال نکرد وارد بخش بعد نشو»
+TN_JUDGMENT_DOC_TITLE = "تصویر دادنامه مورد اعاده"
+
+_TN_JUDGMENT_WARNING = (
+    "⚠️ *اخطار مهم:*\n"
+    "تمام دادنامه‌هایی که برای این پرونده صادر شده است را باید در "
+    "عنوان‌های بعدی (پیوست‌های بعدی) حتماً ارسال کنید؛ در غیر این‌صورت "
+    "پرونده شما ارسال نخواهد شد یا توسط دادگاه برگشت داده خواهد شد."
+)
 
 
 def _get_reasons_list(case_type: str) -> list:
@@ -331,16 +444,24 @@ async def tn_judge_date_handler(message: Message, state: FSMContext):
         await state.set_state(Form.tn_file_no)
         return
 
-    date_text = message.text.strip()
-    if "/" not in date_text:
+    # ⭐ نرمال‌سازی و اعتبارسنجی کامل تاریخ (الزومی کارفرما):
+    #   - تبدیل ارقام فارسی/عربی به انگلیسی
+    #   - تاریخ حتماً با ممیز (/) و فرمت YYYY/MM/DD ذخیره می‌شود
+    #   - خارج از فرمت → اعلام خطا به کاربر و درخواست مجدد
+    valid, normalized = normalize_jalali_date(message.text.strip())
+    if not valid:
         await message.answer(
-            "⚠️ لطفاً تاریخ را با فرمت صحیح وارد کنید (مثال: 1403/09/15):",
+            "⚠️ *فرمت تاریخ صحیح نیست.*\n\n"
+            "لطفاً تاریخ را با فرمت *YYYY/MM/DD* و با ممیز (/) وارد کنید.\n"
+            "_(مثال صحیح: 1403/09/15)_\n\n"
+            "💡 نکته: اگر عدد را فارسی تایپ کرده‌اید اشکالی ندارد — ربات خودش به "
+            "انگلیسی تبدیل می‌کند؛ فقط فرمت باید «سال/ماه/روز» باشد.",
             reply_markup=back_only_kb)
         return
 
-    await state.update_data(tn_judge_date=date_text)
+    await state.update_data(tn_judge_date=normalized)
     await message.answer(
-        f"✅ تاریخ `{date_text}` ثبت شد.\n\n"
+        f"✅ تاریخ `{normalized}` ثبت شد.\n\n"
         f"*مرحله ۴:* لطفاً *نام استان* را انتخاب فرمایید:",
         reply_markup=create_province_kb())
     await state.set_state(Form.tn_province)
@@ -1196,12 +1317,16 @@ async def tn_text_handler(message: Message, state: FSMContext, bot: Bot):
                     "*مرحله ۱۲ — مدارک:*\n\n"
                     "⚠️ *توجه مهم:* چون شخص *حقوقی* دارید، ارسال تصویر *مدرک نمایندگی اجباری* است.\n\n"
                     "📸 لطفاً تصویر *مدرک نمایندگی* را ارسال فرمایید.\n"
-                    "_(مثلاً: روزنامه رسمی، آگهی تأسیس، وکالت‌نامه رسمی)_")
+                    "_(مثلاً: روزنامه رسمی، آگهی تأسیس، وکالت‌نامه رسمی)_",
+                    reply_markup=lavayeh_attachment_more_kb)
+                # ⭐ رفع بن‌بست: قبلاً state «tn_attachment_images» (بدون هندلر!)
+                # ست می‌شد و کاربر برای همیشه گیر می‌کرد — حالا همان فلوی
+                # استاندارد تصاویر (tn_images) با عنوان ثابت استفاده می‌شود.
                 await st.update_data(
                     _tn_mandatory_proxy_sent=False,
                     tn_images=[],
-                    _tn_current_attachment_title="مدرک نمایندگی")
-                await st.set_state(Form.tn_attachment_images)
+                    _tn_current_att_title="مدرک نمایندگی")
+                await st.set_state(Form.tn_images)
             else:
                 await _ask_tn_attachment(message, st, is_first=True)
 
@@ -1238,12 +1363,16 @@ async def tn_text_handler(message: Message, state: FSMContext, bot: Bot):
                 "*مرحله ۱۲ — مدارک:*\n\n"
                 "⚠️ *توجه مهم:* چون شخص *حقوقی* دارید، ارسال تصویر *مدرک نمایندگی اجباری* است.\n\n"
                 "📸 لطفاً تصویر *مدرک نمایندگی* را ارسال فرمایید.\n"
-                "_(مثلاً: روزنامه رسمی، آگهی تأسیس، وکالت‌نامه رسمی)_")
+                "_(مثلاً: روزنامه رسمی، آگهی تأسیس، وکالت‌نامه رسمی)_",
+                reply_markup=lavayeh_attachment_more_kb)
+            # ⭐ رفع بن‌بست: قبلاً state «tn_attachment_images» (بدون هندلر!)
+            # ست می‌شد و کاربر برای همیشه گیر می‌کرد — حالا همان فلوی
+            # استاندارد تصاویر (tn_images) با عنوان ثابت استفاده می‌شود.
             await st.update_data(
                 _tn_mandatory_proxy_sent=False,
                 tn_images=[],
-                _tn_current_attachment_title="مدرک نمایندگی")
-            await st.set_state(Form.tn_attachment_images)
+                _tn_current_att_title="مدرک نمایندگی")
+            await st.set_state(Form.tn_images)
         else:
             await _ask_tn_attachment(message, st, is_first=True)
 
@@ -1262,6 +1391,26 @@ async def tn_text_handler(message: Message, state: FSMContext, bot: Bot):
 # ══════════════════════════════════════════════════════════════════════════════
 async def _ask_tn_attachment(message: Message, state: FSMContext, is_first: bool):
     await state.update_data(tn_images=[])
+
+    data = await state.get_data()
+    case_type = data.get("case_type", "")
+
+    # ⛔ اعاده دادرسی مدنی/کیفری — اولین مدرک اجباری است (دستور کارفرما):
+    # «تصویر دادنامه مورد اعاده» — بدون ارسال آن، وارد بخش بعد نمی‌شویم.
+    if (is_first and _is_eadah_case(case_type)
+            and not data.get("_tn_judgment_doc_sent", False)):
+        await message.answer(
+            "✅ متن ثبت شد.\n\n"
+            "⛔ *مرحله ۱۲ — منضمات (اجباری):*\n\n"
+            f"📸 لطفاً *{TN_JUDGMENT_DOC_TITLE}* را ارسال فرمایید.\n"
+            "⚠️ این مدرک *اجباری* است و بدون ارسال آن امکان ادامه وجود ندارد.\n"
+            "⚠️ فقط فرمت *JPG / JPEG* قابل قبول است.\n\n"
+            f"{_TN_JUDGMENT_WARNING}",
+            reply_markup=lavayeh_attachment_more_kb)
+        await state.update_data(_tn_current_att_title=TN_JUDGMENT_DOC_TITLE)
+        await state.set_state(Form.tn_images)
+        return
+
     intro = "✅ متن ثبت شد.\n\n" if is_first else ""
     await message.answer(
         f"{intro}📄 *عنوان مدرک:*\n\n"
@@ -1283,6 +1432,18 @@ async def tn_attachment_title_handler(message: Message, state: FSMContext):
     mandatory_sent = data.get("_tn_mandatory_proxy_sent", True)
 
     if text == "⏭ رد کردن (بدون مدرک)":
+        # ⛔ اعاده دادرسی — تصویر دادنامه مورد اعاده اجباری است
+        if (_is_eadah_case(data.get("case_type", ""))
+                and not data.get("_tn_judgment_doc_sent", False)
+                and not any(a.get("title") == TN_JUDGMENT_DOC_TITLE for a in attachments)):
+            await message.answer(
+                f"⛔ ارسال *{TN_JUDGMENT_DOC_TITLE}* برای دعوی اعاده دادرسی "
+                "*اجباری* است.\n\n"
+                "بدون این مدرک امکان ادامه فرآیند وجود ندارد.\n"
+                "لطفاً تصویر دادنامه را ارسال فرمایید (عنوان «تصویر دادنامه مورد اعاده» انتخاب شده است):")
+            await state.update_data(_tn_current_att_title=TN_JUDGMENT_DOC_TITLE)
+            await state.set_state(Form.tn_images)
+            return
         if not mandatory_sent and not attachments:
             await message.answer(
                 "⚠️ ارسال تصویر *مدرک نمایندگی* برای شخص حقوقی اجباری است.\n\n"
@@ -1366,14 +1527,27 @@ async def tn_finish_images(message: Message, state: FSMContext):
     if title == "مدرک نمایندگی":
         mandatory_sent = True
 
+    # ⛔ اعاده دادرسی — تصویر دادنامه مورد اعاده ارسال شد → اجباری رفع شد
+    judgment_doc_sent = data.get("_tn_judgment_doc_sent", False)
+    if title == TN_JUDGMENT_DOC_TITLE:
+        judgment_doc_sent = True
+
     await state.update_data(
         tn_attachments=attachments,
         _tn_mandatory_proxy_sent=mandatory_sent,
+        _tn_judgment_doc_sent=judgment_doc_sent,
         tn_images=[])
 
-    await message.answer(
+    confirmed_msg = (
         f"✅ مدرک *{title}* با *{len(images)} تصویر* ثبت شد.\n\n"
-        "آیا مدرک دیگری نیز می‌خواهید ارسال کنید؟",
+        "آیا مدرک دیگری نیز می‌خواهید ارسال کنید؟")
+    # ⛔ اخطار دادنامه‌های بعدی (اعاده دادرسی) — مدرک دادنامه ثبت شد؛
+    # یادآوری ارسال «تمام دادنامه‌های صادرشده» در عنوان‌های بعدی
+    if title == TN_JUDGMENT_DOC_TITLE:
+        confirmed_msg += f"\n\n{_TN_JUDGMENT_WARNING}"
+
+    await message.answer(
+        confirmed_msg,
         reply_markup=lavayeh_attachment_more_kb)
     await state.set_state(Form.tn_attachment_more)
 
@@ -1396,9 +1570,15 @@ async def tn_add_more_images(message: Message, state: FSMContext):
     if title == "مدرک نمایندگی":
         mandatory_sent = True
 
+    # ⛔ اعاده دادرسی — تصویر دادنامه مورد اعاده ارسال شد → اجباری رفع شد
+    judgment_doc_sent = data.get("_tn_judgment_doc_sent", False)
+    if title == TN_JUDGMENT_DOC_TITLE:
+        judgment_doc_sent = True
+
     await state.update_data(
         tn_attachments=attachments,
         _tn_mandatory_proxy_sent=mandatory_sent,
+        _tn_judgment_doc_sent=judgment_doc_sent,
         tn_images=[])
 
     await _ask_tn_attachment(message, state, is_first=False)
@@ -1463,6 +1643,26 @@ async def tn_images_text_fallback(message: Message, state: FSMContext):
 async def tn_attachment_more_handler(message: Message, state: FSMContext):
     text = (message.text or "").strip()
     if text == "✅ خیر، ادامه بده":
+        data = await state.get_data()
+
+        # ⛔ اعاده دادرسی — بدون «تصویر دادنامه مورد اعاده» ادامه ممنوع است
+        if (_is_eadah_case(data.get("case_type", ""))
+                and not data.get("_tn_judgment_doc_sent", False)
+                and not any(a.get("title") == TN_JUDGMENT_DOC_TITLE
+                            for a in data.get("tn_attachments", []))):
+            await message.answer(
+                f"⛔ ارسال *{TN_JUDGMENT_DOC_TITLE}* برای دعوی اعاده دادرسی "
+                "*اجباری* است و بدون آن امکان ورود به بخش بعد وجود ندارد.\n\n"
+                "لطفاً تصویر دادنامه مورد اعاده را ارسال فرمایید:",
+                reply_markup=lavayeh_attachment_more_kb)
+            await state.update_data(_tn_current_att_title=TN_JUDGMENT_DOC_TITLE)
+            await state.set_state(Form.tn_images)
+            return
+
+        # ⛔ اخطار پایانی — همه دادنامه‌های صادرشده باید ارسال شده باشند
+        if _is_eadah_case(data.get("case_type", "")):
+            await message.answer(_TN_JUDGMENT_WARNING)
+
         await _ask_tn_extra_text(message, state)
         return
     if text == "➕ بله، عنوان و مدرک دیگر دارم":
@@ -1844,12 +2044,41 @@ async def _handle_query_persons(message: Message, state: FSMContext, bot: Bot, s
             await state.set_state(Form.tn_appellee_person_type)
 
 
+def _person_button_text(idx: int, name: str, selected: bool) -> str:
+    """متن دکمه کیبورد برای یک شخص (شماره + نام) — «عینا مثل موارد قبلی»."""
+    safe_name = (name or "").strip()[:50]
+    prefix = "❌" if selected else ""
+    return f"{prefix}{idx + 1}. {safe_name}"
+
+
+def _build_person_selection_kb(all_names: list, selected_indices: list) -> ReplyKeyboardMarkup:
+    """ساخت کیبورد (reply) انتخاب افراد — نام‌ها + تایید/ریست/بازگشت.
+
+    ⭐ طبق دستور کارفرما (۱۴۰۵/۰۶): «این فیلدهای انتخابی نباید در خود صفحه
+    (اینلاین) باشند و باید عیناً مثل موارد قبلی در دکمه‌های کیبورد باشند» —
+    چون دکمه‌های اینلاین (callback) در بله کار نمی‌کنند.
+    """
+    rows = []
+    for i, n in enumerate(all_names):
+        if i in selected_indices:
+            # حذف از انتخاب‌ها (❌)
+            rows.append([KeyboardButton(text=_person_button_text(i, n["name"], True))])
+    for i, n in enumerate(all_names):
+        if i not in selected_indices:
+            rows.append([KeyboardButton(text=_person_button_text(i, n["name"], False))])
+    if selected_indices:
+        rows.append([KeyboardButton(text="✅ تایید و ادامه")])
+        rows.append([KeyboardButton(text="🔄 ریست انتخاب‌ها")])
+    rows.append([KeyboardButton(text="🔙 بازگشت به انتخاب دستی")])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
 async def _show_person_selection_list(bot: Bot, user_id: int, all_names: list,
                                      selected_indices: list, section: str, data: dict):
-    """نمایش لیست نام‌ها با اینلاین کیبورد برای انتخاب.
+    """نمایش لیست نام‌ها + کیبورد (دکمه‌های کیبورد ربات، نه اینلاین).
 
-    هر نام انتخاب‌شده از لیست موجود حذف و به لیست انتخاب‌شده‌ها اضافه می‌شود.
-    دکمه ریست برای شروع مجدد انتخاب وجود دارد.
+    هر نام انتخاب‌شده علامت ❌ می‌گیرد (برای حذف) و نام‌های انتخاب‌نشده
+    بدون علامت هستند (برای انتخاب). تایید/ریست/بازگشت هم دکمه کیبورد هستند.
 
     Args:
         bot: نمونه ربات
@@ -1862,186 +2091,154 @@ async def _show_person_selection_list(bot: Bot, user_id: int, all_names: list,
     labels = data.get("tn_labels", {})
     section_label = labels.get(section, "تجدیدنظرخواه" if section == "appellant" else "تجدیدنظرخوانده")
 
-    # تفکیک انتخاب‌شده‌ها و موجود
-    available = [n for i, n in enumerate(all_names) if i not in selected_indices]
-    selected = [all_names[i] for i in selected_indices if i < len(all_names)]
-
     # ساخت متن پیام
     text = f"📋 *لیست افراد پرونده — {section_label}*\n\n"
 
-    if selected:
-        text += "✅ *انتخاب شده‌اند: *\n"
-        for i, n in enumerate(selected, 1):
-            text += f"  {i}. {n['name']}\n"
+    if selected_indices:
+        text += "✅ *انتخاب شده‌اند (برای حذف، دکمه ❌ آن را بزنید):*\n"
+        for i in selected_indices:
+            if i < len(all_names):
+                text += f"  ⬅️ {i + 1}. {all_names[i]['name']}\n"
         text += "\n"
 
+    available = [i for i in range(len(all_names)) if i not in selected_indices]
     if available:
-        text += "👤 *در انتظار انتخاب — روی نام مورد نظر کلیک کنید: *\n"
-        text += "_(هر نامی که انتخاب کنید از لیست حذف می‌شود)_\n\n"
+        text += "👤 *در انتظار انتخاب (روی نام در کیبورد بزنید):*\n"
+        for i in available:
+            text += f"  {i + 1}. {all_names[i]['name']}\n"
+        text += "\n_هر نامی که در کیبورد انتخاب کنید به لیست اضافه می‌شود._\n\n"
     else:
-        text += "✅ *تمام افراد انتخاب شده‌اند.*\n\n"
+        text += "✅ *تمام افراد انتخاب شده‌اند — «تایید و ادامه» را بزنید.*\n\n"
 
-    # ساخت اینلاین کیبورد
-    prefix = "tnq_a" if section == "appellant" else "tnq_p"
-    keyboard = []
-
-    # دکمه‌های انتخاب نام‌های موجود
-    for n in available:
-        # حذف فاصله‌های اضافی برای callback data
-        safe_name = n["name"][:40]
-        keyboard.append([InlineKeyboardButton(
-            text=f"➕ {safe_name}",
-            callback_data=f"{prefix}_sel:{n['index']}"
-        )])
-
-    # دکمه‌های حذف از انتخاب‌شده‌ها
-    if selected:
-        for sel_idx in selected_indices:
-            if sel_idx >= len(all_names):
-                continue
-            safe_name = all_names[sel_idx]["name"][:40]
-            keyboard.append([InlineKeyboardButton(
-                text=f"❌ {safe_name}",
-                callback_data=f"{prefix}_rm:{sel_idx}"
-            )])
-
-    # دکمه‌های ریست و تایید
-    nav_row = []
-    if selected:
-        nav_row.append(InlineKeyboardButton(
-            text="🔄 ریست انتخاب‌ها",
-            callback_data=f"{prefix}_reset:0"
-        ))
-        nav_row.append(InlineKeyboardButton(
-            text="✅ تایید و ادامه",
-            callback_data=f"{prefix}_done:0"
-        ))
-        keyboard.append(nav_row)
-
-    # دکمه بازگشت
-    keyboard.append([InlineKeyboardButton(
-        text="🔙 بازگشت به انتخاب دستی",
-        callback_data=f"{prefix}_back:0"
-    )])
-
-    kb = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    kb = _build_person_selection_kb(all_names, selected_indices)
     await bot.send_message(user_id, text, reply_markup=kb)
 
 
-async def _handle_person_select_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    """هندلر کلی callback های انتخاب/حذف/ریست/تایید افراد.
+def _parse_person_selection_text(text: str, all_names: list, selected_indices: list):
+    """تبدیل متن دکمه/پیام کاربر به (action, index).
 
-    فرمت callback_data:
-        tnq_a_sel:{index}  — انتخاب تجدیدنظرخواه
-        tnq_a_rm:{index}   — حذف از انتخاب تجدیدنظرخواه
-        tnq_a_reset:0      — ریست انتخاب تجدیدنظرخواه
-        tnq_a_done:0       — تایید انتخاب تجدیدنظرخواه
-        tnq_a_back:0       — بازگشت
-        tnq_p_sel:{index}  — انتخاب تجدیدنظرخوانده
-        tnq_p_rm:{index}   — حذف از انتخاب تجدیدنظرخوانده
-        tnq_p_reset:0      — ریست
-        tnq_p_done:0       — تایید
-        tnq_p_back:0       — بازگشت
+    پشتیبانی:
+      - "3. علی رضایی"          → ('sel', 2)
+      - "❌3. علی رضایی"         → ('rm', 2)
+      - فقط شماره: "3"           → sel یا rm (بسته به انتخاب‌شده بودن)
+      - نام خالص: "علی رضایی"    → اولین تطبیق انتخاب‌نشده
     """
-    user_id = callback.from_user.id
-    parts = callback.data.split(":")
-    prefix = parts[0]  # مثلاً tnq_a یا tnq_p
-    action = parts[1]  # sel, rm, reset, done, back
-    index = int(parts[2]) if len(parts) > 2 else 0
+    t = (text or "").strip()
+    if not t:
+        return None, None
 
-    section = "appellant" if prefix == "tnq_a" else "appellee"
+    # ۱) حالت دکمه «حذف» — ❌3. نام
+    is_remove = False
+    if t.startswith("❌"):
+        is_remove = True
+        t = t[1:].strip()
 
-    # دریافت اطلاعات ذخیره‌شده
+    # ۲) شماره ابتدای متن: "3. نام" یا "3"
+    m = re.match(r"^(\d+)[\.\)\-]?\s*(.*)$", t)
+    if m:
+        num = int(m.group(1))
+        if 1 <= num <= len(all_names):
+            idx = num - 1
+            if is_remove:
+                return "rm", idx
+            return ("rm" if idx in selected_indices else "sel"), idx
+        return None, None
+
+    # ۳) تطبیق نامی — اولین مورد انتخاب‌نشده با همین نام
+    target = t.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789"))
+    for i, n in enumerate(all_names):
+        name = (n.get("name") or "").strip()
+        if name == target or name[:50] == target[:50]:
+            return ("rm" if i in selected_indices else "sel"), i
+    return None, None
+
+
+async def _apply_person_selection(message_or_bot, user_id: int, state: FSMContext,
+                                  section: str, action: str, idx):
+    """اعمال یک اقدام انتخاب شخص (sel/rm/reset/done/back) — مشترک بین
+    هندلر پیام (کیبورد) و callback قدیمی.
+
+    message_or_bot: اگر از مسیر پیام باشد Message (برای answer)،
+    وگرنه فقط bot برای send_message.
+    """
+    is_message = hasattr(message_or_bot, "answer")
+    bot = message_or_bot.bot if is_message else message_or_bot
+
+    async def _reply(text, kb=None):
+        if is_message:
+            await message_or_bot.answer(text, reply_markup=kb)
+        else:
+            await bot.send_message(user_id, text, reply_markup=kb)
+
     queried = runtime_state.tn_queried_persons.get(user_id)
     if not queried:
-        await callback.answer("⚠️ اطلاعات منقضی شده است. لطفاً مجدداً شروع کنید.", show_alert=True)
+        await _reply(
+            "⚠️ اطلاعات استعلام منقضی شده است. لطفاً مجدداً از روش ورود دستی استفاده کنید.")
+        data = await state.get_data()
+        labels = data.get("tn_labels", {})
+        if section == "appellant":
+            await _reply(
+                f"👤 لطفاً *نوع شخصیت {labels.get('appellant', 'تجدیدنظرخواه')}* را انتخاب فرمایید:",
+                create_tn_appellant_person_type_kb(case_type=data.get("case_type", "")))
+            await state.set_state(Form.tn_appellant_person_type)
+        else:
+            await _reply(
+                f"👥 لطفاً *نوع شخصیت {labels.get('appellee', 'تجدیدنظرخوانده')}* را انتخاب فرمایید:",
+                create_tn_appellee_person_type_kb())
+            await state.set_state(Form.tn_appellee_person_type)
         return
 
     all_names = queried["all_names"]
     selected_indices = queried["selected_indices"]
     data = await state.get_data()
+    labels = data.get("tn_labels", {})
+    section_label = labels.get(section, "تجدیدنظرخواه" if section == "appellant" else "تجدیدنظرخوانده")
 
     if action == "back":
-        # بازگشت به انتخاب دستی
         runtime_state.tn_queried_persons.pop(user_id, None)
-        await callback.answer()
-        labels = data.get("tn_labels", {})
+        hint = ("💡 در صورتی که کدملی افراد پرونده را ندارید، گزینه استعلام افراد "
+                "موجود در پرونده را انتخاب کنید")
         if section == "appellant":
-            section_label = labels.get("appellant", "تجدیدنظرخواه")
-            await bot.send_message(
-                user_id,
-                f"👤 لطفاً *نوع شخصیت {section_label}* را انتخاب فرمایید:\n\n"
-                f"💡 در صورتی که کدملی افراد پرونده را ندارید، گزینه استعلام افراد موجود در پرونده را انتخاب کنید",
-                reply_markup=create_tn_appellant_person_type_kb(case_type=data.get("case_type", "")))
+            await _reply(
+                f"👤 لطفاً *نوع شخصیت {labels.get('appellant', 'تجدیدنظرخواه')}* را انتخاب فرمایید:\n\n{hint}",
+                create_tn_appellant_person_type_kb(case_type=data.get("case_type", "")))
             await state.set_state(Form.tn_appellant_person_type)
         else:
-            section_label = labels.get("appellee", "تجدیدنظرخوانده")
-            await bot.send_message(
-                user_id,
-                f"👥 لطفاً *نوع شخصیت {section_label}* را انتخاب فرمایید:\n\n"
-                f"💡 در صورتی که کدملی افراد پرونده را ندارید، گزینه استعلام افراد موجود در پرونده را انتخاب کنید",
-                reply_markup=create_tn_appellee_person_type_kb())
+            await _reply(
+                f"👥 لطفاً *نوع شخصیت {labels.get('appellee', 'تجدیدنظرخوانده')}* را انتخاب فرمایید:\n\n{hint}",
+                create_tn_appellee_person_type_kb())
             await state.set_state(Form.tn_appellee_person_type)
         return
 
     if action == "reset":
-        # ریست انتخاب‌ها
         queried["selected_indices"] = []
-        await callback.answer("ریست انجام شد.")
-        # حذف پیام قبلی و ارسال پیام جدید
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
         await _show_person_selection_list(bot, user_id, all_names, [], section, data)
         return
 
     if action == "sel":
-        # انتخاب یک نام
-        if index not in selected_indices:
-            selected_indices.append(index)
-            name = all_names[index]["name"] if index < len(all_names) else ""
-            await callback.answer(f"✅ {name} انتخاب شد.")
+        if idx is not None and 0 <= idx < len(all_names) and idx not in selected_indices:
+            selected_indices.append(idx)
+            queried["selected_indices"] = selected_indices
+            await _show_person_selection_list(bot, user_id, all_names, selected_indices, section, data)
         else:
-            await callback.answer("این نام قبلاً انتخاب شده.")
-
-        queried["selected_indices"] = selected_indices
-        # حذف پیام قبلی و ارسال پیام جدید
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
-        await _show_person_selection_list(bot, user_id, all_names, selected_indices, section, data)
+            await _reply("⚠️ این نام قبلاً انتخاب شده است.")
         return
 
     if action == "rm":
-        # حذف از انتخاب‌ها
-        if index in selected_indices:
-            selected_indices.remove(index)
-            name = all_names[index]["name"] if index < len(all_names) else ""
-            await callback.answer(f"❌ {name} از انتخاب حذف شد.")
+        if idx is not None and idx in selected_indices:
+            selected_indices.remove(idx)
+            queried["selected_indices"] = selected_indices
+            await _show_person_selection_list(bot, user_id, all_names, selected_indices, section, data)
         else:
-            await callback.answer("این نام در لیست انتخاب نیست.")
-
-        queried["selected_indices"] = selected_indices
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
-        await _show_person_selection_list(bot, user_id, all_names, selected_indices, section, data)
+            await _reply("⚠️ این نام در لیست انتخاب نیست.")
         return
 
     if action == "done":
-        # تایید انتخاب نهایی
         if not selected_indices:
-            await callback.answer("⚠️ حداقل یک فرد باید انتخاب کنید!", show_alert=True)
+            await _reply("⚠️ حداقل یک نفر باید انتخاب کنید.")
             return
 
         selected_names = [all_names[i]["name"] for i in selected_indices if i < len(all_names)]
-        labels = data.get("tn_labels", {})
-        section_label = labels.get(section, "تجدیدنظرخواه" if section == "appellant" else "تجدیدنظرخوانده")
-
-        await callback.answer(f"✅ {len(selected_names)} نفر به عنوان {section_label} انتخاب شد.")
 
         # پاکسازی
         runtime_state.tn_queried_persons.pop(user_id, None)
@@ -2067,21 +2264,19 @@ async def _handle_person_select_callback(callback: CallbackQuery, state: FSMCont
             case_type = data.get("case_type", "")
             if _is_prosecutor_objection(case_type):
                 witness_label = labels.get("witness_step", "مطلع/گواه")
-                await bot.send_message(
-                    user_id,
+                await _reply(
                     f"✅ *{len(selected_names)} نفر* به عنوان {section_label} انتخاب شد.\n\n"
                     f"*مرحله ۹:* در صورتی که *{witness_label}* دارید، کدملی شخص حقیقی را وارد فرمایید.\n\n"
                     f"در صورتی که {witness_label} ندارید، گزینه «خیر» را انتخاب فرمایید:",
-                    reply_markup=tn_more_witnesses_kb)
+                    tn_more_witnesses_kb)
                 await state.set_state(Form.tn_more_witnesses)
             else:
                 appellee_label = labels.get("appellee", "تجدیدنظرخوانده")
-                await bot.send_message(
-                    user_id,
+                await _reply(
                     f"✅ *{len(selected_names)} نفر* به عنوان {section_label} انتخاب شد.\n\n"
                     f"*مرحله ۹:* لطفاً *نوع شخصیت {appellee_label}* را انتخاب فرمایید:\n\n"
                     f"💡 در صورتی که کدملی افراد پرونده را ندارید، گزینه استعلام افراد موجود در پرونده را انتخاب کنید",
-                    reply_markup=create_tn_appellee_person_type_kb())
+                    create_tn_appellee_person_type_kb())
                 await state.set_state(Form.tn_appellee_person_type)
         else:
             appellees = []
@@ -2101,48 +2296,99 @@ async def _handle_person_select_callback(callback: CallbackQuery, state: FSMCont
 
             # رفتن به مرحله شهود
             witness_label = labels.get("witness_step", "مطلع/گواه")
-            await bot.send_message(
-                user_id,
+            await _reply(
                 f"✅ *{len(selected_names)} نفر* به عنوان {section_label} انتخاب شد.\n\n"
                 f"*مرحله ۱۰:* در صورتی که *{witness_label}* دارید، کدملی شخص حقیقی را وارد فرمایید.\n\n"
                 f"در صورتی که {witness_label} ندارید، گزینه «خیر» را انتخاب فرمایید:",
-                reply_markup=tn_more_witnesses_kb)
+                tn_more_witnesses_kb)
             await state.set_state(Form.tn_more_witnesses)
         return
+
+
+async def _handle_person_select_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """هندلر کلی callback های انتخاب/حذف/ریست/تایید افراد (سازگاری قدیمی).
+
+    ⚠ فلوی جدید از کیبورد (پیام متنی) استفاده می‌کند —
+    `_apply_person_selection` منطق مشترک است. این هندلر فقط برای پیام‌های
+    اینلاین قدیمی که هنوز در چت کاربر مانده‌اند نگه داشته شده است.
+    """
+    user_id = callback.from_user.id
+    parts = callback.data.split(":")
+    prefix = parts[0]  # مثلاً tnq_a یا tnq_p
+    action = parts[1]  # sel, rm, reset, done, back
+    index = int(parts[2]) if len(parts) > 2 else 0
+
+    section = "appellant" if prefix == "tnq_a" else "appellee"
+
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+
+    await _apply_person_selection(bot, user_id, state, section, action, index)
 
 
 # ثبت callback handler ها
 @tajdid_nazar_router.callback_query(F.data.startswith("tnq_a_"))
 async def tn_query_appellant_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    """callback handler برای انتخاب تجدیدنظرخواه از لیست استعلام"""
+    """callback handler برای انتخاب تجدیدنظرخواه از لیست استعلام (قدیمی)"""
     await _handle_person_select_callback(callback, state, bot)
 
 
 @tajdid_nazar_router.callback_query(F.data.startswith("tnq_p_"))
 async def tn_query_appellee_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    """callback handler برای انتخاب تجدیدنظرخوانده از لیست استعلام"""
+    """callback handler برای انتخاب تجدیدنظرخوانده از لیست استعلام (قدیمی)"""
     await _handle_person_select_callback(callback, state, bot)
 
 
-# هندلر پیام در حالت انتخاب — فقط اطلاع‌رسانی
+# ⭐ هندلر پیام در حالت انتخاب — انتخاب با «دکمه‌های کیبورد» (الزومی کارفرما:
+# انتخاب‌ها نباید اینلاین باشند و باید مثل موارد قبلی کیبوردی باشند)
+async def _person_select_from_list_message(message: Message, state: FSMContext, section: str):
+    """پردازش انتخاب شخص از لیست استعلام — از روی دکمه‌های کیبورد."""
+    if not message.text:
+        await message.answer("⚠️ لطفاً از دکمه‌های کیبورد برای انتخاب استفاده کنید.")
+        return
+
+    text = message.text.strip()
+    user_id = message.from_user.id
+
+    # دکمه‌های کنترلی
+    if text == "🔙 بازگشت به انتخاب دستی":
+        await _apply_person_selection(message, user_id, state, section, "back", None)
+        return
+    if text == "🔄 ریست انتخاب‌ها":
+        await _apply_person_selection(message, user_id, state, section, "reset", None)
+        return
+    if text == "✅ تایید و ادامه":
+        await _apply_person_selection(message, user_id, state, section, "done", None)
+        return
+
+    # دکمه نام شخص (شماره‌دار) یا نام خالص
+    queried = runtime_state.tn_queried_persons.get(user_id)
+    if not queried:
+        await _apply_person_selection(message, user_id, state, section, "none", None)
+        return
+
+    action, idx = _parse_person_selection_text(text, queried["all_names"], queried["selected_indices"])
+    if action is None:
+        await message.answer(
+            "⚠️ ورودی شناخته نشد. لطفاً نام مورد نظر را از *دکمه‌های کیبورد* انتخاب کنید،\n"
+            "یا شمارهٔ فرد را ارسال کنید (مثال: 3)")
+        return
+
+    await _apply_person_selection(message, user_id, state, section, action, idx)
+
+
 @tajdid_nazar_router.message(Form.tn_appellant_select_from_list)
 async def tn_appellant_select_from_list_msg(message: Message, state: FSMContext):
-    """در حالت انتخاب از لیست، فقط از دکمه‌ها استفاده کنید"""
-    await message.answer(
-        "⚠️ لطفاً از دکمه‌های موجود در پیام لیست استفاده کنید.\n\n"
-        "برای انتخاب یک نفر، روی نام آن کلیک کنید.\n"
-        "برای حذف از انتخاب شده‌ها، روی دکمه ❌ کلیک کنید.\n"
-        "برای ریست، روی 🔄 کلیک کنید.")
+    """انتخاب {تجدیدنظرخواه} از لیست استعلام — با دکمه‌های کیبورد"""
+    await _person_select_from_list_message(message, state, "appellant")
 
 
 @tajdid_nazar_router.message(Form.tn_appellee_select_from_list)
 async def tn_appellee_select_from_list_msg(message: Message, state: FSMContext):
-    """در حالت انتخاب از لیست، فقط از دکمه‌ها استفاده کنید"""
-    await message.answer(
-        "⚠️ لطفاً از دکمه‌های موجود در پیام لیست استفاده کنید.\n\n"
-        "برای انتخاب یک نفر، روی نام آن کلیک کنید.\n"
-        "برای حذف از انتخاب شده‌ها، روی دکمه ❌ کلیک کنید.\n"
-        "برای ریست، روی 🔄 کلیک کنید.")
+    """انتخاب {تجدیدنظرخوانده} از لیست استعلام — با دکمه‌های کیبورد"""
+    await _person_select_from_list_message(message, state, "appellee")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2708,10 +2954,17 @@ async def send_tajdid_nazar_result(
     case_type: str = "",
     file_no: str = "",
     tn_persons: list = None,
+    cost_info: dict = None,
 ):
-    """نتیجه ثبت دعوی اعتراضی را ارسال و فلوی پرداخت/امضا را شروع می‌کند."""
+    """نتیجه ثبت دعوی اعتراضی را ارسال و فلوی پرداخت/امضا را شروع می‌کند.
+
+    ⭐ برای اعاده دادرسی مدنی/کیفری، تفکیک هزینه هم اعلام می‌شود:
+      مبلغ سامانه + سود ما (ردیف ۳-۶ + ۵۰۰,۰۰۰ ریال) = مبلغ نهایی (رند بالا)
+    """
     if tn_persons is None:
         tn_persons = []
+    if cost_info is None:
+        cost_info = {}
 
     doc_title = f"{case_type} — پرونده {file_no}" if file_no else case_type
 
@@ -2725,7 +2978,21 @@ async def send_tajdid_nazar_result(
             pass
 
     final_fee = court_total
-    await bot.send_message(user_id, f"💳 *مبلغ نهایی قابل پرداخت: {final_fee:,} ریال*")
+
+    # ⭐ اعلام تفکیکی هزینه برای اعاده دادرسی مدنی/کیفری (دستور کارفرما)
+    if cost_info.get("is_eadah_formula"):
+        system_total = cost_info.get("system_total", cost_info.get("main_total", 0))
+        profit_total = cost_info.get("profit_total", 0)
+        await bot.send_message(
+            user_id,
+            "💰 *تفکیک هزینه اعاده دادرسی:*\n"
+            f"├ مبلغ سامانه: *{system_total:,} ریال*\n"
+            f"├ سود خدمات ما: *{profit_total:,} ریال*\n"
+            f"│ _(ردیف ۳ تا ۶ + ۵۰۰,۰۰۰ ریال)_\n"
+            f"└ جمع: *{system_total + profit_total:,} ریال* → رند به بالا\n\n"
+            f"💳 *مبلغ نهایی قابل پرداخت: {final_fee:,} ریال*")
+    else:
+        await bot.send_message(user_id, f"💳 *مبلغ نهایی قابل پرداخت: {final_fee:,} ریال*")
 
     # ── بررسی معافیت از پرداخت ──────────────────────────────────────────
     if await is_exempt_user(user_id):
@@ -3174,6 +3441,12 @@ async def on_tn_sign_submit_success(bot: Bot, user_id: int, row_idx: int, state:
                 await mark_case_ready_to_send_by_tracking(user_id, "TAJDID_NAZAR", tracking_code)
         except Exception as panel_err:
             logging.warning(f"[TN-SIGN] خطا در انتقال پرونده به آماده‌ارسال: {panel_err}")
+        # ⭐ v1.6 — ثبت موفقیت امضا در پنل (hasSignature=true + signedAt)
+        try:
+            tracking_code = sign_info.get("tracking_code", "")
+            await mark_case_signed_by_tracking(user_id, "TAJDID_NAZAR", tracking_code)
+        except Exception as panel_err:
+            logging.warning(f"[TN-SIGN] خطا در ثبت وضعیت امضای پرونده در پنل: {panel_err}")
         await state.clear()
     else:
         all_persons = sign_info.get("sign_persons", [])

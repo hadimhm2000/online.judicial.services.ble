@@ -943,6 +943,98 @@ async def mark_bulk_item_done(bot, user_id: int, tracking_code: str):
         await finalize_bulk_batch(bot, user_id, tracking_code)
 
 
+async def _mark_bulk_items_paid_and_ready(bot, user_id: int, tracking_code: str):
+    """
+    ⭐ v1.6 — علامت‌گذاری همهٔ ردیف‌های پرداخت‌شدهٔ یک بچ در پنل ادمین:
+      ۱) feeStatus → PAID (برای کاربر معاف: fee=0 + MANUAL_APPROVED)
+      ۲) ورود فوری به «آماده ارسال» (موارد ارسالی) — بدون منتظر ماندن برای امضا
+      ۳) اطلاع‌رسانی فوری به کانال ادمین (ADMIN_ID) — لیست ردیف‌های ارسالی
+
+    طبق سیاست کارفرما: هر آیتم غیر استعلامی که ثبت و پرداخت شده، باید
+    بلافاصله در لیست ارسالی پنل/کانال ادمین ظاهر شود؛ فلگ امضا بعداً
+    (پس از تکمیل امضای دسته‌جمعی) توسط mark_case_signed_by_tracking زده می‌شود.
+
+    فراخوانی:
+      - در finalize_bulk_batch وقتی پیش‌پرداخت کل هزینه را پوشش داده (remaining <= 0)
+      - در bulk_settlement_successful_payment پس از پرداخت فاکتور تسویه
+    """
+    task_data = BULK_TASKS.get(tracking_code)
+    if not task_data:
+        return
+
+    signable_items = task_data.get("signable_items", [])
+    paid_items = [it for it in signable_items if it.get("status") != "failed"]
+    if not paid_items:
+        return
+
+    try:
+        from exempt_users import is_exempt_user
+        is_exempt = await is_exempt_user(user_id)
+    except Exception as ex:
+        logger.warning(f"[BULK-PANEL] بررسی معافیت ناموفق (فرض: معاف نیست): {ex}")
+        is_exempt = False
+
+    try:
+        from panel_sync import upsert_case_to_panel, mark_case_ready_to_send_by_tracking
+    except Exception as ex:
+        logger.error(f"[BULK-PANEL] import panel_sync ناموفق: {ex}")
+        return
+
+    marked = 0
+    for item in paid_items:
+        item_tc = item.get("tracking_code", "")
+        item_svc = (
+            item.get("service_type")
+            or ("EZHHARNAMEH" if item.get("is_ezhharnameh") else "LAVAYEH")
+        )
+        court_total = item.get("court_total", 0) or 0
+        try:
+            await upsert_case_to_panel(
+                bale_user_id=user_id,
+                full_name=str(user_id),
+                service_type=item_svc,
+                status="PROCESSING",
+                tracking_code=item_tc or None,
+                document_category=f"{item.get('title', '')} (دسته‌جمعی — ردیف {item.get('row_index', '?')})",
+                # court_total ریال است؛ فیلد fee پنل «تومان» است
+                fee=0 if is_exempt else (court_total // 10),
+                fee_status="MANUAL_APPROVED" if is_exempt else "PAID",
+                result_summary=(
+                    "پرداخت تسویه/پیش‌پرداخت دسته‌جمعی انجام شد؛ در انتظار امضای الکترونیک"
+                    if not is_exempt else
+                    "معاف از پرداخت؛ در انتظار امضای الکترونیک"
+                ),
+            )
+            # ورود فوری به «آماده ارسال» (موارد ارسالی) — منتظر امضا نمی‌مانیم
+            await mark_case_ready_to_send_by_tracking(user_id, item_svc, item_tc)
+            marked += 1
+        except Exception as ex:
+            logger.warning(f"[BULK-PANEL] خطا در علامت‌گذاری ردیف {item_tc or '(خالی)'}: {ex}")
+
+    # ⭐ اطلاع‌رسانی فوری به کانال ادمین — لیست ردیف‌های ارسال‌شده
+    if marked:
+        try:
+            from config import ADMIN_ID
+            lines = "\n".join(
+                f"  • ردیف {it.get('row_index', '?')}: {it.get('title', '—')}"
+                f" | کد: {it.get('tracking_code') or '—'}"
+                f" | هزینه سامانه: {(it.get('court_total') or 0):,} ریال"
+                for it in paid_items[:10]
+            )
+            if len(paid_items) > 10:
+                lines += f"\n  … و {len(paid_items) - 10} ردیف دیگر"
+            await bot.send_message(
+                ADMIN_ID,
+                f"📤 *موارد ارسالی — دسته‌جمعی `{tracking_code}`*\n\n"
+                f"👤 کاربر: {user_id}\n"
+                f"📦 {marked} ردیف پرداخت‌شده وارد «آماده ارسال» پنل شد (در انتظار امضا):\n"
+                f"{lines}\n\n"
+                f"_(فلگ امضا پس از تکمیل امضای دسته‌جمعی به‌روز می‌شود)_",
+                parse_mode="Markdown")
+        except Exception as ex:
+            logger.warning(f"[BULK-PANEL] خطا در اطلاع‌رسانی ادمین: {ex}")
+
+
 async def finalize_bulk_batch(bot, user_id: int, tracking_code: str):
     """
     گزارش مالی نهایی + صدور فاکتور تسویه (در صورت نیاز) + نمایش منوی
@@ -1039,6 +1131,13 @@ async def finalize_bulk_batch(bot, user_id: int, tracking_code: str):
                 await _safe_send(bot, user_id, f"\u26a0\ufe0f خطا در صدور فاکتور تسویه. لطفاً به مدیریت اطلاع دهید.")
         else:
             # remaining <= 0 → مستقیم به منوی امضا
+            # ⭐ v1.6 — پیش‌پرداخت کل هزینه را پوشش داده؛ ردیف‌ها «پرداخت‌شده»
+            # محسوب می‌شوند → علامت‌گذاری PAID + ورود فوری به «آماده ارسال»
+            # + اطلاع فوری به کانال ادمین (موارد ارسالی).
+            try:
+                await _mark_bulk_items_paid_and_ready(bot, user_id, tracking_code)
+            except Exception as ex:
+                logger.error(f"[BULK-PANEL] خطا در علامت‌گذاری ردیف‌های بچ {tracking_code}: {ex}")
             await _show_bulk_sign_menu(bot, user_id, tracking_code)
     else:
         # هیچ ردیفی موفق نبود
