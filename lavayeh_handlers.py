@@ -2588,22 +2588,46 @@ async def bulk_prepay_successful_payment(message: Message, state: FSMContext, bo
 async def bulk_settlement_successful_payment(message: Message, state: FSMContext, bot: Bot):
     """پرداخت موفق تسویه باقیمانده — نمایش منوی امضا"""
     user_id = message.from_user.id
-    
+    payment = message.successful_payment
+
     await message.answer("✅ *پرداخت تسویه تایید شد!*", parse_mode="Markdown")
-    
+
+    # اطلاع‌رسانی پرداخت تسویه به کانال ادمین — قبلا این پرداخت کاملاً بی‌صدا
+    # بود و مدیر از تسویه دسته‌جمعی باخبر نمی‌شد.
+    try:
+        settle_amount = int(getattr(payment, "total_amount", 0) or 0)
+        await bot.send_message(
+            ADMIN_ID,
+            f"💰 پرداخت تسویه دسته‌جمعی (کیف پول بله):\n\n"
+            f"👤 کاربر: {message.from_user.full_name} ({user_id})\n"
+            f"💰 مبلغ: {settle_amount // 10:,} تومان ({settle_amount:,} ریال)\n"
+            f"⏱ زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}\n"
+            f"🎫 payment_id: {payment.telegram_payment_charge_id}")
+    except Exception as e:
+        logging.error(f"[BULK-SETTLE-PAY] خطا در اطلاع‌رسانی ادمین: {e}", exc_info=True)
+
     # یافتن batch_tracking_code از BULK_TASKS بر اساس user_id
     batch_tc = None
     for tc, td in BULK_TASKS.items():
         if td.get("user_id") == user_id and td.get("status") in ("queued", "processing"):
             batch_tc = tc
             break
-    
+
     if batch_tc:
+        # ⭐ v1.6 — تسویه انجام شد؛ همهٔ ردیف‌های ثبت‌شدهٔ بچ «پرداخت‌شده»
+        # می‌شوند: feeStatus=PAID + ورود فوری به «آماده ارسال» (موارد ارسالی)
+        # + اطلاع فوری به کانال ادمین — بدون منتظر ماندن برای امضاها.
+        try:
+            from bulk_submissions import _mark_bulk_items_paid_and_ready
+            await _mark_bulk_items_paid_and_ready(bot, user_id, batch_tc)
+        except Exception as panel_err:
+            logging.warning(f"[BULK-SETTLE-PAY] خطا در علامت‌گذاری ردیف‌های بچ {batch_tc} در پنل: {panel_err}")
+
         from bulk_submissions import _show_bulk_sign_menu
         await _show_bulk_sign_menu(bot, user_id, batch_tc)
     else:
         await message.answer("⚠️ اطلاعات دسته جمعی یافت نشد. لطفاً به مدیریت اطلاع دهید.")
-    
+
     await state.clear()
 
 
@@ -2666,12 +2690,20 @@ async def bulk_sign_select_callback(callback: CallbackQuery, bot: Bot):
     sign_tracking_code = target_item.get("lavayeh_bill_no") or selected_tc
     # مسیر منوی امضای همین سند (برای چک متفاوت از لایحه است)
     item_sign_menu_path = target_item.get("sign_menu_path")
+    # ⭐ v1.6 — نوع سرویس ردیف (ذخیره‌شده در signable_items) به فلوی امضا
+    # پاس می‌شود تا پس از تکمیل امضا، علامت‌گذاری پنل با نوع صحیح
+    # (مثلا CHECK برای ردیف‌های چک) انجام شود.
+    item_service_type = (
+        target_item.get("service_type")
+        or ("EZHHARNAMEH" if is_ezhhar else "LAVAYEH")
+    )
 
     try:
         await _go_to_sign_flow_after_prepaid(
             bot, user_id, is_ezhhar,
             title, province, row_number, persons,
             sign_tracking_code, national_ids, court_total,
+            service_type=item_service_type,
             sign_menu_path=item_sign_menu_path
         )
     except Exception as e:
@@ -3041,6 +3073,11 @@ async def send_bulk_item_result(
             "court_total": court_total,
             "title": lavayeh_title,
             "is_ezhharnameh": is_ezhharnameh,
+            # ⭐ v1.6 — نوع سرویس ردیف (LAVAYEH/EZHHARNAMEH/CHECK/…) ذخیره
+            # می‌شود تا هنگام تسویه/امضای دسته‌جمعی، علامت‌گذاری پنل (PAID /
+            # آماده‌ارسال / امضا) با نوع صحیح انجام شود — قبلا ردیف‌های چکِ
+            # دسته‌جمعی با LAVAYEH علامت می‌خوردند و پیدا نمی‌شدند.
+            "service_type": service_type,
             "national_ids": nat_id_list,
             "persons": lavayeh_persons,
             "row_index": row_index,

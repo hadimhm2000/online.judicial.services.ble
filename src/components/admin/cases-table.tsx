@@ -79,6 +79,7 @@ export interface CaseItem {
   feeStatus: string;
   isInReadyToSend: boolean;
   hasSignature: boolean;
+  signedAt: string | null;
   errorDetails: string | null;
   errorStep: string | null;
   lastCompletedStep: string | null;
