@@ -1,5 +1,4 @@
 import asyncio
-import datetime
 import logging
 import platform
 import signal
@@ -104,58 +103,6 @@ def _global_exception_handler(exc_type, exc_value, exc_traceback):
     sys.__excepthook__(exc_type, exc_value, exc_traceback)
 
 
-# ⭐ TTL صف‌های امضا/پرداخت/اصلاح — ریشهٔ تکرار پیام: ماندگاری ابدی entryها
-_PENDING_TTL_HOURS = 24
-_PENDING_TS_FIELDS = (
-    "sign_sent_time", "code_sent_time", "created_at", "timestamp",
-    "granted_at", "payment_time", "invoice_time", "started_at",
-    "last_activity_at", "code_sent_announce_time", "total_no_action_start",
-)
-
-
-def cleanup_expired_pending_entries():
-    """پاکسازی entryهای منقضی صف‌های امضا/پرداخت (بیش از _PENDING_TTL_HOURS ساعت عدم فعالیت).
-
-    ⭐ پیشنهاد تکمیلی: ریشهٔ اصلی تکرار ماه‌ها پیام بازیابی، ماندن کاربر
-    برای همیشه در pending_lavayeh_sign / pending_ezhhar_sign / ... بود.
-    این تابع هر entry که از هر فیلد datetime موجود در آن قدیمی‌تر از
-    ۲۴ ساعت باشد را حذف می‌کند (entry بدون timestamp محافظت می‌شود) و
-    پرچم recovery_notified کاربر را هم پاک می‌کند. با این کار، فقط
-    پرونده‌های واقعاً جاری باقی می‌مانند و دیگر هیچ‌وقت برای پروندهٔ
-    ماه‌ها-گذشته پیامی نمی‌رود — حتی بدون نیاز به dedupe.
-    """
-    now = datetime.datetime.now()
-    stores = (
-        ("pending_lavayeh_sign", getattr(runtime_state, "pending_lavayeh_sign", None)),
-        ("pending_ezhhar_sign", getattr(runtime_state, "pending_ezhhar_sign", None)),
-        ("pending_tn_sign", getattr(runtime_state, "pending_tn_sign", None)),
-        ("pending_ezhhar_sana_fix", getattr(runtime_state, "pending_ezhhar_sana_fix", None)),
-        ("pending_lavayeh_payments", getattr(runtime_state, "pending_lavayeh_payments", None)),
-        ("invalid_tracking_retry", getattr(runtime_state, "invalid_tracking_retry", None)),
-    )
-    removed = 0
-    for store_name, store in stores:
-        if not isinstance(store, dict):
-            continue
-        for uid in list(store.keys()):
-            info = store.get(uid)
-            ts = None
-            if isinstance(info, dict):
-                for field in _PENDING_TS_FIELDS:
-                    v = info.get(field)
-                    if isinstance(v, datetime.datetime):
-                        ts = v if ts is None or v > ts else ts
-            if ts is None:
-                continue  # تاریخ نامشخص — محافظت می‌شود
-            if (now - ts).total_seconds() > _PENDING_TTL_HOURS * 3600:
-                store.pop(uid, None)
-                getattr(runtime_state, "recovery_notified", {}).pop(uid, None)
-                removed += 1
-                logging.info(f"[CLEANUP] {store_name}: entry کاربر {uid} پس از {_PENDING_TTL_HOURS} ساعت عدم فعالیت حذف شد.")
-    if removed:
-        logging.info(f"[CLEANUP] مجموع {removed} entry منقضی از صف‌ها حذف شد.")
-
-
 async def state_persister(bot: Bot):
     """تسک پس‌زمینه: ذخیره‌سازی دوره‌ی حالت (هر ۶۰ ثانیه) و پاکسازی رکوردهای منقضی."""
     while True:
@@ -164,7 +111,6 @@ async def state_persister(bot: Bot):
             save_runtime_state()
             cleanup_expired_disrupted()
             cleanup_expired_inquiry_attempts()
-            cleanup_expired_pending_entries()
             logging.debug("[PERSIST] ذخیره‌ی دوره‌ی انجام شد.")
         except asyncio.CancelledError:
             logging.info("[PERSIST] state_persister لغو شد.")
@@ -173,44 +119,11 @@ async def state_persister(bot: Bot):
             logging.error(f"[PERSIST] خطا در ذخیره‌ی دوره‌ی: {e}")
 
 
-def _recovery_case_fingerprint(uid: int) -> str:
-    """اثر انگشت پرونده/رویداد فعال کاربر — برای ارسال فقط یک‌بار پیام بازیابی.
-
-    تا وقتی پرونده همان است (همان کد رهگیری/همان رویداد قطع)، اثر انگشت
-    ثابت می‌ماند و پیام عذرخواهی تکرار نمی‌شود. پرونده جدید یا رویداد جدید
-    (کد رهگیری/زمان جدید) → اثر انگشت جدید → اطلاع‌رسانی دوباره.
-    """
-    parts = []
-    info = runtime_state.pending_lavayeh_sign.get(uid)
-    if info:
-        parts.append(f"lav:{info.get('tracking_code', '')}")
-    info = runtime_state.pending_ezhhar_sign.get(uid)
-    if info:
-        parts.append(f"ezr:{info.get('tracking_code', '')}")
-    info = getattr(runtime_state, "pending_tn_sign", {}).get(uid)
-    if info:
-        parts.append(f"tn:{info.get('tracking_code', '')}")
-    info = runtime_state.pending_ezhhar_sana_fix.get(uid)
-    if info:
-        td = info.get("task_data") or {}
-        parts.append(f"fix:{td.get('tracking_code', '') or info.get('created_at', '')}")
-    info = runtime_state.disrupted_users.get(uid)
-    if info:
-        jd = info.get("job_data") or {}
-        parts.append(f"dis:{jd.get('tracking_code', '') or info.get('timestamp', '')}")
-    return "|".join(parts) if parts else f"uid:{uid}"
-
-
 async def notify_crash_recovery(bot: Bot, submitted_users: list, unsubmitted_users: list):
     """ارسال پیام عذرخواهی به کاربرانی که در میان فرآیند بودند.
 
     - submitted_users: کاربرانی که درخواستشان قبلاً ثبت شده (در روند پردازش)
     - unsubmitted_users: کاربرانی که هنوز ثبت نکرده‌اند (قطع قبل از ثبت)
-
-    ⭐ اصلاحیه: هر کاربر فقط یک‌بار برای هر پرونده/رویداد اطلاع‌رسانی
-    می‌شود (recovery_notified + اثر انگشت). تکرار ماه‌ها ادامه‌دار قبلی —
-    به‌علت ماندن entry قدیمی در pending_* — متوقف می‌شود و فقط پرونده/
-    رویداد جدید پیام تازه می‌گیرد.
     """
     if not submitted_users and not unsubmitted_users:
         return
@@ -220,17 +133,8 @@ async def notify_crash_recovery(bot: Bot, submitted_users: list, unsubmitted_use
     runtime_state._crash_recovered_submitted = set()
     runtime_state._crash_recovered_unsubmitted = set()
 
-    # ⭐ شمارنده‌های ارسال/رد (برای گزارش دقیق به مدیر)
-    sent_sub = skipped_sub = sent_unsub = skipped_unsub = 0
-
     # ── پیام به کاربرانی که درخواستشان ثبت شده ──
     for uid in submitted_users:
-        # ⭐ ارسال فقط یک‌بار برای هر پرونده — پرونده/رویداد جدید دوباره پیام می‌گیرد
-        fp = _recovery_case_fingerprint(uid)
-        if runtime_state.recovery_notified.get(uid) == fp:
-            logging.info(f"[CRASH_RECOVERY] کاربر {uid} قبلاً برای همین پرونده اطلاع‌رسانی شده — رد شد.")
-            skipped_sub += 1
-            continue
         try:
             await bot.send_message(
                 uid,
@@ -239,21 +143,13 @@ async def notify_crash_recovery(bot: Bot, submitted_users: list, unsubmitted_use
                 "مطمئن باشید که موارد شما در روند ثبت قرار گرفته است.\n\n"
                 "در صورتی که تا ۴۵ دقیقه دیگر موارد شما ارسال نشد، لطفاً به شماره "
                 "09306186888 در بله یا واتس‌اپ پیام ارسال فرمایید.")
-            runtime_state.recovery_notified[uid] = fp
             runtime_state._crash_recovered_users[uid] = "submitted"
             runtime_state._crash_recovered_submitted.add(uid)
-            sent_sub += 1
         except Exception as e:
             logging.warning(f"[CRASH_RECOVERY] خطا در ارسال پیام به {uid}: {e}")
 
     # ── پیام به کاربرانی که هنوز ثبت نشده ──
     for uid in unsubmitted_users:
-        # ⭐ ارسال فقط یک‌بار برای هر رویداد قطع — رویداد جدید دوباره پیام می‌گیرد
-        fp = _recovery_case_fingerprint(uid)
-        if runtime_state.recovery_notified.get(uid) == fp:
-            logging.info(f"[CRASH_RECOVERY] کاربر {uid} قبلاً برای همین رویداد اطلاع‌رسانی شده — رد شد.")
-            skipped_unsub += 1
-            continue
         try:
             await bot.send_message(
                 uid,
@@ -262,10 +158,8 @@ async def notify_crash_recovery(bot: Bot, submitted_users: list, unsubmitted_use
                 "لطفاً مجدداً از ابتدا اقدام فرمایید.\n\n"
                 "اگر قبلاً پرداخت کرده‌اید، نگران نباشید — "
                 "پس از شروع مجدد، فرصت تکرار بدون پرداخت به شما داده می‌شود.")
-            runtime_state.recovery_notified[uid] = fp
             runtime_state._crash_recovered_users[uid] = "unsubmitted"
             runtime_state._crash_recovered_unsubmitted.add(uid)
-            sent_unsub += 1
         except Exception as e:
             logging.warning(f"[CRASH_RECOVERY] خطا در ارسال پیام به {uid}: {e}")
 
@@ -274,10 +168,8 @@ async def notify_crash_recovery(bot: Bot, submitted_users: list, unsubmitted_use
         await bot.send_message(
             ADMIN_ID,
             f"🔄 ربات ری‌استارت شد (بازیابی از کرش)\n\n"
-            f"✅ ثبت‌شده (در روند پردازش): {len(submitted_users)} کاربر"
-            f" — پیام ارسال شد: {sent_sub} | رد شد (قبلاً اطلاع‌رسانی شده): {skipped_sub}\n"
-            f"⚠️ ثبت‌نشده (نیاز به اقدام مجدد): {len(unsubmitted_users)} کاربر"
-            f" — پیام ارسال شد: {sent_unsub} | رد شد (قبلاً اطلاع‌رسانی شده): {skipped_unsub}\n\n"
+            f"✅ ثبت‌شده (در روند پردازش): {len(submitted_users)} کاربر\n"
+            f"⚠️ ثبت‌نشده (نیاز به اقدام مجدد): {len(unsubmitted_users)} کاربر\n\n"
             f"📋 IDs ثبت‌شده: {', '.join(str(u) for u in submitted_users[:20])}\n\n"
             f"📋 IDs ثبت‌نشده: {', '.join(str(u) for u in unsubmitted_users[:20])}\n\n"
             f"✅ حالت ذخیره‌شده بارگذاری شد.")
@@ -315,21 +207,6 @@ async def main():
     # ── بررسی کرش قبلی و بارگذاری حالت ──
     crashed, crash_data = was_crash()
     active_submitted, active_unsubmitted = load_into_runtime_state()
-    # ⭐ پیشنهاد تکمیلی: پاکسازی entryهای منقضی (TTL) بلافاصله پس از بارگذاری،
-    # تا پرونده‌های ماه‌ها-گذشته نه تنها پیام نگیرند، بلکه از صف‌ها هم پاک شوند.
-    cleanup_expired_pending_entries()
-    _tn_store = getattr(runtime_state, "pending_tn_sign", {})
-    active_submitted = [
-        u for u in active_submitted
-        if (u in runtime_state.pending_lavayeh_sign
-            or u in runtime_state.pending_ezhhar_sign
-            or u in _tn_store
-            or u in runtime_state.pending_ezhhar_sana_fix)
-    ]
-    active_unsubmitted = [
-        u for u in active_unsubmitted
-        if u in runtime_state.disrupted_users
-    ]
     runtime_state._load_persisted_subscriptions()
     logging.info(
         f"[START] کرش قبلی: {crashed} | "

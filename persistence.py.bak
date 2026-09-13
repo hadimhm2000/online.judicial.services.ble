@@ -232,12 +232,6 @@ def save_runtime_state():
         incomplete[key] = info
     data["incomplete_tasks"] = incomplete
 
-    # 11-ب. ⭐ کاربرانی که پیام بازیابی کرش برایشان ارسال شده (ارسال فقط یک‌بار)
-    recovery_notified = {}
-    for uid, fp in getattr(runtime_state, "recovery_notified", {}).items():
-        recovery_notified[str(uid)] = str(fp)
-    data["recovery_notified"] = recovery_notified
-
     # 12. علامت کرش — برای تشخیص ری‌استارت غیرعادی
     data["crash_flag"] = False
     data["last_save_time"] = datetime.datetime.now().isoformat()
@@ -338,10 +332,6 @@ def load_into_runtime_state():
     # 11. incomplete_tasks
     for key, info in data.get("incomplete_tasks", {}).items():
         runtime_state.incomplete_tasks[key] = info
-
-    # 11-ب. ⭐ recovery_notified — بازیابی وضعیت «پیام بازیابی ارسال شده»
-    for uid_str, fp in data.get("recovery_notified", {}).items():
-        runtime_state.recovery_notified[int(uid_str)] = fp
 
     # حذف فایل‌های حالت پس از بارگذاری موفق
     for fp in [STATE_FILE, STATE_FILE_BACKUP]:
