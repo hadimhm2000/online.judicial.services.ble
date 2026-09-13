@@ -796,34 +796,15 @@ async def process_check_task(data: dict, bot: Bot):
             # ⭐ حتی بدون فقره چک/پیوست اضافی، اگر وکیل داریم برای ثبت
             # وکالت‌نامه الکترونیک وارد منضمات می‌شویم.
             if cheque_items or attachment_groups or has_lawyer:
-                try:
-                    attachments_ok = await _process_check_attachments(
-                        sana_page,
-                        request_title=request_title,
-                        cheque_items=cheque_items,
-                        attachment_groups=attachment_groups,
-                        bot=bot,
-                        user_id=user_id,
-                        bill_no=bill_no,
-                        plaintiffs=plaintiffs)
-                except CheckAbortError:
-                    raise  # قطع‌های آگاهانه همان‌طور پاس داده می‌شوند
-                except Exception as att_err:
-                    # ⭐ خطای غیرمنتظره در منضمات (مثل evaluate خراب) نباید
-                    # باعث retry کل فرآیند شود — پرونده از قبل ثبت موقت شده
-                    # و کدرهگیری گرفته؛ تکرار یعنی ثبتِ تکراری! پیام به
-                    # مدیر و توقف قطعی.
-                    logging.error(
-                        f"[CHECK] خطای غیرمنتظره در منضمات user={user_id}: {att_err}",
-                        exc_info=True)
-                    await bot.send_message(
-                        ADMIN_ID,
-                        f"❌ [CHECK] خطای غیرمنتظره در منضمات کاربر {user_id} | "
-                        f"کد بایگانی: `{bill_no}` | خطا: {str(att_err)[:300]}\n"
-                        "تصاویر/پیوست‌ها را در سامانه دستی تکمیل کنید.")
-                    raise CheckAbortError(
-                        f"خطای غیرمنتظره در منضمات: {att_err}",
-                        step="ATTACHMENTS_UNEXPECTED_ERROR")
+                attachments_ok = await _process_check_attachments(
+                    sana_page,
+                    request_title=request_title,
+                    cheque_items=cheque_items,
+                    attachment_groups=attachment_groups,
+                    bot=bot,
+                    user_id=user_id,
+                    bill_no=bill_no,
+                    plaintiffs=plaintiffs)
 
                 if not attachments_ok:
                     # پیام‌های مربوطه (کدرهگیری اشتباه / قطعی سامانه) داخل
@@ -2159,51 +2140,8 @@ async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
 
 
 async def _fill_lawyer_person(page, national_id: str, bot: Bot, user_id: int):
-    # ⭐ اصلاحیه: در فرم «وکيل» دادخواست، فیلد کدملی وکیل #txtNationalityCode
-    # است (ng-model=viewModel.currentPetitionPerson.NationalityCode) و استعلام
-    # با actions.getLawyerDataWithSana(viewModel.currentPetitionPerson,false)
-    # انجام می‌شود — نه #txtRealIrNationalityCode + callNationalityCode.
-    # قبلاً به‌اشتباه از مسیر شخص حقیقی استفاده می‌شد و کدملی وکیل هرگز
-    # وارد/استعلام نمی‌شد.
-
-    # ۱) وارد کردن کدملی وکیل در #txtNationalityCode
-    filled = await page.evaluate('''(val) => {
-        const inp = document.querySelector('#txtNationalityCode');
-        if (!inp || inp.disabled) return false;
-        inp.focus();
-        inp.value = "";
-        inp.value = val;
-        inp.dispatchEvent(new Event("input", { bubbles: true }));
-        inp.dispatchEvent(new Event("change", { bubbles: true }));
-        try {
-            if (typeof angular !== 'undefined') {
-                const el = angular.element(inp);
-                const ctrl = el.controller('ngModel');
-                if (ctrl) { ctrl.$setViewValue(val); ctrl.$render(); }
-                const scope = el.scope();
-                if (scope && scope.$root && !scope.$root.$$phase) scope.$apply();
-            }
-        } catch (e) {}
-        return true;
-    }''', national_id)
-    if not filled:
-        raise CheckAbortError(
-            "فیلد کدملی وکیل (#txtNationalityCode) در فرم «وکيل» پیدا نشد",
-            step="LAWYER_FIELD_NOT_FOUND")
-    await asyncio.sleep(1)
-
-    # ۲) استعلام وکیل — دکمهٔ «استعلام»:
-    #    ng-click="actions.getLawyerDataWithSana(viewModel.currentPetitionPerson,false)"
-    status = await _query_sana_check(
-        page, "actions.getLawyerDataWithSana", bot, user_id,
-        role="وکیل", national_id=national_id)
-    if status == "failed":
-        raise CheckAbortError(
-            f"استعلام ثنا برای وکیل (کدملی {national_id}) ناموفق",
-            step="SANA_QUERY_FAILED")
-    if status == "no_response":
-        logging.warning(
-            f"[CHECK][وکیل] استعلام وکیل {national_id} پاسخ قطعی نداد — ادامه با احتیاط")
+    """پر کردن کدملی وکیل + استعلام"""
+    await _fill_real_person(page, national_id, bot, user_id, role="وکیل")
 
 
 async def _download_check_images(bot: Bot, images: list, user_id: int) -> list:
@@ -2271,8 +2209,7 @@ async def _select_attachment_type(page, label: str) -> bool:
     ok = await page.evaluate('''(label) => {
         const sel = document.querySelector('#attachmentType');
         if (!sel || sel.disabled) return false;
-        if (sel.tagName !== 'SELECT') return false;
-        const opts = Array.from(sel.options || []);
+        const opts = Array.from(sel.options);
         const target = opts.find(o => (o.innerText || '').trim() === label)
                       || opts.find(o => (o.innerText || '').includes(label));
         if (target) {
@@ -2481,8 +2418,7 @@ async def _fill_check_document_fields(page) -> None:
         ok = await page.evaluate('''(a) => {
             const sel = document.querySelector('#' + a.sid);
             if (!sel || sel.disabled) return false;
-            if (sel.tagName !== 'SELECT') return false;
-            const opts = Array.from(sel.options || []).filter(o => {
+            const opts = Array.from(sel.options).filter(o => {
                 const v = (o.value || '').trim();
                 const t = (o.text || '').trim();
                 if (!v || v === "?" || v === "0" || v.startsWith("? string")) return false;
@@ -2782,8 +2718,7 @@ async def _fill_extra_attachment_form(page, doc_title: str, prepared_paths: list
         ok = await page.evaluate('''() => {
             const sel = document.querySelector('#attachmentType');
             if (!sel || sel.disabled) return false;
-            if (sel.tagName !== 'SELECT') return false;
-            const opts = Array.from(sel.options || []);
+            const opts = Array.from(sel.options);
             const opt = opts.find(o => (o.text || '').includes("مدرک نمايندگي") ||
                                         (o.text || '').includes("مدرک نمایندگی"));
             if (opt) {
@@ -2922,9 +2857,8 @@ async def _upload_electronic_vakalaht_check(
         # ۱) انتخاب «تصوير الكترونيك وكالت نامه» از نوع پیوست
         selected = await page.evaluate('''() => {
             const sel = document.querySelector('#attachmentType');
-            if (!sel || sel.disabled) return false;
-            if (sel.tagName !== 'SELECT') return false;
-            const opts = Array.from(sel.options || []);
+            if (!sel) return false;
+            const opts = Array.from(sel.options);
             const opt = opts.find(o =>
                 (o.text || '').includes("تصوير الكترونيك وكالت نامه") ||
                 (o.text || '').includes("تصویر الکترونیک وکالت نامه")
