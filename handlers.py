@@ -924,7 +924,7 @@ async def process_flow_type(message: types.Message, state: FSMContext):
         # می‌توانست وارد شود و بقیه پیام «در حال توسعه» دریافت می‌کردند).
         from tajdid_nazar_handlers import tajdid_nazar_entry
         await tajdid_nazar_entry(message, state)
-    elif "دادخواست چک" in message.text:
+    elif "دادخواست" in message.text:
         # ⭐ اصلاحیه: این بخش برای همهٔ کاربران فعال است (قبلاً فقط مدیر
         # می‌توانست وارد شود و بقیه پیام «در حال توسعه» دریافت می‌کردند).
         from check_handlers import check_entry
