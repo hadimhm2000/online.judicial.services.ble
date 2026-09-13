@@ -65,7 +65,7 @@ from browser_helpers import (
     goto_url_with_retry, human_delay, force_click_by_text,
     safe_click_by_text, safe_type, wait_for_angular_idle,
     wait_for_horizontal_loading_bar, handle_session_expired,
-    detect_concurrent_login_popup, click_sana_main_menu)
+    click_sana_main_menu)
 
 import json
 
@@ -2063,15 +2063,6 @@ async def _click_preparation_with_retry(page, bot: Bot, user_id: int, max_retrie
                 return True
 
             elif popup_info['type'] == 'error':
-                # ⭐ تشخیص ورود همزمان/انقضای نشست — به‌جای ۳ بار retry
-                # بی‌فایده، نشست تمدید می‌شود (اطلاع به مدیر برای لاگین
-                # مجدد) و سپس کلیک آماده‌سازی از ابتدا تکرار می‌شود.
-                is_concurrent = await detect_concurrent_login_popup(page)
-                if is_concurrent:
-                    logging.warning(f"[LAVAYEH] ورود همزمان/انقضای نشست قبل از تأیید آماده‌سازی (تلاش {attempt+1}) — تمدید نشست")
-                    await handle_session_expired(bot, user_id, page=page)
-                    await asyncio.sleep(3)
-                    break  # خروج از حلقهٔ داخلی → تلاش مجدد کلیک #btnPreparation
                 logging.warning(f"[LAVAYEH] خطا قبل از تأیید: {popup_info['h2']} (تلاش {attempt+1})")
                 await _close_error_popup(page)
                 await asyncio.sleep(2)
@@ -2143,8 +2134,7 @@ async def _click_preparation_with_retry(page, bot: Bot, user_id: int, max_retrie
                 const popup = document.querySelector('.sweet-alert.showSweetAlert.visible');
                 if (!popup) return null;
                 const h2 = popup.querySelector('h2');
-                const pEl = popup.querySelector('p');
-                const h2Text = ((h2 ? h2.innerText.trim() : '') + ' ' + (pEl ? pEl.innerText.trim() : '')).trim();
+                const h2Text = h2 ? h2.innerText.trim() : '';
                 const successIcon = popup.querySelector('.sa-icon.sa-success');
                 const successVisible = successIcon && window.getComputedStyle(successIcon).display !== 'none';
                 const errorIcon = popup.querySelector('.sa-icon.sa-error');
@@ -2175,15 +2165,6 @@ async def _click_preparation_with_retry(page, bot: Bot, user_id: int, max_retrie
                 return True
 
             elif result['type'] == 'error':
-                # ⭐ تشخیص ورود همزمان/انقضای نشست — این پاپ‌آپ h2 خالی و
-                # متن کامل در p است («با این شناسه ... منقضی شده است»).
-                # قبلاً بدون تمدید نشست ۳ بار retry بی‌فایده انجام می‌شد.
-                is_concurrent = await detect_concurrent_login_popup(page)
-                if is_concurrent:
-                    logging.warning(f"[LAVAYEH] ورود همزمان/انقضای نشست در آماده‌سازی (تلاش {attempt+1}) — تمدید نشست")
-                    await handle_session_expired(bot, user_id, page=page)
-                    await asyncio.sleep(3)
-                    break  # retry از ابتدا پس از تمدید نشست
                 logging.warning(f"[LAVAYEH] خطا در آماده‌سازی: {result['h2']} (تلاش {attempt+1})")
                 # بستن پاپ‌آپ خطا
                 await _close_error_popup(page)

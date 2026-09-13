@@ -52,13 +52,6 @@ class AdminRelayStates(StatesGroup):
     send_ask_fee = State()
     send_fee_enter_amount = State()
     send_fee_enter_tracking = State()
-    # ⭐ فلوی «ناوبری امضا بعد از پرداخت» در /send: بله/خیر ← نوع درخواست ←
-    # (مسیر امضای چک/نوع دعوی). اگر بله باشد، پس از پرداخت کاربر ناوبری
-    # امضا مثل سایر موارد فعال می‌شود (service_type واقعی ذخیره می‌گردد).
-    send_fee_ask_sign_nav = State()
-    send_fee_choose_service = State()
-    send_fee_check_menu = State()
-    send_fee_tn_casetype = State()
     case_choose_service = State()
     case_upload_pdf = State()
     case_ask_amount_choice = State()
@@ -226,111 +219,15 @@ async def admin_send_fee_tracking_handler(message: Message, state: FSMContext, b
     text = (message.text or "").strip()
     tracking_code = "" if text == "0" else text
     await state.update_data(_send_fee_tracking=tracking_code)
-    # ⭐ سؤال ناوبری امضا: اگر بله، نوع درخواست (و در صورت چک/تجدیدنظر مسیر
-    # امضا) از مدیر گرفته می‌شود و پس از پرداخت خودکار کاربر، هندلر
-    # admin_fee_successful_payment ناوبری امضا را مثل سایر موارد فعال می‌کند.
-    await message.answer(
-        "🖊 *آیا ناوبری امضا پس از پرداخت برای این کاربر انجام شود؟*\n\n"
-        "• «بله» → نوع درخواست (لایحه/اظهارنامه/دعاوی اعتراضی/چک) را انتخاب "
-        "می‌کنید و پس از پرداخت کاربر، ناوبری امضا به‌صورت خودکار فعال می‌شود.\n"
-        "• «خیر» → فقط فاکتور ارسال پیام ثبت می‌شود (بدون امضا).",
-        reply_markup=send_fee_sign_nav_kb)
-    await state.set_state(AdminRelayStates.send_fee_ask_sign_nav)
-
-
-@admin_relay_router.message(AdminRelayStates.send_fee_ask_sign_nav, F.text == "⏭ خیر، فقط فاکتور")
-async def admin_send_fee_sign_nav_no(message: Message, state: FSMContext):
-    """مدیر امضا نمی‌خواهد — فاکتور ارسال پیام معمولی (ADMIN_SEND)."""
-    if message.from_user.id != ADMIN_ID:
-        return
-    await _finalize_send_fee_invoice(message, state)
-
-
-@admin_relay_router.message(AdminRelayStates.send_fee_ask_sign_nav, F.text == "🖊 بله، ناوبری امضا انجام شود")
-async def admin_send_fee_sign_nav_yes(message: Message, state: FSMContext):
-    """مدیر ناوبری امضا می‌خواهد — انتخاب نوع درخواست."""
-    if message.from_user.id != ADMIN_ID:
-        return
-    await message.answer(
-        "📋 *نوع درخواست* را برای ناوبری امضا انتخاب کنید:",
-        reply_markup=send_fee_sign_service_kb)
-    await state.set_state(AdminRelayStates.send_fee_choose_service)
-
-
-@admin_relay_router.message(AdminRelayStates.send_fee_ask_sign_nav)
-async def admin_send_fee_sign_nav_fallback(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    await message.answer(
-        "⚠️ لطفاً یکی از گزینه‌های زیر را انتخاب کنید:",
-        reply_markup=send_fee_sign_nav_kb)
-
-
-@admin_relay_router.message(AdminRelayStates.send_fee_choose_service)
-async def admin_send_fee_sign_service_handler(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    text = message.text or ""
-    if text not in SEND_FEE_SIGN_SERVICE_LABELS:
-        await message.answer(
-            "⚠️ لطفاً از دکمه‌های زیر انتخاب کنید:",
-            reply_markup=send_fee_sign_service_kb)
-        return
-    cfg = SEND_FEE_SIGN_SERVICE_LABELS[text]
-    await state.update_data(_send_fee_sign_cfg=cfg)
-    if cfg.get("ask_menu") == "check":
-        await message.answer(
-            "🏦 مسیر سامانه برای *امضای این چک* کدام است؟",
-            reply_markup=fee_check_menu_kb)
-        await state.set_state(AdminRelayStates.send_fee_check_menu)
-        return
-    if cfg.get("ask_menu") == "tn":
-        await message.answer(
-            "⚖️ نوع *دعوی اعتراضی* این پرونده کدام است؟",
-            reply_markup=fee_tn_casetype_kb)
-        await state.set_state(AdminRelayStates.send_fee_tn_casetype)
-        return
-    await _finalize_send_fee_invoice(message, state)
-
-
-@admin_relay_router.message(AdminRelayStates.send_fee_check_menu)
-async def admin_send_fee_sign_check_menu_handler(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    text = message.text or ""
-    if text not in FEE_CHECK_MENU_PATHS:
-        await message.answer(
-            "⚠️ لطفاً یکی از گزینه‌های زیر را انتخاب کنید:",
-            reply_markup=fee_check_menu_kb)
-        return
-    await state.update_data(_send_fee_sign_menu_path=FEE_CHECK_MENU_PATHS[text])
-    await _finalize_send_fee_invoice(message, state)
-
-
-@admin_relay_router.message(AdminRelayStates.send_fee_tn_casetype)
-async def admin_send_fee_sign_tn_casetype_handler(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    text = message.text or ""
-    if text not in FEE_TN_CASE_TYPES:
-        await message.answer(
-            "⚠️ لطفاً یکی از انواع دعوی را انتخاب کنید:",
-            reply_markup=fee_tn_casetype_kb)
-        return
-    # مطابق tajdid_nazar_handlers.py: مسیر امضای تجدیدنظر = [نوع دعوی]
-    await state.update_data(_send_fee_sign_menu_path=[text])
     await _finalize_send_fee_invoice(message, state)
 
 
 async def _finalize_send_fee_invoice(message: Message, state: FSMContext):
     """صدور و ارسال فاکتور کیف پول بله برای هزینهٔ ارسال پیام مدیر (/send).
 
-    اگر مدیر در مرحلهٔ «ناوبری امضا» گزینهٔ بله را انتخاب کرده باشد،
-    service_type واقعی (لایحه/اظهارنامه/دعاوی اعتراضی/چک) همراه با
-    sign_menu_path در pending ذخیره می‌شود و پس از پرداخت خودکار کاربر،
-    هندلر admin_fee_successful_payment ناوبری امضا را دقیقاً مثل سایر
-    موارد فعال می‌کند. در غیر این صورت (پیش‌فرض ADMIN_SEND) فقط ثبت پنل،
-    لاگ شیت و اطلاع به مدیر انجام می‌شود و امضایی انجام نمی‌گیرد.
+    پس از پرداخت خودکار توسط کاربر، هندلر admin_fee_successful_payment با
+    service_type=ADMIN_SEND ادامه می‌دهد (بدون ناوبری امضا — فقط ثبت پنل،
+    لاگ شیت و اطلاع به مدیر).
     """
     import runtime_state
     from states import Form
@@ -339,29 +236,17 @@ async def _finalize_send_fee_invoice(message: Message, state: FSMContext):
     target_user_id = data.get("_admin_relay_target")
     amount = data.get("_send_fee_amount", 0)
     tracking_code = data.get("_send_fee_tracking", "")
-    # ⭐ پیکربندی ناوبری امضا (اگر مدیر «بله» گفته باشد)
-    sign_cfg = data.get("_send_fee_sign_cfg") or {}
-    service_type = sign_cfg.get("service_type", "ADMIN_SEND")
-    sign_menu_path = data.get("_send_fee_sign_menu_path")
-    sign_label = sign_cfg.get("label", "")
 
     try:
         invoice_payload = json.dumps({"type": "admin_fee", "uid": target_user_id, "source": "send"})
         url = f"{BALE_API_BASE.rstrip('/')}/bot{BOT_TOKEN}/sendInvoice"
-        invoice_title = f"فاکتور {sign_label}" if sign_label else "فاکتور ارسال پیام"
-        invoice_desc = (
-            (
-                f"هزینه خدمات {sign_label} (ثبت توسط مدیریت)\n"
-                f"مبلغ: {amount // 10:,} تومان ({amount:,} ریال)"
-            ) if sign_label else (
-                f"هزینه دریافت پیام/فایل از مدیریت\n"
-                f"مبلغ: {amount // 10:,} تومان ({amount:,} ریال)"
-            )
-        )
         invoice_data = {
             "chat_id": target_user_id,
-            "title": invoice_title,
-            "description": invoice_desc,
+            "title": "فاکتور ارسال پیام",
+            "description": (
+                f"هزینه دریافت پیام/فایل از مدیریت\n"
+                f"مبلغ: {amount // 10:,} تومان ({amount:,} ریال)"
+            ),
             "payload": invoice_payload,
             "provider_token": BALE_WALLET_TOKEN,
             "currency": "IRR",
@@ -391,9 +276,9 @@ async def _finalize_send_fee_invoice(message: Message, state: FSMContext):
     runtime_state.pending_admin_fee_payments[target_user_id] = {
         "invoice_time": datetime.datetime.now(),
         "final_fee": amount,
-        "service_type": service_type,
+        "service_type": "ADMIN_SEND",
         "tracking_code": tracking_code,
-        "sign_menu_path": sign_menu_path,
+        "sign_menu_path": None,
         "admin_id": ADMIN_ID,
         "source": "send",
     }
@@ -405,16 +290,10 @@ async def _finalize_send_fee_invoice(message: Message, state: FSMContext):
     except Exception as e:
         logger.warning(f"[ADMIN-SEND-FEE] ست کردن state کاربر {target_user_id} ناموفق بود: {e}")
 
-    if sign_cfg:
-        await message.answer(
-            f"✅ فاکتور *{amount:,} ریالی* ({sign_label}) برای کاربر `{target_user_id}` ارسال شد.\n\n"
-            f"🖊 پس از پرداخت خودکار توسط کاربر، ناوبری امضا ({sign_label}) فعال می‌شود."
-        )
-    else:
-        await message.answer(
-            f"✅ فاکتور *{amount:,} ریالی* هزینهٔ ارسال پیام برای کاربر `{target_user_id}` ارسال شد.\n\n"
-            f"💳 پس از پرداخت خودکار توسط کاربر، پرداخت ثبت می‌شود و به شما اطلاع داده می‌شود."
-        )
+    await message.answer(
+        f"✅ فاکتور *{amount:,} ریالی* هزینهٔ ارسال پیام برای کاربر `{target_user_id}` ارسال شد.\n\n"
+        f"💳 پس از پرداخت خودکار توسط کاربر، پرداخت ثبت می‌شود و به شما اطلاع داده می‌شود."
+    )
     await state.clear()
 
 
@@ -467,10 +346,6 @@ async def admin_case_command(message: Message, state: FSMContext):
 @admin_relay_router.message(AdminRelayStates.send_ask_fee, F.text == "/cancel")
 @admin_relay_router.message(AdminRelayStates.send_fee_enter_amount, F.text == "/cancel")
 @admin_relay_router.message(AdminRelayStates.send_fee_enter_tracking, F.text == "/cancel")
-@admin_relay_router.message(AdminRelayStates.send_fee_ask_sign_nav, F.text == "/cancel")
-@admin_relay_router.message(AdminRelayStates.send_fee_choose_service, F.text == "/cancel")
-@admin_relay_router.message(AdminRelayStates.send_fee_check_menu, F.text == "/cancel")
-@admin_relay_router.message(AdminRelayStates.send_fee_tn_casetype, F.text == "/cancel")
 @admin_relay_router.message(AdminRelayStates.case_choose_service, F.text == "/cancel")
 @admin_relay_router.message(AdminRelayStates.case_upload_pdf, F.text == "/cancel")
 @admin_relay_router.message(AdminRelayStates.case_ask_amount_choice, F.text == "/cancel")
@@ -689,27 +564,6 @@ FEE_SERVICE_LABELS = {
 # ⭐ برچسب سرویس فاکتور هزینهٔ ارسال پیام مدیر (/send) — جدا از FEE_SERVICE_LABELS
 # تا به‌عنوان دکمه در کیبورد /fee ظاهر نشود؛ فقط برای label lookup استفاده می‌شود.
 ADMIN_SEND_SERVICE_LABEL = "ارسال پیام مدیریت"
-
-# ⭐ کیبورد سؤال «ناوبری امضا بعد از پرداخت» در فلوی هزینهٔ /send
-send_fee_sign_nav_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="🖊 بله، ناوبری امضا انجام شود")],
-        [KeyboardButton(text="⏭ خیر، فقط فاکتور")],
-    ],
-    resize_keyboard=True
-)
-
-# ⭐ کیبورد/نگاشت نوع درخواست برای ناوبری امضا در /send — همان انواع بخش
-# تست/فاکتور دستی (به‌جز استعلام که پس از پرداخت امضا ندارد)
-SEND_FEE_SIGN_SERVICE_LABELS = {
-    k: v for k, v in FEE_SERVICE_LABELS.items()
-    if v.get("service_type") not in ("INQUIRY", "ADMIN_SEND")
-}
-send_fee_sign_service_kb = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text=k)] for k in SEND_FEE_SIGN_SERVICE_LABELS.keys()]
-             + [[KeyboardButton(text="/cancel")]],
-    resize_keyboard=True
-)
 
 # مسیر منوی سامانه برای امضای چک (مطابق check_scenario.py)
 FEE_CHECK_MENU_PATHS = {
