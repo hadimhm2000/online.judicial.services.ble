@@ -15,14 +15,10 @@ CHANNEL_LINK = "https://ble.ir/onlinejudicialservice"
 
 
 def get_flow_type_kb(user_id: int) -> ReplyKeyboardMarkup:
-    """کیبورد منوی اصلی — دکمه تست فقط برای مدیر.
-
-    ⭐ اصلاحیه: «دعاوی اعتراضی» و «ثبت دادخواست چک» برای همهٔ کاربران
-    فعال شدند — برچسب «(به زودی)» حذف گردید.
-    """
+    """کیبورد منوی اصلی — دکمه تست فقط برای مدیر."""
     _is_admin = (user_id == ADMIN_ID)
-    _tn = "⚖️ دعاوی اعتراضی"
-    _chk = "🏦 ثبت دادخواست چک"
+    _tn = "⚖️ دعاوی اعتراضی" if _is_admin else "⚖️ دعاوی اعتراضی (به زودی)"
+    _chk = "🏦 ثبت دادخواست چک" if _is_admin else "🏦 ثبت دادخواست چک (به زودی)"
     rows = [
         [KeyboardButton(text="🔍 استعلام"), KeyboardButton(text="📦 استعلام (چند مورد همزمان)")],
         [KeyboardButton(text="✍️ ثبت لایحه"), KeyboardButton(text="📄 ثبت اظهارنامه")],
@@ -55,7 +51,7 @@ flow_type_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🔍 استعلام"), KeyboardButton(text="📦 استعلام (چند مورد همزمان)")],
         [KeyboardButton(text="✍️ ثبت لایحه"), KeyboardButton(text="📄 ثبت اظهارنامه")],
-        [KeyboardButton(text="⚖️ دعاوی اعتراضی"), KeyboardButton(text="🏦 ثبت دادخواست چک")],
+        [KeyboardButton(text="⚖️ دعاوی اعتراضی (به زودی)"), KeyboardButton(text="🏦 ثبت دادخواست چک (به زودی)")],
         [KeyboardButton(text="💰 محاسبه تمبر"), KeyboardButton(text="🔧 ابزار فایل")],
     ], resize_keyboard=True)
 
