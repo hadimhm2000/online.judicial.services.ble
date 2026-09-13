@@ -22,7 +22,7 @@ def get_flow_type_kb(user_id: int) -> ReplyKeyboardMarkup:
     """
     _is_admin = (user_id == ADMIN_ID)
     _tn = "⚖️ دعاوی اعتراضی"
-    _chk = "🏦 ثبت دادخواست چک"
+    _chk = "🏦 ثبت دادخواست"
     rows = [
         [KeyboardButton(text="🔍 استعلام"), KeyboardButton(text="📦 استعلام (چند مورد همزمان)")],
         [KeyboardButton(text="✍️ ثبت لایحه"), KeyboardButton(text="📄 ثبت اظهارنامه")],
@@ -55,7 +55,7 @@ flow_type_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🔍 استعلام"), KeyboardButton(text="📦 استعلام (چند مورد همزمان)")],
         [KeyboardButton(text="✍️ ثبت لایحه"), KeyboardButton(text="📄 ثبت اظهارنامه")],
-        [KeyboardButton(text="⚖️ دعاوی اعتراضی"), KeyboardButton(text="🏦 ثبت دادخواست چک")],
+        [KeyboardButton(text="⚖️ دعاوی اعتراضی"), KeyboardButton(text="🏦 ثبت دادخواست")],
         [KeyboardButton(text="💰 محاسبه تمبر"), KeyboardButton(text="🔧 ابزار فایل")],
     ], resize_keyboard=True)
 
@@ -1091,6 +1091,9 @@ check_request_title_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="صدور اجرائیه چک"), KeyboardButton(text="مطالبه وجه چک")],
         [KeyboardButton(text="مطالبه وجه بابت...")],
+        [KeyboardButton(text="دادخواست طلاق توافقی"), KeyboardButton(text="دادخواست طلاق به درخواست زوجه")],
+        [KeyboardButton(text="دادخواست طلاق به درخواست زوج"), KeyboardButton(text="دادخواست نفقه")],
+        [KeyboardButton(text="دادخواست الزام به تمکین"), KeyboardButton(text="دادخواست مهریه")],
         [KeyboardButton(text="🔙 بازگشت")],
     ],
     resize_keyboard=True
@@ -1172,6 +1175,7 @@ check_more_docs_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📎 تصویر یا مدرک دیگر دارم")],
         [KeyboardButton(text="✅ خیر، ادامه به انتخاب دادگاه")],
+        [KeyboardButton(text="👥 افزودن شهود (مطلع/گواه)")],
         [KeyboardButton(text="🔙 بازگشت")],
     ],
     resize_keyboard=True
@@ -1195,6 +1199,7 @@ check_attachment_more_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="➕ بله، عنوان و مدرک دیگر دارم")],
         [KeyboardButton(text="✅ خیر، ادامه به انتخاب دادگاه")],
+        [KeyboardButton(text="👥 افزودن شهود (مطلع/گواه)")],
         [KeyboardButton(text="🔙 بازگشت")],
     ], resize_keyboard=True
 )

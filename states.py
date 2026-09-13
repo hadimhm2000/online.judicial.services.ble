@@ -296,7 +296,9 @@ class Form(StatesGroup):
     check_check_next_images = State()    # تصویر چک بعدی
     check_attachment_title = State()     # عنوان پیوست
     check_attachment_images = State()    # تصاویر پیوست
-    check_attachment_more = State()      # آیا پیوست دیگری هست؟
+    check_attachment_more = State()
+    check_marriage_date = State()        # ⭐ تاریخ وقوع عقد (سند ازدواج — عناوین خانواده)
+    check_marriage_cert_no = State()     # ⭐ شماره سند ازدواج (عناوین خانواده)      # آیا پیوست دیگری هست؟
     check_branch_code = State()           # انتخاب صلاحیت دادگاه (شعبه)
     check_confirm = State()               # پیش‌نمایش و تایید
     check_edit_choice = State()           # انتخاب بخش ویرایش

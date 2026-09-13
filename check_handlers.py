@@ -34,6 +34,16 @@ from aiogram.types import Message, ReplyKeyboardRemove, CallbackQuery
 from bale_file_sender import send_document_direct
 
 import runtime_state
+
+# ⭐ عناوین جدید خانواده — ثبت عین «مطالبه وجه» طبق دستور کارفرما
+CHECK_FAMILY_TITLES = ["دادخواست طلاق توافقی", "دادخواست طلاق به درخواست زوجه",
+                       "دادخواست طلاق به درخواست زوج", "دادخواست نفقه",
+                       "دادخواست الزام به تمکین", "دادخواست مهریه"]
+# طلاق×۳ و «الزام به تمکین»: بدون مبلغ و همیشه دادخواست بدوی
+CHECK_NO_AMOUNT_TITLES = ["دادخواست طلاق توافقی", "دادخواست طلاق به درخواست زوجه",
+                          "دادخواست طلاق به درخواست زوج", "دادخواست الزام به تمکین"]
+# تامین خواسته فقط برای این عناوین پرسیده می‌شود (نفقه و مهریه اضافه شدند)
+CHECK_TAMIN_TITLES = ("مطالبه وجه چک", "مطالبه وجه بابت...", "دادخواست مهریه", "دادخواست نفقه")
 from states import Form
 from keyboards import (
     main_menu_kb, back_only_kb,
@@ -487,7 +497,7 @@ async def check_request_title_handler(message: Message, state: FSMContext):
         await state.set_state(Form.check_request_type)
         return
 
-    if text not in ["صدور اجرائیه چک", "مطالبه وجه چک", "مطالبه وجه بابت..."]:
+    if text not in (["صدور اجرائیه چک", "مطالبه وجه چک", "مطالبه وجه بابت..."] + CHECK_FAMILY_TITLES):
         await message.answer(
             "⚠️ لطفاً یکی از گزینه‌های موجود را انتخاب کنید:",
             reply_markup=check_request_title_kb
@@ -498,9 +508,23 @@ async def check_request_title_handler(message: Message, state: FSMContext):
     # ⭐ تامین خواسته/اعسار فقط برای عناوین «مطالبه وجه» پرسیده می‌شود؛
     # اگر عنوان (در ویرایش) به «صدور اجرائیه چک» تغییر کند، پرچم‌های قبلی
     # ریست می‌شوند تا خواستهٔ فرعی اشتباهی ثبت نشود.
-    if text not in ("مطالبه وجه چک", "مطالبه وجه بابت..."):
+    if text not in CHECK_TAMIN_TITLES:
         await state.update_data(check_tamin_khasteh=False, check_aasar=False)
     if await _check_maybe_return_to_preview(message, state):
+        return
+
+    # ⭐ عناوین خانوادهٔ بدون مبلغ (طلاق×۳ و الزام به تمکین) — پرش از مرحلهٔ مبلغ
+    # و ثبت همیشه به‌صورت «دادخواست بدوی» (در سمت سیناریو اجبار شده است)
+    if text in CHECK_NO_AMOUNT_TITLES:
+        await state.update_data(check_amount=0)
+        if await _check_maybe_return_to_preview(message, state):
+            return
+        await message.answer(
+            "📄 *مرحله ۳:* عنوان خواسته\n\n"
+            f"📝 عنوان انتخابی: *{text}*\n\n"
+            "💡 لطفاً *متن خواسته* خود را وارد فرمایید:",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.check_khasteh_title)
         return
     await message.answer(
         "💰 *مرحله ۲:* لطفاً *مبلغ چک* را به *ریال* وارد فرمایید:\n"
@@ -539,7 +563,7 @@ async def check_amount_handler(message: Message, state: FSMContext):
     data = await state.get_data()
     request_title = data.get("check_request_title", "")
 
-    if request_title in ("مطالبه وجه چک", "مطالبه وجه بابت..."):
+    if request_title in CHECK_TAMIN_TITLES:
         await message.answer(
             "⚖️ آیا درخواست *تامین خواسته و توقیف اموال خوانده* را دارید؟",
             reply_markup=check_yes_no_kb)
@@ -1368,6 +1392,15 @@ async def check_witness_national_id_handler(message: Message, state: FSMContext)
                     reply_markup=check_addressee_add_more_kb)
                 return  # در همان state (check_witness_national_id) می‌مانیم
         # رفتن به مرحله شرح متن
+        _wd = await state.get_data()
+        if _wd.get("_check_back_to_docs"):
+            # ⭐ بازگشت به بخش مدارک (به‌جای شروع مجدد مرحله متن)
+            await state.update_data(_check_back_to_docs=False)
+            await message.answer(
+                "📎 آیا مدرک دیگری نیز دارید؟",
+                reply_markup=check_attachment_more_kb)
+            await state.set_state(Form.check_attachment_more)
+            return
         await _ask_check_text(message, state)
         return
     if text == "➕ افزودن مطلع یا گواه دیگر":
@@ -1444,6 +1477,15 @@ async def check_more_witnesses_handler(message: Message, state: FSMContext):
             await state.set_state(Form.check_witness_national_id)
             return
         if await _check_maybe_return_to_preview(message, state):
+            return
+        _wd = await state.get_data()
+        if _wd.get("_check_back_to_docs"):
+            # ⭐ بازگشت به بخش مدارک (به‌جای شروع مجدد مرحله متن)
+            await state.update_data(_check_back_to_docs=False)
+            await message.answer(
+                "📎 آیا مدرک دیگری نیز دارید؟",
+                reply_markup=check_attachment_more_kb)
+            await state.set_state(Form.check_attachment_more)
             return
         await _ask_check_text(message, state)
     elif "بازگشت" in text:
@@ -1549,6 +1591,15 @@ async def _after_check_text(message: Message, state: FSMContext):
 
 
 async def _ask_check_next_after_text(message: Message, state: FSMContext):
+    # ⭐ عناوین خانواده: ابتدا سند ازدواج (تاریخ وقوع عقد + شماره سند + تصویر)
+    _fam0 = await state.get_data()
+    if (_fam0.get("check_request_title") in CHECK_FAMILY_TITLES
+            and not _fam0.get("check_attachment_groups")
+            and not _fam0.get("_marriage_cert_done")):
+        await state.update_data(_marriage_cert_done=True)
+        await _ask_marriage_cert_date(message, state)
+        return
+
     """ادامهٔ فلوی بعد از شرح متن/استشهادیه — «مطالبه وجه بابت...» هیچ فقره چک،
     کدرهگیری و تصویر چکی ندارد؛ مستقیم به سوال مدارک اضافی می‌رود."""
     data = await state.get_data()
@@ -1562,6 +1613,57 @@ async def _ask_check_next_after_text(message: Message, state: FSMContext):
         return
 
     await _ask_check_images(message, state)
+
+
+async def _ask_marriage_cert_date(message, state):
+    """شروع بخش سند ازدواج برای عناوین خانواده: دریافت تاریخ وقوع عقد."""
+    await message.answer(
+        "📎 *بخش مدارک:*\n\n"
+        "⚠️ در این دادخواست، *سند ازدواج یا رونوشت آن* باید حتماً پیوست شود.\n\n"
+        "📅 لطفاً *تاریخ وقوع عقد* را وارد فرمایید:\n_(مثال: 1400/05/12)_",
+        reply_markup=back_only_kb)
+    await state.set_state(Form.check_marriage_date)
+
+
+@check_router.message(Form.check_marriage_date)
+async def check_marriage_date_handler(message: Message, state: FSMContext):
+    text = _to_en((message.text or "").strip())
+    if "بازگشت" in text:
+        await _ask_check_text(message, state)
+        return
+    if not re.match(r"^\d{4}/\d{2}/\d{2}$", text):
+        await message.answer(
+            "⚠️ تاریخ را با فرمت صحیح وارد کنید:\n_(مثال: 1400/05/12)_",
+            reply_markup=back_only_kb)
+        return
+    await state.update_data(check_marriage_date=text)
+    await message.answer("🔢 لطفاً *شماره سند ازدواج* را وارد فرمایید:", reply_markup=back_only_kb)
+    await state.set_state(Form.check_marriage_cert_no)
+
+
+@check_router.message(Form.check_marriage_cert_no)
+async def check_marriage_cert_no_handler(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if "بازگشت" in text:
+        await _ask_marriage_cert_date(message, state)
+        return
+    if not text:
+        return
+    from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+    manage_kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="✅ اتمام ارسال تصاویر")],
+            [KeyboardButton(text="🔙 بازگشت")]],
+        resize_keyboard=True)
+    await state.update_data(
+        _current_attachment_title="سند ازدواج",
+        _current_attachment_images=[],
+        _is_marriage_cert=True)
+    await message.answer(
+        "🖼 لطفاً تصویر *سند ازدواج (یا رونوشت آن)* را ارسال فرمایید.\n"
+        "پس از ارسال همهٔ تصاویر، دکمهٔ *«اتمام ارسال تصاویر»* را بزنید.",
+        reply_markup=manage_kb)
+    await state.set_state(Form.check_attachment_images)
 
 
 @check_router.message(Form.check_esteshahadieh_images, F.photo)
@@ -1634,11 +1736,15 @@ async def check_text_handler(message: Message, state: FSMContext, bot: Bot):
             from text_collector import process_docx_input
 
             async def _on_check_docx_complete(final_text, final_html, st, b, cid, was_editing, char_count):
-                await b.send_message(cid, f"✅ متن دادخواست از فایل ورد دریافت شد ({char_count} کاراکتر).")
+                # ⭐ ادغام با متن تایپ‌شدهٔ قبلی (ترتیب: متن تایپی، سپس متن ورد)
+                _final = (f"{_prev_check_text_before_docx}\n\n{final_text}").strip() if _prev_check_text_before_docx else final_text
+                await st.update_data(check_text=_final, check_text_html=final_html, check_text_from_docx=True)
+                await b.send_message(cid, f"✅ متن دادخواست از فایل ورد دریافت و به متن قبلی اضافه شد ({char_count} کاراکتر).")
                 if await _check_maybe_return_to_preview(message, st):
                     return
                 await _after_check_text(message, st)
 
+            _prev_check_text_before_docx = ((await state.get_data()).get("check_text") or "").strip()
             await process_docx_input(
                 message=message,
                 user_id=user_id,
@@ -1685,11 +1791,25 @@ async def check_text_handler(message: Message, state: FSMContext, bot: Bot):
         await state.set_state(Form.check_witness_national_id)
         return
 
-    # متن شرح دریافت شد — (در صورت اعسار ابتدا استشهادیه) سپس تصاویر/مدارک
-    await state.update_data(check_text=message.text, check_text_html="")
-    if await _check_maybe_return_to_preview(message, state):
-        return
-    await _after_check_text(message, state)
+    # ⭐ اصلاحیهٔ کارفرما: پیام‌های پیاپی کاربر جمع می‌شود و «یک متن واحد و کامل»
+    # به ترتیب و بدون به‌هم‌خوردن وارد سامانه می‌شود (ظرفیت ~۲۰ صفحه)
+    from text_collector import collect_text_part
+
+    async def _on_check_text_final(final_text, st, b, cid):
+        if len(final_text) > 60000:
+            await b.send_message(
+                cid, "⚠️ متن ارسالی بیش از حد مجاز (حدود ۲۰ صفحه) است؛ لطفاً متن را کوتاه‌تر کنید.")
+            return
+        _pd = await st.get_data()
+        if _pd.get("check_text_from_docx"):
+            _prev = (_pd.get("check_text") or "").strip()
+            final_text = (f"{_prev}\n\n{final_text}").strip() if _prev else final_text
+        await st.update_data(check_text=final_text, check_text_html="", check_text_from_docx=False)
+        if await _check_maybe_return_to_preview(message, st):
+            return
+        await _after_check_text(message, st)
+
+    await collect_text_part(user_id, chat_id, message.text, state, bot, _on_check_text_final)
 
 
 @check_router.message(Form.check_text_input)
@@ -1704,11 +1824,15 @@ async def check_text_input_handler(message: Message, state: FSMContext, bot: Bot
             from text_collector import process_docx_input
 
             async def _on_check_docx_complete(final_text, final_html, st, b, cid, was_editing, char_count):
-                await b.send_message(cid, f"✅ متن دادخواست از فایل ورد دریافت شد ({char_count} کاراکتر).")
+                # ⭐ ادغام با متن تایپ‌شدهٔ قبلی (ترتیب: متن تایپی، سپس متن ورد)
+                _final = (f"{_prev_check_text_before_docx}\n\n{final_text}").strip() if _prev_check_text_before_docx else final_text
+                await st.update_data(check_text=_final, check_text_html=final_html, check_text_from_docx=True)
+                await b.send_message(cid, f"✅ متن دادخواست از فایل ورد دریافت و به متن قبلی اضافه شد ({char_count} کاراکتر).")
                 if await _check_maybe_return_to_preview(message, st):
                     return
                 await _after_check_text(message, st)
 
+            _prev_check_text_before_docx = ((await state.get_data()).get("check_text") or "").strip()
             await process_docx_input(
                 message=message,
                 user_id=user_id,
@@ -1733,11 +1857,25 @@ async def check_text_input_handler(message: Message, state: FSMContext, bot: Bot
         await _ask_check_text(message, state)
         return
 
-    # متن شرح دریافت شد
-    await state.update_data(check_text=message.text, check_text_html="")
-    if await _check_maybe_return_to_preview(message, state):
-        return
-    await _after_check_text(message, state)
+    # ⭐ اصلاحیهٔ کارفرما: پیام‌های پیاپی کاربر جمع می‌شود و «یک متن واحد و کامل»
+    # به ترتیب و بدون به‌هم‌خوردن وارد سامانه می‌شود (ظرفیت ~۲۰ صفحه)
+    from text_collector import collect_text_part
+
+    async def _on_check_text_final(final_text, st, b, cid):
+        if len(final_text) > 60000:
+            await b.send_message(
+                cid, "⚠️ متن ارسالی بیش از حد مجاز (حدود ۲۰ صفحه) است؛ لطفاً متن را کوتاه‌تر کنید.")
+            return
+        _pd = await st.get_data()
+        if _pd.get("check_text_from_docx"):
+            _prev = (_pd.get("check_text") or "").strip()
+            final_text = (f"{_prev}\n\n{final_text}").strip() if _prev else final_text
+        await st.update_data(check_text=final_text, check_text_html="", check_text_from_docx=False)
+        if await _check_maybe_return_to_preview(message, st):
+            return
+        await _after_check_text(message, st)
+
+    await collect_text_part(user_id, chat_id, message.text, state, bot, _on_check_text_final)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1965,6 +2103,15 @@ async def check_more_images_handler(message: Message, state: FSMContext):
     text = message.text or ""
     data = await state.get_data()
 
+    if text == "👥 افزودن شهود (مطلع/گواه)":
+        # ⭐ افزودن شهود از میانهٔ بخش مدارک — بازگشت به همین بخش پس از اتمام
+        await state.update_data(_check_back_to_docs=True)
+        await message.answer(
+            "🔍 لطفاً *کدملی شهود (مطلع/گواه)* را ارسال فرمایید:\n_(۱۰ رقمی)_",
+            reply_markup=check_addressee_add_more_kb)
+        await state.set_state(Form.check_witness_national_id)
+        return
+
     if text == "📎 تصویر یا مدرک دیگر دارم":
         # بررسی شخص حقوقی — مدرک نمایندگی اجباری
         persons = data.get("check_plainiffs", []) + data.get("check_defendants", [])
@@ -2150,7 +2297,17 @@ async def check_finish_attachment_images(message: Message, state: FSMContext):
         return
 
     attachment_groups = data.get("check_attachment_groups", [])
-    attachment_groups.append({"title": title, "images": list(att_images)})
+    if data.get("_is_marriage_cert"):
+        # ⭐ گروه سند ازدواج — با شماره سند و تاریخ عقد (برای سمت سیناریو)
+        attachment_groups.append({
+            "title": "سند ازدواج",
+            "images": list(att_images),
+            "is_marriage_cert": True,
+            "cert_no": data.get("check_marriage_cert_no", ""),
+            "cert_date": data.get("check_marriage_date", "")})
+        await state.update_data(_is_marriage_cert=False)
+    else:
+        attachment_groups.append({"title": title, "images": list(att_images)})
 
     if title == "مدرک نمایندگی":
         mandatory_sent = True
@@ -2198,6 +2355,15 @@ async def check_attachment_images_text_fallback(message: Message, state: FSMCont
 @check_router.message(Form.check_attachment_more)
 async def check_attachment_more_handler(message: Message, state: FSMContext):
     text = message.text or ""
+    if text == "👥 افزودن شهود (مطلع/گواه)":
+        # ⭐ افزودن شهود از میانهٔ بخش مدارک — بازگشت به همین بخش پس از اتمام
+        await state.update_data(_check_back_to_docs=True)
+        await message.answer(
+            "🔍 لطفاً *کدملی شهود (مطلع/گواه)* را ارسال فرمایید:\n_(۱۰ رقمی)_",
+            reply_markup=check_addressee_add_more_kb)
+        await state.set_state(Form.check_witness_national_id)
+        return
+
     if text == "➕ بله، عنوان و مدرک دیگر دارم":
         await message.answer(
             "📎 لطفاً *عنوان مدرک* بعدی را وارد فرمایید:",
@@ -2241,6 +2407,15 @@ async def check_attachment_more_handler(message: Message, state: FSMContext):
 # مرحله ۱۱ — انتخاب صلاحیت دادگاه
 # ══════════════════════════════════════════════════════════════════════════════
 async def _ask_check_branch(message: Message, state: FSMContext):
+    # ⭐ اصلاحیهٔ کارفرما: بدون مدرک و بدون شهود، اجازهٔ ادامه داده نمی‌شود
+    _vd = await state.get_data()
+    if not _vd.get("check_witnesses") and not _vd.get("check_attachment_groups"):
+        await message.answer(
+            "⚠️ شما هنوز *هیچ مدرکی* پیوست نکرده‌اید و *هیچ شهودی (مطلع/گواه)* وارد نکرده‌اید.\n\n"
+            "حتماً *تصویر مدرک* پیوست کنید یا *دو شهود* را وارد کنید.",
+            reply_markup=check_more_docs_kb)
+        await state.set_state(Form.check_more_images)
+        return
     load_check_units()
     await message.answer(
         "🏛 *مرحله ۱۱:* لطفاً از طریق جدول زیر، *صلاحیت دادگاه* خود را انتخاب کنید:",
@@ -2315,6 +2490,11 @@ def build_check_preview(data: dict) -> str:
     estesh_count = 0
     other_attach = []
     for g in attachment_groups:
+        if g.get("is_marriage_cert"):
+            other_attach.append(
+                f"  • سند ازدواج (شماره: {_escape_md(str(g.get('cert_no', '')))} — "
+                f"تاریخ: {_escape_md(str(g.get('cert_date', '')))}) "
+                f"({len(g.get('images', []))} تصویر)")
         if g.get("is_esteshahadieh") or "استشهادیه" in (g.get("title", "") or ""):
             estesh_count += len(g.get("images", []))
         else:
@@ -2325,10 +2505,12 @@ def build_check_preview(data: dict) -> str:
     if other_attach:
         attachments_text += "\n📎 سایر مدارک:\n" + "\n".join(other_attach)
 
+    amount_line = (f"💰 مبلغ چک: *{_fmt(amount)} ریال*\n" if request_title not in CHECK_NO_AMOUNT_TITLES
+                   else "💰 مبلغ: *بدون مبلغ (غیر مالی)*\n")
     base = (
-        f"🏦 *پیش‌نمایش دادخواست چک:*\n\n"
+        f"🏦 *پیش‌نمایش دادخواست:*\n\n"
         f"📌 عنوان خواسته: *{_escape_md(request_title)}*\n\n"
-        f"💰 مبلغ چک: *{_fmt(amount)} ریال*\n"
+        f"{amount_line}"
         f"{extra_flags}\n\n"
         f"📄 عنوان خواسته (متن):\n  {khasteh_preview}\n\n"
         f"👤 خواهان(ها):\n{plaintiffs_text}\n\n"
@@ -2401,6 +2583,8 @@ async def check_confirm_handler(message: Message, state: FSMContext, bot: Bot):
             "query_type": "دادخواست_چک",
             "task_type": "CHECK_SUBMIT",
             "check_request_title": data.get("check_request_title", ""),
+            "check_marriage_cert_no": data.get("check_marriage_cert_no", ""),
+            "check_marriage_date": data.get("check_marriage_date", ""),
             "check_amount": data.get("check_amount", 0),
             "check_tamin_khasteh": bool(data.get("check_tamin_khasteh", False)),
             "check_aasar": bool(data.get("check_aasar", False)),

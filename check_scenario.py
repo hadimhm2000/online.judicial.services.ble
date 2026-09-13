@@ -211,6 +211,9 @@ async def process_check_task(data: dict, bot: Bot):
     has_lawyer = any(p.get("person_type") == "وکیل" for p in plaintiffs)
     has_legal_plaintiff = any(p.get("person_type") == "شخص حقوقی" for p in plaintiffs)
     is_high_amount = amount > 1_000_000_000  # بیش از ۱ میلیارد ریال
+    # ⭐ طلاق×۳ و «الزام به تمکین» مبلغ ندارند و همیشه دادخواست بدوی ثبت می‌شوند
+    if request_title in CHECK_NO_AMOUNT_TITLES:
+        is_high_amount = True
 
     # مسیر منوی سامانه برای مرحلهٔ امضا (پس از پرداخت) — دقیقاً همان مسیرِ
     # انتخاب‌شده در شروع ثبت؛ sign_menu_path در کل زنجیرهٔ پرداخت→امضا پاس می‌شود
@@ -430,33 +433,34 @@ async def process_check_task(data: dict, bot: Bot):
             }''', khasteh_text)
             await asyncio.sleep(1)
 
-            # ۴.۵ انتخاب «مبلغ معین»
-            await sana_page.evaluate('''() => {
-                const sel = document.querySelector('select[ng-model*="PriceType"]');
-                if (sel) {
-                    sel.value = "1";
-                    sel.dispatchEvent(new Event("input", { bubbles: true }));
-                    sel.dispatchEvent(new Event("change", { bubbles: true }));
-                }
-            }''')
-            await asyncio.sleep(1)
+            # ⭐ برای طلاق×۳ و «الزام به تمکین» گزینهٔ مبلغ حذف می‌شود
+            if request_title not in CHECK_NO_AMOUNT_TITLES:
+                # ۴.۵ انتخاب «مبلغ معین»
+                await sana_page.evaluate('''() => {
+                    const sel = document.querySelector('select[ng-model*="PriceType"]');
+                    if (sel) {
+                        sel.value = "1";
+                        sel.dispatchEvent(new Event("input", { bubbles: true }));
+                        sel.dispatchEvent(new Event("change", { bubbles: true }));
+                    }
+                }''')
+                await asyncio.sleep(1)
 
-            # ۴.۶ وارد کردن مبلغ
-            amount_str = str(amount)
-            await sana_page.evaluate('''(val) => {
-                const inp = document.querySelector('input[id^="txtPrice"]');
-                if (inp) {
-                    inp.focus();
-                    inp.value = "";
-                    inp.value = val;
-                    inp.dispatchEvent(new Event("input", { bubbles: true }));
-                    inp.dispatchEvent(new Event("change", { bubbles: true }));
-                }
-            }''', amount_str)
-            await asyncio.sleep(1)
-
+                # ۴.۶ وارد کردن مبلغ
+                amount_str = str(amount)
+                await sana_page.evaluate('''(val) => {
+                    const inp = document.querySelector('input[id^="txtPrice"]');
+                    if (inp) {
+                        inp.focus();
+                        inp.value = "";
+                        inp.value = val;
+                        inp.dispatchEvent(new Event("input", { bubbles: true }));
+                        inp.dispatchEvent(new Event("change", { bubbles: true }));
+                    }
+                }''', amount_str)
+                await asyncio.sleep(1)
             # ۴.۷ تیک‌های خسارت (فقط مطالبه وجه)
-            if request_title == "مطالبه وجه چک":
+            if request_title in ("مطالبه وجه چک", "مطالبه وجه بابت..."):
                 await sana_page.evaluate('''() => {
                     const rdbJudge = document.querySelector('#rdbJudgePrice');
                     if (rdbJudge && !rdbJudge.checked && !rdbJudge.disabled) rdbJudge.click();
@@ -1150,11 +1154,8 @@ async def process_check_task(data: dict, bot: Bot):
                     ADMIN_ID,
                     f"⚠️ [CHECK] تلاش {attempt+1} ناموفق. ریلود...\nخطا: {str(e)[:300]}"
                 )
-                try:
-                    await sana_page.reload()
-                    await asyncio.sleep(6)
-                except Exception:
-                    pass
+                # ⭐ ریلود با قاعدهٔ جدید: ۱۰ ثانیه صبر + بررسی نمایش محتوا
+                await _reload_page_with_settle(sana_page, prefix="CHECK")
             else:
                 await bot.send_message(
                     user_id,
@@ -1412,7 +1413,8 @@ async def _click_save_temp_check(page, bot: Bot, user_id: int,
     user_msg = (
         "⚠️ *خطا در ثبت موقت دادخواست چک:*\n\n"
         "«" + last_error[:300] + "»\n\n"
-        "فرآیند متوقف شد. لطفاً به مدیریت اطلاع دهید."
+        "لطفا 30 دقیقه دیگر مجددا مورد خود را ارسال بفرمائید.\n"
+        "باتشکر"
     )
     try:
         await bot.send_message(user_id, user_msg)
@@ -1477,6 +1479,61 @@ async def _click_step_box(page, step_name: str, bot: Bot, user_id: int,
     return False
 
 
+
+# ⭐ عناوین جدید خانواده — ثبت عین «مطالبه وجه» طبق دستور کارفرما
+CHECK_FAMILY_TITLES = ("دادخواست طلاق توافقی", "دادخواست طلاق به درخواست زوجه",
+                       "دادخواست طلاق به درخواست زوج", "دادخواست نفقه",
+                       "دادخواست الزام به تمکین", "دادخواست مهریه")
+# طلاق×۳ و «الزام به تمکین»: بدون مبلغ و همیشه دادخواست بدوی
+CHECK_NO_AMOUNT_TITLES = ("دادخواست طلاق توافقی", "دادخواست طلاق به درخواست زوجه",
+                          "دادخواست طلاق به درخواست زوج", "دادخواست الزام به تمکین")
+_FAMILY_SEARCH = {"دادخواست طلاق توافقی": "طلاق", "دادخواست طلاق به درخواست زوجه": "طلاق",
+                  "دادخواست طلاق به درخواست زوج": "طلاق", "دادخواست نفقه": "نفقه",
+                  "دادخواست الزام به تمکین": "تمکین", "دادخواست مهریه": "مهریه"}
+_FAMILY_TARGET = {"دادخواست طلاق توافقی": ["طلاق توافقی"],
+                  "دادخواست طلاق به درخواست زوجه": ["طلاق به درخواست زوجه"],
+                  "دادخواست طلاق به درخواست زوج": ["طلاق به درخواست زوج"],
+                  "دادخواست نفقه": ["پرداخت نفقه", "نفقه"],
+                  "دادخواست الزام به تمکین": ["الزام به تمکین", "تمکین"],
+                  "دادخواست مهریه": ["پرداخت مهریه", "مهریه"]}
+_FAMILY_FALLBACK = {"دادخواست طلاق توافقی": ["طلاق"], "دادخواست طلاق به درخواست زوجه": ["زوجه"],
+                    "دادخواست طلاق به درخواست زوج": ["زوج"], "دادخواست نفقه": ["نفقه"],
+                    "دادخواست الزام به تمکین": ["تمکین"], "دادخواست مهریه": ["مهریه"]}
+
+
+
+
+async def _reload_page_with_settle(page, prefix: str = "CHECK") -> bool:
+    """
+    ریلود صفحه طبق قاعدٔ جدید کارفرما:
+      ۱. ریلود صفحه
+      ۲. حتماً ۱۰ ثانیه صبر
+      ۳. بررسی اینکه صفحه واقعاً چیزی نمایش می‌دهد (منو/محتوای بدنه)
+      ۴. اگر چیزی نمایش داده نشد → یک بار دیگر ریلود + ۱۰ ثانیه صبر
+    قبلاً ریلود با ۵–۶ ثانیه صبر انجام می‌شد و گاهی صفحه هنوز خالی بود.
+    """
+    for reload_round in range(1, 3):
+        try:
+            await page.reload()
+        except Exception as e:
+            logging.warning(f"[{prefix}] خطا در ریلود صفحه (دور {reload_round}): {e}")
+        await asyncio.sleep(10)
+        try:
+            loaded = await page.evaluate("""() => {
+                const menu = document.querySelector('a.list-group-item, li.list-group-item');
+                const bodyText = document.body ? (document.body.innerText || "").trim() : "";
+                return !!menu || bodyText.length > 50;
+            }""")
+        except Exception:
+            loaded = False
+        if loaded:
+            logging.info(f"[{prefix}] صفحه پس از ریلود محتوا نمایش داد (دور {reload_round}).")
+            return True
+        logging.warning(
+            f"[{prefix}] پس از ریلود هنوز چیزی نمایش داده نشد (دور {reload_round}/2) — ریلود مجدد...")
+    return False
+
+
 async def _select_khasteh_option(page, request_title: str, bot: Bot, user_id: int,
                                    search_term: str = None,
                                    target_texts: list = None,
@@ -1510,13 +1567,21 @@ async def _select_khasteh_option(page, request_title: str, bot: Bot, user_id: in
     """
     is_ejra = (request_title == "صدور اجرائیه چک")
     is_badane = (request_title == "مطالبه وجه بابت...")
+    is_family = request_title in CHECK_FAMILY_TITLES
 
     if search_term is None:
         # ⭐ طبق دستور کارفرما: برای «مطالبه وجه بابت...» عبارت «وجه» تایپ می‌شود
-        search_term = "وجه" if is_badane else "چک"
+        if is_badane:
+            search_term = "وجه"
+        elif is_family:
+            search_term = _FAMILY_SEARCH.get(request_title, "خواسته")
+        else:
+            search_term = "چک"
     if target_texts is None:
         if is_badane:
             target_texts = ["مطالبه وجه بابت"]
+        elif is_family:
+            target_texts = _FAMILY_TARGET.get(request_title, [])
         elif is_ejra:
             target_texts = ["درخواست صدور اجرائیه نسبت به چک بلامحل"]
         else:
@@ -1524,6 +1589,8 @@ async def _select_khasteh_option(page, request_title: str, bot: Bot, user_id: in
     if fallback_texts is None:
         if is_badane:
             fallback_texts = ["وجه بابت"]
+        elif is_family:
+            fallback_texts = _FAMILY_FALLBACK.get(request_title, [])
         elif is_ejra:
             fallback_texts = ["صدور اجرائیه"]
         else:
@@ -2985,6 +3052,115 @@ async def _upload_electronic_vakalaht_check(
         return False
 
 
+
+async def _register_marriage_certificate(page, group, group_paths, bot, user_id, bill_no) -> bool:
+    """⭐ ثبت «سند ازدواج» طبق مسیر ارسالی کارفرما:
+    انتخاب «سند ازدواج» در attachmentType → شماره سند (txtNo) → تاریخ عقد (txtIssueDate)
+    → مقدار ثابت ۱ (txtCourt) → تعداد برگ (txt001) → «افزودن پیوست» (incAttach0)
+    → «ثبت و ویرایش پیوست» (btnSaveDoc) با مدیریت خطا → آپلود تصاویر عین سایر منضمات."""
+    cert_no = str(group.get("cert_no", "") or "").strip()
+    cert_date = str(group.get("cert_date", "") or "").strip()
+    logging.info(
+        f"[CHECK][منضمات] ثبت سند ازدواج — شماره:{cert_no} تاریخ:{cert_date} "
+        f"تصویر:{len(group_paths)}")
+
+    # ۱) «پیوست جدید»
+    clicked = await page.evaluate("""() => {
+        const btn = document.querySelector('#newAttachmentType');
+        if (btn && !btn.disabled) { btn.click(); return true; }
+        return false;
+    }""")
+    if clicked:
+        await asyncio.sleep(3)
+        await wait_for_angular_idle(page)
+        await asyncio.sleep(1)
+
+    # ۲) انتخاب «سند ازدواج» در فهرست نوع سند
+    if not await _select_attachment_type(page, "سند ازدواج"):
+        err = "گزینه «سند ازدواج» در فهرست نوع سند یافت نشد"
+        logging.error(f"[CHECK][منضمات] {err}")
+        try:
+            await bot.send_message(ADMIN_ID, f"❌ [CHECK] {err} — کاربر {user_id} | کد: {bill_no}")
+        except Exception:
+            pass
+        return False
+    await asyncio.sleep(1)
+
+    # ۳) شماره سند + تاریخ عقد + فیلد ثابت «1» + تعداد برگ
+    fill_js = """(a) => {
+        const el = document.querySelector('#' + a.n) || document.querySelector('input[name="' + a.n + '"]');
+        if (!el) return false;
+        const s = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        s.call(el, a.v);
+        el.dispatchEvent(new Event('input', {bubbles: true}));
+        el.dispatchEvent(new Event('change', {bubbles: true}));
+        return true;
+    }"""
+    if cert_no:
+        await page.evaluate(fill_js, {"n": "txtNo", "v": cert_no})
+    if cert_date:
+        await page.evaluate(fill_js, {"n": "txtIssueDate", "v": cert_date})
+        await asyncio.sleep(0.5)
+        try:
+            await page.evaluate(
+                "() => { document.querySelectorAll('.dropdown-menu, ul.dropdown-menu')"
+                ".forEach(m => m.remove()); }")
+        except Exception:
+            pass
+    await page.evaluate(fill_js, {"n": "txtCourt", "v": "1"})
+    await page.evaluate(fill_js, {"n": "txt001", "v": str(len(group_paths))})
+    await asyncio.sleep(0.5)
+
+    # ۴) «افزودن پیوست»
+    added = await page.evaluate("""() => {
+        const btn = document.querySelector('#incAttach0');
+        if (btn && !btn.disabled) { btn.click(); return true; }
+        return false;
+    }""")
+    if not added:
+        err = "دکمه «افزودن پیوست» (incAttach0) یافت نشد"
+        logging.error(f"[CHECK][منضمات] {err}")
+        try:
+            await bot.send_message(ADMIN_ID, f"❌ [CHECK] {err} — کاربر {user_id} | کد: {bill_no}")
+        except Exception:
+            pass
+        return False
+    await asyncio.sleep(1)
+
+    # ۵) «ثبت و ویرایش پیوست» با ریترای و اعمال خطاها/نکات منضمات
+    save_ok = await click_save_doc_with_retry(page, bot, user_id, prefix="CHECK")
+    if not save_ok:
+        error_text = await _uh_error_popup_text(page)
+        logging.error(f"[CHECK][منضمات] ذخیره سند ازدواج ناموفق: {error_text!r}")
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"❌ [CHECK] ذخیره سند ازدواج ناموفق — کاربر {user_id} | کد: {bill_no} | "
+                f"خطا: {(error_text or 'نامشخص')[:200]}")
+        except Exception:
+            pass
+        return False
+    await resilient_sleep(page, 5, bot, user_id)
+
+    # ۶) آپلود تصاویر عین سایر منضمات
+    if group_paths:
+        upload_result = await _upload_check_files(
+            page, "سند ازدواج", group_paths, bot, user_id, bill_no)
+        if not upload_result.get("success"):
+            logging.error(
+                f"[CHECK][منضمات] آپلود تصاویر سند ازدواج ناموفق: {upload_result.get('error')}")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"❌ [CHECK] آپلود تصاویر سند ازدواج ناموفق — کاربر {user_id} | کد: {bill_no} | "
+                    f"خطا: {(upload_result.get('error') or 'نامشخص')[:200]}")
+            except Exception:
+                pass
+            return False
+    logging.info("[CHECK][منضمات] سند ازدواج ثبت و تصاویر آپلود شد")
+    return True
+
+
 async def _process_check_attachments(
     page,
     request_title: str,
@@ -3196,8 +3372,13 @@ async def _process_check_attachments(
 
         # ⭐ استشهادیه محلی — فقط وقتی کاربر درخواست اعسار داده است؛
         # طبق دستور کارفرما: نوع پیوست «استشهاديه محلي» + تمام فیلدها = ۱
-        is_estesh = bool(group.get("is_esteshahadieh")) or ("استشهاد" in group_title)
-        if is_estesh:
+        # ⭐ سند ازدواج — مسیر اختصاصی طبق دستور کارفرما (سپس مابقی عین منضمات)
+        if group.get("is_marriage_cert"):
+            mc_ok = await _register_marriage_certificate(
+                page, group, group_paths, bot, user_id, bill_no)
+            if not mc_ok:
+                logging.error("[CHECK][منضمات] ثبت سند ازدواج ناموفق بود")
+        elif bool(group.get("is_esteshahadieh")) or ("استشهاد" in group_title):
             estesh_ok = await _upload_esteshahadieh_attachment(
                 page, group_paths, bot, user_id, bill_no)
             if not estesh_ok:

@@ -165,6 +165,38 @@ def _is_service_down_error(error_text: str) -> bool:
     return any(sig in error_text for sig in _SERVICE_DOWN_ERROR_SIGNATURES)
 
 
+async def _reload_page_with_settle(page, prefix: str = "LAVAYEH") -> bool:
+    """
+    ریلود صفحه طبق قاعدٔ جدید کارفرما:
+      ۱. ریلود صفحه
+      ۲. حتماً ۱۰ ثانیه صبر
+      ۳. بررسی اینکه صفحه واقعاً چیزی نمایش می‌دهد (منو/محتوای بدنه)
+      ۴. اگر چیزی نمایش داده نشد → یک بار دیگر ریلود + ۱۰ ثانیه صبر
+    قبلاً ریلود با ۵–۶ ثانیه صبر انجام می‌شد و گاهی صفحه هنوز خالی بود.
+    """
+    for reload_round in range(1, 3):
+        try:
+            await page.reload()
+        except Exception as e:
+            logging.warning(f"[{prefix}] خطا در ریلود صفحه (دور {reload_round}): {e}")
+        await asyncio.sleep(10)
+        try:
+            loaded = await page.evaluate("""() => {
+                const menu = document.querySelector('a.list-group-item, li.list-group-item');
+                const bodyText = document.body ? (document.body.innerText || "").trim() : "";
+                return !!menu || bodyText.length > 50;
+            }""")
+        except Exception:
+            loaded = False
+        if loaded:
+            logging.info(f"[{prefix}] صفحه پس از ریلود محتوا نمایش داد (دور {reload_round}).")
+            return True
+        logging.warning(
+            f"[{prefix}] پس از ریلود هنوز چیزی نمایش داده نشد (دور {reload_round}/2) — ریلود مجدد...")
+    return False
+
+
+
 # ══════════════════════════════════════════════════════════════════════
 # تابع اصلی پردازش لایحه
 # ══════════════════════════════════════════════════════════════════════
@@ -228,6 +260,11 @@ async def process_lavayeh_task(data: dict, bot: Bot):
 
     max_attempts = 3
     lavayeh_bill_no = ""
+
+    # ⭐ اصلاحیهٔ کارفرما: وقتی سرویس استعلام واحدهای قضایی سنا قطع است، یک بار
+    # صفحه ریلود و ثبت از نو شروع می‌شود؛ فقط اگر بار دوم هم همان خطا درآمد،
+    # اعلام قطعی به کاربر انجام می‌شود.
+    service_down_seen = False
     for attempt in range(max_attempts):
         try:
             ok = await goto_url_with_retry(sana_page, "https://sakha2.adliran.ir/Offices/Index", bot, user_id)
@@ -797,6 +834,22 @@ async def process_lavayeh_task(data: dict, bot: Bot):
             return
 
         except LavayehServiceDownError as e:
+            # ⭐ اصلاحیهٔ کارفرما: قبل از اعلام قطعی به کاربر، «یک بار»
+            # ریلود و شروع مجدد ثبت؛ فقط در تکرار دوم خطا، اعلام قطعی.
+            if not service_down_seen:
+                service_down_seen = True
+                logging.warning(
+                    f"[LAVAYEH] سرویس استعلام واحدهای قضایی سنا قطع است "
+                    f"(user={user_id}) — ریلود صفحه و شروع مجدد ثبت (فرصت یک‌باره)...")
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"⚠️ [LAVAYEH] سرویس استعلام واحدهای قضایی سنا برای "
+                        f"کاربر {user_id} قطع بود — ریلود و شروع مجدد ثبت: {str(e)[:200]}")
+                except Exception:
+                    pass
+                await _reload_page_with_settle(sana_page, prefix="LAVAYEH")
+                continue
             # ══════════════════════════════════════════════════════════
             # قطعی سرویس سمت سرور سنا (نه خطای داده/ورودی کاربر). پیام
             # صریح و جدا از قالب «خطای ثبت موقت» عادی ارسال می‌شود تا
@@ -950,11 +1003,9 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                     ADMIN_ID,
                     f"⚠️ [LAVAYEH] تلاش {attempt + 1} ناموفق. ریلود...\nخطا: {str(e)[:300]}"
                 )
-                try:
-                    await sana_page.reload()
-                    await asyncio.sleep(6)
-                except Exception:
-                    pass
+                # ⭐ ریلود با قاعدهٔ جدید: ۱۰ ثانیه صبر + بررسی نمایش محتوا،
+                # و در صورت خالی بودن صفحه، ریلود مجدد
+                await _reload_page_with_settle(sana_page, prefix="LAVAYEH")
             else:
                 await bot.send_message(
                     user_id,
