@@ -920,13 +920,25 @@ async def process_flow_type(message: types.Message, state: FSMContext):
         from stamp_calc_handlers import stamp_calc_entry
         await stamp_calc_entry(message, state)
     elif "دعاوی اعتراضی" in message.text:
-        # ⭐ اصلاحیه: این بخش برای همهٔ کاربران فعال است (قبلاً فقط مدیر
-        # می‌توانست وارد شود و بقیه پیام «در حال توسعه» دریافت می‌کردند).
+        if message.from_user.id != ADMIN_ID:
+            await message.answer(
+                "⏳ *بخش دعاوی اعتراضی در حال توسعه است.*\n\n"
+                "این سرویس به‌زودی برای استفاده عمومی فعال خواهد شد.\n"
+                "برای پیگیری اخبار به کانال ما مراجعه کنید:\n"
+                "https://ble.ir/onlinejudicialservice",
+                reply_markup=get_main_menu_kb(message.from_user.id))
+            return
         from tajdid_nazar_handlers import tajdid_nazar_entry
         await tajdid_nazar_entry(message, state)
     elif "دادخواست چک" in message.text:
-        # ⭐ اصلاحیه: این بخش برای همهٔ کاربران فعال است (قبلاً فقط مدیر
-        # می‌توانست وارد شود و بقیه پیام «در حال توسعه» دریافت می‌کردند).
+        if message.from_user.id != ADMIN_ID:
+            await message.answer(
+                "⏳ *بخش ثبت دادخواست چک در حال توسعه است.*\n\n"
+                "این سرویس به‌زودی برای استفاده عمومی فعال خواهد شد.\n"
+                "برای پیگیری اخبار به کانال ما مراجعه کنید:\n"
+                "https://ble.ir/onlinejudicialservice",
+                reply_markup=get_main_menu_kb(message.from_user.id))
+            return
         from check_handlers import check_entry
         await check_entry(message, state)
     elif "ارزش منطقه‌ای" in message.text:
