@@ -1762,12 +1762,47 @@ async def _fill_jihat_section(page, reasons, case_type: str, bot: Bot, user_id: 
 # «ثبت موقت» + کد رهگیری — الگوی اظهارنامه
 # ══════════════════════════════════════════════════════════════════════════════
 
+
+
+async def _reload_page_with_settle(page, prefix: str = "TN") -> bool:
+    """
+    ریلود صفحه طبق قاعدٔ جدید کارفرما:
+      ۱. ریلود صفحه
+      ۲. حتماً ۱۰ ثانیه صبر
+      ۳. بررسی اینکه صفحه واقعاً چیزی نمایش می‌دهد (منو/محتوای بدنه)
+      ۴. اگر چیزی نمایش داده نشد → یک بار دیگر ریلود + ۱۰ ثانیه صبر
+    قبلاً ریلود با ۵–۶ ثانیه صبر انجام می‌شد و گاهی صفحه هنوز خالی بود.
+    """
+    for reload_round in range(1, 3):
+        try:
+            await page.reload()
+        except Exception as e:
+            logging.warning(f"[{prefix}] خطا در ریلود صفحه (دور {reload_round}): {e}")
+        await asyncio.sleep(10)
+        try:
+            loaded = await page.evaluate("""() => {
+                const menu = document.querySelector('a.list-group-item, li.list-group-item');
+                const bodyText = document.body ? (document.body.innerText || "").trim() : "";
+                return !!menu || bodyText.length > 50;
+            }""")
+        except Exception:
+            loaded = False
+        if loaded:
+            logging.info(f"[{prefix}] صفحه پس از ریلود محتوا نمایش داد (دور {reload_round}).")
+            return True
+        logging.warning(
+            f"[{prefix}] پس از ریلود هنوز چیزی نمایش داده نشد (دور {reload_round}/2) — ریلود مجدد...")
+    return False
+
+
 async def _raise_fatal_tn_save_error(bot: Bot, user_id: int, error_text: str):
     """خطای «ثبت موقت» → پیام به کاربر + TajdidFatalError (الگوی اظهارنامه)."""
     await bot.send_message(
         user_id,
-        f"⚠️ *خطا در ثبت موقت {('دعاوی اعتراضی')}*:\n\n«{error_text}»\n\n"
-        "فرآیند متوقف شد. لطفاً به مدیریت اطلاع دهید.")
+        f"⚠️ *خطا در ثبت موقت دعاوی اعتراضی*:\n\n"
+        f"«{error_text}»\n"
+        f"لطفا 30 دقیقه دیگر مجددا مورد خود را ارسال بفرمائید.\n"
+        f"باتشکر")
     raise TajdidFatalError(error_text)
 
 
@@ -1778,6 +1813,11 @@ async def _click_save_temp(page, bot: Bot, user_id: int, max_retries: int = 5):
      مانند اظهارنامه و بعد ادامه مراحل. بعد از گزینه ثبت همان الارم ها
      و خطا ها و اخذ کدرهگیری و همه موارد را رعایت کن»
     """
+    # ⭐ اصلاحیهٔ کارفرما: خطای «در تخصیص کد رهگیری اشکالی بوجود آمد» قطعی نیست —
+    # دکمهٔ «ثبت موقت» دوباره زده می‌شود؛ این عمل تا ۳ بار تکرار و فقط پس از آن
+    # خطا به‌صورت قطعی اعلام می‌شود.
+    tracking_code_error_retries = 0
+
     for attempt in range(max_retries):
         # بررسی session expiry قبل از هر تلاش
         had_expiry = await check_and_handle_expiry(page, bot, user_id)
@@ -1801,6 +1841,14 @@ async def _click_save_temp(page, bot: Bot, user_id: int, max_retries: int = 5):
             logging.info(f"[TN] session renewed after save attempt {attempt + 1} (during loading wait)")
             continue
         elif loading_result:
+            if ("تخصیص کد رهگیری" in str(loading_result)
+                    and tracking_code_error_retries < 3):
+                tracking_code_error_retries += 1
+                logging.warning(
+                    f"[TN] خطای «تخصیص کد رهگیری» (بار {tracking_code_error_retries}/3) — "
+                    f"کلیک مجدد «ثبت موقت»...")
+                await asyncio.sleep(3)
+                continue
             await _raise_fatal_tn_save_error(bot, user_id, loading_result)
 
         # بررسی session expiry بعد از ثبت
@@ -1843,6 +1891,15 @@ async def _click_save_temp(page, bot: Bot, user_id: int, max_retries: int = 5):
             error_text = result[6:].strip()
             if _is_session_error_text(error_text):
                 await handle_session_expired(bot, user_id, page=page)
+                continue
+            if ("تخصیص کد رهگیری" in error_text
+                    and tracking_code_error_retries < 3):
+                tracking_code_error_retries += 1
+                logging.warning(
+                    f"[TN] خطای «تخصیص کد رهگیری» از پاپ‌آپ "
+                    f"(بار {tracking_code_error_retries}/3) — کلیک مجدد «ثبت موقت»...")
+                await _close_popup(page)
+                await asyncio.sleep(3)
                 continue
             await _raise_fatal_tn_save_error(bot, user_id, error_text)
 
@@ -2885,6 +2942,14 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                     sana_page, data, groups_with_paths, has_legal, has_lawyer,
                     bot, user_id, bill_no)
                 if not attachments_ok:
+                    # ⭐ اصلاحیهٔ کارفرما: اطلاع شکست منضمات به مدیر
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"❌ [TN] آپلود منضمات {case_type} کاربر {user_id} ناموفق بود "
+                            f"(کد رهگیری: {bill_no}) — تسک به‌عنوان ناقص ذخیره شد.")
+                    except Exception:
+                        pass
                     # خطای کدنویسی — تسک incomplete ذخیره شد داخل تابع
                     return
 
@@ -3007,6 +3072,14 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                         f"{fee_msg}\n\n"
                         f"⚠️ چاپ نسخه پرونده با خطا مواجه شد؛ لطفاً با پشتیبانی تماس بگیرید.\n"
                         f"کد رهگیری: `{bill_no}`")
+                    # ⭐ اصلاحیهٔ کارفرما: اطلاع شکست چاپ به مدیر
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"⚠️ [TN] ثبت {case_type} کاربر {user_id} انجام شد اما چاپ PDF "
+                            f"ناموفق بود. کد رهگیری: `{bill_no}` — نسخه چاپی را دستی بررسی کنید.")
+                    except Exception:
+                        pass
                     try:
                         from panel_sync import upsert_case_to_panel
                         await upsert_case_to_panel(
@@ -3029,6 +3102,13 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
 
         except TajdidSanaQueryError as e:
             logging.error(f"[TN] خطای استعلام ثنا user={user_id}: {e}")
+            # ⭐ اصلاحیهٔ کارفرما: اطلاع هر خطای دعاوی اعتراضی به مدیر
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"⚠️ [TN] خطای استعلام ثنا user={user_id}: {e}")
+            except Exception:
+                pass
             # ذخیره اطلاعات تسک برای ادامه بعدی در صورت ویرایش شناسه ملی
             pending_task_data = dict(data)
             pending_task_data["_sana_error_national_id"] = e.national_id
@@ -3063,6 +3143,14 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
 
         except TajdidFatalError as e:
             logging.error(f"[TN] خطای قطعی user={user_id} (تلاش {attempt + 1}): {e}")
+            # ⭐ اصلاحیهٔ کارفرما: اطلاع خطای قطعی دعاوی اعتراضی به مدیر
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"❌ [TN] خطای قطعی ثبت {case_type} کاربر {user_id} "
+                    f"(تلاش {attempt + 1}): {str(e)[:300]}")
+            except Exception:
+                pass
             await bot.send_message(user_id, f"⚠️ *خطای قطعی:*\n\n«{str(e)[:250]}»")
             await log_event(
                 "خطای سامانه", f"دعاوی اعتراضی ({case_type})", str(user_id), user_id,
@@ -3086,11 +3174,8 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                 await bot.send_message(
                     ADMIN_ID,
                     f"⚠️ [TN] تلاش {attempt + 1} ناموفق. ریلود...\nخطا: {str(e)[:300]}")
-                try:
-                    await sana_page.reload()
-                    await asyncio.sleep(6)
-                except Exception:
-                    pass
+                # ⭐ ریلود با قاعدهٔ جدید: ۱۰ ثانیه صبر + بررسی نمایش محتوا
+                await _reload_page_with_settle(sana_page, prefix="TN")
             else:
                 await bot.send_message(
                     user_id,
