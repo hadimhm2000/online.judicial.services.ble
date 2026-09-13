@@ -36,8 +36,7 @@ from browser_helpers import (
     resilient_sleep, check_and_handle_expiry, soft_click_if_exists,
     goto_url_with_retry, human_delay, force_click_by_text,
     safe_click_by_text, safe_type, wait_for_angular_idle,
-    handle_session_expired, wait_for_horizontal_loading_bar,
-    detect_concurrent_login_popup)
+    handle_session_expired, wait_for_horizontal_loading_bar)
 
 
 class EzhharFatalError(Exception):
@@ -1961,17 +1960,6 @@ async def _click_preparation(page, bot: Bot, user_id: int, max_retries: int = 3)
             logging.warning(f"[EZHHAR] دکمه تایید اطلاعات (preparation) پیدا نشد — تلاش {attempt+1}")
 
         await asyncio.sleep(40 if attempt > 0 else 12)
-
-        # ⭐ تشخیص ورود همزمان/انقضای نشست (پاپ‌آپ «با این شناسه ... در
-        # صفحه یا رایانه ای دیگر ... منقضی شده است») — قبلاً این پاپ‌آپ بی‌صدا
-        # بسته و فقط retry بی‌فایده انجام می‌شد. حالا ابتدا نشست تمدید می‌شود
-        # (اطلاع به مدیر برای لاگین مجدد) و همان تلاش پس از آن ادامه می‌یابد.
-        is_concurrent = await detect_concurrent_login_popup(page)
-        if is_concurrent:
-            logging.warning(f"[EZHHAR] ورود همزمان/انقضای نشست در آماده‌سازی (تلاش {attempt+1}) — تمدید نشست")
-            await handle_session_expired(bot, user_id, page=page)
-            await asyncio.sleep(3)
-            continue
 
         # بررسی پاپ‌آپ تایید — باید «تایید اطلاعات» را بزنیم
         confirm_clicked = await page.evaluate('''() => {

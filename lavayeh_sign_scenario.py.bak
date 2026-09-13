@@ -85,71 +85,18 @@ async def navigate_to_sign_page(
         # تداخل نکند. از click_sana_main_menu استفاده می‌شود که فقط داخل
         # a.list-group-item جستجو می‌کند و هرگز به div/span/li عمومی‌تر
         # escalate نمی‌شود (که می‌توانست باعث کلیک روی آیتم اشتباه شود).
-        # ⭐ اصلاحیه (دعاوی اعتراضی): زیرمنوهای «دعاوی اعتراضی»
-        # (تجدیدنظرخواهی، واخواهی، فرجام خواهی، اعاده دادرسی مدنی/کیفری،
-        # اعتراض ثالث، اعتراض به قرار دادسرا) li.list-group-item هستند و
-        # داخل ul جداگانه‌ای زیر هدر <a class="list-group-item"> به نام
-        # «دعاوی اعتراضی» قرار دارند — پس ابتدا هدر اصلی باز می‌شود و
-        # سپس همان زیرمنویی که کاربر ثبت را با آن شروع کرده (عیناً مثل
-        # مسیر ثبت اظهارنامه/تجدیدنظر).
-        OBJECTION_SUB_MENUS = {
-            "تجدیدنظرخواهی", "واخواهی", "فرجام خواهی",
-            "اعاده دادرسی مدنی", "اعاده دادرسی کیفری",
-            "اعتراض ثالث", "اعتراض به قرار دادسرا",
-        }
-
         first_menu_text = menu_path[0]
-
-        if first_menu_text in OBJECTION_SUB_MENUS:
-            # ۱) اگر زیرمنو visible باشد مستقیم کلیک شود؛ وگرنه هدر
-            #    «دعاوی اعتراضی» باز می‌شود و پس از صبر، زیرمنو کلیک می‌شود
-            state = await sana_page.evaluate('''(text) => {
-                const items = Array.from(document.querySelectorAll('li.list-group-item'));
-                const t = items.find(el => {
-                    const tx = (el.innerText || "").trim();
-                    return tx === text || tx.includes(text);
-                });
-                if (!t) return "not_found";
-                const r = t.getBoundingClientRect();
-                if (r.width > 0 && r.height > 0) { t.click(); return "clicked"; }
-                const heads = Array.from(document.querySelectorAll('a.list-group-item'));
-                const head = heads.find(a => (a.innerText || "").includes("دعاوی اعتراضی"));
-                if (head) { head.click(); return "expanded"; }
-                return "no_header";
-            }''', first_menu_text)
-
-            if state == "not_found":
-                logging.error(f"[SIGN] زیرمنوی «{first_menu_text}» پیدا نشد")
-                return False
-            if state == "no_header":
-                logging.error("[SIGN] منوی اصلی «دعاوی اعتراضی» پیدا نشد")
-                return False
-            if state == "expanded":
-                await resilient_sleep(sana_page, 3, bot, user_id)
-                # حالا که زیرمنو visible است، همان گزینهٔ شروعِ ثبت کلیک می‌شود
-                await sana_page.evaluate('''(text) => {
-                    const items = Array.from(document.querySelectorAll('li.list-group-item'));
-                    const t = items.find(el => {
-                        const tx = (el.innerText || "").trim();
-                        return tx === text || tx.includes(text);
-                    });
-                    if (t) t.click();
-                }''', first_menu_text)
-            await resilient_sleep(sana_page, 5, bot, user_id)
-            sub_menus = menu_path[1:]
-        else:
-            clicked = await click_sana_main_menu(
-                sana_page, first_menu_text, exclude_texts=["اظهارنامه"],
-                timeout_sec=15, prefix="SIGN")
-            if not clicked:
-                logging.error(f"[SIGN] منوی «{first_menu_text}» پیدا نشد")
-                return False
-            await resilient_sleep(sana_page, 5, bot, user_id)
-            sub_menus = menu_path[1:]
+        clicked = await click_sana_main_menu(
+            sana_page, first_menu_text, exclude_texts=["اظهارنامه"],
+            timeout_sec=15, prefix="SIGN")
+        if not clicked:
+            logging.error(f"[SIGN] منوی «{first_menu_text}» پیدا نشد")
+            return False
+        await resilient_sleep(sana_page, 5, bot, user_id)
 
         # کلیک‌های بعدیِ مسیر منو (در صورت وجود بیش از یک آیتم؛ مثلاً چک
         # بدوی: «ارایه و پیگیری دادخواست» → «دادخواست بدوی»)
-        for sub_menu_text in sub_menus:
+        for sub_menu_text in menu_path[1:]:
             clicked = await sana_page.evaluate('''(text) => {
                 const items = Array.from(document.querySelectorAll('li.list-group-item'));
                 const t = items.find(el => el.innerText && el.innerText.includes(text));
