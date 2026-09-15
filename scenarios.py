@@ -79,6 +79,57 @@ from sana_profile_report import extract_sana_profile, build_sana_profile_pdf
 # PRE_CHECK — استعلام تعداد پیوست در تب جدید (بدون دستکاری sana_page)
 # ══════════════════════════════════════════════════════════════════════════════
 
+async def _close_extra_tabs(browser_context, keep_page=None):
+    """⭐ قبل از باز کردن تب جدید برای PRE_CHECK، هر تب اضافی که از
+    تلاش‌های قبلی (مثلاً به‌خاطر خطا) بسته نشده باقی مانده را می‌بندد —
+    تا تب‌های تلنبارشده حافظه/منابع مرورگر را اشغال نکنند و باعث کندی یا
+    خطای تب جدید نشوند. تب اصلی (sana_page) هرگز بسته نمی‌شود."""
+    main_page = keep_page if keep_page is not None else getattr(runtime_state, "sana_page", None)
+    for p in list(browser_context.pages):
+        if p is main_page:
+            continue
+        try:
+            await p.close()
+        except Exception as e:
+            logging.warning(f"[PRE_CHECK] بستن تب اضافی ناموفق: {e}")
+
+
+async def _wait_selector_with_reload(page, selector: str, where: str,
+                                     initial_timeout_ms: int = 15000,
+                                     reload_wait_s: int = 10,
+                                     max_reloads: int = 2) -> bool:
+    """صبر برای ظاهر شدن یک سلکتور؛ در صورت عدم موفقیت سامانه را حداکثر
+    ``max_reloads`` بار ریلود می‌کند (هر بار ``reload_wait_s`` ثانیه صبر و
+    بررسی مجدد). خروجی False یعنی حتی بعد از همهٔ تلاش‌ها هم پیدا نشد —
+    فراخواننده باید پیام «اختلال سامانه» را به کاربر بدهد."""
+    try:
+        await page.wait_for_selector(selector, state='visible', timeout=initial_timeout_ms)
+        return True
+    except Exception:
+        logging.warning(f"[{where}] سلکتور «{selector}» ظرف {initial_timeout_ms // 1000} ثانیه پیدا نشد — تلاش با ریلود")
+
+    for attempt in range(1, max_reloads + 1):
+        try:
+            await page.reload(wait_until="domcontentloaded", timeout=30000)
+        except Exception as e:
+            logging.warning(f"[{where}] ریلود شمارهٔ {attempt} ناموفق: {e}")
+        await asyncio.sleep(reload_wait_s)
+        try:
+            await page.wait_for_selector(selector, state='visible', timeout=initial_timeout_ms)
+            logging.info(f"[{where}] سلکتور «{selector}» پس از ریلود شمارهٔ {attempt} پیدا شد")
+            return True
+        except Exception:
+            logging.warning(f"[{where}] سلکتور «{selector}» پس از ریلود شمارهٔ {attempt} همچنان پیدا نشد")
+
+    return False
+
+
+SYSTEM_GLITCH_MESSAGE = (
+    "⚠️ سامانه در حال حاضر با اختلال مواجه است.\n"
+    "لطفاً ۳۰ دقیقه دیگر مجدداً تلاش کنید."
+)
+
+
 async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = False):
     """
     استعلام تعداد پیوست‌ها در یک تب جدید — بدون دستکاری sana_page.
@@ -98,6 +149,8 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
 
     page = None
     try:
+        # ⭐ ابتدا تب‌های اضافیِ باقی‌مانده از تلاش‌های قبلی را می‌بندیم
+        await _close_extra_tabs(browser_context)
         page = await browser_context.new_page()
 
         # ── ۱. رفتن به صفحه اصلی ─────────────────────────────────
@@ -152,12 +205,13 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
         if category == "لایحه" or (
             category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
         ):
-            # ابتدا منتظر ظاهر شدن رادیوباتن می‌مانیم
-            try:
-                await page.wait_for_selector('#rdbGetPetition', state='visible', timeout=10000)
-            except Exception:
-                logging.error("[PRE_CHECK] رادیوباتن #rdbGetPetition یافت نشد")
-                await bot.send_message(user_id, "⚠️ صفحه سامانه بارگذاری نشد.")
+            # ابتدا منتظر ظاهر شدن رادیوباتن می‌مانیم — در صورت نبودن،
+            # سامانه تا ۲ بار ریلود و مجدداً بررسی می‌شود
+            found = await _wait_selector_with_reload(
+                page, '#rdbGetPetition', where="PRE_CHECK")
+            if not found:
+                logging.error("[PRE_CHECK] رادیوباتن #rdbGetPetition یافت نشد (پس از ریلود)")
+                await bot.send_message(user_id, SYSTEM_GLITCH_MESSAGE)
                 return
             # کلیک با فعال‌سازی AngularJS digest
             await page.evaluate('''() => {
@@ -176,10 +230,11 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
             await asyncio.sleep(4)
 
         # ── ۳. وارد کردن کد رهگیری ────────────────────────────────
-        try:
-            await page.wait_for_selector('#txtPetitionNo, #billNo', timeout=15000)
-        except Exception:
-            await bot.send_message(user_id, "⚠️ صفحه سامانه بارگذاری نشد.")
+        found = await _wait_selector_with_reload(
+            page, '#txtPetitionNo, #billNo', where="PRE_CHECK")
+        if not found:
+            logging.error("[PRE_CHECK] فیلد کدرهگیری (#txtPetitionNo/#billNo) پیدا نشد (پس از ریلود)")
+            await bot.send_message(user_id, SYSTEM_GLITCH_MESSAGE)
             return
 
         # لایحه: فیلد ورودی کدرهگیری #billNo
@@ -2680,6 +2735,32 @@ async def _get_next_job():
         return normal_get.result(), runtime_state.job_queue
 
 
+# ⭐ PRE_CHECK از یک تب کاملاً جدا (بدون دخالت به sana_page) استفاده می‌کند
+# و ذاتاً می‌تواند هم‌زمان با تسک‌های دیگر (لایحه/اظهارنامه/تجدیدنظر) روی
+# sana_page اجرا شود. با این حال اگر داخل همان حلقهٔ اصلی browser_worker
+# با await پردازش شود، تا پایان تسک فعلی (که می‌تواند چند دقیقه طول
+# بکشد — مثلاً تجدیدنظر/اعاده دادرسی) در صف می‌ماند و کاربر هرگز تعداد
+# پیوست/فاکتور را دریافت نمی‌کند. برای همین PRE_CHECK را به‌صورت
+# fire-and-forget (asyncio.create_task) اجرا می‌کنیم تا حلقهٔ اصلی معطل
+# آن نشود؛ سقف هم‌زمانی هم برای کنترل مصرف منابع (باز شدن تب‌های زیاد) در
+# نظر گرفته شده.
+_pre_check_concurrency = asyncio.Semaphore(2)
+
+
+async def _run_pre_check_task(data: dict, bot: Bot):
+    async with _pre_check_concurrency:
+        try:
+            await _process_pre_check_on_new_page(data, bot)
+        except Exception as e:
+            logging.error(f"[PRE_CHECK] خطای مدیریت‌نشده در تسک هم‌زمان: {e}")
+            try:
+                from bug_reporter import report_bug
+                await report_bug(bot, where="_run_pre_check_task", error=e,
+                                 user_id=data.get("user_id"))
+            except Exception:
+                pass
+
+
 async def browser_worker(bot: Bot):
     runtime_state.playwright_instance = await async_playwright().start()
     try:
@@ -2707,7 +2788,14 @@ async def browser_worker(bot: Bot):
                     continue
 
                 try:
-                    await process_task(data, bot)
+                    # ⭐ PRE_CHECK هرگز نباید حلقهٔ اصلی را مسدود کند — با
+                    # await معمولی پردازش نمی‌شود، بلافاصله به‌صورت هم‌زمان
+                    # (concurrent) دیسپچ و از صف خارج می‌شود تا تسک‌های
+                    # طولانی (تجدیدنظر/لایحه و ...) آن را در صف نگه ندارند.
+                    if data.get("task_type") == "PRE_CHECK":
+                        asyncio.create_task(_run_pre_check_task(data, bot))
+                    else:
+                        await process_task(data, bot)
                 except Exception as task_err:
                     if _looks_like_browser_closed_error(task_err):
                         logging.warning(

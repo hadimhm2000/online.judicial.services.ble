@@ -1,0 +1,38 @@
+--- states.py.orig	2026-09-14 09:07:54.282738097 +0000
++++ repo/states.py	2026-09-14 09:08:09.005982731 +0000
+@@ -300,6 +300,35 @@
+     check_marriage_date = State()        # ⭐ تاریخ وقوع عقد (سند ازدواج — عناوین خانواده)
+     check_marriage_cert_no = State()     # ⭐ شماره سند ازدواج (عناوین خانواده)      # آیا پیوست دیگری هست؟
+     check_branch_code = State()           # انتخاب صلاحیت دادگاه (شعبه)
++
++    # =========================================================
++    # ⭐ State های اضافی نسخهٔ جدید check_handlers.py (عناوین خانواده + فلوی
++    # نمایندگان خواهان/خوانده) — این ۱۸ مورد در فایل جدید ارجاع داده می‌شوند
++    # ولی در نسخهٔ فعلی states.py تعریف نشده بودند (باعث AttributeError در
++    # زمان import می‌شدند). این‌جا صرفاً برای رفع کرش اضافه شده‌اند؛ فلوی
++    # نمایندگان خواهان/خوانده (ملی/نام/تصویر مدرک) قبلاً معادل کوتاه‌تری با
++    # check_plaintiff_vakalat_no / check_defendant_vakalat_no و
++    # check_legal_rep_doc_images / check_legal_rep_more داشت که هنوز هم در
++    # مسیرهای دیگر همین فایل استفاده می‌شود؛ در صورت یکسان‌سازی کامل نام‌ها
++    # در آینده می‌توان این بلوک را حذف کرد.
++    check_plaintiff_legal_rep_national_id = State()
++    check_plaintiff_legal_rep_name = State()
++    check_plaintiff_legal_rep_doc_image = State()
++    check_plaintiff_legal_rep_doc_images_more = State()
++    check_defendant_legal_rep_national_id = State()
++    check_defendant_legal_rep_name = State()
++    check_defendant_legal_rep_doc_image = State()
++    check_defendant_legal_rep_doc_images_more = State()
++    check_esteshahadieh_image = State()
++    check_esteshahadieh_more = State()
++    check_marriage_cert_image = State()   # ⭐ تصاویر سند ازدواج (عناوین خانواده)
++    check_marriage_cert_more = State()
++    check_cheque_tracking = State()
++    check_cheque_next_tracking = State()
++    check_attachment_image = State()
++    check_more_attachments = State()
++    check_branch = State()
++    check_witness_name = State()          # ⭐ نام و نام‌خانوادگی مطلع/گواه (فیلد جدید)
+     check_confirm = State()               # پیش‌نمایش و تایید
+     check_edit_choice = State()           # انتخاب بخش ویرایش
+ 
