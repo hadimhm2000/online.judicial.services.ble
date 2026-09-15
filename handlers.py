@@ -447,10 +447,84 @@ async def global_successful_payment_handler(message: types.Message, state: FSMCo
         await _rv_pay(message, state, bot)
         return
 
+    # ═══════════════════════════════════════════════════════════════════
+    # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): پیش‌پرداخت ثبت — برای تمام بخش‌های
+    # ربات به‌جز استعلامات؛ پس از تایید خودکار پرداخت، تسک به صف ثبت
+    # ارسال می‌شود. state معتبرترین سیگنال است؛ payload فاکتور
+    # {"type": "reg_prepay", "svc": ...} مسیر پشتیبان وقتی state از بین
+    # رفته باشد.
+    # ═══════════════════════════════════════════════════════════════════
+    _prepay_states = (
+        Form.waiting_for_lavayeh_prepay,    # لایحه / اعلام وکالت (۱۰۰/۲۰۰ تومان)
+        Form.waiting_for_ezhhar_prepay,     # اظهارنامه (۱۰۰ تومان)
+        Form.waiting_for_tn_prepay,         # دعاوی اعتراضی / اعاده دادرسی (۲۰۰ تومان)
+        Form.waiting_for_check_prepay,      # ثبت دادخواست (۲۰۰ تومان)
+    )
+    if current_state in _prepay_states or _pl.get("type") == "reg_prepay":
+        _svc = _pl.get("svc")
+        _routed = False
+        try:
+            if current_state == Form.waiting_for_lavayeh_prepay or (
+                    current_state not in _prepay_states and _svc in ("lavayeh", "ealam")):
+                from lavayeh_handlers import lavayeh_prepay_successful_payment as _lv_prepay
+                await _lv_prepay(message, state, bot)
+                _routed = True
+            elif current_state == Form.waiting_for_ezhhar_prepay or (
+                    current_state not in _prepay_states and _svc == "ezhharnameh"):
+                from ezhharnameh_handlers import ezhhar_prepay_successful_payment as _ez_prepay
+                await _ez_prepay(message, state, bot)
+                _routed = True
+            elif current_state == Form.waiting_for_tn_prepay or (
+                    current_state not in _prepay_states and _svc == "tn"):
+                from tajdid_nazar_handlers import tn_prepay_successful_payment as _tn_prepay
+                await _tn_prepay(message, state, bot)
+                _routed = True
+            elif current_state == Form.waiting_for_check_prepay or (
+                    current_state not in _prepay_states and _svc == "check"):
+                from check_handlers import check_prepay_successful_payment as _ck_prepay
+                await _ck_prepay(message, state, bot)
+                _routed = True
+        except Exception as _prepay_err:
+            logging.error(f"[REG-PREPAY] خطا در پردازش پرداخت پیش‌پرداخت: {_prepay_err}",
+                          exc_info=True)
+            await message.answer(
+                "⚠️ خطا در پردازش پرداخت پیش‌پرداخت — به مدیریت اطلاع داده شد.")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"⚠️ [REG-PREPAY] خطای پردازش — user={message.from_user.id}, "
+                    f"state={current_state}, payload={_pl}")
+            except Exception:
+                pass
+            return
+        if _routed:
+            return
+        # پرداخت از نوع reg_prepay بود اما به هیچ state/سرویسی نگشت —
+        # اطلاعات کامل برای مدیر (بدون از دست رفتن پرداخت)
+        logging.error(f"[REG-PREPAY] پرداخت ناشناخته — state={current_state}, payload={_pl}")
+        await message.answer(
+            "✅ پرداخت شما دریافت شد.\n⚠️ در پردازش خودکار مشکلی پیش آمد؛ "
+            "به مدیریت اطلاع داده شد.")
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"⚠️ [REG-PREPAY] پرداخت reg_prepay بدون مسیر — user={message.from_user.id}, "
+                f"state={current_state}, payload={_pl}, "
+                f"charge_id={getattr(message.successful_payment, 'telegram_payment_charge_id', '')}")
+        except Exception:
+            pass
+        return
+
+    # ── پرداخت نهایی دعاوی اعتراضی (فاکتور پایان کار) — پردازش مستقیم ──
+    # (هندلر decorated در روتر فرعی از مسیر روتر مادر unreachable بود و
+    #  پرداخت‌های دعاوی اعتراضی به شاخه استعلام می‌افتاد.)
+    if current_state == Form.waiting_for_tn_payment_receipt:
+        from tajdid_nazar_handlers import tn_successful_payment as _tn_pay
+        await _tn_pay(message, state, bot)
+        return
+
     # ── سایر حالت‌های اختصاصی — بدون مداخله ──
-    if current_state in (Form.waiting_for_lavayeh_prepay,
-                         Form.waiting_for_ezhhar_prepay,
-                         Form.waiting_for_ealam_payment_receipt,
+    if current_state in (Form.waiting_for_ealam_payment_receipt,
                          Form.stamp_calc_waiting_payment,
                          Form.bulk_prepay_wait,
                          Form.bulk_settlement_wait):
@@ -1316,10 +1390,12 @@ async def process_attachments_opt(message: types.Message, state: FSMContext):
                     f"(تلاش {attempts} از {MAX_INQUIRY_ATTEMPTS})")
             return
         except FastInvalidTrackingCodeError:
+            # ⭐ اصلاحیه طبق دستور کارفرما: اعلام اینکه کدرهگیری اشتباه است
+            # یا عنوان دسته بندی درست انتخاب نشده است.
             attempts = _record_failed_inquiry(message.from_user.id)
             if attempts >= MAX_INQUIRY_ATTEMPTS:
                 await message.answer(
-                    f"❌ {SAMANEH_WRONG_TYPE_ERROR}\n\n"
+                    f"❌ کدرهگیری اشتباه است یا عنوان دسته بندی را درست انتخاب نکرده اید.\n\n"
                     f"⚠️ *تعداد دفعات تلاش شما به حداکثر ({MAX_INQUIRY_ATTEMPTS} بار) رسیده است.*\n\n"
                     f"لطفاً کدرهگیری و نوع سند (لایحه، اظهارنامه، شکواییه و ...) را به‌دقت بررسی فرمایید و مجدداً از منوی اصلی شروع کنید.",
                     reply_markup=get_main_menu_kb(message.from_user.id))
@@ -1327,15 +1403,20 @@ async def process_attachments_opt(message: types.Message, state: FSMContext):
             else:
                 remaining = MAX_INQUIRY_ATTEMPTS - attempts
                 await message.answer(
-                    f"❌ کدرهگیری یا نوع خدمت را اشتباه وارد نموده‌اید.\n\n"
+                    f"❌ کدرهگیری اشتباه است یا عنوان دسته بندی را درست انتخاب نکرده اید.\n\n"
                     f"⚠️ لطفاً کدرهگیری و نوع سند خود را بررسی کنید.\n"
                     f"(تلاش {attempts} از {MAX_INQUIRY_ATTEMPTS})")
             return
         except FastWrongFormTrackingCodeError as e:
+            # ⭐ اصلاحیه طبق دستور کارفرما: عین همان پیام خطای سامانه ارسال
+            # می‌شود + اعلام اینکه کدرهگیری اشتباه است یا عنوان دسته بندی
+            # درست انتخاب نشده + مهلت ۴۵ دقیقه‌ای ثبت مجدد بدون پرداخت.
             attempts = _record_failed_inquiry(message.from_user.id)
             if attempts >= MAX_INQUIRY_ATTEMPTS:
                 await message.answer(
                     f"❌ {str(e)}\n\n"
+                    f"⚠️ کدرهگیری اشتباه است یا عنوان دسته بندی را درست انتخاب نکرده اید.\n"
+                    f"تا {runtime_state.INVALID_TRACKING_RETRY_MINUTES} دقیقه دیگر فرصت دارید تا بدون پرداخت هزینه مجدد ، درخواست خود را مجددا ثبت بفرمائید.\n\n"
                     f"⚠️ *تعداد دفعات تلاش شما به حداکثر ({MAX_INQUIRY_ATTEMPTS} بار) رسیده است.*\n\n"
                     f"لطفاً کدرهگیری و نوع سند (لایحه، اظهارنامه، شکواییه و ...) را به‌دقت بررسی فرمایید و مجدداً از منوی اصلی شروع کنید.",
                     reply_markup=get_main_menu_kb(message.from_user.id))
@@ -1344,11 +1425,22 @@ async def process_attachments_opt(message: types.Message, state: FSMContext):
                 remaining = MAX_INQUIRY_ATTEMPTS - attempts
                 await message.answer(
                     f"❌ {str(e)}\n\n"
-                    f"⚠️ لطفاً کدرهگیری و نوع سند خود را بررسی کنید.\n"
+                    f"⚠️ کدرهگیری اشتباه است یا عنوان دسته بندی را درست انتخاب نکرده اید.\n"
+                    f"تا {runtime_state.INVALID_TRACKING_RETRY_MINUTES} دقیقه دیگر فرصت دارید تا بدون پرداخت هزینه مجدد ، درخواست خود را مجددا ثبت بفرمائید.\n\n"
+                    f"لطفاً کدرهگیری و نوع سند خود را بررسی کنید.\n"
                     f"(تلاش {attempts} از {MAX_INQUIRY_ATTEMPTS})")
             return
         except FastSessionExpiredError:
-            logger.warning("[FAST-CHECK] نشست منقضی — فال‌بک به صف مرورگر")
+            # ⭐ اصلاحیه طبق دستور کارفرما: وقتی تب جدید استعلام پیوست باز
+            # می‌شود و نشست منقضی است، باید به مدیر اعلام شود که لاگین جدید
+            # انجام دهد؛ تب استعلام در api_direct بسته می‌شود و تب جدید برای
+            # ورود اطلاعات لاگین باز می‌شود و منتظر تایید مدیر می‌مانیم.
+            logger.warning("[FAST-CHECK] نشست منقضی — اطلاع به مدیر، لاگین مجدد و فال‌بک به صف مرورگر")
+            try:
+                from browser_helpers import handle_session_expired
+                await handle_session_expired(message.bot, message.from_user.id, page=None)
+            except Exception as login_err:
+                logger.error(f"[FAST-CHECK] خطا در فرآیند لاگین مجدد مدیر: {login_err}", exc_info=True)
         except FastCheckError as e:
             logger.warning(f"[FAST-CHECK] شکست: {e} — فال‌بک به صف مرورگر")
         

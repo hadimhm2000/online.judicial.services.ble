@@ -1011,6 +1011,44 @@ async def _set_legal_record_no_zero(page, prefix: str = "EZHHAR"):
     return False
 
 
+async def _set_legal_economic_code_one(page, prefix: str = "EZHHAR"):
+    """کد اقتصادی شخص حقوقی (#txtLegalIrECode / EconomicCode) را روی «1» می‌گذارد.
+
+    ⭐ طبق دستور کارفرما: در کلیه بخش‌های ربات، هر جا شخص حقوقی وارد شد،
+    بعد از استعلام موفق شناسه ملی شرکت باید در فیلد کد اقتصادی عدد 1
+    وارد شود:
+        <input id="txtLegalIrECode" ... maxlength="11"
+         ng-model="viewModel.currentPetitionPerson.EconomicCode">
+    این فیلد فقط پس از استعلام موفق شرکت رندر می‌شود، پس باید بعد از
+    callLegalNationalityCode صدا زده شود.
+    """
+    for _ in range(10):
+        done = await page.evaluate('''() => {
+            const inp = document.querySelector('#txtLegalIrECode, input[ng-model$=".EconomicCode"]');
+            if (!inp || inp.disabled) return false;
+            inp.focus();
+            inp.value = "1";
+            inp.dispatchEvent(new Event("input", { bubbles: true }));
+            inp.dispatchEvent(new Event("change", { bubbles: true }));
+            try {
+                if (typeof angular !== 'undefined') {
+                    const ctrl = angular.element(inp).controller('ngModel');
+                    if (ctrl) { ctrl.$setViewValue("1"); ctrl.$render(); }
+                    const scope = angular.element(inp).scope();
+                    if (scope && scope.$root && !scope.$root.$$phase) scope.$apply();
+                }
+            } catch(e) {}
+            return true;
+        }''')
+        if done:
+            logging.info(f"[{prefix}] کد اقتصادی شخص حقوقی (#txtLegalIrECode) روی «1» تنظیم شد")
+            await asyncio.sleep(1)
+            return True
+        await asyncio.sleep(0.5)
+    logging.warning(f"[{prefix}] فیلد کد اقتصادی (#txtLegalIrECode) یافت نشد — رد شد")
+    return False
+
+
 async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
                               person_role: str = "", person_index: int = 0):
     """پر کردن اطلاعات شخص حقوقی و استعلام"""
@@ -1051,6 +1089,8 @@ async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
                           current_national_id=company_id, person_role=person_role, person_index=person_index)
         # شماره ثبت شخص حقوقی — همیشه صفر
         await _set_legal_record_no_zero(page)
+        # ⭐ کد اقتصادی — طبق دستور کارفرما بعد از استعلام شناسه ملی، عدد 1
+        await _set_legal_economic_code_one(page)
         return
 
     # ── ادامه فرآیند عادی با کدملی نماینده ──
@@ -1085,6 +1125,8 @@ async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
                       current_national_id=company_id, person_role=person_role, person_index=person_index)
     # شماره ثبت شخص حقوقی — همیشه صفر
     await _set_legal_record_no_zero(page)
+    # ⭐ کد اقتصادی — طبق دستور کارفرما بعد از استعلام شناسه ملی، عدد 1
+    await _set_legal_economic_code_one(page)
     await asyncio.sleep(5)
 
     # انتخاب نوع نماینده (مدیرعامل یا نماینده)

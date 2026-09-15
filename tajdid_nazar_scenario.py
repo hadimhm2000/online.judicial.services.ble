@@ -257,7 +257,10 @@ TN_COST_SMS_SURCHARGE = 50  # ریال — «و در اخر به اضافه 50 �
 # ⭐ فرمول اختصاصی اعاده دادرسی مدنی/کیفری (دستور کارفرما ۱۴۰۵/۰۶):
 #   - مبلغ سامانه (جمع کل هزینه) — همان عدد جدول، بدون تغییر
 #   - سود ما = جمع ردیف ۳ تا ۶ جدول + ۵۰۰,۰۰۰ ریال
+#     ⭐ اصلاحیه ۱۴۰۵/۰۶/۲۴: ردیف‌های «اعاده دادرسی ...» (مثل ردیف ۴
+#     «اعاده دادرسي حقوقي در دعاوي غيرمالي») از سود حذف می‌شوند.
 #   - مبلغ نهایی = مبلغ سامانه + سود ما → «رند به بالا» → اعلام به کاربر
+#     ⭐ فقط مبلغ نهایی به کاربر اعلام می‌شود (بدون جزئیات محاسبه).
 EADAH_PROFIT_SURCHARGE = 500000      # ریال
 EADAH_PROFIT_ROW_RANGE = (3, 6)      # ردیف‌های ۳ تا ۶ جدول هزینه (۱-indexed)
 EADAH_CASE_TYPES = ("اعاده دادرسی مدنی", "اعاده دادرسی کیفری")
@@ -559,6 +562,40 @@ async def _set_legal_record_no_zero(page):
     return False
 
 
+async def _set_legal_economic_code_one(page):
+    """کد اقتصادی شخص حقوقی (#txtLegalIrECode / EconomicCode) را روی «1» می‌گذارد.
+
+    ⭐ طبق دستور کارفرما: در کلیه بخش‌های ربات، هر جا شخص حقوقی وارد شد،
+    بعد از استعلام موفق شناسه ملی شرکت باید در فیلد کد اقتصادی عدد 1
+    وارد شود. این فیلد فقط پس از استعلام موفق شرکت رندر می‌شود.
+    """
+    for _ in range(10):
+        done = await page.evaluate('''() => {
+            const inp = document.querySelector('#txtLegalIrECode, input[ng-model$=".EconomicCode"]');
+            if (!inp || inp.disabled) return false;
+            inp.focus();
+            inp.value = "1";
+            inp.dispatchEvent(new Event("input", { bubbles: true }));
+            inp.dispatchEvent(new Event("change", { bubbles: true }));
+            try {
+                if (typeof angular !== 'undefined') {
+                    const ctrl = angular.element(inp).controller('ngModel');
+                    if (ctrl) { ctrl.$setViewValue("1"); ctrl.$render(); }
+                    const scope = angular.element(inp).scope();
+                    if (scope && scope.$root && !scope.$root.$$phase) scope.$apply();
+                }
+            } catch (e) {}
+            return true;
+        }''')
+        if done:
+            logging.info("[TN] کد اقتصادی شخص حقوقی (#txtLegalIrECode) روی «1» تنظیم شد")
+            await asyncio.sleep(1)
+            return True
+        await asyncio.sleep(0.5)
+    logging.warning("[TN] فیلد کد اقتصادی (#txtLegalIrECode) یافت نشد — رد شد")
+    return False
+
+
 async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
                              person_role: str = "", person_index: int = 0):
     """پر کردن اطلاعات شخص حقوقی + استعلام شرکت و نماینده.
@@ -607,6 +644,9 @@ async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
 
     # ۴. شماره ثبت — همیشه صفر
     await _set_legal_record_no_zero(page)
+
+    # ⭐ ۴-ب. کد اقتصادی — طبق دستور کارفرما بعد از استعلام شناسه ملی، عدد 1
+    await _set_legal_economic_code_one(page)
 
     if not national_id:
         logging.info(f"[TN] شخص حقوقی ({person_role}) بدون کدملی نماینده — فقط شناسه ملی شرکت ثبت شد")
@@ -2053,8 +2093,9 @@ async def _calculate_cost(page, bot: Bot, user_id: int, max_retries: int = 3,
 
     ⭐ فرمول اختصاصی اعاده دادرسی مدنی/کیفری (دستور کارفرما ۱۴۰۵/۰۶):
       - مبلغ سامانه = جمع کل هزینه (بدون تغییر)
-      - سود ما = جمع ردیف ۳ تا ۶ + ۵۰۰,۰۰۰ ریال
+      - سود ما = جمع ردیف ۳ تا ۶ (بدون ردیف‌های «اعاده دادرسی») + ۵۰۰,۰۰۰ ریال
       - مبلغ نهایی = مبلغ سامانه + سود ما → رند به بالا
+      - ⭐ به کاربر فقط مبلغ نهایی اعلام می‌شود (نه جزئیات محاسبه)
       (ردیف از ستون «ردیف» جدول خوانده می‌شود؛ اگر نبود، جایگاه ردیف)
 
     اگر جدول نمایش داده نشد:
@@ -2190,12 +2231,22 @@ async def _calculate_cost(page, bot: Bot, user_id: int, max_retries: int = 3,
 
             # ⭐ اعاده دادرسی مدنی/کیفری — فرمول اختصاصی کارفرما:
             # سود = جمع ردیف ۳ تا ۶ + ۵۰۰,۰۰۰ ریال
+            # ⭐ اصلاحیه کارفرما (۱۴۰۵/۰۶/۲۴): ردیف‌های «اعاده دادرسی ...»
+            # (مثل «اعاده دادرسي حقوقي در دعاوي غيرمالي» — ردیف ۴، مبلغ
+            # ۳,۶۰۰,۰۰۰ در نمونهٔ لاگ) در سود خدمات زیرمحاسبه نمی‌شوند؛
+            # بقیهٔ روش محاسبه دست‌نخورده می‌ماند.
             if case_type in EADAH_CASE_TYPES:
                 row_lo, row_hi = EADAH_PROFIT_ROW_RANGE
                 profit_rows = []
+                excluded_rows = []
                 for pos, item in enumerate(labels, start=1):
                     row_no = item.get("rowNo") or pos  # ستون ردیف؛ وگرنه جایگاه
                     if row_lo <= row_no <= row_hi:
+                        # نرمال‌سازی با حفظ فاصله (ي→ی، ك→ک) برای تطبیط برچسب
+                        label_norm = _normalize_fa(item.get("label", ""))
+                        if "اعاده دادرسی" in label_norm or "اعاده دادرسي" in label_norm:
+                            excluded_rows.append(item)
+                            continue
                         profit_rows.append(item)
                 profit_sum = sum(item.get("amount", 0) for item in profit_rows)
                 profit_total = profit_sum + EADAH_PROFIT_SURCHARGE
@@ -2203,10 +2254,16 @@ async def _calculate_cost(page, bot: Bot, user_id: int, max_retries: int = 3,
                 # ⭐ رند به بالا «هزارتومانی» مطابق مثال کارفرما (۵,۰۰۱,۸۹۸ → ۵,۰۰۲,۰۰۰)
                 final_total = round_up_to_thousand(raw_total)
 
+                if excluded_rows:
+                    logging.info(
+                        f"[TN] ردیف‌های «اعاده دادرسی» از سود خدمات حذف شدند: "
+                        f"{excluded_rows}")
+
                 logging.info(
                     f"[TN] محاسبه هزینه اعاده دادرسی ({case_type}): "
                     f"مبلغ سامانه={main_total:,} + سود=({profit_sum:,} "
-                    f"({len(profit_rows)} ردیف: ردیف {row_lo} تا {row_hi}) + "
+                    f"({len(profit_rows)} ردیف: ردیف {row_lo} تا {row_hi} "
+                    f"بدون ردیف‌های اعاده دادرسی) + "
                     f"{EADAH_PROFIT_SURCHARGE:,})={profit_total:,} → "
                     f"جمع={raw_total:,} → رند بالا: {final_total:,}")
 
@@ -3035,11 +3092,25 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
 
             if cost_error:
                 # جدول هزینه نمایش داده نشد — ارسال PDF + پیام خطا (الگوی اظهارنامه)
+                # ⭐ سکشن جدید (۱۴۰۵/۰۶): اگر پیش‌پرداخت دارد، در پیام ذکر و
+                # رکورد مصرف شود تا مدیر هنگام محاسبه دستی هزینه لحاظ کند.
+                _prepay_note = ""
+                try:
+                    from prepay_registration import pop_prepaid
+                    _pre = pop_prepaid(user_id)
+                    if _pre:
+                        _prepay_note = (
+                            f"\n\n💵 مبلغ *{int(_pre.get('amount_rial', 0)):,} ریال* "
+                            f"به عنوان پیش پرداخت، پرداخت شده است و در محاسبه "
+                            f"هزینه شما لحاظ خواهد شد.")
+                except Exception:
+                    pass
                 await bot.send_message(
                     user_id,
                     f"⚠️ *بخش هزینه سامانه دادگاه اختلال دارد.*\n\n"
                     f"📄 {case_type} شما با کد رهگیری `{bill_no}` ثبت و چاپ شد.\n"
-                    f"لطفاً برای محاسبه هزینه به مدیریت به شماره *09306186888* در واتساپ پیام دهید.")
+                    f"لطفاً برای محاسبه هزینه به مدیریت به شماره *09306186888* در واتساپ پیام دهید."
+                    f"{_prepay_note}")
                 if pdf_path and os.path.exists(pdf_path):
                     from bale_file_sender import send_document_direct
                     await send_document_direct(user_id, pdf_path)
@@ -3062,11 +3133,20 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                         f"کد: {bill_no} — هزینه نهایی: {final_total:,} ریال")
                 else:
                     # چاپ ناموفق — دست‌کم مبلغ را اعلام کن
-                    fee_msg = f"💰 *هزینه دادرسی: {final_total:,} ریال*"
-                    if cost_info.get("is_eadah_formula"):
-                        fee_msg += (
-                            f"\n_(مبلغ سامانه: {cost_info.get('main_total', 0):,} ریال + "
-                            f"سود خدمات: {cost_info.get('profit_total', 0):,} ریال — رند به بالا)_")
+                    # ⭐ اصلاحیه ۱۴۰۵/۰۶/۲۴: فقط مبلغ نهایی (بدون جزئیات محاسبه)
+                    # + اعمال کسر پیش‌پرداخت (سکشن جدید)
+                    _fee_final = final_total
+                    try:
+                        from prepay_registration import (
+                            adjust_final_fee_with_prepay, build_prepay_fee_text)
+                        _adj, _pre = adjust_final_fee_with_prepay(user_id, final_total)
+                        if _pre:
+                            fee_msg = build_prepay_fee_text(_adj, _pre, final_total)
+                            _fee_final = _adj
+                        else:
+                            fee_msg = f"💰 *هزینه دادرسی: {final_total:,} ریال*"
+                    except Exception:
+                        fee_msg = f"💰 *هزینه دادرسی: {final_total:,} ریال*"
                     await bot.send_message(
                         user_id,
                         f"{fee_msg}\n\n"
@@ -3087,7 +3167,7 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                             service_type="TAJDID_NAZAR", status="FAILED",
                             tracking_code=bill_no or None,
                             document_category=case_type,
-                            fee=final_total // 10,
+                            fee=_fee_final // 10,
                             error_details="ثبت انجام شد اما چاپ PDF ناموفق بود",
                             error_step="print_pdf")
                     except Exception as panel_err:

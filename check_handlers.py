@@ -29,6 +29,24 @@
   ۲. نمونه‌متن فقط برای «صدور اجرائیه چک» و «مطالبه وجه چک» نمایش داده
      می‌شود؛ عناوین دیگر (طلاق، نفقه، تمکین، مهریه) بدون متن نمونه.
   ۳. طلاق توافقی: الزام دو شخص حقیقی در خواهان + حذف کامل بخش خوانده.
+
+اصلاحات نسخهٔ جدید (طبق دستور کارفرما):
+  ۱. شرح متن: فراخوانی صحیح collect_text_part (امضای user_id/chat_id/text/
+     state/bot/on_complete) — قبلاً با آرگومان‌های نادرست صدا زده می‌شد و
+     ارسال متن هیچ اکشنی نداشت. برای تمام عناوین (اجرائیه، مطالبه وجه،
+     مطالبه وجه بابت...، خانواده) یکسان کار می‌کند.
+  ۲. فایل ورد (.docx): پشتیبانی کامل — استخراج متن + HTML فرمت‌دار، ذخیرهٔ
+     file_id/نام فایل، ارسال کپی به مدیر و انتقال HTML به سناریو. دکمهٔ
+     «ارسال فایل ورد» با تطبیق امن متن (قبلاً «(docx)» بدون نقطه بود و
+     هرگز مطابقت نمی‌کرد).
+  ۳. خوانده: بعد از ثبت کدملی خوانده (شخص حقیقی یا وکیل)، دکمهٔ
+     «اتمام و ادامه» در کیبورد نمایش داده می‌شود تا کاربر بتواند به
+     مرحلهٔ بعد برود.
+  ۴. مطلع/گواه: بعد از ارسال کدملی، نام دیگر پرسیده نمی‌شود — نام از
+     استعلام ثنا خودکار در سامانه درج می‌شود.
+  ۵. متن خواسته (check_khasteh_text) دیگر با شرح متن ترکیب نمی‌شود —
+     سناریو این دو را در فیلدهای جداگانه ثبت می‌کند و ترکیب قبلی باعث
+     تکرار دوبار متن خواسته در سامانه می‌شد.
 """
 
 import asyncio
@@ -516,7 +534,7 @@ async def check_request_title_handler(message: Message, state: FSMContext):
         await message.answer("⚠️ لطفاً از لیست، عنوان خواسته را انتخاب کنید:")
         return
 
-    if text not in CHECK_FAMILY_TITLES and text not in ("صدور اجرائیه چک", "مطالبه وجه چک"):
+    if text not in CHECK_FAMILY_TITLES and text not in ("صدور اجرائیه چک", "مطالبه وجه چک", "مطالبه وجه بابت..."):
         await message.answer("⚠️ لطفاً از لیست، عنوان خواسته را انتخاب کنید:")
         return
 
@@ -557,7 +575,7 @@ async def check_request_title_handler(message: Message, state: FSMContext):
 async def check_amount_handler(message: Message, state: FSMContext):
     text = _to_en(message.text or "")
 
-    if text == "🔙 بازگشت":
+    if "بازگشت" in text:
         await message.answer(
             "🏦 *ثبت دادخواست چک (روال تکی)*\n\n"
             "*مرحله ۱:* لطفاً *عنوان خواسته خود* را انتخاب فرمایید:",
@@ -1427,10 +1445,13 @@ async def check_defendant_national_id_handler(message: Message, state: FSMContex
     defendants.append(current)
     await state.update_data(check_defendants=defendants, _check_current_defendant={})
 
+    # ⭐ اصلاحیه: کیبورد با دکمهٔ «اتمام و ادامه» — قبلاً بدون show_finish
+    # بود و کاربر بعد از ثبت اولین خوانده راهی برای رفتن به مرحلهٔ بعد نداشت.
     await message.answer(
         f"✅ *شخص حقیقی (خوانده)* با کدملی `{text}` ثبت شد.\n\n"
-        "آیا خوانده دیگری نیز وجود دارد؟",
-        reply_markup=create_ezhhar_addressee_person_type_kb())
+        "آیا خوانده دیگری نیز وجود دارد؟\n"
+        "_(در غیر این صورت دکمهٔ «اتمام و ادامه» را بفشارید)_",
+        reply_markup=create_ezhhar_addressee_person_type_kb(show_finish=True))
     await state.set_state(Form.check_defendant_person_type)
 
 
@@ -1489,13 +1510,15 @@ async def check_defendant_vakalat_no_handler(message: Message, state: FSMContext
     defendants.append(current)
     await state.update_data(check_defendants=defendants, _check_current_defendant={})
 
+    # ⭐ اصلاحیه: کیبورد با دکمهٔ «اتمام و ادامه» — مثل مسیر شخص حقیقی خوانده
+    # (اعتبارسنجیِ «حداقل یک خوانده حقیقی/حقوقی در کنار وکیل» داخل هندلر انجام می‌شود)
     await message.answer(
         f"✅ *وکیل* با کدملی `{current.get('national_id', '')}` ثبت شد.\n"
         f"📑 شماره قرارداد وکالت: `{contract_no}`\n"
         f"💰 مبلغ تمبر وکالت (خودکار محاسبه شد): *{stamp_text}*\n\n"
         "⚠️ چون *وکیل* اضافه کردید، *خوانده* (شخص حقیقی یا حقوقی) نیز باید وارد شود.\n\n"
         "لطفاً نوع شخصیت خوانده بعدی را انتخاب فرمایید:",
-        reply_markup=create_ezhhar_addressee_person_type_kb())
+        reply_markup=create_ezhhar_addressee_person_type_kb(show_finish=True))
     await state.set_state(Form.check_defendant_person_type)
 
 
@@ -1732,44 +1755,25 @@ async def check_witness_national_id_handler(message: Message, state: FSMContext)
                 "⚠️ این کد ملی قبلاً برای مطلع/گواه ثبت شده است. لطفاً کد ملی دیگری وارد فرمایید:")
             return
 
-    current = {"person_type": "شخص حقیقی", "national_id": text}
-    await state.update_data(_check_current_witness=current)
+    # ⭐ اصلاحیه طبق دستور کارفرما: نام مطلع/گواه دیگر پرسیده نمی‌شود —
+    # سناریوی سامانه نام را خودکار از استعلام ثنا (بر اساس کدملی) برمی‌دارد.
+    witnesses.append({
+        "person_type": "شخص حقیقی",
+        "national_id": text,
+        "name": "",
+    })
+    await state.update_data(check_witnesses=witnesses)
 
     await message.answer(
-        "👤 لطفاً *نام و نام خانوادگی* مطلع/گواه را وارد فرمایید:",
-        reply_markup=back_only_kb)
-    await state.set_state(Form.check_witness_name)
-
-
-@check_router.message(Form.check_witness_name)
-async def check_witness_name_handler(message: Message, state: FSMContext):
-    text = message.text.strip() if message.text else ""
-
-    if "بازگشت" in text:
-        await message.answer(
-            "🔍 *مرحله ۷:* آیا *مطلع یا گواه* دارید؟\n\n"
-            "در صورت وجود، *کدملی* مطلع/گواه را ارسال فرمایید.\n"
-            "_(در غیر این صورت گزینه «اتمام» را انتخاب کنید)_",
-            reply_markup=check_addressee_add_more_kb)
-        await state.set_state(Form.check_witness_national_id)
-        return
-
-    if not text:
-        await message.answer("⚠️ نام نمی‌تواند خالی باشد. دوباره وارد فرمایید:")
-        return
-
-    data = await state.get_data()
-    current = data.get("_check_current_witness") or {}
-    current["name"] = text
-    witnesses = data.get("check_witnesses", [])
-    witnesses.append(current)
-    await state.update_data(check_witnesses=witnesses, _check_current_witness={})
-
-    await message.answer(
-        f"✅ *شخص حقیقی (مطلع/گواه)* با کدملی `{current.get('national_id')}` ثبت شد.\n\n"
+        f"✅ *شخص حقیقی (مطلع/گواه)* با کدملی `{text}` ثبت شد.\n\n"
         "آیا مطلع یا گواه دیگری نیز وجود دارد؟",
         reply_markup=check_addressee_add_more_kb)
     await state.set_state(Form.check_more_witnesses)
+
+
+# ⭐ اصلاحیه: هندلر «نام مطلع/گواه» حذف شد — طبق دستور کارفرما بعد از
+# ارسال کدملی مطلع/گواه، نام دیگر پرسیده نمی‌شود (نام از استعلام ثنا
+# خودکار در سامانه درج می‌شود). مستقیم به مرحلهٔ «مطلع/گواه دیگر؟» می‌رویم.
 
 
 @check_router.message(Form.check_more_witnesses)
@@ -1864,20 +1868,19 @@ async def _ask_check_text(message: Message, state: FSMContext):
     await state.set_state(Form.check_text)
 
 
-async def _after_check_text(message: Message, state: FSMContext, final_text: str):
+async def _after_check_text(message: Message, state: FSMContext, final_text: str,
+                             final_html: str = ""):
     """
-    جمع‌بندی متن چندبخشی + رفتن به مرحله بعد (توضیحات اضافی).
+    ذخیره متن نهایی + رفتن به مرحله بعد (توضیحات اضافی).
+
+    ⭐ اصلاحیه: متن «عنوان خواسته» (check_khasteh_text) دیگر با شرح متن
+    ترکیب نمی‌شود — سناریوی سامانه این دو را در دو فیلد جداگانه ثبت
+    می‌کند (txtDescription برای خواسته، ادیتور شرح برای متن) و ترکیبِ
+    قبلی باعث تکرار دوبار متن خواسته در سامانه می‌شد.
     """
-    data = await state.get_data()
-    request_title = data.get("check_request_title", "")
-
-    # ⭐ ترکیب عنوان خواسته (متن) + متن دادخواست در یک فیلد واحد
-    khasteh = (data.get("check_khasteh_text") or "").strip()
-    full_text = (khasteh + "\n" + final_text.strip()).strip() if khasteh else final_text.strip()
-
     await state.update_data(
-        check_text=full_text,
-        check_text_html="")
+        check_text=final_text.strip(),
+        check_text_html=final_html or "")
 
     # رفتن به مرحله توضیحات اضافی
     await message.answer(
@@ -1886,13 +1889,50 @@ async def _after_check_text(message: Message, state: FSMContext, final_text: str
     await state.set_state(Form.check_extra_text)
 
 
-async def _ask_check_next_after_text(message: Message, state: FSMContext, final_text: str):
+async def _ask_check_next_after_text(message: Message, state: FSMContext, final_text: str,
+                                    final_html: str = ""):
     """
     ادامهٔ جریان بعد از ثبت متن (برای ویرایش: بازگشت به پیش‌نمایش).
     """
     if await _check_maybe_return_to_preview(message, state):
         return
-    await _after_check_text(message, state, final_text)
+    await _after_check_text(message, state, final_text, final_html)
+
+
+async def _process_check_docx(message: Message, state: FSMContext, bot: Bot,
+                              user_id: int, chat_id: int):
+    """پردازش فایل ورد (.docx) شرح متن دادخواست — استخراج متن + HTML
+    با فرمت، ذخیره file_id/نام فایل برای ارسال به مدیر و ادامهٔ جریان.
+
+    ⭐ اصلاحیه: قبلاً هیچ هندلری برای فایل ورد در فلوی چک وجود نداشت و
+    check_docx_file_id هرگز ذخیره نمی‌شد (فایل ورد کاربر عملاً گم می‌شد).
+    """
+    from text_collector import process_docx_input
+
+    doc = message.document
+    extra_updates = {
+        "check_docx_file_id": doc.file_id,
+        "check_docx_file_name": doc.file_name,
+    }
+
+    async def _on_check_docx_complete(final_text, final_html, st, b, cid,
+                                      was_editing=False, char_count=0):
+        await b.send_message(
+            cid,
+            f"✅ متن دادخواست از فایل ورد دریافت شد ({char_count} کاراکتر).")
+        await _ask_check_next_after_text(message, state, final_text, final_html)
+
+    await process_docx_input(
+        message=message,
+        user_id=user_id,
+        chat_id=chat_id,
+        state=state,
+        bot=bot,
+        on_complete=_on_check_docx_complete,
+        text_state_key="check_text",
+        html_state_key="check_text_html",
+        extra_state_updates=extra_updates,
+        processing_msg="⏳ در حال پردازش فایل ورد...")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2064,7 +2104,7 @@ async def check_esteshahadieh_more_handler(message: Message, state: FSMContext):
 # مرحله ۸ — شرح متن (پذیرش متن چندبخشی یا فایل ورد)
 # ══════════════════════════════════════════════════════════════════════════════
 @check_router.message(Form.check_text)
-async def check_text_handler(message: Message, state: FSMContext):
+async def check_text_handler(message: Message, state: FSMContext, bot: Bot):
     if message.text == "🔙 بازگشت":
         await message.answer(
             "🔍 *مرحله ۷:* آیا *مطلع یا گواه* دارید؟",
@@ -2072,44 +2112,89 @@ async def check_text_handler(message: Message, state: FSMContext):
         await state.set_state(Form.check_witness_national_id)
         return
 
-    async def _on_check_text_final(final_text, st, b, cid, was_editing=False):
-        # ⭐ پارامتر was_edging برای سازگاری با text_collector (۵ آرگومان)
-        await _ask_check_next_after_text(message, state, final_text)
+    user_id = message.from_user.id
+    chat_id = message.chat.id
 
-    # دکمه ارسال فایل ورد
-    if message.text and "📎 ارسال فایل ورد (docx)" in message.text:
+    # ── پشتیبانی فایل ورد (.docx) — استخراج متن + HTML ──────────
+    if message.document and message.document.file_name and message.document.file_name.lower().endswith(".docx"):
+        await _process_check_docx(message, state, bot, user_id, chat_id)
+        return
+
+    if not message.text:
         await message.answer(
-            "📎 لطفاً *فایل ورد (.docx)* حاوی شرح متن دادخواست را ارسال فرمایید:",
+            "⚠️ لطفاً شرح متن را به صورت متن ارسال فرمایید.\nیا فایل .docx ارسال نمایید.")
+        return
+
+    # دکمه ارسال فایل ورد — ⚠️ متن دکمه «📎 ارسال فایل ورد (.docx)» است؛
+    # قبلاً با «(docx)» بدون نقطه مقایسه می‌شد و هرگز مطابقت نمی‌کرد.
+    if "ارسال فایل ورد" in message.text:
+        await message.answer(
+            "📎 لطفاً *فایل ورد (.docx)* حاوی شرح متن دادخواست را ارسال فرمایید:\n\n"
+            "💡 متن داخل فایل عیناً (با حفظ فرمت بولد و ...) در سامانه درج خواهد شد.",
             reply_markup=back_only_kb)
         await state.set_state(Form.check_text_input)
         return
 
-    from text_collector import collect_text_part
-    await collect_text_part(
-        message, state, field="check_text_parts",
-        done_button="✅ پایان متن و ادامه",
-        prompt_text="📄 لطفاً *شرح متن* دادخواست را ارسال فرمایید (می‌توانید در چند پیام ارسال کنید):",
-        on_complete=_on_check_text_final,
-        allow_docx=True)
-
-
-@check_router.message(Form.check_text_input)
-async def check_text_input_handler(message: Message, state: FSMContext):
-    if message.text == "🔙 بازگشت":
-        await _ask_check_text(message, state)
+    # دکمه تایپ مستقیم متن
+    if "تایپ مستقیم" in message.text:
+        await message.answer(
+            "📝 لطفاً *شرح متن دادخواست* خود را ارسال فرمایید:\n"
+            "_(می‌توانید در چند پیام ارسال کنید)_",
+            reply_markup=check_docx_option_kb)
         return
+
+    # ⭐ اصلاحیه مهم: امضای صحیح collect_text_part — قبلاً با آرگومان‌های
+    # نادرست (field/done_button/prompt_text/allow_docx) صدا زده می‌شد که
+    # TypeError می‌داد و متن کاربر هرگز ذخیره نمی‌شد (هیچ اکشنی رخ نمی‌داد).
+    from text_collector import collect_text_part
 
     async def _on_check_text_final(final_text, st, b, cid, was_editing=False):
         # ⭐ پارامتر was_editing برای سازگاری با text_collector (۵ آرگومان)
         await _ask_check_next_after_text(message, state, final_text)
 
-    from text_collector import collect_text_part
     await collect_text_part(
-        message, state, field="check_text_parts",
-        done_button="✅ پایان متن و ادامه",
-        prompt_text="📄 لطفاً *شرح متن* دادخواست را ارسال فرمایید (متن یا فایل ورد):",
+        user_id=user_id,
+        chat_id=chat_id,
+        text=message.text,
+        state=state,
+        bot=bot,
         on_complete=_on_check_text_final,
-        allow_docx=True)
+        first_part_reply="⏳ در حال دریافت متن دادخواست...")
+
+
+@check_router.message(Form.check_text_input)
+async def check_text_input_handler(message: Message, state: FSMContext, bot: Bot):
+    if message.text == "🔙 بازگشت":
+        await _ask_check_text(message, state)
+        return
+
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
+    # ── پشتیبانی فایل ورد (.docx) — استخراج متن + HTML ──────────
+    if message.document and message.document.file_name and message.document.file_name.lower().endswith(".docx"):
+        await _process_check_docx(message, state, bot, user_id, chat_id)
+        return
+
+    if not message.text:
+        await message.answer(
+            "⚠️ لطفاً *فایل ورد (.docx)* یا متن را ارسال فرمایید:")
+        return
+
+    from text_collector import collect_text_part
+
+    async def _on_check_text_final(final_text, st, b, cid, was_editing=False):
+        # ⭐ پارامتر was_editing برای سازگاری با text_collector (۵ آرگومان)
+        await _ask_check_next_after_text(message, state, final_text)
+
+    await collect_text_part(
+        user_id=user_id,
+        chat_id=chat_id,
+        text=message.text,
+        state=state,
+        bot=bot,
+        on_complete=_on_check_text_final,
+        first_part_reply="⏳ در حال دریافت متن دادخواست...")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2566,7 +2651,11 @@ async def _go_to_check_preview(message: Message, state: FSMContext):
     if witnesses:
         lines.append(f"\n🔍 مطلع/گواه ({len(witnesses)} نفر):")
         for i, w in enumerate(witnesses, 1):
-            lines.append(f"  {i}. `{(w.get('national_id') or '')}` — {_escape_md(w.get('name', ''))}")
+            w_name = (w.get("name") or "").strip()
+            if w_name:
+                lines.append(f"  {i}. `{(w.get('national_id') or '')}` — {_escape_md(w_name)}")
+            else:
+                lines.append(f"  {i}. `{(w.get('national_id') or '')}`")
 
     if aasar:
         lines.append(f"\n📷 استشهادیه: {len(esteshahadieh)} تصویر")
@@ -2596,31 +2685,25 @@ async def _go_to_check_preview(message: Message, state: FSMContext):
 
 
 # ── تایید و ارسال ─────────────────────────────────────────────────────────────
-@check_router.message(Form.check_confirm, F.text == "✅ تایید و ثبت نهایی")
-async def check_confirm_handler(message: Message, state: FSMContext):
-    data = await state.get_data()
+async def _submit_check_request(message: Message, state: FSMContext, bot: Bot):
+    """ساخت تسک ثبت دادخواست و ارسال به صف پردازش + اطلاع به مدیر.
 
-    # بررسی: حداقل یک خواهان و یک خوانده
+    (از check_confirm_handler جدا شد تا پس از «تایید و ثبت نهایی» بلافاصله و
+    نیز پس از تایید خودکار پیش‌پرداخت — سکشن جدید کارفرما ۱۴۰۵/۰۶ — قابل
+    فراخوانی باشد.)
+    """
+    data = await state.get_data()
+    user_id = message.from_user.id
+    request_title = data.get("check_request_title", "")
     plaintiffs = data.get("check_plainiffs", [])
     defendants = data.get("check_defendants", [])
-    if not plaintiffs:
-        await message.answer("⚠️ حداقل یک خواهان باید ثبت شود.")
-        return
-    request_title = data.get("check_request_title", "")
-    # ⭐ طلاق توافقی: خوانده ندارد
-    if not defendants and request_title != CHECK_TALAGH_TOAFIGHI_TITLE:
-        await message.answer("⚠️ حداقل یک خوانده باید ثبت شود.")
-        return
 
-    user_id = message.from_user.id
-
-    # ⭐ جمع‌بندی متن کامل
-    khasteh = (data.get("check_khasteh_text") or "").strip()
-    body = (data.get("check_text") or "").strip()
-    full_text = (khasteh + "\n" + body).strip() if khasteh else body
+    # ⭐ جمع‌بندی متن کامل — اصلاحیه: متن خواسته (khasteh) دیگر دوباره به
+    # شرح متن اضافه نمی‌شود؛ سناریوی سامانه این دو را در فیلدهای جداگانه
+    # (txtDescription برای خواسته / ادیتور شرح برای متن) ثبت می‌کند و
+    # ترکیب قبلی باعث تکرار دوبار متن خواسته در سامانه می‌شد.
+    full_text = (data.get("check_text") or "").strip()
     await state.update_data(check_text=full_text)
-
-    bot: Bot = message.bot
 
     # دانلود تصاویر چک — ⚠️ check_scenario.py خودش از روی file_id دانلود
     # می‌کند (_download_check_images)؛ اینجا فقط برای پیش‌نمایش/سازگاری
@@ -2694,10 +2777,11 @@ async def check_confirm_handler(message: Message, state: FSMContext):
         "check_request_title": request_title,
         "check_amount": amount,
         "check_stamp_duty": stamp,
-        "check_khasteh_text": khasteh,
+        "check_khasteh_text": data.get("check_khasteh_text", ""),
         "check_tamin_khasteh": data.get("check_tamin_khasteh", False),
         "check_aasar": data.get("check_aasar", False),
         "check_text": full_text,
+        "check_text_html": data.get("check_text_html", ""),
         "check_extra_text": data.get("check_extra_text", ""),
         "check_tracking_no": data.get("check_tracking_no", ""),
         "check_tracking_list": data.get("check_tracking_list", []),
@@ -2710,6 +2794,7 @@ async def check_confirm_handler(message: Message, state: FSMContext):
         "check_branch_name": data.get("check_branch_name", ""),
         "check_branch_path": data.get("check_branch_path", ""),
         "check_docx_path": docx_path,
+        "check_docx_file_id": data.get("check_docx_file_id"),
         "check_docx_file_name": data.get("check_docx_file_name", ""),
     }
 
@@ -2737,6 +2822,125 @@ async def check_confirm_handler(message: Message, state: FSMContext):
         )
     except Exception:
         pass
+
+
+@check_router.message(Form.check_confirm, F.text == "✅ تایید و ثبت نهایی")
+async def check_confirm_handler(message: Message, state: FSMContext):
+    data = await state.get_data()
+
+    # بررسی: حداقل یک خواهان و یک خوانده
+    plaintiffs = data.get("check_plainiffs", [])
+    defendants = data.get("check_defendants", [])
+    if not plaintiffs:
+        await message.answer("⚠️ حداقل یک خواهان باید ثبت شود.")
+        return
+    request_title = data.get("check_request_title", "")
+    # ⭐ طلاق توافقی: خوانده ندارد
+    if not defendants and request_title != CHECK_TALAGH_TOAFIGHI_TITLE:
+        await message.answer("⚠️ حداقل یک خوانده باید ثبت شود.")
+        return
+
+    user_id = message.from_user.id
+    bot: Bot = message.bot
+
+    # ⭐ معافین از پرداخت → مستقیم ثبت (بدون پیش‌پرداخت)
+    from exempt_users import is_exempt_user
+    if await is_exempt_user(user_id):
+        await _submit_check_request(message, state, bot)
+        return
+
+    # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): پیش‌پرداخت قبل از شروع ثبت —
+    # فاکتور و درگاه پرداخت ارسال می‌شود؛ پس از تایید خودکار پرداخت،
+    # ثبت آغاز خواهد شد (check_prepay_successful_payment).
+    # ثبت دادخواست: ۲۰۰ تومان.
+    from prepay_registration import send_prepay_invoice
+    sent = await send_prepay_invoice(bot, user_id, "check",
+                                     f"ثبت دادخواست ({request_title})")
+    if sent:
+        # داده‌های FSM دست‌نخورده می‌مانند تا پس از پرداخت ارسال شوند
+        await state.set_state(Form.waiting_for_check_prepay)
+    return
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): پرداخت پیش‌پرداخت ثبت دادخواست —
+# پس از تایید خودکار پرداخت بله، ثبت در سامانه آغاز می‌شود.
+# (علاوه بر decorated زیرین، از global_successful_payment_handler در
+#  handlers.py نیز مستقیم فراخوانی می‌شود.)
+# ══════════════════════════════════════════════════════════════════════════════
+@check_router.message(Form.waiting_for_check_prepay, F.successful_payment)
+async def check_prepay_successful_payment(message: Message, state: FSMContext, bot: Bot):
+    """پرداخت موفق پیش‌پرداخت ثبت دادخواست — تشخیص خودکار توسط بله"""
+    user_id = message.from_user.id
+    payment = message.successful_payment
+    data = await state.get_data()
+    request_title = data.get("check_request_title", "")
+
+    # مبلغ واقعی پرداخت‌شده (total_amount ریال است) — تعرفه: ۲۰۰ تومان
+    from prepay_registration import register_prepaid, get_prepay_amount_toman
+    fee = int((getattr(payment, "total_amount", 0) or 0) // 10) \
+        or get_prepay_amount_toman("check")
+
+    logging.info(f"[CHECK-PREPAY] پرداخت خودکار تشخیص داده شد برای کاربر {user_id}")
+
+    # ⚠️ داده‌های FSM از بین رفته — بدون ثبت؛ اطلاع به مدیر
+    if not data.get("check_request_title"):
+        logging.error(f"[CHECK-PREPAY] داده FSM یافت نشد — user={user_id}")
+        await message.answer(
+            "⚠️ اطلاعات درخواست شما یافت نشد؛ لطفاً دوباره ثبت را شروع کنید.\n"
+            "پرداخت شما به مدیریت اطلاع داده شد و در هزینه ثبت بعدی لحاظ می‌گردد.")
+        try:
+            from config import ADMIN_ID
+            await bot.send_message(
+                ADMIN_ID,
+                f"⚠️ [CHECK-PREPAY] پرداخت بدون داده FSM — user={user_id}\n"
+                f"🎫 payment_id: {payment.telegram_payment_charge_id}\n"
+                f"💰 مبلغ: {fee:,} تومان")
+        except Exception:
+            pass
+        await state.clear()
+        return
+
+    # ⭐ ثبت پیش‌پرداخت برای کسر از هزینه کل در پایان کار
+    register_prepaid(user_id, fee, "check",
+                     f"ثبت دادخواست ({request_title})",
+                     payment.telegram_payment_charge_id)
+
+    await message.answer(
+        "✅ *پرداخت پیش‌پرداخت تایید شد!*",
+        parse_mode="Markdown")
+    await message.answer(
+        f"💰 مبلغ: *{fee:,} تومان*\n\n"
+        f"📝 نوع: *ثبت دادخواست ({request_title})*\n\n"
+        f"⏳ درخواست شما در حال ارسال به سامانه قضایی است...",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+    # اطلاع‌رسانی به ادمین
+    try:
+        from config import ADMIN_ID
+        await bot.send_message(
+            ADMIN_ID,
+            f"💰 پرداخت پیش‌پرداخت ثبت دادخواست (تشخیص خودکار):\n\n"
+            f"👤 کاربر: {message.from_user.full_name} ({user_id})\n"
+            f"📝 عنوان: {request_title}\n"
+            f"💰 مبلغ: {fee:,} تومان\n"
+            f"⏱ زمان: {__import__('datetime').datetime.now().strftime('%Y/%m/%d %H:%M')}\n"
+            f"🎫 payment_id: {payment.telegram_payment_charge_id}")
+    except Exception as e:
+        logger.error(f"[CHECK-PREPAY] خطا در ارسال اطلاع به ادمین: {e}")
+
+    # ⭐ شروع ثبت — ارسال تسک به صف پردازش
+    await _submit_check_request(message, state, bot)
+
+
+@check_router.message(Form.waiting_for_check_prepay)
+async def check_prepay_waiting_message(message: Message):
+    """در حال انتظار پرداخت پیش‌پرداخت — پرداخت از طریق فاکتور بله"""
+    await message.answer(
+        "⏳ لطفاً فاکتور پیش‌پرداخت ارسال‌شده را در چت پرداخت کنید تا ثبت "
+        "درخواست شما آغاز گردد.")
 
 
 # ── انصراف ────────────────────────────────────────────────────────────────────

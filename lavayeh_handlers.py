@@ -2337,17 +2337,20 @@ async def lavayeh_confirm_handler(message: Message, state: FSMContext, bot: Bot)
             await state.clear()
             return
 
-        # ═══ ارسال مستقیم به صف پردازش (بدون پیش‌پرداخت) ═══
-        # هزینه واقعی بعد از ثبت در سامانه و دریافت مبلغ از چاپ محاسبه و نمایش داده می‌شود
-        if not hasattr(runtime_state, "active_lavayeh_users"):
-            runtime_state.active_lavayeh_users = set()
-        runtime_state.active_lavayeh_users.add(user_id)
+        # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): پیش‌پرداخت قبل از شروع ثبت —
+        # فاکتور و درگاه پرداخت ارسال می‌شود؛ پس از تایید خودکار پرداخت،
+        # درخواست به صف ثبت ارسال خواهد شد (lavayeh_prepay_successful_payment).
+        # لایحه: ۱۰۰ تومان — اعلام وکالت: ۲۰۰ تومان (سایر موارد).
+        if title == "اعلام وکالت":
+            prepay_svc_key, prepay_label = "ealam", "اعلام وکالت"
+        else:
+            prepay_svc_key, prepay_label = "lavayeh", f"لایحه ({title})"
 
-        await message.answer(
-            "⏳ *درخواست شما تایید شد.*\n\nدر حال ارسال به سامانه قضایی...",
-            reply_markup=ReplyKeyboardRemove())
-        await _send_lavayeh_task_to_queue(data, user_id, title, bot=bot)
-        await state.clear()
+        from prepay_registration import send_prepay_invoice
+        sent = await send_prepay_invoice(bot, user_id, prepay_svc_key, prepay_label)
+        if sent:
+            # داده‌های FSM دست‌نخورده می‌مانند تا پس از پرداخت ارسال شوند
+            await state.set_state(Form.waiting_for_lavayeh_prepay)
         return
 
     if text == "✏️ ویرایش اطلاعات":
@@ -2441,19 +2444,50 @@ async def lavayeh_prepay_pre_checkout(pre_checkout_query: PreCheckoutQuery, bot:
 
 
 # هندلر successful_payment برای پرداخت پیش‌ثبت لایحه — تشخیص خودکار
+# (از global_successful_payment_handler در handlers.py نیز مستقیم فراخوانی
+#  می‌شود — سکشن جدید کارفرما ۱۴۰۵/۰۶)
 @lavayeh_router.message(Form.waiting_for_lavayeh_prepay, F.successful_payment)
 async def lavayeh_prepay_successful_payment(message: Message, state: FSMContext, bot: Bot):
-    """پرداخت موفق خدمات لایحه — تشخیص خودکار توسط بله"""
+    """پرداخت موفق پیش‌پرداخت لایحه/اعلام وکالت — تشخیص خودکار توسط بله"""
     user_id = message.from_user.id
     data = await state.get_data()
     title = data.get("lavayeh_title", "لایحه")
     payment = message.successful_payment
-    fee = LAVAYEH_SERVICE_FEE
+    # مبلغ واقعی پرداخت‌شده (total_amount ریال است) — تعرفه: لایحه ۱۰۰، اعلام وکالت ۲۰۰ تومان
+    from prepay_registration import register_prepaid, get_prepay_amount_toman
+    if title == "اعلام وکالت":
+        _svc_key = "ealam"
+    else:
+        _svc_key = "lavayeh"
+    fee = int((getattr(payment, "total_amount", 0) or 0) // 10) \
+        or get_prepay_amount_toman(_svc_key)
 
     logging.info(f"[LAVAYEH-PREPAY] پرداخت خودکار تشخیص داده شد برای کاربر {user_id}")
 
+    # ⚠️ داده‌های FSM از بین رفته — بدون ثبت؛ اطلاع به مدیر
+    if not data.get("lavayeh_title"):
+        logging.error(f"[LAVAYEH-PREPAY] داده FSM یافت نشد — user={user_id}")
+        await message.answer(
+            "⚠️ اطلاعات درخواست شما یافت نشد؛ لطفاً دوباره ثبت را شروع کنید.\n"
+            "پرداخت شما به مدیریت اطلاع داده شد و در هزینه ثبت بعدی لحاظ می‌گردد.")
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"⚠️ [LAVAYEH-PREPAY] پرداخت بدون داده FSM — user={user_id}\n"
+                f"🎫 payment_id: {payment.telegram_payment_charge_id}\n"
+                f"💰 مبلغ: {fee:,} تومان")
+        except Exception:
+            pass
+        await state.clear()
+        return
+
+    # ⭐ ثبت پیش‌پرداخت برای کسر از هزینه کل در پایان کار (سکشن جدید ۱۴۰۵/۰۶)
+    register_prepaid(user_id, fee, _svc_key,
+                     f"لایحه ({title})" if title != "اعلام وکالت" else "اعلام وکالت",
+                     payment.telegram_payment_charge_id)
+
     await message.answer(
-        f"✅ *پرداخت تایید شد!*",
+        f"✅ *پرداخت پیش‌پرداخت تایید شد!*",
         parse_mode="Markdown"
     )
     await message.answer(
@@ -3159,10 +3193,22 @@ async def send_lavayeh_result(
     if skip_fee_calc:
         # مبلغ نهایی از قبل محاسبه شده (مثلاً در اعلام وکالت)
         final_fee = court_total
-        fee_text = f"💳 *مبلغ نهایی قابل پرداخت: {final_fee:,} ریال*"
+        base_fee_text = f"💳 *مبلغ نهایی قابل پرداخت: {final_fee:,} ریال*"
     else:
-        fee_text = format_lavayeh_fee_explanation(court_total)
         final_fee = calculate_lavayeh_fee(court_total)
+        base_fee_text = format_lavayeh_fee_explanation(court_total)
+
+    # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): کسر پیش‌پرداخت از هزینه کل —
+    # هزینه کل اعلام می‌شود، ذکر می‌گردد که فلان مبلغ به عنوان پیش پرداخت
+    # پرداخت شده است و مابقی به‌عنوان «مبلغ قابل پرداخت شما» + فاکتور ارسال می‌شود.
+    from prepay_registration import adjust_final_fee_with_prepay, build_prepay_fee_text
+    adjusted_fee, prepay_info = adjust_final_fee_with_prepay(user_id, final_fee)
+    if prepay_info:
+        total_fee_rial = final_fee
+        final_fee = adjusted_fee
+        fee_text = build_prepay_fee_text(final_fee, prepay_info, total_fee_rial)
+    else:
+        fee_text = base_fee_text
 
     await bot.send_message(user_id, fee_text)
 
@@ -3263,6 +3309,55 @@ async def send_lavayeh_result(
             await mark_case_ready_to_send_by_tracking(user_id, service_type, tracking_code)
         except Exception as panel_err:
             logging.warning(f"[LAVAYEH] خطا در آپدیت پرونده پیش‌پرداخت‌شده در پنل: {panel_err}")
+        # رفتن مستقیم به فلوی امضا
+        await _go_to_sign_flow_after_prepaid(
+            bot, user_id, is_ezhharnameh, lavayeh_title,
+            lavayeh_province, lavayeh_row_number, lavayeh_persons,
+            tracking_code, national_ids, court_total, service_type=service_type,
+            sign_menu_path=sign_menu_path
+        )
+        return
+
+    # ── ⭐ پیش‌پرداخت کل هزینه را پوشش داده → بدون فاکتور، مستقیم فلوی امضا ──
+    if final_fee <= 0:
+        await bot.send_message(
+            user_id,
+            f"✅ *{service_label} با موفقیت در سامانه قضایی ثبت شد.*\n\n"
+            f"✅ هزینه شما به‌طور کامل با پیش‌پرداخت تسویه شده است.\n\n"
+            f"مراحل بعدی (امضای الکترونیک) آغاز می‌شود.",
+            reply_markup=ReplyKeyboardRemove())
+        runtime_state.pending_lavayeh_payments[user_id] = {
+            "invoice_time": datetime.datetime.now(),
+            "final_fee": 0,
+            "court_total": court_total,
+            "tracking_code": tracking_code,
+            "national_ids": national_ids,
+            "reminder_sent": True,   # بدون فاکتور — یادآور نمی‌فرستد
+            "blocked": False,
+            "lavayeh_title": lavayeh_title,
+            "lavayeh_province": lavayeh_province,
+            "lavayeh_row_number": lavayeh_row_number,
+            "lavayeh_persons": lavayeh_persons,
+            "is_ezhharnameh": is_ezhharnameh,
+            "service_type": service_type,
+            "sign_menu_path": sign_menu_path,
+            "admin_manual": admin_manual,
+        }
+        try:
+            await upsert_case_to_panel(
+                bale_user_id=user_id,
+                full_name=str(user_id),
+                service_type=service_type,
+                status="PROCESSING",
+                tracking_code=tracking_code or None,
+                document_category=None if admin_manual else lavayeh_title,
+                fee=0,
+                fee_status="PAID",
+                result_summary="تسویه کامل با پیش‌پرداخت؛ در انتظار امضای الکترونیک",
+            )
+            await mark_case_ready_to_send_by_tracking(user_id, service_type, tracking_code)
+        except Exception as panel_err:
+            logging.warning(f"[LAVAYEH] خطا در آپدیت پرونده تسویه‌شده در پنل: {panel_err}")
         # رفتن مستقیم به فلوی امضا
         await _go_to_sign_flow_after_prepaid(
             bot, user_id, is_ezhharnameh, lavayeh_title,

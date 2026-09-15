@@ -496,6 +496,32 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                             break
                         await resilient_sleep(sana_page, 1, bot, user_id)
 
+                    # ⭐ کد اقتصادی شخص حقوقی (#txtLegalIrECode / EconomicCode) —
+                    # طبق دستور کارفرما بعد از استعلام شناسه ملی شرکت، عدد 1
+                    # در این فیلد وارد می‌شود (در کلیه بخش‌های ربات).
+                    for _ in range(8):
+                        _eco_ok = await sana_page.evaluate('''() => {
+                            const inp = document.querySelector('#txtLegalIrECode, input[ng-model$=".EconomicCode"]');
+                            if (!inp || inp.disabled) return false;
+                            inp.focus();
+                            inp.value = "1";
+                            inp.dispatchEvent(new Event("input", { bubbles: true }));
+                            inp.dispatchEvent(new Event("change", { bubbles: true }));
+                            try {
+                                if (typeof angular !== 'undefined') {
+                                    const ctrl = angular.element(inp).controller('ngModel');
+                                    if (ctrl) { ctrl.$setViewValue("1"); ctrl.$render(); }
+                                    const scope = angular.element(inp).scope();
+                                    if (scope && scope.$root && !scope.$root.$$phase) scope.$apply();
+                                }
+                            } catch(e) {}
+                            return true;
+                        }''')
+                        if _eco_ok:
+                            logging.info("[LAVAYEH] کد اقتصادی شخص حقوقی (#txtLegalIrECode) روی «1» تنظیم شد")
+                            break
+                        await resilient_sleep(sana_page, 1, bot, user_id)
+
                     await sana_page.evaluate('''() => {
                         const rdb = document.querySelector('input[type="radio"][value="7"]');
                         if (rdb) rdb.click();
