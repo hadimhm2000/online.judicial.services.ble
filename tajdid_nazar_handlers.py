@@ -42,6 +42,13 @@ from states import Form
 from bale_file_sender import send_document_direct
 from config import ADMIN_ID, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE
 from exempt_users import is_exempt_user
+from prepay_registration import (
+    send_prepay_invoice,
+    register_prepaid,
+    get_prepay_amount_toman,
+    adjust_final_fee_with_prepay,
+    build_prepay_fee_text,
+)
 from panel_sync import upsert_case_to_panel, mark_case_ready_to_send_by_tracking, mark_case_signed_by_tracking
 from sheets import log_event
 from keyboards import (
@@ -2544,6 +2551,86 @@ async def _go_to_tn_preview(message: Message, state: FSMContext):
 # ══════════════════════════════════════════════════════════════════════════════
 # تایید یا ویرایش
 # ══════════════════════════════════════════════════════════════════════════════
+async def _submit_tn_request(message: Message, state: FSMContext, bot: Bot,
+                             data: dict, user_id: int, case_type: str):
+    """ساخت تسک دعاوی اعتراضی و ارسال به صف پردازش + اطلاع به مدیر/پنل.
+
+    (از tn_confirm_handler جدا شد تا پس از «تایید اطلاعات» بلافاصله و نیز
+    پس از تایید خودکار پیش‌پرداخت — سکشن جدید کارفرما ۱۴۰۵/۰۶ — قابل
+    فراخوانی باشد.)
+    """
+    # تعیین task_type
+    TASK_TYPE_MAP = {
+        "تجدیدنظرخواهی": "TN_APPEAL",
+        "واخواهی": "TN_REHEARING",
+        "فرجام خواهی": "TN_SUPREME",
+        "اعاده دادرسی مدنی": "TN_CIVIL_REVIEW",
+        "اعاده دادرسی کیفری": "TN_CRIMINAL_REVIEW",
+        "اعتراض ثالث": "TN_THIRD_PARTY",
+        "اعتراض به قرار دادسرا": "TN_PROSECUTOR_OBJECTION",
+    }
+    task_type = TASK_TYPE_MAP.get(case_type, "TN_APPEAL")
+
+    job_data = {
+        "user_id": user_id,
+        "query_type": f"دعاوی_اعتراضی_{case_type}",
+        "task_type": task_type,
+        "case_type": case_type,
+        "tn_judge_no": data.get("tn_judge_no", ""),
+        "tn_file_no": data.get("tn_file_no", ""),
+        "tn_judge_date": data.get("tn_judge_date", ""),
+        "tn_province": data.get("tn_province", ""),
+        "tn_doc_type": data.get("tn_doc_type", ""),
+        "tn_amount": data.get("tn_amount", 0),
+        "tn_insolvency": data.get("tn_insolvency", False),
+        "tn_appellants": data.get("tn_appellants", []),
+        "tn_appellees": data.get("tn_appellees", []),
+        "tn_witnesses": data.get("tn_witnesses", []),
+        "tn_text": data.get("tn_text", ""),
+        "tn_text_html": data.get("tn_text_html", ""),
+        "tn_extra_text": data.get("tn_extra_text", ""),
+        "tn_attachments": data.get("tn_attachments", []),
+        "tn_reasons": data.get("tn_reasons", []),
+        "tn_labels": data.get("tn_labels", {}),
+        "tn_appellant_query_mode": data.get("tn_appellant_query_mode", False),
+        "tn_appellant_selected_names": data.get("tn_appellant_selected_names", []),
+        "tn_appellee_query_mode": data.get("tn_appellee_query_mode", False),
+        "tn_appellee_selected_names": data.get("tn_appellee_selected_names", []),
+    }
+
+    # 📥 کپی کامل درخواست برای ادمین — همین لحظه، مستقل از موفقیت/شکست
+    # پردازش خودکار بعدی در سنا.
+    try:
+        from admin_forward import send_generic_submission_to_admin
+        from config import ADMIN_ID
+        await send_generic_submission_to_admin(
+            bot, ADMIN_ID, user_id, f"دعاوی اعتراضی ({case_type})", job_data,
+            image_keys=["tn_attachments"],
+        )
+    except Exception as e:
+        logging.error(f"[TN] خطا در ارسال کپی درخواست به ادمین: {e}", exc_info=True)
+
+    await runtime_state.job_queue.put(job_data)
+
+    try:
+        from panel_sync import upsert_case_to_panel
+        await upsert_case_to_panel(
+            bale_user_id=user_id, full_name=str(user_id),
+            service_type="TAJDID_NAZAR", status="PROCESSING",
+            document_category=case_type,
+            result_summary="در حال ثبت در سامانه سنا",
+        )
+    except Exception as panel_err:
+        logging.warning(f"[TN] خطا در ثبت اولیه پرونده در پنل: {panel_err}")
+
+    await message.answer(
+        f"✅ *درخواست {case_type} تایید شد و به صف پردازش ارسال شد.*\n\n"
+        f"⏳ ثبت در سامانه قضایی در حال انجام است."
+        f" پس از آماده‌سازی و محاسبه هزینه، مبلغ پرداخت و رسید آن ارسال خواهد شد.",
+        reply_markup=ReplyKeyboardRemove())
+    await state.clear()
+
+
 @tajdid_nazar_router.message(Form.tn_confirm)
 async def tn_confirm_handler(message: Message, state: FSMContext, bot: Bot):
     text = message.text or ""
@@ -2553,80 +2640,19 @@ async def tn_confirm_handler(message: Message, state: FSMContext, bot: Bot):
         user_id = message.from_user.id
         case_type = data.get("case_type", "")
 
-        # تعیین task_type
-        TASK_TYPE_MAP = {
-            "تجدیدنظرخواهی": "TN_APPEAL",
-            "واخواهی": "TN_REHEARING",
-            "فرجام خواهی": "TN_SUPREME",
-            "اعاده دادرسی مدنی": "TN_CIVIL_REVIEW",
-            "اعاده دادرسی کیفری": "TN_CRIMINAL_REVIEW",
-            "اعتراض ثالث": "TN_THIRD_PARTY",
-            "اعتراض به قرار دادسرا": "TN_PROSECUTOR_OBJECTION",
-        }
-        task_type = TASK_TYPE_MAP.get(case_type, "TN_APPEAL")
+        # ⭐ معافین از پرداخت → مستقیم ثبت (بدون پیش‌پرداخت)
+        if await is_exempt_user(user_id):
+            await _submit_tn_request(message, state, bot, data, user_id, case_type)
+            return
 
-        # FIX: ارسال مستقیم به صف پردازش (job_queue) به جای ذخیره در state
-        # قبلاً تسک فقط در FSM state ذخیره می‌شد و هرگز پردازش نمی‌شد
-        # همچنین پیام امضای الکترونیک بلافاصله نمایش داده می‌شد که اشتباه بود
-        # امضا فقط پس از چاپ، پرداخت و تایید پرداخت باید نمایش داده شود
-        job_data = {
-            "user_id": user_id,
-            "query_type": f"دعاوی_اعتراضی_{case_type}",
-            "task_type": task_type,
-            "case_type": case_type,
-            "tn_judge_no": data.get("tn_judge_no", ""),
-            "tn_file_no": data.get("tn_file_no", ""),
-            "tn_judge_date": data.get("tn_judge_date", ""),
-            "tn_province": data.get("tn_province", ""),
-            "tn_doc_type": data.get("tn_doc_type", ""),
-            "tn_amount": data.get("tn_amount", 0),
-            "tn_insolvency": data.get("tn_insolvency", False),
-            "tn_appellants": data.get("tn_appellants", []),
-            "tn_appellees": data.get("tn_appellees", []),
-            "tn_witnesses": data.get("tn_witnesses", []),
-            "tn_text": data.get("tn_text", ""),
-            "tn_text_html": data.get("tn_text_html", ""),
-            "tn_extra_text": data.get("tn_extra_text", ""),
-            "tn_attachments": data.get("tn_attachments", []),
-            "tn_reasons": data.get("tn_reasons", []),
-            "tn_labels": data.get("tn_labels", {}),
-            "tn_appellant_query_mode": data.get("tn_appellant_query_mode", False),
-            "tn_appellant_selected_names": data.get("tn_appellant_selected_names", []),
-            "tn_appellee_query_mode": data.get("tn_appellee_query_mode", False),
-            "tn_appellee_selected_names": data.get("tn_appellee_selected_names", []),
-        }
-
-        # 📥 کپی کامل درخواست برای ادمین — همین لحظه، مستقل از موفقیت/شکست
-        # پردازش خودکار بعدی در سنا.
-        try:
-            from admin_forward import send_generic_submission_to_admin
-            from config import ADMIN_ID
-            await send_generic_submission_to_admin(
-                bot, ADMIN_ID, user_id, f"دعاوی اعتراضی ({case_type})", job_data,
-                image_keys=["tn_attachments"],
-            )
-        except Exception as e:
-            logging.error(f"[TN] خطا در ارسال کپی درخواست به ادمین: {e}", exc_info=True)
-
-        await runtime_state.job_queue.put(job_data)
-
-        try:
-            from panel_sync import upsert_case_to_panel
-            await upsert_case_to_panel(
-                bale_user_id=user_id, full_name=str(user_id),
-                service_type="TAJDID_NAZAR", status="PROCESSING",
-                document_category=case_type,
-                result_summary="در حال ثبت در سامانه سنا",
-            )
-        except Exception as panel_err:
-            logging.warning(f"[TN] خطا در ثبت اولیه پرونده در پنل: {panel_err}")
-
-        await message.answer(
-            f"✅ *درخواست {case_type} تایید شد و به صف پردازش ارسال شد.*\n\n"
-            f"⏳ ثبت در سامانه قضایی در حال انجام است."
-            f" پس از آماده‌سازی و محاسبه هزینه، مبلغ پرداخت و رسید آن ارسال خواهد شد.",
-            reply_markup=ReplyKeyboardRemove())
-        await state.clear()
+        # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): پیش‌پرداخت قبل از شروع ثبت —
+        # فاکتور و درگاه پرداخت ارسال می‌شود؛ پس از تایید خودکار پرداخت،
+        # ثبت آغاز خواهد شد (tn_prepay_successful_payment).
+        sent = await send_prepay_invoice(
+            bot, user_id, "tn", f"دعاوی اعتراضی ({case_type})")
+        if sent:
+            # داده‌های FSM دست‌نخورده می‌مانند تا پس از پرداخت ارسال شوند
+            await state.set_state(Form.waiting_for_tn_prepay)
         return
 
     if text == "✏️ ویرایش اطلاعات":
@@ -2650,6 +2676,93 @@ async def tn_confirm_handler(message: Message, state: FSMContext, bot: Bot):
     await message.answer(
         "⚠️ لطفاً یکی از گزینه‌های زیر را انتخاب فرمایید:",
         reply_markup=tn_confirm_kb)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): پرداخت پیش‌پرداخت دعاوی اعتراضی —
+# پس از تایید خودکار پرداخت بله، ثبت در سامانه آغاز می‌شود.
+# (علاوه بر decorated زیرین، از global_successful_payment_handler در
+#  handlers.py نیز مستقیم فراخوانی می‌شود — هندلرهای decorated روتر فرعی
+#  در aiogram 3.x از مسیر روتر مادر unreachable هستند؛ الگوی مشابه:
+#  lavayeh_successful_payment.)
+# ══════════════════════════════════════════════════════════════════════════════
+@tajdid_nazar_router.message(Form.waiting_for_tn_prepay, F.successful_payment)
+async def tn_prepay_successful_payment(message: Message, state: FSMContext, bot: Bot):
+    """پرداخت موفق پیش‌پرداخت دعاوی اعتراضی — تشخیص خودکار توسط بله"""
+    user_id = message.from_user.id
+    payment = message.successful_payment
+    data = await state.get_data()
+    case_type = data.get("case_type", "")
+
+    # مبلغ واقعی پرداخت‌شده (total_amount ریال است)
+    amount_toman = int((getattr(payment, "total_amount", 0) or 0) // 10) \
+        or get_prepay_amount_toman("tn")
+
+    logging.info(f"[TN-PREPAY] پرداخت خودکار تشخیص داده شد برای کاربر {user_id}")
+
+    # ⚠️ داده‌های FSM از بین رفته (مثلاً /start زده شده) — بدون ثبت
+    if not case_type:
+        logging.error(f"[TN-PREPAY] داده FSM یافت نشد — user={user_id}")
+        await message.answer(
+            "⚠️ اطلاعات درخواست شما یافت نشد؛ لطفاً دوباره ثبت را شروع کنید.\n"
+            "پرداخت شما به مدیریت اطلاع داده شد و در هزینه ثبت بعدی لحاظ می‌گردد.")
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"⚠️ [TN-PREPAY] پرداخت بدون داده FSM — user={user_id}\n"
+                f"🎫 payment_id: {payment.telegram_payment_charge_id}\n"
+                f"💰 مبلغ: {amount_toman:,} تومان")
+        except Exception:
+            pass
+        await state.clear()
+        return
+
+    # ⭐ ثبت پیش‌پرداخت برای کسر از هزینه کل در پایان کار
+    register_prepaid(user_id, amount_toman, "tn",
+                     f"دعاوی اعتراضی ({case_type})",
+                     payment.telegram_payment_charge_id)
+
+    await message.answer(
+        "✅ *پرداخت پیش‌پرداخت تایید شد!*",
+        parse_mode="Markdown")
+    await message.answer(
+        f"💰 مبلغ: *{amount_toman:,} تومان*\n\n"
+        f"📝 نوع: *دعاوی اعتراضی ({case_type})*\n\n"
+        f"⏳ درخواست شما در حال ارسال به سامانه قضایی است...",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+    await log_event(
+        "پرداخت", f"دعاوی اعتراضی ({case_type})", message.from_user.full_name, user_id,
+        doc_name=f"پیش‌پرداخت دعاوی اعتراضی ({case_type})",
+        payment_status="پرداخت شده (کیف پول بله - پیش‌ثبت)",
+        note=f"مبلغ: {amount_toman:,} تومان | Bale payment_id: {payment.telegram_payment_charge_id}"
+    )
+
+    # اطلاع‌رسانی به ادمین
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"💰 پرداخت پیش‌پرداخت دعاوی اعتراضی (تشخیص خودکار):\n\n"
+            f"👤 کاربر: {message.from_user.full_name} ({user_id})\n"
+            f"📝 نوع: {case_type}\n"
+            f"💰 مبلغ: {amount_toman:,} تومان\n"
+            f"⏱ زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}\n"
+            f"🎫 payment_id: {payment.telegram_payment_charge_id}")
+    except Exception as e:
+        logging.error(f"[TN-PREPAY] خطا در ارسال اطلاع به ادمین: {e}", exc_info=True)
+
+    # ⭐ شروع ثبت — ارسال تسک به صف پردازش
+    await _submit_tn_request(message, state, bot, data, user_id, case_type)
+
+
+@tajdid_nazar_router.message(Form.waiting_for_tn_prepay)
+async def tn_prepay_waiting_message(message: Message):
+    """در حال انتظار پرداخت پیش‌پرداخت — پرداخت از طریق فاکتور بله"""
+    await message.answer(
+        "⏳ لطفاً فاکتور پیش‌پرداخت ارسال‌شده را در چت پرداخت کنید تا ثبت "
+        "درخواست شما آغاز گردد.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2979,20 +3092,18 @@ async def send_tajdid_nazar_result(
 
     final_fee = court_total
 
-    # ⭐ اعلام تفکیکی هزینه برای اعاده دادرسی مدنی/کیفری (دستور کارفرما)
-    if cost_info.get("is_eadah_formula"):
-        system_total = cost_info.get("system_total", cost_info.get("main_total", 0))
-        profit_total = cost_info.get("profit_total", 0)
-        await bot.send_message(
-            user_id,
-            "💰 *تفکیک هزینه اعاده دادرسی:*\n"
-            f"├ مبلغ سامانه: *{system_total:,} ریال*\n"
-            f"├ سود خدمات ما: *{profit_total:,} ریال*\n"
-            f"│ _(ردیف ۳ تا ۶ + ۵۰۰,۰۰۰ ریال)_\n"
-            f"└ جمع: *{system_total + profit_total:,} ریال* → رند به بالا\n\n"
-            f"💳 *مبلغ نهایی قابل پرداخت: {final_fee:,} ریال*")
+    # ⭐ اصلاحیه کارفرما (۱۴۰۵/۰۶/۲۴): فقط مبلغ نهایی به کاربر نمایش داده
+    # می‌شود — نه جزئیات محاسبه (تفکیک مبلغ سامانه/سود حذف شد).
+    # ⭐ سکشن جدید (۱۴۰۵/۰۶): اگر کاربر پیش‌پرداخت داشته، هزینه کل اعلام،
+    # پیش‌پرداخت ذکر و مابقی به‌عنوان مبلغ قابل پرداخت + فاکتور ارسال می‌شود.
+    adjusted_fee, prepay_info = adjust_final_fee_with_prepay(user_id, final_fee)
+    if prepay_info:
+        total_fee_rial = final_fee
+        final_fee = adjusted_fee
+        fee_text = build_prepay_fee_text(final_fee, prepay_info, total_fee_rial)
     else:
-        await bot.send_message(user_id, f"💳 *مبلغ نهایی قابل پرداخت: {final_fee:,} ریال*")
+        fee_text = f"💳 *مبلغ نهایی قابل پرداخت: {final_fee:,} ریال*"
+    await bot.send_message(user_id, fee_text)
 
     # ── بررسی معافیت از پرداخت ──────────────────────────────────────────
     if await is_exempt_user(user_id):
@@ -3032,6 +3143,39 @@ async def send_tajdid_nazar_result(
             await mark_case_ready_to_send_by_tracking(user_id, "TAJDID_NAZAR", tracking_code)
         except Exception as panel_err:
             logging.warning(f"[TN-PAYMENT] خطا در آپدیت پرونده معاف در پنل: {panel_err}")
+        await _tn_start_sign_flow(bot, user_id, tracking_code, case_type, tn_persons)
+        return
+
+    # ── ⭐ پیش‌پرداخت کل هزینه را پوشش داده → بدون فاکتور، مستقیم فلوی امضا ──
+    if final_fee <= 0:
+        await bot.send_message(
+            user_id,
+            "✅ *هزینه شما به‌طور کامل با پیش‌پرداخت تسویه شده است.*\n\n"
+            "مراحل بعدی (امضای الکترونیک) آغاز می‌شود.",
+            reply_markup=ReplyKeyboardRemove())
+        runtime_state.pending_tn_payments[user_id] = {
+            "invoice_time": datetime.datetime.now(),
+            "final_fee": 0,
+            "court_total": court_total,
+            "tracking_code": tracking_code,
+            "national_ids": national_ids,
+            "case_type": case_type,
+            "tn_persons": tn_persons,
+            "reminder_sent": True,   # بدون فاکتور — یادآور نمی‌فرستد
+            "blocked": False,
+        }
+        try:
+            await upsert_case_to_panel(
+                bale_user_id=user_id, full_name=str(user_id),
+                service_type="TAJDID_NAZAR", status="PROCESSING",
+                tracking_code=tracking_code or None,
+                document_category=doc_title,
+                fee=0, fee_status="PAID",
+                result_summary="تسویه کامل با پیش‌پرداخت؛ در انتظار امضای الکترونیک",
+            )
+            await mark_case_ready_to_send_by_tracking(user_id, "TAJDID_NAZAR", tracking_code)
+        except Exception as panel_err:
+            logging.warning(f"[TN-PAYMENT] خطا در آپدیت پرونده تسویه‌شده در پنل: {panel_err}")
         await _tn_start_sign_flow(bot, user_id, tracking_code, case_type, tn_persons)
         return
 

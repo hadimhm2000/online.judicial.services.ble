@@ -238,6 +238,12 @@ def save_runtime_state():
         recovery_notified[str(uid)] = str(fp)
     data["recovery_notified"] = recovery_notified
 
+    # 11-ج. ⭐ پیش‌پرداخت‌های ثبت (سکشن جدید کارفرما ۱۴۰۵/۰۶) — برای کسر در پایان کار
+    prepaid_regs = {}
+    for uid, info in getattr(runtime_state, "prepaid_registrations", {}).items():
+        prepaid_regs[str(uid)] = info
+    data["prepaid_registrations"] = prepaid_regs
+
     # 12. علامت کرش — برای تشخیص ری‌استارت غیرعادی
     data["crash_flag"] = False
     data["last_save_time"] = datetime.datetime.now().isoformat()
@@ -342,6 +348,12 @@ def load_into_runtime_state():
     # 11-ب. ⭐ recovery_notified — بازیابی وضعیت «پیام بازیابی ارسال شده»
     for uid_str, fp in data.get("recovery_notified", {}).items():
         runtime_state.recovery_notified[int(uid_str)] = fp
+
+    # 11-ج. ⭐ prepaid_registrations — پیش‌پرداخت‌های ثبت برای کسر در پایان کار
+    for uid_str, info in data.get("prepaid_registrations", {}).items():
+        uid = int(uid_str)
+        info = _deserialize_all_datetimes(info, ["paid_at"])
+        runtime_state.prepaid_registrations[uid] = info
 
     # حذف فایل‌های حالت پس از بارگذاری موفق
     for fp in [STATE_FILE, STATE_FILE_BACKUP]:
