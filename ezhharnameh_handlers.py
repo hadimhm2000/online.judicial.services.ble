@@ -892,13 +892,15 @@ async def ezhhar_confirm_handler(message: Message, state: FSMContext, bot: Bot):
             await state.clear()
             return
 
-        # ═══ ارسال مستقیم به صف پردازش (بدون پیش‌پرداخت) ═══
-        # هزینه واقعی بعد از ثبت در سامانه و دریافت مبلغ از چاپ محاسبه و نمایش داده می‌شود
-        await message.answer(
-            "⏳ *درخواست شما تایید شد.*\n\nدر حال ارسال به سامانه قضایی...",
-            reply_markup=ReplyKeyboardRemove())
-        await _send_ezhhar_task_to_queue(data, user_id, bot=bot)
-        await state.clear()
+        # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): پیش‌پرداخت قبل از شروع ثبت —
+        # فاکتور و درگاه پرداخت ارسال می‌شود؛ پس از تایید خودکار پرداخت،
+        # درخواست به صف ثبت ارسال خواهد شد (ezhhar_prepay_successful_payment).
+        # اظهارنامه: ۱۰۰ تومان.
+        from prepay_registration import send_prepay_invoice
+        sent = await send_prepay_invoice(bot, user_id, "ezhharnameh", "اظهارنامه")
+        if sent:
+            # داده‌های FSM دست‌نخورده می‌مانند تا پس از پرداخت ارسال شوند
+            await state.set_state(Form.waiting_for_ezhhar_prepay)
         return
 
     if text == "✏️ ویرایش اطلاعات":
@@ -956,18 +958,44 @@ async def ezhhar_prepay_pre_checkout(pre_checkout_query: PreCheckoutQuery, bot: 
 
 
 # هندلر successful_payment برای پرداخت پیش‌ثبت اظهارنامه — تشخیص خودکار
+# (از global_successful_payment_handler در handlers.py نیز مستقیم فراخوانی
+#  می‌شود — سکشن جدید کارفرما ۱۴۰۵/۰۶)
 @ezhharnameh_router.message(Form.waiting_for_ezhhar_prepay, F.successful_payment)
 async def ezhhar_prepay_successful_payment(message: Message, state: FSMContext, bot: Bot):
-    """پرداخت موفق خدمات اظهارنامه — تشخیص خودکار توسط بله"""
+    """پرداخت موفق پیش‌پرداخت اظهارنامه — تشخیص خودکار توسط بله"""
     user_id = message.from_user.id
     data = await state.get_data()
     payment = message.successful_payment
-    fee = EZHHARNAMEH_SERVICE_FEE
+    # مبلغ واقعی پرداخت‌شده (total_amount ریال است) — تعرفه اظهارنامه: ۱۰۰ تومان
+    from prepay_registration import register_prepaid, get_prepay_amount_toman
+    fee = int((getattr(payment, "total_amount", 0) or 0) // 10) \
+        or get_prepay_amount_toman("ezhharnameh")
 
     logging.info(f"[EZHHAR-PREPAY] پرداخت خودکار تشخیص داده شد برای کاربر {user_id}")
 
+    # ⚠️ داده‌های FSM از بین رفته — بدون ثبت؛ اطلاع به مدیر
+    if not data.get("ezhhar_declarants"):
+        logging.error(f"[EZHHAR-PREPAY] داده FSM یافت نشد — user={user_id}")
+        await message.answer(
+            "⚠️ اطلاعات درخواست شما یافت نشد؛ لطفاً دوباره ثبت را شروع کنید.\n"
+            "پرداخت شما به مدیریت اطلاع داده شد و در هزینه ثبت بعدی لحاظ می‌گردد.")
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"⚠️ [EZHHAR-PREPAY] پرداخت بدون داده FSM — user={user_id}\n"
+                f"🎫 payment_id: {payment.telegram_payment_charge_id}\n"
+                f"💰 مبلغ: {fee:,} تومان")
+        except Exception:
+            pass
+        await state.clear()
+        return
+
+    # ⭐ ثبت پیش‌پرداخت برای کسر از هزینه کل در پایان کار (سکشن جدید ۱۴۰۵/۰۶)
+    register_prepaid(user_id, fee, "ezhharnameh", "اظهارنامه",
+                     payment.telegram_payment_charge_id)
+
     await message.answer(
-        f"✅ *پرداخت تایید شد!*",
+        f"✅ *پرداخت پیش‌پرداخت تایید شد!*",
         parse_mode="Markdown"
     )
     await message.answer(

@@ -1057,9 +1057,12 @@ async def _start_free_retry_window(bot: Bot, user_id: int, notice_text: str, dat
 
 async def _handle_invalid_tracking_code(bot: Bot, user_id: int, data: dict, tracking_code: str, doc_name: str):
     """مدیریت خطای «کد رهگیری نامعتبر است» که سامانه نشان می‌دهد —
-    هم برای استعلام تکی و هم برای هر آیتم از استعلام دسته‌جمعی (کارت/اکسل)."""
+    هم برای استعلام تکی و هم برای هر آیتم از استعلام دسته‌جمعی (کارت/اکسل).
+
+    ⭐ طبق دستور کارفرما: به کاربر اعلام می‌شود که کدرهگیری اشتباه است
+    یا عنوان دسته بندی را درست انتخاب نکرده است."""
     notice_text = (
-        f"❌ کدرهگیری‌ای که وارد نموده‌اید اشتباه است.\n\n"
+        f"❌ کدرهگیری اشتباه است یا عنوان دسته بندی را درست انتخاب نکرده اید.\n\n"
         f"⏰ شما *{runtime_state.INVALID_TRACKING_RETRY_MINUTES} دقیقه* فرصت دارید تا بدون پرداخت هزینه‌ی مجدد، "
         f"کدرهگیری صحیح را ارسال و دوباره استعلام بگیرید.\n\n"
         f"لطفاً کدرهگیری جدید را ارسال نمایید:"
@@ -1070,11 +1073,16 @@ async def _handle_invalid_tracking_code(bot: Bot, user_id: int, data: dict, trac
 async def _handle_wrong_form_tracking_code(bot: Bot, user_id: int, data: dict, tracking_code: str, doc_name: str, system_text: str):
     """مدیریت خطای «این کد رهگیری مربوط به نوع سند دیگری است» — متن واقعی
     سامانه عیناً برای کاربر ارسال می‌شود و همان فرصت رایگان اصلاح فعال
-    می‌شود (بدون پرداخت هزینه‌ی مجدد)."""
+    می‌شود (بدون پرداخت هزینه‌ی مجدد).
+
+    ⭐ طبق دستور کارفرما: عین همان پیام خطای سامانه + اعلام اینکه کدرهگیری
+    اشتباه است یا عنوان دسته بندی درست انتخاب نشده + مهلت ۴۵ دقیقه‌ای
+    ثبت مجدد بدون پرداخت هزینه."""
     notice_text = (
         f"❌ {system_text}\n\n"
-        f"⏰ شما *{runtime_state.INVALID_TRACKING_RETRY_MINUTES} دقیقه* فرصت دارید تا با کدرهگیری/نوع سند صحیح، "
-        f"بدون پرداخت هزینه‌ی مجدد دوباره درخواست خود را ثبت نمایید.\n\n"
+        f"⚠️ کدرهگیری اشتباه است یا عنوان دسته بندی را درست انتخاب نکرده اید.\n\n"
+        f"تا {runtime_state.INVALID_TRACKING_RETRY_MINUTES} دقیقه دیگر فرصت دارید تا بدون پرداخت هزینه مجدد ، "
+        f"درخواست خود را مجددا ثبت بفرمائید.\n\n"
         f"لطفاً کدرهگیری صحیح را ارسال نمایید:"
     )
     await _start_free_retry_window(bot, user_id, notice_text, data, tracking_code, doc_name)
