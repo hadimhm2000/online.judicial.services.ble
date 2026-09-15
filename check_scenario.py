@@ -208,8 +208,10 @@ async def process_check_task(data: dict, bot: Bot):
     # 📎 پیوست‌های اضافی کاربر (غیر از تصاویر فقرات چک)
     attachment_groups = list(data.get("check_attachment_groups") or [])
 
-    has_lawyer = any(p.get("person_type") == "وکیل" for p in plaintiffs)
+    has_lawyer = any(p.get("person_type") == "وکیل" for p in plaintiffs) or \
+                 any(p.get("person_type") == "وکیل" for p in defendants)
     has_legal_plaintiff = any(p.get("person_type") == "شخص حقوقی" for p in plaintiffs)
+    has_legal_defendant = any(p.get("person_type") == "شخص حقوقی" for p in defendants)
     is_high_amount = amount > 1_000_000_000  # بیش از ۱ میلیارد ریال
     # ⭐ طلاق×۳ و «الزام به تمکین» مبلغ ندارند و همیشه دادخواست بدوی ثبت می‌شوند
     if request_title in CHECK_NO_AMOUNT_TITLES:
@@ -354,7 +356,7 @@ async def process_check_task(data: dict, bot: Bot):
                     if (rdb) rdb.click();
                 }''')
                 await asyncio.sleep(2)
-            elif has_legal_plaintiff:
+            elif has_legal_plaintiff or has_legal_defendant:
                 await sana_page.evaluate('''() => {
                     const rdb = document.querySelector('#rdbAgentOffer');
                     if (rdb) rdb.click();
@@ -588,7 +590,7 @@ async def process_check_task(data: dict, bot: Bot):
                     await safe_click_by_text(sana_page, "وكيل", bot, user_id)
                 await resilient_sleep(sana_page, 4, bot, user_id)
 
-                for idx, person in enumerate(plaintiffs):
+                for idx, person in enumerate(list(plaintiffs) + list(defendants)):
                     if person.get("person_type") != "وکیل":
                         continue
                     await sana_page.evaluate('''() => {
@@ -600,11 +602,11 @@ async def process_check_task(data: dict, bot: Bot):
                     await resilient_sleep(sana_page, 10, bot, user_id)
 
             # ── ۷.۵ مرحله «نماينده» (اگر حقوقی داشتیم) ──────────────────
-            # ⭐ فلو جدید: همهٔ مدیرعامل/نمایندگان شرکت خواهانِ حقوقی در این
-            # مرحله ثبت می‌شوند (تا ۵ نفر — قبلاً فقط اولین نماینده ثبت
-            # می‌شد). اولین نفر قبلاً در خودِ مرحلهٔ «خواهان» هم پر شده
-            # (سازگاری با روال سامانه).
-            if has_legal_plaintiff:
+            # ⭐ فلو جدید: همهٔ مدیرعامل/نمایندگان شرکت خواهان و خوانده حقوقی
+            # (هرکدام تا ۵ نفر) در این مرحله ثبت می‌شوند — قبلاً این حلقه
+            # فقط برای شرکت خواهان اجرا می‌شد و نمایندگان شرکت خوانده اصلاً
+            # به سامانه ارسال نمی‌شدند.
+            if has_legal_plaintiff or has_legal_defendant:
                 clicked = await sana_page.evaluate('''() => {
                     const steps = Array.from(document.querySelectorAll('.step'));
                     const t = steps.find(el => el.innerText && el.innerText.trim() === "نماينده");
@@ -615,17 +617,24 @@ async def process_check_task(data: dict, bot: Bot):
                     await safe_click_by_text(sana_page, "نماينده", bot, user_id)
                 await resilient_sleep(sana_page, 4, bot, user_id)
 
-                legal_pl = next((p for p in plaintiffs if p.get("person_type") == "شخص حقوقی"), {})
+                def _collect_legal_reps(persons):
+                    legal_person = next((p for p in persons if p.get("person_type") == "شخص حقوقی"), {})
+                    reps = list(legal_person.get("representatives") or [])
+                    if not reps:
+                        rep_type_legacy = legal_person.get("representative_type", "")
+                        nat_id_legacy = legal_person.get("national_id", "")
+                        if nat_id_legacy:
+                            reps = [{
+                                "representative_type": rep_type_legacy,
+                                "national_id": nat_id_legacy,
+                            }]
+                    # ⭐ نمایندهٔ اول همین الان همراه با خودِ مرحلهٔ «خواهان»/
+                    # «خوانده» توسط _fill_legal_person پر شده — اینجا فقط از
+                    # نمایندهٔ دوم به بعد پردازش می‌شود تا تکراری ثبت نشود.
+                    return reps[1:]
+
                 # ⭐ لیست نمایندگان (فلو جدید) — فال‌بک به ساختار قدیمی تک‌نماینده
-                legal_reps = list(legal_pl.get("representatives") or [])
-                if not legal_reps:
-                    rep_type_legacy = legal_pl.get("representative_type", "")
-                    nat_id_legacy = legal_pl.get("national_id", "")
-                    if nat_id_legacy:
-                        legal_reps = [{
-                            "representative_type": rep_type_legacy,
-                            "national_id": nat_id_legacy,
-                        }]
+                legal_reps = _collect_legal_reps(plaintiffs) + _collect_legal_reps(defendants)
 
                 for rep_idx, rep in enumerate(legal_reps):
                     rep_type = rep.get("representative_type", "")
@@ -3317,34 +3326,38 @@ async def _process_check_attachments(
             except Exception:
                 pass
 
-    # ۲.۵) ⭐ وکالت‌نامه الکترونیک — اگر وکیل داریم (شماره قرارداد + تمبر)
-    lawyers = [p for p in (plaintiffs or []) if p.get("person_type") == "وکیل"]
-    if lawyers:
-        first_lawyer = lawyers[0]
-        contract_no = first_lawyer.get("contract_number", "")
-        stamp_val = int(first_lawyer.get("stamp_amount_value", 0) or 0)
-        if contract_no or stamp_val:
-            # «پیوست جدید» برای فرم وکالت‌نامه الکترونیک
-            await asyncio.sleep(2)
-            clicked = await page.evaluate('''() => {
-                const btn = document.querySelector('#newAttachmentType');
-                if (btn && !btn.disabled) { btn.click(); return true; }
-                return false;
-            }''')
-            if clicked:
-                logging.info("[CHECK][منضمات] کلیک «پیوست جدید» برای وکالت‌نامه الکترونیک")
-                await asyncio.sleep(3)
-                await wait_for_angular_idle(page)
-                await asyncio.sleep(1)
-            vakalaht_ok = await _upload_electronic_vakalaht_check(
-                page, contract_no, stamp_val, bot, user_id, bill_no)
-            if not vakalaht_ok:
-                # شکست وکالت‌نامه فرآیند کلی را قطع نمی‌کند — مدیر مطلع می‌شود
-                await bot.send_message(
-                    ADMIN_ID,
-                    f"⚠️ [CHECK] وکالت‌نامه الکترونیک (قرارداد {contract_no}) برای کاربر "
-                    f"{user_id} ثبت نشد — لطفاً در سامانه به‌صورت دستی بررسی کنید. "
-                    f"کد: {bill_no}")
+    # ۲.۵) ⭐ وکالت‌نامه الکترونیک — برای هر وکیل (خواهان یا خوانده) که شماره
+    # قرارداد وکالت و تمبر دارد؛ قبلاً فقط وکیل خواهان (و فقط اولین مورد)
+    # پردازش می‌شد — حالا روی همهٔ وکلای خواهان و خوانده حلقه می‌زند تا
+    # وکالت‌نامهٔ وکیل خوانده هم در سامانه ثبت شود.
+    lawyers = [p for p in (list(plaintiffs or []) + list(defendants or []))
+               if p.get("person_type") == "وکیل"]
+    for lawyer in lawyers:
+        contract_no = lawyer.get("contract_number", "")
+        stamp_val = int(lawyer.get("stamp_amount_value", 0) or 0)
+        if not (contract_no or stamp_val):
+            continue
+        # «پیوست جدید» برای فرم وکالت‌نامه الکترونیک
+        await asyncio.sleep(2)
+        clicked = await page.evaluate('''() => {
+            const btn = document.querySelector('#newAttachmentType');
+            if (btn && !btn.disabled) { btn.click(); return true; }
+            return false;
+        }''')
+        if clicked:
+            logging.info("[CHECK][منضمات] کلیک «پیوست جدید» برای وکالت‌نامه الکترونیک")
+            await asyncio.sleep(3)
+            await wait_for_angular_idle(page)
+            await asyncio.sleep(1)
+        vakalaht_ok = await _upload_electronic_vakalaht_check(
+            page, contract_no, stamp_val, bot, user_id, bill_no)
+        if not vakalaht_ok:
+            # شکست وکالت‌نامه فرآیند کلی را قطع نمی‌کند — مدیر مطلع می‌شود
+            await bot.send_message(
+                ADMIN_ID,
+                f"⚠️ [CHECK] وکالت‌نامه الکترونیک (قرارداد {contract_no}) برای کاربر "
+                f"{user_id} ثبت نشد — لطفاً در سامانه به‌صورت دستی بررسی کنید. "
+                f"کد: {bill_no}")
 
     # ۳) پیوست‌های اضافی کاربر (غیر از تصاویر فقرات چک)
     for g_idx, group in enumerate(attachment_groups):
