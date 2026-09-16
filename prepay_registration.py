@@ -10,9 +10,16 @@
   ۳. در پایان کار، هزینه مثل همیشه محاسبه می‌شود؛ مبلغ کل اعلام می‌گردد،
      پیش‌پرداخت از آن کسر می‌شود و فاکتور «مابقی» برای کاربر ارسال می‌شود.
 
-تعرفه (تومان):
-  - لایحه و اظهارنامه: ۱۰۰ تومان
-  - سایر موارد (ثبت دادخواست، دعاوی اعتراضی، اعلام وکالت و ...): ۲۰۰ تومان
+تعرفه (تومان) — پس از اصلاحیهٔ ۱۴۰۵/۰۶/۲۵ (حداقلِ مبلغ فاکتور API):
+  - لایحه و اظهارنامه: ۱,۰۰۰ تومان (۱۰,۰۰۰ ریال)
+  - سایر موارد (ثبت دادخواست، دعاوی اعتراضی، اعلام وکالت و ...): ۲,۰۰۰ تومان
+
+  ⚠️ تعرفهٔ اولیهٔ دستور کارفرما ۱۰۰/۲۰۰ تومان بود؛ API بله/تلگرام
+  مبالغ زیر ۱۰,۰۰۰ ریال را با خطای 400 «total price must be at
+  least 10000» رد می‌کند، لذا با حفظ نسبت ۱۰۰:۲۰۰ ده‌برابر شد.
+  تابع get_prepay_amount_toman به‌طور خودکار حداقلِ مجاز را اعمال
+  می‌کند (MIN_INVOICE_AMOUNT_RIAL) تا فاکتور، پیام‌های کاربر/مدیر و
+  کسرِ پایان کار همیشه روی یک عدد بمانند و خطای 400 برگردد نکند.
 
 نکته معماری: هندلر successful_payment در aiogram با روتر مادر
 (global_successful_payment_handler در handlers.py) مسیریابی می‌شود؛
@@ -34,8 +41,16 @@ from config import (
     PREPAY_LAYEHE_EIZARNAMEH_TOMAN, PREPAY_OTHER_SERVICES_TOMAN,
 )
 
-# سرویس‌های مشمول تعرفه ۱۰۰ تومانی (لایحه و اظهارنامه)
+# سرویس‌های مشمول تعرفهٔ لایحه/اظهارنامه (۱,۰۰۰ تومان)
 _LAYEHE_EIZAR_SERVICES = {"lavayeh", "ezhharnameh"}
+
+# ═══ حداقلِ مبلغ مجاز فاکتور در API بله/تلگرام (۱۰,۰۰۰ ریال) ═══
+# خطای مرجع (لاگ کارفرما ۱۴۰۵/۰۶/۲۵):
+#   "Bad Request: prices: total price must be at least 10000."
+# این گارد در get_prepay_amount_toman اعمال می‌شود تا هر مسیری که مبلغ
+# می‌سازد (فاکتور، پیام کاربر/مدیر، fallback ثبت پس از پرداخت) همیشه
+# منطبق بر یک عددِ مجاز باشد.
+MIN_INVOICE_AMOUNT_RIAL = 10_000
 
 # کلید payload فاکتور — برای تشخیص قطعی نوع پرداخت در هندلر سراسری
 PREPAY_INVOICE_TYPE = "reg_prepay"
@@ -44,11 +59,28 @@ PREPAY_INVOICE_TYPE = "reg_prepay"
 def get_prepay_amount_toman(service_key: str) -> int:
     """مبلغ پیش‌پرداخت (تومان) بر اساس نوع سرویس.
 
-    لایحه و اظهارنامه → ۱۰۰ تومان؛ سایر موارد → ۲۰۰ تومان.
+    لایحه و اظهارنامه → ۱,۰۰۰ تومان؛ سایر موارد → ۲,۰۰۰ تومان.
+    (تعرفهٔ اولیهٔ ۱۰۰/۲۰۰ تومان بود؛ API بله مبالغ زیر ۱۰,۰۰۰ ریال را
+    می‌رَد، لذا ×۱۰ شد — نسبت ۱۰۰:۲۰۰ حفظ شده است.)
+
+    ⚠️ گارد API: اگر مقدار کانفیگ (عمدی یا اشتباه) زیر حداقلِ مجاز
+    بیفتد، همین‌جا به حداقل (۱,۰۰۰ تومان = ۱۰,۰۰۰ ریال) بالا برده
+    می‌شود تا sendInvoice هرگز با خطای «total price must be at least
+    10000» رد نشود. چون همهٔ مسیرها از همین تابع مبلغ می‌گیرند،
+    فاکتور، پیام‌ها و کسرِ پایان کار همیشه یک عدد را می‌بینند.
     """
     if service_key in _LAYEHE_EIZAR_SERVICES:
-        return PREPAY_LAYEHE_EIZARNAMEH_TOMAN
-    return PREPAY_OTHER_SERVICES_TOMAN
+        base = PREPAY_LAYEHE_EIZARNAMEH_TOMAN
+    else:
+        base = PREPAY_OTHER_SERVICES_TOMAN
+    if base * 10 < MIN_INVOICE_AMOUNT_RIAL:
+        base = MIN_INVOICE_AMOUNT_RIAL // 10
+    return base
+
+
+def get_prepay_amount_rial(service_key: str) -> int:
+    """مبلغ پیش‌پرداخت (ریال) — همیشه ≥ حداقلِ مجاز فاکتور API."""
+    return get_prepay_amount_toman(service_key) * 10
 
 
 async def send_prepay_invoice(bot, user_id: int, service_key: str,
@@ -59,7 +91,7 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
     باید state را روی waiting_for_*_prepay بگذارد)، False در خطا.
     """
     amount_toman = get_prepay_amount_toman(service_key)
-    amount_rial = amount_toman * 10
+    amount_rial = amount_toman * 10  # تضمین‌شده ≥ MIN_INVOICE_AMOUNT_RIAL
 
     # ═══ ارسال فاکتور بله (sendInvoice) — الگوی اثبات‌شده پروژه ═══
     try:
