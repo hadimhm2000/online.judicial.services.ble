@@ -455,10 +455,10 @@ async def global_successful_payment_handler(message: types.Message, state: FSMCo
     # رفته باشد.
     # ═══════════════════════════════════════════════════════════════════
     _prepay_states = (
-        Form.waiting_for_lavayeh_prepay,    # لایحه / اعلام وکالت (۱۰۰/۲۰۰ تومان)
-        Form.waiting_for_ezhhar_prepay,     # اظهارنامه (۱۰۰ تومان)
-        Form.waiting_for_tn_prepay,         # دعاوی اعتراضی / اعاده دادرسی (۲۰۰ تومان)
-        Form.waiting_for_check_prepay,      # ثبت دادخواست (۲۰۰ تومان)
+        Form.waiting_for_lavayeh_prepay,    # لایحه / اعلام وکالت (۱,۰۰۰/۲,۰۰۰ تومان)
+        Form.waiting_for_ezhhar_prepay,     # اظهارنامه (۱,۰۰۰ تومان)
+        Form.waiting_for_tn_prepay,         # دعاوی اعتراضی / اعاده دادرسی (۲,۰۰۰ تومان)
+        Form.waiting_for_check_prepay,      # ثبت دادخواست (۲,۰۰۰ تومان)
     )
     if current_state in _prepay_states or _pl.get("type") == "reg_prepay":
         _svc = _pl.get("svc")

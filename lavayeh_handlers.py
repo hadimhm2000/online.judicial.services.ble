@@ -1079,7 +1079,17 @@ async def bulk_confirm_handler(message: Message, state: FSMContext):
             return
         
         prepay_rial = processable_count * BULK_PREPAY_PER_ROW_TOMAN * 10  # تومان → ریال
-        prepay_toman = processable_count * BULK_PREPAY_PER_ROW_TOMAN
+        # ⚠️ گارد حداقلِ مبلغ فاکتور API بله/تلگرام (۱۰,۰۰۰ ریال) —
+        # با نرخ ۲۰۰ تومان/ردیف، فایل‌های کمتر از ۵ ردیف زیر حداقل می‌افتند
+        # و sendInvoice با خطای 400 «total price must be at least 10000»
+        # رد می‌شود (همان خطای [REG-PREPAY]). مقدارِ اصلاح‌شده هم در BULK_TASKS
+        # ذخیره می‌شود تا پیام‌ها، گزارش مدیر و تسویهٔ پایان کار دقیقاً
+        # برابر مبلغ واقعی فاکتور بمانند. نرخ‌های بالاتر کانفیگ بی‌تغییر
+        # پاس می‌شوند.
+        from prepay_registration import MIN_INVOICE_AMOUNT_RIAL
+        if prepay_rial < MIN_INVOICE_AMOUNT_RIAL:
+            prepay_rial = MIN_INVOICE_AMOUNT_RIAL
+        prepay_toman = prepay_rial // 10  # نمایش تومان همیشه منطبق بر مبلغ واقعی فاکتور
         
         # بررسی معافیت مدیر از پیش‌پرداخت
         user_id = message.from_user.id
@@ -2340,7 +2350,7 @@ async def lavayeh_confirm_handler(message: Message, state: FSMContext, bot: Bot)
         # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): پیش‌پرداخت قبل از شروع ثبت —
         # فاکتور و درگاه پرداخت ارسال می‌شود؛ پس از تایید خودکار پرداخت،
         # درخواست به صف ثبت ارسال خواهد شد (lavayeh_prepay_successful_payment).
-        # لایحه: ۱۰۰ تومان — اعلام وکالت: ۲۰۰ تومان (سایر موارد).
+        # لایحه: ۱,۰۰۰ تومان — اعلام وکالت: ۲,۰۰۰ تومان (اصلاحیهٔ ۱۴۰۵/۰۶/۲۵).
         if title == "اعلام وکالت":
             prepay_svc_key, prepay_label = "ealam", "اعلام وکالت"
         else:
@@ -2453,7 +2463,7 @@ async def lavayeh_prepay_successful_payment(message: Message, state: FSMContext,
     data = await state.get_data()
     title = data.get("lavayeh_title", "لایحه")
     payment = message.successful_payment
-    # مبلغ واقعی پرداخت‌شده (total_amount ریال است) — تعرفه: لایحه ۱۰۰، اعلام وکالت ۲۰۰ تومان
+    # مبلغ واقعی پرداخت‌شده (total_amount ریال است) — تعرفه: لایحه ۱,۰۰۰، اعلام وکالت ۲,۰۰۰ تومان
     from prepay_registration import register_prepaid, get_prepay_amount_toman
     if title == "اعلام وکالت":
         _svc_key = "ealam"
