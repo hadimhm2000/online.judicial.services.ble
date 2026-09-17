@@ -249,6 +249,7 @@ async def enrich_bulk_inquiry_items(valid_items: list, user_id: int = None, bot=
     from api_direct import (
         fast_pre_check, FastCheckError,
         SessionExpiredError as FastSessionExpiredError,
+        SessionNotReadyError as FastSessionNotReadyError,
         PetitionNotFoundError as FastPetitionNotFoundError,
         InvalidTrackingCodeError as FastInvalidTrackingCodeError,
     )
@@ -344,6 +345,25 @@ async def enrich_bulk_inquiry_items(valid_items: list, user_id: int = None, bot=
                 "row_index": row_idx,
                 "description": f"کدرهگیری {tracking_code} ({doc_category})",
                 "error": f"نشست سامانه سناخا منقضی است ({e}) — بقیه‌ی موارد هم متوقف شدند",
+            })
+            # ⭐ اصلاحیهٔ کارفرما: در مسیر دسته‌جمعی هم باید به مدیر اطلاع داده
+            # شود و لاگین مجدد (پس‌زمینه) آغاز شود — قبلاً فقط صف‌های تکی
+            # این کار را می‌کردند و استعلام دسته‌جمعی بی‌صدا شکست می‌خورد.
+            if bot is not None:
+                try:
+                    import asyncio as _asyncio
+                    from browser_helpers import handle_session_expired as _hse
+                    _asyncio.create_task(_hse(bot, user_id, page=None))
+                except Exception as _hse_err:
+                    logger.warning(f"[BULK-INQ] خطا در آغاز لاگین مجدد: {_hse_err}")
+        except FastSessionNotReadyError:
+            # ⭐ اصلاحیهٔ کارفرما: هنوز لاگینی انجام نشده — این «انقضای نشست»
+            # نیست؛ خطای عادی برای این ردیف ثبت و به ردیف بعدی می‌رویم
+            # (بدون چرخهٔ لاگین مجدد/اطلاع غلط به مدیر).
+            failed_items.append({
+                "row_index": row_idx,
+                "description": f"کدرهگیری {tracking_code} ({doc_category})",
+                "error": "سامانه هنوز وارد نشده است — پس از ورود مدیریت مجدداً تلاش فرمایید",
             })
         except FastCheckError as e:
             failed_items.append({

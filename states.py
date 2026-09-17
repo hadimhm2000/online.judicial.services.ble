@@ -48,6 +48,11 @@ class Form(StatesGroup):
     waiting_for_lavayeh_payment_receipt = State()
     lavayeh_payment_reminder_response = State()
 
+    # ⭐ پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی لایحه — پس از خطای «شخص ارائه‌کننده
+    # لایحه در فهرست اشخاص پرونده نیست» یا خطای تاریخ تولد ثنا
+    lavayeh_nid_fix_select_person = State()   # انتخاب شخصی که کدملیش ویرایش می‌شود
+    lavayeh_nid_fix_new_nid = State()         # دریافت کدملی جدید
+
     # =========================================================
     # State های بخش اخذ امضای الکترونیک لایحه
     # =========================================================
@@ -216,6 +221,13 @@ class Form(StatesGroup):
     tn_sana_error_action = State()
     tn_sana_error_new_national_id = State()
 
+    # ⭐ پنجرهٔ ۴۵ دقیقه‌ای ویرایش شماره دادنامه/پرونده/تاریخ دعاوی اعتراضی
+    # پس از خطای «شماره تصمیم نهایی یا شماره پرونده اشتباه می باشد» در ثبتِ
+    # پس از پرداخت پیش‌پرداخت — با همان اطلاعات سیو شده ادامه می‌یابد.
+    tn_retrieve_fix_judge_no = State()
+    tn_retrieve_fix_file_no = State()
+    tn_retrieve_fix_judge_date = State()
+
     # =========================================================
 
     tn_appellant_vakalat_no = State()    # شماره قرارداد وکالت تجدیدنظرخواه
@@ -348,6 +360,11 @@ class Form(StatesGroup):
     check_witness_name = State()          # ⭐ نام و نام‌خانوادگی مطلع/گواه (فیلد جدید)
     check_confirm = State()               # پیش‌نمایش و تایید
     check_edit_choice = State()           # انتخاب بخش ویرایش
+
+    # ⭐ پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی دادخواست چک — پس از خطای ثنا
+    # (تاریخ تولد اشتباه / شناسه ملی ثبت نشده)
+    check_nid_fix_select_person = State() # انتخاب شخصی که کدملیش ویرایش می‌شود
+    check_nid_fix_new_nid = State()       # دریافت کدملی جدید
 
     # =========================================================
     # State های بخش استعلام ارزش منطقه‌ای

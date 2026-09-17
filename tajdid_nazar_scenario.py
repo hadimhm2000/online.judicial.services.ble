@@ -74,6 +74,19 @@ class TajdidSanaQueryError(Exception):
         self.person_index = person_index
 
 
+class TajdidRetrieveDataError(TajdidFatalError):
+    """⭐ خطای «شماره تصمیم نهایی یا شماره پرونده اشتباه می باشد» در
+    استعلام/بازیابی دادنامه — دادهٔ ورودی غلط است و retry بی‌فایده است.
+
+    زیرکلاس TajdidFatalError است تا هندلرهای موجود هم آن را بگیرند؛
+    فراخوان‌ندهٔ اصلی (process_tajdid_nazar_task) آن را زودتر می‌گیرد و
+    پنجرهٔ ۴۵ دقیقه‌ای ویرایش سه‌گانه را باز می‌کند.
+    """
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.popup_text = message
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # ثابت‌ها
 # ══════════════════════════════════════════════════════════════════════════════
@@ -506,6 +519,21 @@ def _is_session_error_text(text) -> bool:
         "رایانه ای دیگر", "رایانه اي ديگر", "رایانهٔ دیگر",
         "اعتبار ورود", "ورود قبلی", "صفحه یا رایانه",
     ))
+
+
+def _is_retrieve_mismatch_error_text(text) -> bool:
+    """⭐ آیا متن، خطای «شماره تصمیم نهایی یا شماره پرونده اشتباه می باشد» است؟
+
+    نرمال‌سازی‌شده (error_catalog) — مقاوم به ي/ک عربی و نیم‌فاصله."""
+    if not text or not isinstance(text, str):
+        return False
+    try:
+        import error_catalog
+        return error_catalog.is_retrieve_mismatch(text)
+    except Exception:
+        # فال‌بک ساده در صورت خطای ایمپورت
+        t = str(text).replace("ي", "ی").replace("ك", "ک").replace("‌", "")
+        return ("تصمیم نهایی" in t) or ("شماره پرونده اشتباه" in t)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1157,6 +1185,18 @@ async def _handle_post_retrieve_error(page, error_text: str, bot: Bot, user_id: 
         await _close_popup(page)
         await handle_session_expired(bot, user_id, page=page)
         return True
+
+    # ⭐ اصلاحیهٔ کارفرما: خطای «شماره تصمیم نهایی یا شماره پرونده اشتباه
+    # می باشد» — retry بی‌فایده است؛ بلافاصله TajdidRetrieveDataError پرتاب
+    # می‌شود تا:
+    #   - در مسیر «استعلام افراد موجود در پرونده» → پیام خطا + شروع از ابتدا
+    #     و بازگشت به منوی اصلی
+    #   - در مسیر ثبتِ پس از پرداخت پیش‌پرداخت → پنجرهٔ ۴۵ دقیقه‌ای ویرایش
+    #     شماره دادنامه/پرونده/تاریخ با همان اطلاعات سیو شده
+    if _is_retrieve_mismatch_error_text(error_text):
+        await _close_popup(page)
+        logging.warning(f"[TN] خطای شماره دادنامه/پرونده اشتباه — توقف بدون retry")
+        raise TajdidRetrieveDataError(error_text)
 
     # خطای دیگر → بستن پاپ‌آپ (گزینه «بستن») — استعلام مجدد توسط فراخواننده
     await _close_popup(page)
@@ -3194,7 +3234,22 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
             pending_task_data["_sana_error_national_id"] = e.national_id
             pending_task_data["_sana_error_person_role"] = e.person_role
             pending_task_data["_sana_error_person_index"] = e.person_index
-            runtime_state.pending_tn_sana_fix[user_id] = {
+
+            # ⭐ اصلاحیهٔ کارفرما: پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی + جریمهٔ نصف
+            # پیش‌پرداخت — ماندگار در persistence (حتی پس از کرش/قطعی ربات
+            # برای هر درخواست بعدی کاربر مورد محاسبه قرار می‌گیرد).
+            try:
+                import nid_fix_window
+                _win = nid_fix_window.start_window(
+                    user_id, flow=nid_fix_window.FLOW_TN,
+                    task_data=pending_task_data, error_text=str(e),
+                    national_id=e.national_id, person_role=e.person_role,
+                    person_index=e.person_index)
+            except Exception as _win_err:
+                logging.error(f"[TN] خطا در شروع پنجرهٔ ویرایش کدملی: {_win_err}")
+                _win = None
+
+            runtime_state.pending_tn_sana_fix[user_id] = _win or {
                 "task_data": pending_task_data,
                 "created_at": asyncio.get_event_loop().time(),
             }
@@ -3217,9 +3272,59 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                 user_id,
                 f"⚠️ *خطای استعلام ثنا*\n\n"
                 f"شناسه ملی `{e.national_id}` ({role_label}) ثبت‌نام ثنا ندارد یا اشتباه است.\n\n"
-                f"لطفاً یکی از گزینه‌های زیر را انتخاب کنید:",
+                f"لطفاً یکی از گزینه‌های زیر را انتخاب کنید:\n"
+                f"• *ویرایش شناسه ملی:* شناسه صحیح را ارسال کنید تا ثبت با همان اطلاعات سیو شده ادامه یابد.\n"
+                f"• *حذف درخواست:* درخواست حذف می‌شود.\n\n"
+                f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این صورت پس از ۳۰ دقیقه، "
+                f"*نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از هزینه کسر می‌گردد.",
                 reply_markup=kb)
             return  # متوقف — منتظر اصلاح کاربر
+
+        except TajdidRetrieveDataError as e:
+            # ⭐ اصلاحیهٔ کارفرما: خطای «شماره تصمیم نهایی یا شماره پرونده
+            # اشتباه می باشد» در ثبتِ پس از پرداخت پیش‌پرداخت — پنجرهٔ
+            # ۴۵ دقیقه‌ای ویرایش سه‌گانه (دادنامه/پرونده/تاریخ) با همان
+            # اطلاعات سیو شده؛ بدون طی مجدد سایر مراحل.
+            logging.error(f"[TN] خطای شماره دادنامه/پرونده user={user_id}: {e}")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"⚠️ [TN] خطای شماره دادنامه/پرونده کاربر {user_id}: {str(e)[:200]}")
+            except Exception:
+                pass
+
+            task_data_snapshot = dict(data)
+            try:
+                import nid_fix_window
+                nid_fix_window.start_tn_retrieve_fix(
+                    user_id, task_data=task_data_snapshot,
+                    error_text=str(e))
+            except Exception as _win_err:
+                logging.error(f"[TN] خطا در شروع پنجرهٔ ۴۵ دقیقه‌ای: {_win_err}")
+
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            rtv_kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="✏️ ویرایش شماره دادنامه / پرونده / تاریخ",
+                    callback_data=f"tn_rtv_fix:{user_id}")],
+                [InlineKeyboardButton(
+                    text="🗑 انصراف از درخواست",
+                    callback_data=f"tn_rtv_cancel:{user_id}")],
+            ])
+            await bot.send_message(
+                user_id,
+                f"⚠️ *خطای سامانه:*\n\n«{str(e)[:250]}»\n\n"
+                f"📝 لطفاً *شماره دادنامه*، *شماره پرونده* و *تاریخ دادنامه* را مجدداً وارد کنید.\n"
+                f"⏰ تا *۴۵ دقیقه* فرصت دارید تا ادامه روند را انجام دهید.\n"
+                f"✅ پس از ویرایش این سه مورد، ثبت با *همان اطلاعات سیو شده* و بدون طی مجدد سایر مراحل ادامه می‌یابد.",
+                reply_markup=rtv_kb)
+            try:
+                await log_event(
+                    "خطای سامانه", f"دعاوی اعتراضی ({case_type})", str(user_id), user_id,
+                    doc_name=case_type, note=f"خطای شماره دادنامه/پرونده: {str(e)[:200]}")
+            except Exception:
+                pass
+            return
 
         except TajdidFatalError as e:
             logging.error(f"[TN] خطای قطعی user={user_id} (تلاش {attempt + 1}): {e}")

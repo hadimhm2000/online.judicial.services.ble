@@ -215,7 +215,13 @@ async def handle_session_expired(bot: Bot, user_id: int, page=None, timeout_seco
       ۴) روی همان صفحه‌ی اصلی (page)، دکمه‌ی «بستن» پاپ‌آپ خطا را می‌زند
          تا صفحه دقیقاً از همان‌جا که متوقف شده بود قابل ادامه باشد.
     """
-    await bot.send_message(ADMIN_ID, "⚠️ *اعتبار نشست سامانه (ثنا) به اتمام رسیده است.*\nدر حال باز کردن تب جدید...")
+    # ⭐ اصلاحیهٔ کارفرما: اگر هیچ‌کس هنوز وارد سامانه نشده باشد، پیام
+    # «نشست منقضی شده» گمراه‌کننده است — متن پیام حالت «برقرار نبودن نشست»
+    # را هم پوشش می‌دهد.
+    if not runtime_state.login_event.is_set():
+        await bot.send_message(ADMIN_ID, "⚠️ *هیچ نشست فعالی با سامانه (ثنا) وجود ندارد (وارد نشده‌اید).*\nدر حال باز کردن تب ورود...")
+    else:
+        await bot.send_message(ADMIN_ID, "⚠️ *اعتبار نشست سامانه (ثنا) به اتمام رسیده است.*\nدر حال باز کردن تب جدید...")
 
     login_page = await runtime_state.browser_context.new_page()
     try:

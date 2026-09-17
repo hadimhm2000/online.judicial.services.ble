@@ -180,6 +180,32 @@ def save_runtime_state():
         ezhhar_fix[str(uid)] = info
     data["pending_ezhhar_sana_fix"] = ezhhar_fix
 
+    # 6-ب. ⭐ وضعیت اصلاح شناسه ملی دعاوی اعتراضی (قبلاً ماندگار نبود — اصلاح شد)
+    tn_fix = {}
+    for uid, info in getattr(runtime_state, "pending_tn_sana_fix", {}).items():
+        tn_fix[str(uid)] = info
+    data["pending_tn_sana_fix"] = tn_fix
+
+    # 6-ج. ⭐ وضعیت اصلاح شناسه ملی لایحه (alias پنجرهٔ ۳۰ دقیقه‌ای)
+    lav_fix = {}
+    for uid, info in getattr(runtime_state, "pending_lavayeh_sana_fix", {}).items():
+        lav_fix[str(uid)] = info
+    data["pending_lavayeh_sana_fix"] = lav_fix
+
+    # 6-د. ⭐ پنجره‌های ۳۰ دقیقه‌ای ویرایش کدملی + جریمهٔ نصف پیش‌پرداخت
+    # (nid_fix_window.py) — طبق دستور کارفرما حتی پس از کرش/قطعی ربات باید
+    # برای هر درخواست بعدی کاربر مورد محاسبه قرار گیرد.
+    nid_fix_windows = {}
+    for uid, info in getattr(runtime_state, "pending_nid_fix_windows", {}).items():
+        nid_fix_windows[str(uid)] = info
+    data["pending_nid_fix_windows"] = nid_fix_windows
+
+    # 6-ه. ⭐ پنجرهٔ ۴۵ دقیقه‌ای ویرایش دادنامه/پرونده/تاریخ دعاوی اعتراضی
+    tn_rtv_fix = {}
+    for uid, info in getattr(runtime_state, "pending_tn_retrieve_fix", {}).items():
+        tn_rtv_fix[str(uid)] = info
+    data["pending_tn_retrieve_fix"] = tn_rtv_fix
+
     # 7. استفاده رایگان کاربران
     free_usage = {}
     for uid, info in runtime_state.user_free_usage.items():
@@ -308,7 +334,29 @@ def load_into_runtime_state():
 
     # 6. pending_ezhhar_sana_fix — در انتظار اصلاح (ثبت‌شده)
     for uid_str, info in data.get("pending_ezhhar_sana_fix", {}).items():
+        info = _deserialize_all_datetimes(info, ["created_at", "deadline"])
         runtime_state.pending_ezhhar_sana_fix[int(uid_str)] = info
+        active_submitted.append(int(uid_str))
+
+    # 6-ب. ⭐ pending_tn_sana_fix — در انتظار اصلاح (ثبت‌شده)
+    for uid_str, info in data.get("pending_tn_sana_fix", {}).items():
+        runtime_state.pending_tn_sana_fix[int(uid_str)] = info
+        active_submitted.append(int(uid_str))
+
+    # 6-ج. ⭐ pending_lavayeh_sana_fix — در انتظار اصلاح (ثبت‌شده)
+    for uid_str, info in data.get("pending_lavayeh_sana_fix", {}).items():
+        runtime_state.pending_lavayeh_sana_fix[int(uid_str)] = info
+        active_submitted.append(int(uid_str))
+
+    # 6-د. ⭐ pending_nid_fix_windows — پنجره‌های ۳۰ دقیقه‌ای ویرایش کدملی
+    for uid_str, info in data.get("pending_nid_fix_windows", {}).items():
+        info = _deserialize_all_datetimes(info, ["created_at", "deadline"])
+        runtime_state.pending_nid_fix_windows[int(uid_str)] = info
+
+    # 6-ه. ⭐ pending_tn_retrieve_fix — پنجرهٔ ۴۵ دقیقه‌ای ویرایش دادنامه TN
+    for uid_str, info in data.get("pending_tn_retrieve_fix", {}).items():
+        info = _deserialize_all_datetimes(info, ["created_at", "deadline"])
+        runtime_state.pending_tn_retrieve_fix[int(uid_str)] = info
         active_submitted.append(int(uid_str))
 
     # 7. user_free_usage

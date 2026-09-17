@@ -3689,3 +3689,243 @@ async def check_edit_choice_handler(message: Message, state: FSMContext):
         return
 
     await message.answer("⚠️ لطفاً از دکمه‌ها استفاده کنید:")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ⭐ پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی دادخواست چک — پس از خطای ثنا
+# («تاریخ تولد ارسالی مربوط به شماره ملی ... اشتباه است» / شناسه ملی ثبت نشده).
+# پنجره و جریمهٔ نصف پیش‌پرداخت در nid_fix_window مدیریت و در persistence
+# ذخیره می‌شود (حتی پس از کرش/قطعی ربات برای درخواست‌های بعدی کاربر محاسبه می‌گردد).
+# ══════════════════════════════════════════════════════════════════════════════
+
+import nid_fix_window as _chk_nfw
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from config import ADMIN_ID as _CHK_ADMIN_ID
+
+# لیست‌های اشخاص دادخواست — برای یافتن و ویرایش کدملی
+_CHECK_PERSON_LIST_KEYS = ("check_plainiffs", "check_defendants", "check_witnesses")
+
+
+def _find_check_person_idx(task_data: dict, old_nid: str):
+    """یافتن (لیست_کلید، ایندکس) شخص با کدملی مشخص در دادهٔ تسک چک."""
+    if not old_nid:
+        return None, None
+    for list_key in _CHECK_PERSON_LIST_KEYS:
+        for i, p in enumerate(task_data.get(list_key, []) or []):
+            if str(p.get("national_id", "")) == str(old_nid):
+                return list_key, i
+    return None, None
+
+
+@check_router.callback_query(F.data.startswith("chk_nid_fix:"))
+async def chk_nid_fix_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """کاربر دکمهٔ «ویرایش کدملی» را زد."""
+    parts = callback.data.split(":")
+    target_user_id = int(parts[1])
+
+    if callback.from_user.id != target_user_id:
+        await callback.answer("⚠️ این دکمه مربوط به شما نیست.")
+        return
+
+    win = _chk_nfw.get_window(target_user_id)
+    if not win or win.get("flow") != _chk_nfw.FLOW_CHECK:
+        await callback.answer(
+            "⚠️ درخواستی برای ویرایش یافت نشد (مهلت ۳۰ دقیقه‌ای به پایان رسیده است).")
+        return
+
+    await callback.answer()
+
+    task_data = win.get("task_data") or {}
+    old_nid = win.get("national_id", "")
+    list_key, person_idx = _find_check_person_idx(task_data, old_nid)
+
+    if list_key is None:
+        # شخص با کدملی خطادار در داده یافت نشد — شاید کدملی از متن پاپ‌آپ
+        # استخراج نشده باشد؛ کاربر لیست اشخاص را می‌بیند
+        persons_flat = []
+        for lk in _CHECK_PERSON_LIST_KEYS:
+            for i, p in enumerate(task_data.get(lk, []) or []):
+                persons_flat.append((lk, i, p))
+        if not persons_flat:
+            await bot.send_message(
+                target_user_id,
+                "⚠️ فهرست اشخاص درخواست یافت نشد. لطفاً از منوی اصلی مجدداً اقدام فرمایید.",
+                reply_markup=main_menu_kb)
+            await state.clear()
+            return
+        await bot.send_message(
+            target_user_id,
+            "👥 لطفاً *شخصی را که کدملی اشتباه دارد* انتخاب فرمایید:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text=f"{i + 1}. {str(p.get('name') or p.get('national_id') or 'شخص ' + str(i + 1))[:40]}",
+                    callback_data=f"chk_nid_pick:{target_user_id}:{lk}:{i}")]
+                for i, (lk, idx, p) in enumerate(persons_flat)
+            ]))
+        await state.set_state(Form.check_nid_fix_select_person)
+        return
+
+    await state.update_data(_chk_nid_fix_list=list_key, _chk_nid_fix_index=person_idx)
+    await bot.send_message(
+        target_user_id,
+        f"🔢 کدملی فعلی: `{old_nid}`\n\n"
+        "لطفاً *کدملی صحیح* را ارسال فرمایید:\n_(۱۰ رقمی)_\n\n"
+        "⚠️ اطلاعات قبلی دادخواست حفظ شده و فقط کدملی اصلاح می‌شود.",
+        reply_markup=back_only_kb)
+    await state.set_state(Form.check_nid_fix_new_nid)
+
+
+@check_router.callback_query(F.data.startswith("chk_nid_pick:"))
+async def chk_nid_pick_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """کاربر شخصی را برای ویرایش کدملی انتخاب کرد."""
+    parts = callback.data.split(":")
+    target_user_id = int(parts[1])
+    list_key = parts[2]
+    person_idx = int(parts[3])
+
+    if callback.from_user.id != target_user_id:
+        await callback.answer("⚠️ این دکمه مربوط به شما نیست.")
+        return
+
+    win = _chk_nfw.get_window(target_user_id)
+    if not win or win.get("flow") != _chk_nfw.FLOW_CHECK:
+        await callback.answer("⚠️ مهلت ویرایش به پایان رسیده است.")
+        return
+
+    await callback.answer()
+    await state.update_data(_chk_nid_fix_list=list_key, _chk_nid_fix_index=person_idx)
+
+    old_nid = ((win.get("task_data") or {}).get(list_key, []) or [{}])[person_idx].get("national_id", "")
+    await bot.send_message(
+        target_user_id,
+        f"🔢 کدملی فعلی: `{old_nid or '---'}`\n\n"
+        "لطفاً *کدملی صحیح* را ارسال فرمایید:\n_(۱۰ رقمی)_\n\n"
+        "⚠️ اطلاعات قبلی دادخواست حفظ شده و فقط کدملی اصلاح می‌شود.",
+        reply_markup=back_only_kb)
+    await state.set_state(Form.check_nid_fix_new_nid)
+
+
+@check_router.callback_query(F.data.startswith("chk_nid_cancel:"))
+async def chk_nid_cancel_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """حذف درخواست — بستن پنجرهٔ ۳۰ دقیقه‌ای + اعمال جریمهٔ نصف پیش‌پرداخت."""
+    parts = callback.data.split(":")
+    target_user_id = int(parts[1])
+
+    if callback.from_user.id != target_user_id:
+        await callback.answer("⚠️ این دکمه مربوط به شما نیست.")
+        return
+
+    _chk_nfw.pop_window(target_user_id)
+    await callback.answer("درخواست حذف شد.")
+
+    # جریمه — نصف مبلغ پیش‌پرداخت برای موارد بعدی (عین دستور کارفرما)
+    new_rial = _chk_nfw.halve_prepaid(target_user_id)
+    penalty_line = (
+        f"💰 نصف مبلغ پیش‌پرداخت شما ({new_rial // 10:,} تومان) برای موارد بعدی "
+        "شما لحاظ شد و از هزینه کسر می‌گردد.\n" if new_rial > 0 else "")
+
+    try:
+        await callback.message.edit_text(
+            (callback.message.text or "") + "\n\n🗑 _درخواست حذف شد._")
+    except Exception:
+        pass
+
+    await bot.send_message(
+        target_user_id,
+        "🗑 *درخواست دادخواست حذف شد.*\n\n"
+        f"{penalty_line}\n"
+        "در صورت نیاز، از منوی اصلی مجدداً اقدام فرمایید.",
+        reply_markup=main_menu_kb)
+    await state.clear()
+
+
+@check_router.message(Form.check_nid_fix_select_person)
+async def chk_nid_select_person_message(message: Message, state: FSMContext):
+    """در حالت انتخاب شخص، فقط دکمه‌های اینلاین معتبرند."""
+    if message.text == "🔙 بازگشت":
+        _chk_nfw.pop_window(message.from_user.id)
+        await message.answer(
+            "🗑 ویرایش لغو شد و درخواست حذف شد.", reply_markup=main_menu_kb)
+        await state.clear()
+        return
+    await message.answer("⚠️ لطفاً شخص را از دکمه‌های بالا انتخاب فرمایید.")
+
+
+@check_router.message(Form.check_nid_fix_new_nid)
+async def chk_nid_receive_new_nid(message: Message, state: FSMContext, bot: Bot):
+    """دریافت کدملی جدید و ادامهٔ ثبت دادخواست با همان اطلاعات سیو شده."""
+    if not message.text:
+        return
+
+    user_id = message.from_user.id
+    _fa_ar = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+    nat_id = message.text.translate(_fa_ar).replace(" ", "").strip()
+
+    if message.text == "🔙 بازگشت":
+        _chk_nfw.pop_window(user_id)
+        await message.answer(
+            "🗑 ویرایش لغو شد و درخواست حذف شد.", reply_markup=main_menu_kb)
+        await state.clear()
+        return
+
+    if not re.match(r"^[0-9]{10}$", nat_id):
+        await message.answer("⚠️ کدملی باید *۱۰ رقمی* باشد:")
+        return
+
+    win = _chk_nfw.pop_window(user_id)
+    if not win or win.get("flow") != _chk_nfw.FLOW_CHECK:
+        await message.answer(
+            "⚠️ درخواست منقضی شده است. لطفاً مجدداً اقدام فرمایید.",
+            reply_markup=main_menu_kb)
+        await state.clear()
+        return
+
+    fsm_data = await state.get_data()
+    list_key = fsm_data.get("_chk_nid_fix_list")
+    person_idx = fsm_data.get("_chk_nid_fix_index")
+
+    task_data = win.get("task_data") or {}
+    if list_key is None:
+        list_key, person_idx = _find_check_person_idx(task_data, win.get("national_id", ""))
+
+    if list_key is None or person_idx is None:
+        await message.answer(
+            "⚠️ شخص مورد نظر یافت نشد. لطفاً مجدداً اقدام فرمایید.",
+            reply_markup=main_menu_kb)
+        await state.clear()
+        return
+
+    persons = task_data.get(list_key, [])
+    if person_idx >= len(persons):
+        await message.answer(
+            "⚠️ شخص مورد نظر یافت نشد. لطفاً مجدداً اقدام فرمایید.",
+            reply_markup=main_menu_kb)
+        await state.clear()
+        return
+
+    old_nid = persons[person_idx].get("national_id", "")
+    persons[person_idx]["national_id"] = nat_id
+    task_data[list_key] = persons
+    task_data.pop("_sana_error_national_id", None)
+    task_data.pop("_sana_error_role", None)
+    task_data.pop("_sana_error_kind", None)
+
+    logging.info(
+        f"[CHECK] کدملی ({list_key}[{person_idx}]) کاربر {user_id} ویرایش شد: "
+        f"{old_nid} → {nat_id} — ارسال مجدد به صف")
+    try:
+        await bot.send_message(
+            _CHK_ADMIN_ID,
+            f"✏️ [CHECK] کدملی کاربر {user_id} ویرایش شد ({old_nid} → {nat_id}) "
+            "— درخواست مجدداً به صف ارسال شد.")
+    except Exception:
+        pass
+
+    await message.answer(
+        f"✅ کدملی به `{nat_id}` تغییر یافت.\n\n"
+        "⏳ ثبت دادخواست با *همان اطلاعات سیو شده* ادامه می‌یابد...",
+        reply_markup=main_menu_kb)
+
+    # ارسال مجدد تسک — بدون طی مجدد سایر مراحل
+    await runtime_state.job_queue.put(task_data)
+    await state.clear()

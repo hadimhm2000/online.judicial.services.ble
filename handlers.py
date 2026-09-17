@@ -28,6 +28,7 @@ from states import Form
 from sheets import append_to_sheet, log_event
 from api_direct import (
     fast_pre_check, FastCheckError, SessionExpiredError as FastSessionExpiredError,
+    SessionNotReadyError as FastSessionNotReadyError,
     PetitionNotFoundError as FastPetitionNotFoundError,
     InvalidTrackingCodeError as FastInvalidTrackingCodeError,
     WrongFormTrackingCodeError as FastWrongFormTrackingCodeError)
@@ -1464,15 +1465,32 @@ async def process_attachments_opt(message: types.Message, state: FSMContext):
                     f"لطفاً کدرهگیری و نوع سند خود را بررسی کنید.\n"
                     f"(تلاش {attempts} از {MAX_INQUIRY_ATTEMPTS})")
             return
+        except FastSessionNotReadyError:
+            # ⭐ اصلاحیهٔ کارفرما: هنوز هیچ‌کس وارد سامانه نشده است — این حالت
+            # «انقضای نشست» نیست و نباید چرخهٔ لاگین مجدد/اطلاع به مدیر با
+            # پیام غلط «نشست منقضی» اجرا شود. کاربر بی‌صدا به صف مرورگر
+            # فال‌بک می‌شود (صف خودش در صورت نیاز ورود دستی مدیر را می‌خواهد).
+            logger.info(
+                "[FAST-CHECK] نشست هنوز برقرار نیست (لاگینی انجام نشده) — "
+                "فال‌بک به صف مرورگر بدون چرخهٔ لاگین مجدد")
         except FastSessionExpiredError:
             # ⭐ اصلاحیه طبق دستور کارفرما: وقتی تب جدید استعلام پیوست باز
-            # می‌شود و نشست منقضی است، باید به مدیر اعلام شود که لاگین جدید
-            # انجام دهد؛ تب استعلام در api_direct بسته می‌شود و تب جدید برای
-            # ورود اطلاعات لاگین باز می‌شود و منتظر تایید مدیر می‌مانیم.
+            # می‌شود و نشست واقعاً منقضی است، باید به مدیر اعلام شود که لاگین
+            # جدید انجام دهد.
+            # ⭐ اصلاح انسداد: فرآیند لاگین مجدد تا ۱۲۰ ثانیه منتظر تایید
+            # مدیر می‌ماند — دیگر داخل هندلر (و مسیر کاربر) منتظر نمی‌مانیم
+            # و به‌صورت تسک پس‌زمینه اجرا می‌شود تا کاربر سریع پاسخ بگیرد.
             logger.warning("[FAST-CHECK] نشست منقضی — اطلاع به مدیر، لاگین مجدد و فال‌بک به صف مرورگر")
             try:
-                from browser_helpers import handle_session_expired
-                await handle_session_expired(message.bot, message.from_user.id, page=None)
+                await message.answer(
+                    "⚠️ نشست سامانه منقضی شده است؛ درخواست شما به صف پردازش "
+                    "انتقال یافت و پس از ورود مجدد مدیریت به سامانه انجام می‌شود.")
+            except Exception:
+                pass
+            try:
+                import asyncio as _asyncio
+                from browser_helpers import handle_session_expired as _hse
+                _asyncio.create_task(_hse(message.bot, message.from_user.id, page=None))
             except Exception as login_err:
                 logger.error(f"[FAST-CHECK] خطا در فرآیند لاگین مجدد مدیر: {login_err}", exc_info=True)
         except FastCheckError as e:

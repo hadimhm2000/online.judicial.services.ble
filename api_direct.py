@@ -46,6 +46,15 @@ class SessionExpiredError(FastCheckError):
     pass
 
 
+class SessionNotReadyError(FastCheckError):
+    """⭐ اصلاحیهٔ کارفرما: هنوز هیچ‌کس وارد سامانه نشده است (نه انقضای
+    نشست). در این حالت نباید چرخهٔ «نشست منقضی — لاگین مجدد» به‌صورت
+    اشتباه اجرا شود؛ فقط باید به صف مرورگر فال‌بک شود تا در جای درست
+    خودش ورود دستی مدیر را درخواست کند.
+    """
+    pass
+
+
 class PetitionNotFoundError(FastCheckError):
     pass
 
@@ -75,6 +84,20 @@ async def fast_pre_check(
     user_id: int = None,
     bot=None
 ) -> int:
+    # ⭐ اصلاحیهٔ کارفرما — ریشهٔ خطای غلط «لاگین مجدد» در استعلام پیوستی:
+    # اگر هیچ‌کس وارد سامانه نشده باشد (login_event ست نشده)، اصلاً نباید
+    # FAST-CHECK اجرا شود؛ چون ۴۰۱/۴۰۳ گرفتن در این حالت طبیعی است و نباید
+    # به‌عنوان «نشست منقضی» به مدیر اطلاع داده شود. فقط فال‌بک به صف.
+    login_event = getattr(runtime_state, "login_event", None)
+    if login_event is not None and not login_event.is_set():
+        logger.info(
+            "[FAST-CHECK] هیچ نشست فعالی وجود ندارد (هنوز لاگین نشده) — "
+            "فال‌بک مستقیم به صف مرورگر")
+        raise SessionNotReadyError("هیچ نشست فعالی وجود ندارد — هنوز وارد سامانه نشده است")
+
+    if not runtime_state.browser_context:
+        raise FastCheckError("مرورگر هنوز راه‌اندازی نشده")
+
     async with _semaphore:
         await _rate_limit()
         try:
@@ -83,8 +106,14 @@ async def fast_pre_check(
             return count
         except (EndpointsNotDiscovered, APIError) as e:
             logger.info(f"[FAST-CHECK] API Direct failed ({e}) -> trying page")
-        except SessionExpiredError:
-            raise
+        except SessionExpiredError as e:
+            # ⭐ اصلاحیهٔ کارفرما: ۴۰۱/۴۰۳ مسیر API لزوماً به معنی انقضای
+            # نشست نیست (کوکی‌های XHR/تغییرات سمت سرور) — قبل از اعلام
+            # «نشست منقضی» مسیر صفحه امتحان می‌شود تا خطای غلطِ لاگین مجدد
+            # حین استعلام پیوستی پیش نیاید.
+            logger.info(
+                f"[FAST-CHECK] API Direct session-ish response ({e}) "
+                "-> trying page route before declaring expiry")
         try:
             count = await _do_page_check(tracking_code, category, subcategory, user_id, bot)
             logger.info(f"[FAST-CHECK] Page: {tracking_code} -> {count}")

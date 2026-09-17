@@ -2536,6 +2536,219 @@ async def lavayeh_prepay_successful_payment(message: Message, state: FSMContext,
     await state.clear()
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ⭐ پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی لایحه — پس از خطای «شخص ارائه‌کننده لایحه
+# در فهرست اشخاص پرونده نیست» یا «تاریخ تولد ارسالی مربوط به شماره ملی ...
+# اشتباه است». پنجره و جریمهٔ نصف پیش‌پرداخت در nid_fix_window مدیریت و در
+# persistence ذخیره می‌شود (حتی پس از کرش/قطعی ربات برای درخواست‌های بعدی
+# کاربر مورد محاسبه قرار می‌گیرد).
+# ══════════════════════════════════════════════════════════════════════════════
+
+import nid_fix_window as _nfw
+
+
+@lavayeh_router.callback_query(F.data.startswith("lav_nid_fix:"))
+async def lav_nid_fix_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """کاربر دکمهٔ «ویرایش کدملی» را زد."""
+    parts = callback.data.split(":")
+    target_user_id = int(parts[1])
+
+    if callback.from_user.id != target_user_id:
+        await callback.answer("⚠️ این دکمه مربوط به شما نیست.")
+        return
+
+    win = _nfw.get_window(target_user_id)
+    if not win or win.get("flow") != _nfw.FLOW_LAVAYEH:
+        await callback.answer(
+            "⚠️ درخواستی برای ویرایش یافت نشد (مهلت ۳۰ دقیقه‌ای به پایان رسیده است).")
+        return
+
+    await callback.answer()
+
+    person_index = win.get("person_index", -1)
+    task_data = win.get("task_data") or {}
+    persons = task_data.get("lavayeh_persons", [])
+
+    # اگر ایندکس شخص مشخص نیست، لیست اشخاص برای انتخاب نمایش داده می‌شود
+    if person_index is None or person_index < 0 or person_index >= len(persons):
+        if not persons:
+            await bot.send_message(
+                target_user_id,
+                "⚠️ فهرست اشخاص درخواست یافت نشد. لطفاً از منوی اصلی مجدداً اقدام فرمایید.",
+                reply_markup=restart_kb)
+            return
+        await state.update_data(_nid_fix_flow="lavayeh")
+        await bot.send_message(
+            target_user_id,
+            "👥 لطفاً *شخصی را که کدملی اشتباه دارد* انتخاب فرمایید:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text=f"{i + 1}. {str(p.get('name') or p.get('national_id') or 'شخص ' + str(i + 1))[:40]}",
+                    callback_data=f"lav_nid_pick:{target_user_id}:{i}")]
+                for i, p in enumerate(persons)
+            ]))
+        await state.set_state(Form.lavayeh_nid_fix_select_person)
+        return
+
+    await state.update_data(_nid_fix_flow="lavayeh", _nid_fix_person_index=person_index)
+    old_nid = (persons[person_index] or {}).get("national_id", "") if person_index < len(persons) else ""
+    await bot.send_message(
+        target_user_id,
+        f"🔢 کدملی فعلی: `{old_nid or '---'}`\n\n"
+        "لطفاً *کدملی صحیح* را ارسال فرمایید:\n_(۱۰ رقمی)_\n\n"
+        "⚠️ اطلاعات قبلی لایحه حفظ شده و فقط کدملی اصلاح می‌شود.",
+        reply_markup=back_only_kb)
+    await state.set_state(Form.lavayeh_nid_fix_new_nid)
+
+
+@lavayeh_router.callback_query(F.data.startswith("lav_nid_pick:"))
+async def lav_nid_pick_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """کاربر شخصی را برای ویرایش کدملی انتخاب کرد."""
+    parts = callback.data.split(":")
+    target_user_id = int(parts[1])
+    person_index = int(parts[2])
+
+    if callback.from_user.id != target_user_id:
+        await callback.answer("⚠️ این دکمه مربوط به شما نیست.")
+        return
+
+    win = _nfw.get_window(target_user_id)
+    if not win or win.get("flow") != _nfw.FLOW_LAVAYEH:
+        await callback.answer("⚠️ مهلت ویرایش به پایان رسیده است.")
+        return
+
+    await callback.answer()
+    await state.update_data(_nid_fix_flow="lavayeh", _nid_fix_person_index=person_index)
+
+    persons = (win.get("task_data") or {}).get("lavayeh_persons", [])
+    old_nid = (persons[person_index] or {}).get("national_id", "") if person_index < len(persons) else ""
+    await bot.send_message(
+        target_user_id,
+        f"🔢 کدملی فعلی: `{old_nid or '---'}`\n\n"
+        "لطفاً *کدملی صحیح* را ارسال فرمایید:\n_(۱۰ رقمی)_\n\n"
+        "⚠️ اطلاعات قبلی لایحه حفظ شده و فقط کدملی اصلاح می‌شود.",
+        reply_markup=back_only_kb)
+    await state.set_state(Form.lavayeh_nid_fix_new_nid)
+
+
+@lavayeh_router.callback_query(F.data.startswith("lav_nid_cancel:"))
+async def lav_nid_cancel_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """حذف درخواست — بستن پنجرهٔ ۳۰ دقیقه‌ای + اعمال جریمهٔ نصف پیش‌پرداخت."""
+    parts = callback.data.split(":")
+    target_user_id = int(parts[1])
+
+    if callback.from_user.id != target_user_id:
+        await callback.answer("⚠️ این دکمه مربوط به شما نیست.")
+        return
+
+    _nfw.pop_window(target_user_id)
+    runtime_state.pending_lavayeh_sana_fix.pop(target_user_id, None)
+    await callback.answer("درخواست حذف شد.")
+
+    # جریمه — نصف مبلغ پیش‌پرداخت برای موارد بعدی (عین دستور کارفرما)
+    new_rial = _nfw.halve_prepaid(target_user_id)
+    penalty_line = (
+        f"💰 نصف مبلغ پیش‌پرداخت شما ({new_rial // 10:,} تومان) برای موارد بعدی "
+        "شما لحاظ شد و از هزینه کسر می‌گردد.\n" if new_rial > 0 else "")
+
+    try:
+        await callback.message.edit_text(
+            (callback.message.text or "") + "\n\n🗑 _درخواست حذف شد._")
+    except Exception:
+        pass
+
+    await bot.send_message(
+        target_user_id,
+        "🗑 *درخواست لایحه حذف شد.*\n\n"
+        f"{penalty_line}\n"
+        "در صورت نیاز، از منوی اصلی مجدداً اقدام فرمایید.",
+        reply_markup=restart_kb)
+    await state.clear()
+
+
+@lavayeh_router.message(Form.lavayeh_nid_fix_select_person)
+async def lav_nid_select_person_message(message: Message, state: FSMContext):
+    """در حالت انتخاب شخص، فقط دکمه‌های اینلاین معتبرند."""
+    if message.text == "🔙 بازگشت":
+        _nfw.pop_window(message.from_user.id)
+        await message.answer(
+            "🗑 ویرایش لغو شد و درخواست حذف شد.",
+            reply_markup=restart_kb)
+        await state.clear()
+        return
+    await message.answer("⚠️ لطفاً شخص را از دکمه‌های بالا انتخاب فرمایید.")
+
+
+@lavayeh_router.message(Form.lavayeh_nid_fix_new_nid)
+async def lav_nid_receive_new_nid(message: Message, state: FSMContext, bot: Bot):
+    """دریافت کدملی جدید و ادامهٔ ثبت لایحه با همان اطلاعات سیو شده."""
+    if not message.text:
+        return
+
+    user_id = message.from_user.id
+
+    if message.text == "🔙 بازگشت":
+        _nfw.pop_window(user_id)
+        runtime_state.pending_lavayeh_sana_fix.pop(user_id, None)
+        await message.answer(
+            "🗑 ویرایش لغو شد و درخواست حذف شد.", reply_markup=restart_kb)
+        await state.clear()
+        return
+
+    nat_id = _to_en(message.text)
+    if not re.match(r"^[0-9]{10}$", nat_id):
+        await message.answer("⚠️ کدملی باید *۱۰ رقمی* باشد:")
+        return
+
+    win = _nfw.pop_window(user_id)
+    runtime_state.pending_lavayeh_sana_fix.pop(user_id, None)
+    if not win or win.get("flow") != _nfw.FLOW_LAVAYEH:
+        await message.answer(
+            "⚠️ درخواست منقضی شده است. لطفاً مجدداً اقدام فرمایید.",
+            reply_markup=restart_kb)
+        await state.clear()
+        return
+
+    fsm_data = await state.get_data()
+    person_index = fsm_data.get("_nid_fix_person_index", win.get("person_index", -1))
+
+    task_data = win.get("task_data") or {}
+    persons = task_data.get("lavayeh_persons", [])
+    if person_index is None or person_index < 0 or person_index >= len(persons):
+        await message.answer(
+            "⚠️ شخص مورد نظر یافت نشد. لطفاً مجدداً اقدام فرمایید.",
+            reply_markup=restart_kb)
+        await state.clear()
+        return
+
+    old_nid = persons[person_index].get("national_id", "")
+    persons[person_index]["national_id"] = nat_id
+    task_data["lavayeh_persons"] = persons
+    task_data.pop("_sana_error_national_id", None)
+    task_data.pop("_sana_error_person_index", None)
+    task_data.pop("_sana_error_kind", None)
+
+    logging.info(
+        f"[LAVAYEH] کدملی شخص {person_index} کاربر {user_id} ویرایش شد: "
+        f"{old_nid} → {nat_id} — ارسال مجدد به صف")
+    await bot.send_message(
+        ADMIN_ID,
+        f"✏️ [LAVAYEH] کدملی شخص {person_index + 1} کاربر {user_id} ویرایش شد "
+        f"({old_nid} → {nat_id}) — درخواست مجدداً به صف ارسال شد.")
+
+    await message.answer(
+        f"✅ کدملی به `{nat_id}` تغییر یافت.\n\n"
+        "⏳ ثبت لایحه با *همان اطلاعات سیو شده* ادامه می‌یابد...",
+        reply_markup=restart_kb)
+
+    # ارسال مجدد تسک — بدون طی مجدد سایر مراحل
+    if not hasattr(runtime_state, "active_lavayeh_users"):
+        runtime_state.active_lavayeh_users = set()
+    runtime_state.active_lavayeh_users.add(user_id)
+    await runtime_state.job_queue.put(task_data)
+    await state.clear()
+
+
 # ══════════════════════════════════════════════════════════════════════
 # پرداخت پیش‌پرداخت دسته‌جمعی (مشترک لایحه/اظهارنامه)
 # ══════════════════════════════════════════════════════════════════════
