@@ -1066,7 +1066,41 @@ async def process_main_menu(message: types.Message, state: FSMContext):
     if "➕ ثبت استعلام جدید" in message.text:
         await message.answer("لطفاً نوع خدمت جدید را انتخاب نمایید:", reply_markup=main_menu_kb)
         return
-        
+
+    # ⭐ اصلاحیه: این دکمه‌های منوی اصلی قبلاً فقط در process_flow_type
+    # (وضعیت Form.waiting_for_flow_type) پاسخ داده می‌شدند. اما تعداد
+    # زیادی از مسیرهای «بازگشت» در سراسر ربات کاربر را به وضعیت
+    # Form.main_menu برمی‌گردانند (همراه با همین کیبورد اصلی) — در نتیجه
+    # با فشردن این دکمه‌ها از این وضعیت، هیچ پاسخی از ربات دریافت
+    # نمی‌شد. حالا این وضعیت هم دقیقاً همان رفتار را دارد.
+    elif "ثبت لایحه" in message.text:
+        from lavayeh_handlers import lavayeh_entry
+        await lavayeh_entry(message, state)
+        return
+    elif "ثبت اظهارنامه" in message.text:
+        from ezhharnameh_handlers import ezhharnameh_entry
+        await ezhharnameh_entry(message, state)
+        return
+    elif "محاسبه تمبر" in message.text:
+        from stamp_calc_handlers import stamp_calc_entry
+        await stamp_calc_entry(message, state)
+        return
+    elif "دعاوی اعتراضی" in message.text:
+        from tajdid_nazar_handlers import tajdid_nazar_entry
+        await tajdid_nazar_entry(message, state)
+        return
+    elif "دادخواست" in message.text:
+        from check_handlers import check_entry
+        await check_entry(message, state)
+        return
+    elif "ارزش منطقه‌ای" in message.text:
+        from regional_value_handlers import regional_value_entry
+        await regional_value_entry(message, state)
+        return
+    elif "ابزار فایل" in message.text:
+        await file_tools_entry(message, state)
+        return
+
     elif "🧹 خالی کردن سبد" in message.text:
         await state.update_data(cart=[])
         await message.answer("🧹 سبد استعلام‌های شما خالی شد.", reply_markup=main_menu_kb)
@@ -2650,3 +2684,34 @@ async def bulk_inquiry_confirm_handler(message: types.Message, state: FSMContext
         cart=items,
         total_payment_sum=total_sum,
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ⭐ اصلاحیه: دستگیرهٔ نهایی (Fallback) برای «دکمه‌های بی‌پاسخ» پس از بازگشت
+#
+# مشکل: در چند مسیر (لایحه/اظهارنامه/دعاوی اعتراضی/دادخواست چک/ارزش
+# منطقه‌ای/...) هنگام پایان یا خطا، state با state.clear() به None
+# بازنشانی می‌شود، اما کیبورد نمایش‌داده‌شده (مثل get_main_menu_kb) هنوز
+# دکمه‌هایی دارد که برای اجرا شدنشان نیاز به یک state خاص (مثلاً
+# Form.main_menu یا Form.waiting_for_flow_type) دارند. چون هیچ هندلری
+# برای متن دلخواه در state=None ثبت نشده (به‌جز /start)، فشردن آن
+# دکمه‌ها هیچ پاسخی از ربات دریافت نمی‌کرد — دقیقاً همان «دکمه کار
+# نمی‌کند» که پس از دکمه‌های بازگشت گزارش شده بود.
+#
+# این هندلر روی یک روتر کاملاً مجزا (fallback_router) تعریف شده تا در
+# bot.py به‌عنوان *آخرین* روتر ثبت شود؛ این‌طور تضمین می‌شود که تنها در
+# صورتی اجرا شود که هیچ‌کدام از هندلرهای دیگر (اصلی یا زیرمنوها) پیام
+# را نگرفته باشند — و باعث سایه‌انداختن روی دکمه‌های ورودی زیرمنوها
+# (که با StateFilter("*") ثبت شده‌اند) نمی‌شود.
+# ══════════════════════════════════════════════════════════════════════════════
+fallback_router = Router()
+
+
+@fallback_router.message(StateFilter(None), F.text)
+async def fallback_unmatched_none_state(message: types.Message, state: FSMContext):
+    await message.answer(
+        "❓ متوجه انتخاب شما نشدم یا این گزینه در این مرحله معتبر نیست.\n"
+        "لطفاً یکی از گزینه‌های زیر را انتخاب فرمایید:",
+        reply_markup=get_flow_type_kb(message.from_user.id)
+    )
+    await state.set_state(Form.waiting_for_flow_type)
