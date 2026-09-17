@@ -184,6 +184,9 @@ async def process_check_task(data: dict, bot: Bot):
     # ⭐ درخواست‌های تامین خواسته و اعسار از هزینه دادرسی (بله/خیر از کاربر)
     tamin_khasteh = bool(data.get("check_tamin_khasteh", False))
     aasar = bool(data.get("check_aasar", False))
+    # ⭐ عناوین اعسار — نوع دادگاه از کاربر پرسیده شده (حقوقی / صلح)
+    court_type = (data.get("check_court_type") or "").strip()
+    is_aasar_title = request_title in CHECK_AASAR_TITLES
     tracking_no = data.get("check_tracking_no", "")
     plaintiffs = data.get("check_plainiffs", [])
     defendants = data.get("check_defendants", [])
@@ -217,6 +220,13 @@ async def process_check_task(data: dict, bot: Bot):
     if request_title in CHECK_NO_AMOUNT_TITLES:
         is_high_amount = True
 
+    # ⭐ عناوین اعسار — مسیر منو بر اساس انتخاب کاربر تعیین می‌شود:
+    #   دادگاه حقوقی → ارایه و پیگیری دادخواست → دادخواست بدوی
+    #   دادگاه صلح  → دعاوی دادگاههای صلح → دعاوی حقوقی
+    # (مبلغ/تامین خواسته/اعسارِ فرعی برای این عناوین حذف شده است)
+    if is_aasar_title:
+        is_high_amount = (court_type != "صلح")
+
     # مسیر منوی سامانه برای مرحلهٔ امضا (پس از پرداخت) — دقیقاً همان مسیرِ
     # انتخاب‌شده در شروع ثبت؛ sign_menu_path در کل زنجیرهٔ پرداخت→امضا پاس می‌شود
     sign_menu_path = (
@@ -230,7 +240,8 @@ async def process_check_task(data: dict, bot: Bot):
         f"plaintiffs={len(plaintiffs)} defendants={len(defendants)} "
         f"cheques={len(cheque_items)} extra_attachments={len(attachment_groups)} "
         f"tamin_khasteh={tamin_khasteh} aasar={aasar} "
-        f"is_high_amount={is_high_amount} branch={branch_code}"
+        f"is_high_amount={is_high_amount} branch={branch_code} "
+        f"court_type={court_type!r} witnesses={len(witnesses)}"
     )
 
     try:
@@ -245,11 +256,19 @@ async def process_check_task(data: dict, bot: Bot):
     except Exception as panel_err:
         logging.warning(f"[CHECK] خطا در ثبت اولیه پرونده در پنل: {panel_err!r}")
 
-    await bot.send_message(
-        user_id,
-        f"🏦 *در حال ثبت دادخواست چک...*\n"
-        f"نوع خواسته: *{request_title}*\n"
-        f"مبلغ: *{amount:,} ریال*")
+    # ⭐ عناوین اعسار مبلغ ندارند — پیام بدون خط «مبلغ»
+    if is_aasar_title:
+        await bot.send_message(
+            user_id,
+            f"🏦 *در حال ثبت دادخواست...*\n"
+            f"نوع خواسته: *{request_title}*\n"
+            f"🏛 دادگاه: *دادگاه {court_type or 'حقوقی'}*")
+    else:
+        await bot.send_message(
+            user_id,
+            f"🏦 *در حال ثبت دادخواست چک...*\n"
+            f"نوع خواسته: *{request_title}*\n"
+            f"مبلغ: *{amount:,} ریال*")
     await bot.send_message(
         ADMIN_ID,
         f"🔄 [CHECK] شروع ثبت دادخواست چک برای کاربر {user_id}\n"
@@ -257,6 +276,7 @@ async def process_check_task(data: dict, bot: Bot):
         f"خوانده: {len(defendants)} | فقرات چک: {len(cheque_items)}\n"
         f"تامین خواسته: {'بله' if tamin_khasteh else 'خیر'} | "
         f"اعسار: {'بله' if aasar else 'خیر'}"
+        + (f" | دادگاه: {court_type}" if is_aasar_title else "")
     )
 
     # bill_no قبل از حلقهٔ تلاش مقداردهی می‌شود تا در هندلر CheckAbortError
@@ -436,7 +456,8 @@ async def process_check_task(data: dict, bot: Bot):
             await asyncio.sleep(1)
 
             # ⭐ برای طلاق×۳ و «الزام به تمکین» گزینهٔ مبلغ حذف می‌شود
-            if request_title not in CHECK_NO_AMOUNT_TITLES:
+            # ⭐ عناوین اعسار نیز مبلغ ندارند (گزینهٔ مبلغ حذف شده است)
+            if request_title not in CHECK_NO_AMOUNT_TITLES and not is_aasar_title:
                 # ۴.۵ انتخاب «مبلغ معین»
                 await sana_page.evaluate('''() => {
                     const sel = document.querySelector('select[ng-model*="PriceType"]');
@@ -1496,6 +1517,22 @@ CHECK_FAMILY_TITLES = ("دادخواست طلاق توافقی", "دادخواس
 # طلاق×۳ و «الزام به تمکین»: بدون مبلغ و همیشه دادخواست بدوی
 CHECK_NO_AMOUNT_TITLES = ("دادخواست طلاق توافقی", "دادخواست طلاق به درخواست زوجه",
                           "دادخواست طلاق به درخواست زوج", "دادخواست الزام به تمکین")
+# ⭐ عناوین اعسار — در فیلد «خواسته» عبارت «اعسار» تایپ و گزینهٔ دقیقِ همان
+# عنوان انتخاب می‌شود؛ مبلغ/تامین/اعسار فرعی ندارند و مسیر منو بر اساس
+# انتخاب کاربر (دادگاه حقوقی / صلح) تعیین می‌گردد.
+CHECK_AASAR_TITLES = ("اعسار از پرداخت هزینه دادرسی",
+                      "اعسار از پرداخت محکوم به",
+                      "اعسار از پرداخت مهریه")
+# دراپ‌داون سامانه (getReliefFromJSSPetitionType) برای جستجوی «اعسار»:
+#   «اعسار از پرداخت محکوم به» / «اعسار از پرداخت مهریه» /
+#   «اعسار از پرداخت هزینه دادرسی»
+_AASAR_SEARCH = {t: "اعسار" for t in CHECK_AASAR_TITLES}
+_AASAR_TARGET = {
+    "اعسار از پرداخت هزینه دادرسی": ["اعسار از پرداخت هزینه دادرسی"],
+    "اعسار از پرداخت محکوم به": ["اعسار از پرداخت محکوم به"],
+    "اعسار از پرداخت مهریه": ["اعسار از پرداخت مهریه"],
+}
+_AASAR_FALLBACK = {t: ["اعسار"] for t in CHECK_AASAR_TITLES}
 _FAMILY_SEARCH = {"دادخواست طلاق توافقی": "طلاق", "دادخواست طلاق به درخواست زوجه": "طلاق",
                   "دادخواست طلاق به درخواست زوج": "طلاق", "دادخواست نفقه": "نفقه",
                   "دادخواست الزام به تمکین": "تمکین", "دادخواست مهریه": "مهریه"}
@@ -1577,17 +1614,25 @@ async def _select_khasteh_option(page, request_title: str, bot: Bot, user_id: in
     is_ejra = (request_title == "صدور اجرائیه چک")
     is_badane = (request_title == "مطالبه وجه بابت...")
     is_family = request_title in CHECK_FAMILY_TITLES
+    is_aasar = request_title in CHECK_AASAR_TITLES
 
     if search_term is None:
         # ⭐ طبق دستور کارفرما: برای «مطالبه وجه بابت...» عبارت «وجه» تایپ می‌شود
-        if is_badane:
+        if is_aasar:
+            # ⭐ عناوین اعسار — در فیلد «خواسته» عبارت «اعسار» تایپ و گزینهٔ
+            # دقیقِ همان عنوان (اعسار از پرداخت محکوم به/مهریه/هزینه دادرسی)
+            # از دراپ‌داون سامانه انتخاب می‌شود.
+            search_term = _AASAR_SEARCH.get(request_title, "اعسار")
+        elif is_badane:
             search_term = "وجه"
         elif is_family:
             search_term = _FAMILY_SEARCH.get(request_title, "خواسته")
         else:
             search_term = "چک"
     if target_texts is None:
-        if is_badane:
+        if is_aasar:
+            target_texts = _AASAR_TARGET.get(request_title, [])
+        elif is_badane:
             target_texts = ["مطالبه وجه بابت"]
         elif is_family:
             target_texts = _FAMILY_TARGET.get(request_title, [])
@@ -1596,7 +1641,9 @@ async def _select_khasteh_option(page, request_title: str, bot: Bot, user_id: in
         else:
             target_texts = ["مطالبه وجه چک"]
     if fallback_texts is None:
-        if is_badane:
+        if is_aasar:
+            fallback_texts = _AASAR_FALLBACK.get(request_title, [])
+        elif is_badane:
             fallback_texts = ["وجه بابت"]
         elif is_family:
             fallback_texts = _FAMILY_FALLBACK.get(request_title, [])
@@ -3212,6 +3259,143 @@ async def _register_marriage_certificate(page, group, group_paths, bot, user_id,
     return True
 
 
+async def _register_dadnameh_attachment(page, group, group_paths, bot, user_id, bill_no) -> bool:
+    """⭐ ثبت «تصويردادنامه غيرمكانيزه» (دادنامه/اجرائیه) طبق مسیر کارفرما:
+
+    انتخاب «تصويردادنامه غيرمكانيزه» در attachmentType →
+      - #txtNo ← شماره دادنامه (عددی)
+      - #txtIssueDate ← تاریخ دادنامه (فرمت ۱۴۰۳/۰۶/۱۵)
+      - #txtUnit ← نام دادگاه
+      - #txtCourt ← شماره شعبه
+    → تعداد برگ پیوست (#txt001 = تعداد تصاویر) → «افزودن پیوست» (incAttach0)
+    → «ثبت و ویرایش پیوست» (btnSaveDoc) با مدیریت خطا → آپلود تصاویر عین سایر منضمات.
+    """
+    dadnameh_no = str(group.get("dadnameh_no", "") or "").strip()
+    dadnameh_date = str(group.get("dadnameh_date", "") or "").strip()
+    dadnameh_court = str(group.get("dadnameh_court", "") or "").strip()
+    dadnameh_branch = str(group.get("dadnameh_branch", "") or "").strip()
+    logging.info(
+        f"[CHECK][منضمات] ثبت دادنامه غیرمکنه — شماره:{dadnameh_no} تاریخ:{dadnameh_date} "
+        f"دادگاه:{dadnameh_court} شعبه:{dadnameh_branch} تصویر:{len(group_paths)}")
+
+    # ۱) «پیوست جدید»
+    clicked = await page.evaluate("""() => {
+        const btn = document.querySelector('#newAttachmentType');
+        if (btn && !btn.disabled) { btn.click(); return true; }
+        return false;
+    }""")
+    if clicked:
+        await asyncio.sleep(3)
+        await wait_for_angular_idle(page)
+        await asyncio.sleep(1)
+
+    # ۲) انتخاب «تصويردادنامه غيرمكانيزه» در فهرست نوع سند
+    if not await _select_attachment_type(page, "تصويردادنامه غيرمكانيزه"):
+        err = "گزینه «تصويردادنامه غيرمكانيزه» در فهرست نوع سند یافت نشد"
+        logging.error(f"[CHECK][منضمات] {err}")
+        try:
+            await bot.send_message(ADMIN_ID, f"❌ [CHECK] {err} — کاربر {user_id} | کد: {bill_no}")
+        except Exception:
+            pass
+        return False
+    await asyncio.sleep(1)
+
+    # ۳) تکمیل فیلدهای سند — شماره دادنامه / تاریخ / نام دادگاه / شماره شعبه
+    fill_js = """(a) => {
+        const el = document.querySelector('#' + a.n) || document.querySelector('input[name="' + a.n + '"]');
+        if (!el) return false;
+        const s = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        s.call(el, a.v);
+        el.dispatchEvent(new Event('input', {bubbles: true}));
+        el.dispatchEvent(new Event('change', {bubbles: true}));
+        return true;
+    }"""
+    filled_no = await page.evaluate(fill_js, {"n": "txtNo", "v": dadnameh_no})
+    if not filled_no:
+        logging.warning("[CHECK][منضمات] فیلد #txtNo (شماره دادنامه) پیدا نشد")
+
+    filled_date = await page.evaluate(fill_js, {"n": "txtIssueDate", "v": dadnameh_date})
+    if filled_date:
+        await asyncio.sleep(0.5)
+        # بستن dropdown تقویم فارسی که ممکن است روی فرزندها باز شود
+        try:
+            await page.evaluate(
+                "() => { document.querySelectorAll('.dropdown-menu, ul.dropdown-menu')"
+                ".forEach(m => m.remove()); }")
+        except Exception:
+            pass
+    else:
+        logging.warning("[CHECK][منضمات] فیلد #txtIssueDate (تاریخ دادنامه) پیدا نشد")
+
+    if dadnameh_court:
+        filled_unit = await page.evaluate(fill_js, {"n": "txtUnit", "v": dadnameh_court})
+        if not filled_unit:
+            logging.warning("[CHECK][منضمات] فیلد #txtUnit (نام دادگاه) پیدا نشد")
+
+    if dadnameh_branch:
+        filled_court = await page.evaluate(fill_js, {"n": "txtCourt", "v": dadnameh_branch})
+        if not filled_court:
+            logging.warning("[CHECK][منضمات] فیلد #txtCourt (شماره شعبه) پیدا نشد")
+
+    # ۴) تعداد برگ پیوست (مثل سایر پیوست‌ها)
+    await page.evaluate(fill_js, {"n": "txt001", "v": str(len(group_paths))})
+    await asyncio.sleep(0.5)
+
+    # ۵) «افزودن پیوست»
+    added = await page.evaluate("""() => {
+        const btn = document.querySelector('#incAttach0');
+        if (btn && !btn.disabled) { btn.click(); return true; }
+        return false;
+    }""")
+    if not added:
+        err = "دکمه «افزودن پیوست» (incAttach0) برای دادنامه یافت نشد"
+        logging.error(f"[CHECK][منضمات] {err}")
+        try:
+            await bot.send_message(ADMIN_ID, f"❌ [CHECK] {err} — کاربر {user_id} | کد: {bill_no}")
+        except Exception:
+            pass
+        return False
+    await asyncio.sleep(1)
+
+    # ۶) «ثبت و ویرایش پیوست» با ریترای و اعمال خطاها/نکات منضمات
+    save_ok = await click_save_doc_with_retry(page, bot, user_id, prefix="CHECK")
+    if not save_ok:
+        error_text = await _uh_error_popup_text(page)
+        logging.error(f"[CHECK][منضمات] ذخیره دادنامه غیرمکنه ناموفق: {error_text!r}")
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"❌ [CHECK] ذخیره دادنامه غیرمکنه ناموفق — کاربر {user_id} | کد: {bill_no} | "
+                f"خطا: {(error_text or 'نامشخص')[:200]}")
+            await bot.send_message(
+                user_id,
+                "⚠️ ثبت پیوست دادنامه در بخش منضمات با خطا مواجه شد.\n"
+                f"🔢 کد بایگانی: `{bill_no}`\n"
+                f"لطفاً به شماره {SUPPORT_PHONE} در واتساپ یا بله پیام دهید.")
+        except Exception:
+            pass
+        return False
+    await resilient_sleep(page, 5, bot, user_id)
+
+    # ۷) آپلود تصاویر عین سایر منضمات
+    if group_paths:
+        upload_result = await _upload_check_files(
+            page, "تصويردادنامه غيرمكانيزه", group_paths, bot, user_id, bill_no)
+        if not upload_result.get("success"):
+            logging.error(
+                f"[CHECK][منضمات] آپلود تصاویر دادنامه ناموفق: {upload_result.get('error')}")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"❌ [CHECK] آپلود تصاویر دادنامه ناموفق — کاربر {user_id} | کد: {bill_no} | "
+                    f"خطا: {(upload_result.get('error') or 'نامشخص')[:200]}")
+            except Exception:
+                pass
+            return False
+    logging.info("[CHECK][منضمات] دادنامه غیرمکنه ثبت و تصاویر آپلود شد")
+    return True
+
+
 async def _process_check_attachments(
     page,
     request_title: str,
@@ -3425,14 +3609,23 @@ async def _process_check_attachments(
             logging.warning(f"[CHECK][منضمات] تصویری برای پیوست «{group_title}» دانلود نشد")
             continue
 
-        # ⭐ استشهادیه محلی — فقط وقتی کاربر درخواست اعسار داده است؛
-        # طبق دستور کارفرما: نوع پیوست «استشهاديه محلي» + تمام فیلدها = ۱
+        # ⭐ استشهادیه محلی — فقط وقتی کاربر درخواست اعسار داده است یا عنوان
+        # اعسار است؛ طبق دستور کارفرما: نوع پیوست «استشهاديه محلي» + تمام فیلدها = ۱
         # ⭐ سند ازدواج — مسیر اختصاصی طبق دستور کارفرما (سپس مابقی عین منضمات)
+        # ⭐ دادنامه غیرمکنه — عناوین اعسار (تصويردادنامه غيرمكانيزه + ۴ فیلد سند)
+        # ⭐ لیست اموال — عناوین اعسار (ساير ضمائم)
         if group.get("is_marriage_cert"):
             mc_ok = await _register_marriage_certificate(
                 page, group, group_paths, bot, user_id, bill_no)
             if not mc_ok:
                 logging.error("[CHECK][منضمات] ثبت سند ازدواج ناموفق بود")
+        elif bool(group.get("is_dadnameh")):
+            dn_ok = await _register_dadnameh_attachment(
+                page, group, group_paths, bot, user_id, bill_no)
+            if not dn_ok:
+                logging.error("[CHECK][منضمات] ثبت دادنامه غیرمکنه ناموفق بود")
+            else:
+                logging.info("[CHECK][منضمات] پیوست «تصويردادنامه غيرمكانيزه» ثبت و آپلود شد")
         elif bool(group.get("is_esteshahadieh")) or ("استشهاد" in group_title):
             estesh_ok = await _upload_esteshahadieh_attachment(
                 page, group_paths, bot, user_id, bill_no)
@@ -3440,6 +3633,21 @@ async def _process_check_attachments(
                 logging.error("[CHECK][استشهادیه] ثبت/آپلود استشهادیه ناموفق بود")
             else:
                 logging.info("[CHECK][استشهادیه] پیوست «استشهاديه محلي» ثبت و آپلود شد")
+        elif bool(group.get("is_assets_list")) or ("لیست اموال" in group_title) or ("ليست اموال" in group_title):
+            # ⭐ لیست اموال — مانند سایر پیوست‌ها با «ساير ضمائم» ثبت و آپلود می‌شود
+            upload_result = await resilient_upload_attachment(
+                page, group_title, group_paths, bot, user_id,
+                prefix="CHECK", form_fill_fn=_fill_extra_attachment_form)
+            if not upload_result.get("success"):
+                logging.error(
+                    f"[CHECK][منضمات] آپلود لیست اموال ناموفق: "
+                    f"{upload_result.get('error')}")
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"❌ [CHECK] آپلود لیست اموال ناموفق — کاربر {user_id} | "
+                    f"کد: {bill_no} | خطا: {(upload_result.get('error') or 'نامشخص')[:200]}")
+            else:
+                logging.info("[CHECK][منضمات] پیوست «لیست اموال» (ساير ضمائم) آپلود شد")
         else:
             # آپلود با resilient_upload_attachment (فرم سفارشی: نمایندگی/سایر ضمائم)
             upload_result = await resilient_upload_attachment(
