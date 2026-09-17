@@ -19,7 +19,7 @@ from aiogram.types import BotCommand
 
 from config import BOT_TOKEN, BALE_API_BASE, ADMIN_ID
 from bug_reporter import init_file_logging, report_bug, upload_logs
-from handlers import router
+from handlers import router, fallback_router
 from scenarios import browser_worker
 from admin_relay import admin_relay_router
 
@@ -34,6 +34,10 @@ from persistence import (
 dp = Dispatcher(storage=MemoryStorage())
 dp.include_router(router)
 dp.include_router(admin_relay_router)
+# ⭐ اصلاحیه: fallback_router باید همیشه *آخرین* روتر ثبت‌شده باشد تا فقط
+# وقتی پیامی توسط هیچ‌کدام از روترهای بالا (اصلی/زیرمنوها/ادمین) گرفته
+# نشد، اجرا شود — نه زودتر.
+dp.include_router(fallback_router)
 runtime_state.dp = dp
 
 

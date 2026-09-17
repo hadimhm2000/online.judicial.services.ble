@@ -198,13 +198,19 @@ async def dismiss_expiry_popup(page) -> bool:
     return bool(closed)
 
 
-async def handle_session_expired(bot: Bot, user_id: int, page=None):
+async def handle_session_expired(bot: Bot, user_id: int, page=None, timeout_seconds: float = 120):
     """
     مدیریت هوشمند انقضای نشست ثنا:
       ۱) به مدیر اطلاع می‌دهد و یک تب جدید برای لاگین مجدد باز می‌کند
          (تب اصلی/صفحه‌ی در حال کار — که پاپ‌آپ خطا رویش نمایش داده شده —
          دست‌نخورده باقی می‌ماند تا وضعیت/مرحله‌ی فعلی از دست نرود).
-      ۲) منتظر می‌ماند تا مدیر دکمه‌ی تایید لاگین را در ربات بزند.
+      ۲) منتظر می‌ماند تا مدیر دکمه‌ی تایید لاگین را در ربات بزند
+         (⭐ اصلاحیه: حداکثر `timeout_seconds` ثانیه — این تابع داخل
+         حلقه‌ی اصلی و سراسری browser_worker اجرا می‌شود؛ صف پردازش همه‌ی
+         کاربران تا پایان این انتظار متوقف می‌ماند. قبلاً این انتظار بدون
+         سقف زمانی بود و در صورت تاخیر مدیر در تایید لاگین، کل ربات برای
+         تمام کاربران — حتی آن‌هایی که کارشان ربطی به نشست منقضی‌شده
+         نداشت — بی‌پاسخ می‌ماند).
       ۳) تب لاگین را می‌بندد.
       ۴) روی همان صفحه‌ی اصلی (page)، دکمه‌ی «بستن» پاپ‌آپ خطا را می‌زند
          تا صفحه دقیقاً از همان‌جا که متوقف شده بود قابل ادامه باشد.
@@ -217,7 +223,22 @@ async def handle_session_expired(bot: Bot, user_id: int, page=None):
         runtime_state.login_event.clear()
 
         await bot.send_message(ADMIN_ID, "🔑 *لاگین مجدد ثنا:*\nپنجره ورود جدید باز شده است. لطفا لاگین کنید و دکمه زیر را بفشارید 👇", reply_markup=admin_login_kb)
-        await runtime_state.login_event.wait()
+        try:
+            await asyncio.wait_for(runtime_state.login_event.wait(), timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            logging.warning(
+                f"[SESSION_EXPIRED] پس از {timeout_seconds} ثانیه، مدیر لاگین را تایید نکرد — "
+                "برای جلوگیری از توقف کامل صف پردازش، ادامه می‌دهیم (تسک فعلی به احتمال زیاد ناموفق خواهد شد)."
+            )
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"⏱ *زمان انتظار برای تایید لاگین ({int(timeout_seconds)} ثانیه) به پایان رسید.*\n"
+                    "برای اینکه صف پردازش سایر کاربران مسدود نماند، ادامه می‌دهیم. "
+                    "لطفاً هر زمان لاگین کردید، دکمه تایید را بزنید تا کارهای بعدی درست پردازش شوند."
+                )
+            except Exception:
+                pass
     except Exception as e:
         logging.error(f"Error in handle_session_expired page navigation: {e}")
     finally:
