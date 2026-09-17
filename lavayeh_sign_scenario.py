@@ -43,7 +43,58 @@ async def navigate_to_sign_page(
     tracking_code: str,
     menu_path: list | None = None) -> bool:
     """
-    ناوبری به صفحه اخذ امضا.
+    ناوبری به صفحه اخذ امضا — با پشتیبانی لاگین مجدد مدیر.
+
+    ⭐ اصلاحیه (طبق دستور کارفرما): اگر در «هر قسمت» از ناوبری — چه شروع،
+    چه هر اقدامی — آیتم منو پیدا نشد (مثل «[SIGN] آیتم منوی 'ارایه و
+    پیگیری لایحه' پیدا نشد»)، فوراً به مدیر اطلاع داده می‌شود که لاگین
+    مجدد انجام دهد؛ پس از لاگین مجدد، ناوبری یک‌بار دیگر تکرار می‌شود.
+    """
+    # تلاش اول — ناوبری عادی
+    ok = await _navigate_to_sign_page_once(bot, user_id, tracking_code, menu_path)
+    if ok:
+        return True
+
+    # ⭐ ناوبری ناموفق بود (مثل «آیتم منو پیدا نشد») — طبق دستور کارفرما:
+    # در همهٔ قسمت‌های ناوبری (شروع یا هر اقدام)، به مدیر اطلاع داده شود
+    # که برای ادامه باید لاگین مجدد در سامانه انجام دهد.
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"⚠️ [SIGN] ناوبری امضا برای کاربر {user_id} ناموفق بود "
+            f"(کد رهگیری: {tracking_code}).\n"
+            "احتمالاً نشست سامانه منقضی شده است — لطفاً *لاگین مجدد* انجام دهید؛ "
+            "پس از لاگین، ناوبری به‌صورت خودکار تکرار خواهد شد.")
+    except Exception:
+        pass
+
+    # جریان لاگین مجدد مدیر (باز کردن تب لاگین + انتظار برای تایید)
+    try:
+        await handle_session_expired(bot, user_id, page=runtime_state.sana_page)
+    except Exception as e:
+        logging.warning(f"[SIGN] جریان لاگین مجدد مدیر با خطا مواجه شد: {e}")
+
+    # تلاش دوم — پس از لاگین مجدد
+    logging.info(f"[SIGN] تلاش مجدد ناوبری پس از لاگین مدیر — کاربر {user_id}")
+    ok2 = await _navigate_to_sign_page_once(bot, user_id, tracking_code, menu_path)
+    if not ok2:
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"❌ [SIGN] ناوبری امضا برای کاربر {user_id} پس از لاگین مجدد هم "
+                f"ناموفق بود (کد رهگیری: {tracking_code}) — لطفاً به‌صورت دستی بررسی کنید.")
+        except Exception:
+            pass
+    return ok2
+
+
+async def _navigate_to_sign_page_once(
+    bot: Bot,
+    user_id: int,
+    tracking_code: str,
+    menu_path: list | None = None) -> bool:
+    """
+    ناوبری به صفحه اخذ امضا (یک تلاش).
     مسیر:
       ۱. رفتن به صفحه اصلی سامانه
       ۲. کلیک روی مسیر منوی مربوط به نوع سند (menu_path)

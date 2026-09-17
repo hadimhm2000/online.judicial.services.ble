@@ -1094,6 +1094,18 @@ check_request_title_kb = ReplyKeyboardMarkup(
         [KeyboardButton(text="دادخواست طلاق توافقی"), KeyboardButton(text="دادخواست طلاق به درخواست زوجه")],
         [KeyboardButton(text="دادخواست طلاق به درخواست زوج"), KeyboardButton(text="دادخواست نفقه")],
         [KeyboardButton(text="دادخواست الزام به تمکین"), KeyboardButton(text="دادخواست مهریه")],
+        [KeyboardButton(text="اعسار از پرداخت هزینه دادرسی")],
+        [KeyboardButton(text="اعسار از پرداخت محکوم به")],
+        [KeyboardButton(text="اعسار از پرداخت مهریه")],
+        [KeyboardButton(text="🔙 بازگشت")],
+    ],
+    resize_keyboard=True
+)
+
+# ⭐ عناوین اعسار — انتخاب نوع دادگاه (حقوقی / صلح) در ابتدای ثبت
+check_court_type_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🏛 دادگاه حقوقی"), KeyboardButton(text="🕊 دادگاه صلح")],
         [KeyboardButton(text="🔙 بازگشت")],
     ],
     resize_keyboard=True
@@ -1181,25 +1193,40 @@ check_more_docs_kb = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# ⭐ اصلاحیه: دکمه‌ها عیناً همان متن‌هایی هستند که هندلرهای check_handlers.py
+# انتظار دارند — قبلاً متن‌های کیبورد با هندلرها مطابقت نداشت و کاربر
+# پس از ارسال تصویر/ذخیرهٔ پیوست، در بن‌بست «لطفاً از دکمه‌ها استفاده کنید»
+# می‌افتاد.
 check_attachment_title_kb_first = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="🔹 عنوان مهم نیست (سایر مستندات)"), KeyboardButton(text="⏭ رد کردن (بدون مدرک)")],
+        [KeyboardButton(text="➕ افزودن پیوست جدید")],
+        [KeyboardButton(text="⏭ رد کردن (بدون مدرک)")],
         [KeyboardButton(text="🔙 بازگشت")],
     ], resize_keyboard=True
 )
 
 check_attachment_title_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="🔹 عنوان مهم نیست (سایر مستندات)")],
+        [KeyboardButton(text="➕ افزودن پیوست جدید")],
+        [KeyboardButton(text="✅ اتمام و ادامه")],
         [KeyboardButton(text="🔙 بازگشت")],
     ], resize_keyboard=True
 )
 
 check_attachment_more_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="➕ بله، عنوان و مدرک دیگر دارم")],
-        [KeyboardButton(text="✅ خیر، ادامه به انتخاب دادگاه")],
-        [KeyboardButton(text="👥 افزودن شهود (مطلع/گواه)")],
+        [KeyboardButton(text="➕ افزودن تصویر دیگر")],
+        [KeyboardButton(text="✅ ادامه")],
+        [KeyboardButton(text="🔙 بازگشت")],
+    ], resize_keyboard=True
+)
+
+# ⭐ کیبورد عمومی «پس از دریافت تصاویر» — استشهادیه / گواهی ازدواج /
+# لیست اموال / دادنامه: متن دکمه‌ها با هندلرهای مربوطه مطابقت دارد.
+check_images_continue_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="➕ افزودن تصویر دیگر")],
+        [KeyboardButton(text="✅ ادامه")],
         [KeyboardButton(text="🔙 بازگشت")],
     ], resize_keyboard=True
 )

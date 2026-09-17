@@ -273,6 +273,7 @@ class Form(StatesGroup):
     check_bulk_input_method = State()     # انتخاب نوع فایل (اکسل)
     check_bulk_file_upload = State()      # دریافت فایل اکسل
     check_request_title = State()         # انتخاب عنوان خواسته (صدور اجرائیه / مطالبه وجه / مطالبه وجه بابت...)
+    check_court_type = State()            # ⭐ عناوین اعسار: دادگاه حقوقی یا دادگاه صلح
     check_amount = State()                # مبلغ چک به ریال
     check_tamin_khasteh = State()         # سوال تامین خواسته و توقیف اموال خوانده (بله/خیر)
     check_aasar = State()                 # سوال اعسار از هزینه دادرسی (بله/خیر)
@@ -306,6 +307,16 @@ class Form(StatesGroup):
     check_marriage_date = State()        # ⭐ تاریخ وقوع عقد (سند ازدواج — عناوین خانواده)
     check_marriage_cert_no = State()     # ⭐ شماره سند ازدواج (عناوین خانواده)      # آیا پیوست دیگری هست؟
     check_branch_code = State()           # انتخاب صلاحیت دادگاه (شعبه)
+    # ⭐ عناوین اعسار — تصاویر لیست اموال
+    check_assets_list_image = State()     # تصاویر لیست اموال (الزامی)
+    check_assets_list_more = State()      # ادامه / تصویر دیگر لیست اموال
+    # ⭐ عناوین اعسار — تصاویر دادنامه یا اجرائیه + فیلدهای سند
+    check_judgment_image = State()        # تصاویر دادنامه/اجرائیه (الزامی)
+    check_judgment_more = State()         # ادامه / تصویر دیگر دادنامه
+    check_judgment_no = State()           # شماره دادنامه (فقط عدد)
+    check_judgment_date = State()         # تاریخ دادنامه (فرمت تاریخ)
+    check_judgment_court_name = State()   # نام دادگاه
+    check_judgment_branch_no = State()    # شماره شعبه (فقط عدد)
 
     # =========================================================
     # ⭐ State های اضافی نسخهٔ جدید check_handlers.py (عناوین خانواده + فلوی
