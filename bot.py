@@ -168,6 +168,14 @@ async def state_persister(bot: Bot):
             save_runtime_state()
             cleanup_expired_disrupted()
             cleanup_expired_inquiry_attempts()
+            # ⭐ اسوئپر پنجره‌های ۳۰/۴۵ دقیقه‌ای (ویرایش کدملی/دادنامه) —
+            # باید قبل از TTL-کلین‌آپ اجرا شود تا جریمهٔ نصف پیش‌پرداخت
+            # پیش از حذفِ entry اعمال شود.
+            try:
+                import nid_fix_window
+                await nid_fix_window.sweep_expired(bot)
+            except Exception as _sw_err:
+                logging.error(f"[PERSIST] خطا در sweep پنجره‌های ویرایش: {_sw_err}")
             cleanup_expired_pending_entries()
             logging.debug("[PERSIST] ذخیره‌ی دوره‌ی انجام شد.")
         except asyncio.CancelledError:
@@ -323,12 +331,18 @@ async def main():
     # تا پرونده‌های ماه‌ها-گذشته نه تنها پیام نگیرند، بلکه از صف‌ها هم پاک شوند.
     cleanup_expired_pending_entries()
     _tn_store = getattr(runtime_state, "pending_tn_sign", {})
+    _tn_fix_store = getattr(runtime_state, "pending_tn_sana_fix", {})
+    _lav_fix_store = getattr(runtime_state, "pending_lavayeh_sana_fix", {})
+    _tn_rtv_store = getattr(runtime_state, "pending_tn_retrieve_fix", {})
     active_submitted = [
         u for u in active_submitted
         if (u in runtime_state.pending_lavayeh_sign
             or u in runtime_state.pending_ezhhar_sign
             or u in _tn_store
-            or u in runtime_state.pending_ezhhar_sana_fix)
+            or u in runtime_state.pending_ezhhar_sana_fix
+            or u in _tn_fix_store
+            or u in _lav_fix_store
+            or u in _tn_rtv_store)
     ]
     active_unsubmitted = [
         u for u in active_unsubmitted
@@ -384,6 +398,17 @@ async def main():
             logging.info("[RECOVERY] اطلاع به مدیر (بدون کاربر فعال) ارسال شد.")
         except Exception as e:
             logging.error(f"[RECOVERY] خطا در ارسال به مدیر: {e}", exc_info=True)
+
+    # ⭐ اسوئپ اولیهٔ پنجره‌های منقضی (۳۰ دقیقه‌ای کدملی / ۴۵ دقیقه‌ای دادنامه)
+    # — بلافاصله پس از استارت تا پنجره‌های منقضی‌شده در دوران خاموشی هم
+    # جریمه/اطلاع‌رسانی شوند (ماندگاری در persistence تضمین شده است).
+    try:
+        import nid_fix_window
+        _closed = await nid_fix_window.sweep_expired(bot)
+        if _closed:
+            logging.info(f"[START] {_closed} پنجرهٔ منقضی ویرایش بسته و جریمه‌ها اعمال شد.")
+    except Exception as _sw_err:
+        logging.error(f"[START] خطا در اسوئپ اولیهٔ پنجره‌های ویرایش: {_sw_err}")
 
     # ── شروع تسک‌های پس‌زمینه ──
     asyncio.create_task(browser_worker(bot))

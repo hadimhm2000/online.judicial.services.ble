@@ -1327,6 +1327,18 @@ async def ezhhar_delete_request_callback(callback: CallbackQuery, state: FSMCont
 
     # حذف از pending
     runtime_state.pending_ezhhar_sana_fix.pop(target_user_id, None)
+    # ⭐ بستن پنجرهٔ ۳۰ دقیقه‌ای + جریمهٔ نصف پیش‌پرداخت (حذف صریح درخواست)
+    try:
+        import nid_fix_window
+        nid_fix_window.pop_window(target_user_id)
+        _new_rial = nid_fix_window.halve_prepaid(target_user_id)
+        if _new_rial > 0:
+            await bot.send_message(
+                target_user_id,
+                f"💰 نصف مبلغ پیش‌پرداخت شما ({_new_rial // 10:,} تومان) "
+                "برای موارد بعدی شما لحاظ شد و از هزینه کسر می‌گردد.")
+    except Exception as _pen_err:
+        logging.error(f"[EZHHAR] خطا در اعمال جریمه پس از حذف درخواست: {_pen_err}")
     await callback.answer("درخواست حذف شد.")
 
     try:
@@ -1409,6 +1421,13 @@ async def ezhhar_receive_new_national_id(message: Message, state: FSMContext, bo
     task_data.pop("_sana_error_national_id", None)
     task_data.pop("_sana_error_person_role", None)
     task_data.pop("_sana_error_person_index", None)
+
+    # ⭐ بستن پنجرهٔ ۳۰ دقیقه‌ای — ویرایش موفق؛ پیش‌پرداخت دست‌نخورده می‌ماند
+    try:
+        import nid_fix_window
+        nid_fix_window.pop_window(message.from_user.id)
+    except Exception:
+        pass
 
     await message.answer(
         f"✅ شناسه ملی به `{nat_id}` تغییر یافت.\n\n"

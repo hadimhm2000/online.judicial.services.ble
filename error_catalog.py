@@ -46,6 +46,14 @@ UPLOAD_CONFIRMED = "upload_confirmed"     # «پیوست مورد نظر با م
 # خطای کدملی اشتباه یا عدم ثبت‌نام ثنا
 NATIONAL_ID_INVALID_OR_NOT_REGISTERED = "national_id_invalid_or_not_registered"
 
+# ⭐ اصلاحیهٔ کارفرما: خطای «شماره تصمیم نهایی یا شماره پرونده اشتباه می باشد»
+# در استعلام/بازیابی دادنامهٔ دعاوی اعتراضی
+RETRIEVE_MISMATCH = "retrieve_mismatch"
+
+# ⭐ اصلاحیهٔ کارفرما: «شخص ارائه‌کننده لایحه به‌نام ... در فهرست اشخاص
+# پرونده نیست و امکان ثبت لایحه دفاعیه وجود ندارد»
+PERSON_NOT_IN_CASE = "person_not_in_case"
+
 GENERAL_ERROR = "general_error"
 SUCCESS = "success"
 UNKNOWN = "unknown"
@@ -67,6 +75,16 @@ def normalize(text) -> str:
 # ترتیب مهم است: دسته‌های خاص‌تر (مثل «امضا در ثنا ثبت نشده») باید قبل از
 # دسته‌های عمومی‌تر (مثل general_error) بررسی شوند.
 CATALOG = [
+    # ── ⭐ خطاهای خاص کارفرما (باید قبل از دسته‌های عمومی بررسی شوند) ──
+    (RETRIEVE_MISMATCH, [
+        "تصمیم نهایی یا شماره پرونده اشتباه",
+        "تصمیم نهایی",
+        "شماره پرونده اشتباه",
+    ]),
+    (PERSON_NOT_IN_CASE, [
+        "در فهرست اشخاص پرونده نیست",
+    ]),
+
     # ── امضا (خاص‌ترین‌ها اول) ──
     (SIGN_SANA_NOT_REGISTERED, [
         "در سامانه ثنا درج نشده",
@@ -183,6 +201,46 @@ def is_session_expiry(text) -> bool:
     return any(k in norm for k in _SESSION_KEYWORDS)
 
 
+# ── ⭐ توابع کمکی اصلاحیهٔ کارفرما (نرمال‌سازی‌شده — مقاوم به ي/ک عربی و
+#    نیم‌فاصله) ────────────────────────────────────────────────────
+
+def is_retrieve_mismatch(text) -> bool:
+    """آیا متن، خطای «شماره تصمیم نهایی یا شماره پرونده اشتباه می باشد» است؟"""
+    norm = normalize(text)
+    if not norm:
+        return False
+    return ("تصمیم نهایی" in norm) or ("شماره پرونده اشتباه" in norm)
+
+
+def is_person_not_in_case(text) -> bool:
+    """آیا متن، خطای «... در فهرست اشخاص پرونده نیست ...» است؟"""
+    norm = normalize(text)
+    if not norm:
+        return False
+    return "در فهرست اشخاص پرونده نیست" in norm
+
+
+def is_birthdate_error(text) -> bool:
+    """آیا متن، خطای «تاریخ تولد ارسالی مربوط به شماره ملی ... اشتباه است» است؟
+
+    نرمال‌سازی‌شده — نسخه‌های قبلی در فایل‌های مختلف با substring خام
+    بررسی می‌شدند و به ي/ک عربی حساس بودند.
+    """
+    norm = normalize(text)
+    if not norm:
+        return False
+    return "تاریخ تولد" in norm and "اشتباه" in norm
+
+
+def extract_national_id(text) -> str:
+    """استخراج شماره ملی از متن خطای سامانه (مثل «... مربوط به شماره ملی
+    4420910144 اشتباه است») — ۱۰ رقمی؛ خالی اگر یافت نشد."""
+    if not text:
+        return ""
+    m = re.search(r"\d{10,}", str(text))
+    return m.group(0)[:10] if m else ""
+
+
 def is_load_error(text) -> bool:
     return classify(text) == LOAD_ERROR
 
@@ -265,6 +323,8 @@ def describe(text) -> str:
         UPLOAD_REGISTERED: "پیوست ثبت شد",
         UPLOAD_CONFIRMED: "پیوست تایید شد",
         NATIONAL_ID_INVALID_OR_NOT_REGISTERED: "کدملی اشتباه یا عدم ثبت‌نام ثنا",
+        RETRIEVE_MISMATCH: "شماره تصمیم نهایی/پرونده اشتباه",
+        PERSON_NOT_IN_CASE: "شخص در فهرست اشخاص پرونده نیست",
         GENERAL_ERROR: "خطای عمومی",
         SUCCESS: "عملیات موفق",
         UNKNOWN: "خطای ناشناخته",

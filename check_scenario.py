@@ -154,6 +154,24 @@ class CheckAbortError(Exception):
         self.user_msg = user_msg
 
 
+class CheckSanaDataError(CheckAbortError):
+    """⭐ اصلاحیهٔ کارفرما — خطای داده‌ای ثنا در ثبت دادخواست چک که با ویرایش
+    کدملی شخص قابل رفع است (تاریخ تولد ارسالی مربوط به شماره ملی ... اشتباه
+    است / اطلاعاتی با این شناسه ملی ثبت نشده است).
+
+    طبق دستور کارفرما: کاربر ۳۰ دقیقه فرصت دارد کدملی را ویرایش کند؛ در غیر
+    این صورت پس از ۳۰ دقیقه نصف مبلغ پیش‌پرداخت برای موارد بعدی او از هزینه
+    کسر می‌گردد (مدیریت در nid_fix_window + هندلرهای check_handlers).
+    """
+
+    def __init__(self, message: str, kind: str = "other", national_id: str = "",
+                 role: str = ""):
+        super().__init__(message, step="SANA_DATA_ERROR")
+        self.kind = kind            # birthdate | not_registered | other
+        self.national_id = national_id
+        self.role = role
+
+
 def _text_to_editor_html(text: str) -> str:
     """متن کاربر را به HTML امن برای ادیتور تبدیل می‌کند."""
     if not text:
@@ -1135,6 +1153,86 @@ async def process_check_task(data: dict, bot: Bot):
 
             return
 
+        except CheckSanaDataError as sana_err:
+            # ⭐ اصلاحیهٔ کارفرما: خطای داده‌ای ثنا در دادخواست چک («تاریخ تولد
+            # ارسالی مربوط به شماره ملی ... اشتباه است» / شناسه ملی ثبت نشده)
+            # — پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی + جریمهٔ نصف پیش‌پرداخت برای
+            # موارد بعدی. پنجره در persistence ذخیره می‌شود تا حتی پس از
+            # کرش/قطعی ربات برای هر درخواست بعدیِ کاربر محاسبه گردد.
+            # (فقط برای ثبت تکی؛ ردیف‌های دسته‌جمعی همان رفتار قبلی را دارند.)
+            logging.error(
+                f"[CHECK] خطای داده‌ای ثنا user={user_id} (kind={sana_err.kind}): {sana_err}")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"⚠️ [CHECK] خطای داده‌ای ثنا کاربر {user_id} "
+                    f"(kind={sana_err.kind}, nid={sana_err.national_id}, "
+                    f"role={sana_err.role}): {str(sana_err)[:200]}")
+            except Exception:
+                pass
+
+            if is_bulk_check and batch_tracking_code:
+                # ردیف دسته‌جمعی — رفتار قبلی: علامت‌گذاری ردیف و ادامهٔ بچ
+                try:
+                    from bulk_submissions import BULK_TASKS, mark_bulk_item_done
+                    if batch_tracking_code in BULK_TASKS:
+                        BULK_TASKS[batch_tracking_code].setdefault("failures", []).append({
+                            "row_index": bulk_row_index,
+                            "tracking_code": tracking_no,
+                            "title": f"دادخواست چک — {request_title}",
+                            "error": f"خطای داده‌ای ثنا: {str(sana_err)[:150]}",
+                        })
+                    await mark_bulk_item_done(bot, user_id, batch_tracking_code)
+                except Exception as log_err:
+                    logging.error(f"[CHECK] خطا در mark_bulk_item_done: {log_err}")
+                return
+
+            task_data_snapshot = dict(data)
+            task_data_snapshot["_sana_error_national_id"] = sana_err.national_id
+            task_data_snapshot["_sana_error_role"] = sana_err.role
+            task_data_snapshot["_sana_error_kind"] = sana_err.kind
+
+            try:
+                import nid_fix_window
+                _win = nid_fix_window.start_window(
+                    user_id, flow=nid_fix_window.FLOW_CHECK,
+                    task_data=task_data_snapshot, error_text=str(sana_err),
+                    national_id=sana_err.national_id)
+            except Exception as _win_err:
+                logging.error(f"[CHECK] خطا در شروع پنجرهٔ ویرایش کدملی: {_win_err}")
+                _win = None
+
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            chk_kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="✏️ ویرایش کدملی",
+                    callback_data=f"chk_nid_fix:{user_id}")],
+                [InlineKeyboardButton(
+                    text="🗑 حذف درخواست",
+                    callback_data=f"chk_nid_cancel:{user_id}")],
+            ])
+            await bot.send_message(
+                user_id,
+                f"⚠️ *خطای استعلام ثنا:*\n\n«{str(sana_err)[:250]}»\n\n"
+                f"❌ کدملی ({sana_err.role or 'شخص'}) اشتباه می باشد.\n\n"
+                f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این "
+                f"صورت پس از ۳۰ دقیقه، *نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما "
+                f"از هزینه کسر می‌گردد.\n"
+                f"✅ پس از ویرایش، ثبت با همان اطلاعات سیو شده ادامه می‌یابد.",
+                reply_markup=chk_kb)
+            try:
+                from panel_sync import upsert_case_to_panel
+                await upsert_case_to_panel(
+                    bale_user_id=user_id, full_name=str(user_id),
+                    service_type="CHECK", status="FAILED",
+                    tracking_code=tracking_no or None,
+                    document_category=f"دادخواست چک — {request_title}{_doc_category_suffix}",
+                    error_details=f"خطای داده‌ای ثنا: {str(sana_err)[:200]}",
+                    error_step="SANA_DATA_ERROR")
+            except Exception as panel_err:
+                logging.warning(f"[CHECK] خطا در ثبت شکست در پنل: {panel_err!r}")
+            return
+
         except CheckAbortError as abort_err:
             # ⭐ قطع بدون تلاش مجدد — پیام کاربر (در صورت وجود) + اطلاع مدیر +
             # ثبت شکست در پنل + علامت‌گذاری ردیف دسته‌جمعی
@@ -2044,7 +2142,18 @@ async def _query_sana_check(page, ng_click: str, bot: Bot, user_id: int,
                 # مدیریت شده توسط check_and_handle_expiry — تمدید و تلاش مجدد
                 continue
 
-            # ⭐ خطای غیر نشست: یکبار retry؛ اگر دوباره خطا آمد →
+            # ⭐ اصلاحیهٔ کارفرما: خطای «تاریخ تولد ارسالی مربوط به شماره ملی
+            # ... اشتباه است» یا «اطلاعاتی با این شناسه ملی ثبت نشده است» —
+            # retry بی‌فایده است؛ بلافاصله CheckSanaDataError پرتاب می‌شود تا
+            # پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی برای کاربر باز شود.
+            if kind in ("birthdate", "not_registered"):
+                logging.warning(
+                    f"[CHECK][{role}] خطای داده‌ای ثنا برای کدملی {national_id}: "
+                    f"{popup_text!r}")
+                raise CheckSanaDataError(
+                    popup_text, kind=kind, national_id=national_id, role=role)
+
+            # خطای غیر نشست دیگر: یکبار retry؛ اگر دوباره خطا آمد →
             # متن خطا برای کاربر و مدیر ارسال می‌شود
             logging.warning(
                 f"[CHECK][{role}] خطای استعلام ثنا برای کدملی {national_id} "

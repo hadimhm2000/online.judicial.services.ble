@@ -38,6 +38,7 @@ from aiogram.types import (
     CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton)
 
 import runtime_state
+import nid_fix_window
 from states import Form
 from bale_file_sender import send_document_direct
 from config import ADMIN_ID, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE
@@ -52,7 +53,7 @@ from prepay_registration import (
 from panel_sync import upsert_case_to_panel, mark_case_ready_to_send_by_tracking, mark_case_signed_by_tracking
 from sheets import log_event
 from keyboards import (
-    back_only_kb, restart_kb,
+    back_only_kb, restart_kb, get_main_menu_kb,
     representative_type_kb,
     create_province_kb,
     lavayeh_attachment_more_kb,
@@ -1951,7 +1952,7 @@ async def _handle_query_persons(message: Message, state: FSMContext, bot: Bot, s
     # نام step در سامانه
     from tajdid_nazar_scenario import (
         APPELLANT_STEP_MAP, APPELLEE_STEP_MAP,
-        pre_query_tn_persons, TajdidFatalError,
+        pre_query_tn_persons, TajdidFatalError, TajdidRetrieveDataError,
     )
     case_type = data.get("case_type", "")
     if section == "appellant":
@@ -2019,6 +2020,21 @@ async def _handle_query_persons(message: Message, state: FSMContext, bot: Bot, s
 
         # نمایش لیست انتخاب
         await _show_person_selection_list(bot, user_id, names, [], section, data)
+
+    except TajdidRetrieveDataError as e:
+        # ⭐ اصلاحیهٔ کارفرما: خطای «شماره تصمیم نهایی یا شماره پرونده اشتباه
+        # می باشد» در مسیر «استعلام افراد موجود در پرونده» — متن خطا ارسال
+        # می‌شود، کاربر باید از ابتدا اطلاعات را وارد کند و ربات به منوی
+        # اصلی برمی‌گردد تا کاربر دوباره مسیر را پیش ببرد.
+        # (در این مسیر هنوز پیش‌پرداختی پرداخت نشده — جریمه‌ای وجود ندارد.)
+        logger.error(f"[TN] خطای شماره دادنامه/پرونده در استعلام افراد: {e}")
+        await message.answer(
+            f"⚠️ *خطای سامانه:*\n\n«{str(e)[:250]}»\n\n"
+            "🔄 لطفاً اطلاعات را مجدداً و *از ابتدا* وارد فرمایید.\n"
+            "ربات به منوی اصلی بازگشت — می‌توانید مسیر را دوباره پیش ببرید.",
+            reply_markup=get_main_menu_kb(user_id))
+        await state.clear()
+        return
 
     except TajdidFatalError as e:
         logger.error(f"[TN] خطای استعلام افراد: {e}")
@@ -2927,6 +2943,19 @@ async def tn_delete_request_callback(callback: CallbackQuery, state: FSMContext,
     except Exception:
         pass
 
+    # ⭐ بستن پنجرهٔ ۳۰ دقیقه‌ای + جریمهٔ نصف پیش‌پرداخت (حذف صریح درخواست)
+    try:
+        import nid_fix_window
+        nid_fix_window.pop_window(target_user_id)
+        _new_rial = nid_fix_window.halve_prepaid(target_user_id)
+        if _new_rial > 0:
+            await bot.send_message(
+                target_user_id,
+                f"💰 نصف مبلغ پیش‌پرداخت شما ({_new_rial // 10:,} تومان) "
+                "برای موارد بعدی شما لحاظ شد و از هزینه کسر می‌گردد.")
+    except Exception as _pen_err:
+        logging.error(f"[TN] خطا در اعمال جریمه پس از حذف درخواست: {_pen_err}")
+
     await bot.send_message(
         target_user_id,
         "🗑 *درخواست حذف شد.*\n\nدر صورت نیاز، از منوی اصلی مجدداً اقدام فرمایید.",
@@ -2998,9 +3027,170 @@ async def tn_sana_error_new_national_id_handler(message: Message, state: FSMCont
     task_data.pop("_sana_error_person_role", None)
     task_data.pop("_sana_error_person_index", None)
 
+    # ⭐ بستن پنجرهٔ ۳۰ دقیقه‌ای — ویرایش موفق؛ پیش‌پرداخت دست‌نخورده می‌ماند
+    try:
+        import nid_fix_window
+        nid_fix_window.pop_window(message.from_user.id)
+    except Exception:
+        pass
+
     await message.answer(
         f"✅ شناسه ملی به `{nat_id}` تغییر یافت.\n\n"
         "⏳ در حال ارسال مجدد درخواست به صف پردازش...",
+        reply_markup=restart_kb)
+
+    await runtime_state.job_queue.put(task_data)
+    await state.clear()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ⭐ پنجرهٔ ۴۵ دقیقه‌ای ویرایش شماره دادنامه/پرونده/تاریخ دعاوی اعتراضی
+# پس از خطای «شماره تصمیم نهایی یا شماره پرونده اشتباه می باشد» در ثبتِ
+# پس از پرداخت پیش‌پرداخت — ویرایش سه‌گانه و ادامهٔ ثبت با همان اطلاعات
+# سیو شده، بدون طی مجدد سایر مراحل (nid_fix_window.start_tn_retrieve_fix).
+# ══════════════════════════════════════════════════════════════════════════════
+
+@tajdid_nazar_router.callback_query(F.data.startswith("tn_rtv_fix:"))
+async def tn_rtv_fix_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """کاربر دکمهٔ «ویرایش شماره دادنامه / پرونده / تاریخ» را زد."""
+    parts = callback.data.split(":")
+    target_user_id = int(parts[1])
+
+    if callback.from_user.id != target_user_id:
+        await callback.answer("⚠️ این دکمه مربوط به شما نیست.")
+        return
+
+    pending = nid_fix_window.get_tn_retrieve_fix(target_user_id)
+    if not pending:
+        await callback.answer(
+            "⚠️ درخواستی برای ویرایش یافت نشد (مهلت ۴۵ دقیقه‌ای به پایان رسیده است).")
+        return
+
+    await callback.answer()
+
+    try:
+        await callback.message.edit_text(
+            (callback.message.text or "") + "\n\n✏️ _در انتظار وارد کردن مجدد اطلاعات..._")
+    except Exception:
+        pass
+
+    await bot.send_message(
+        target_user_id,
+        "🔢 لطفاً *شماره دادنامه* جدید را ارسال فرمایید:\n"
+        "_(۱۴۰۰ به بعد: ۱۸ رقمی | ۹۹ و قبل‌تر: ۱۶ رقمی)_",
+        reply_markup=back_only_kb)
+    await state.set_state(Form.tn_retrieve_fix_judge_no)
+
+
+@tajdid_nazar_router.callback_query(F.data.startswith("tn_rtv_cancel:"))
+async def tn_rtv_cancel_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """کاربر انصراف از درخواست را انتخاب کرد — بستن پنجرهٔ ۴۵ دقیقه‌ای."""
+    parts = callback.data.split(":")
+    target_user_id = int(parts[1])
+
+    if callback.from_user.id != target_user_id:
+        await callback.answer("⚠️ این دکمه مربوط به شما نیست.")
+        return
+
+    nid_fix_window.pop_tn_retrieve_fix(target_user_id)
+    await callback.answer("درخواست حذف شد.")
+
+    try:
+        await callback.message.edit_text(
+            (callback.message.text or "") + "\n\n🗑 _درخواست حذف شد._")
+    except Exception:
+        pass
+
+    await bot.send_message(
+        target_user_id,
+        "🗑 *درخواست حذف شد.*\n\n"
+        "💰 مبلغ پیش‌پرداخت شما حفظ شده و در هزینه ثبت بعدی شما لحاظ می‌گردد.\n\n"
+        "در صورت نیاز، از منوی اصلی مجدداً اقدام فرمایید.",
+        reply_markup=restart_kb)
+    await state.clear()
+
+
+@tajdid_nazar_router.message(Form.tn_retrieve_fix_judge_no)
+async def tn_rtv_judge_no_handler(message: Message, state: FSMContext):
+    """دریافت شماره دادنامه جدید (مرحله ۱ از ۳)."""
+    if not message.text:
+        return
+    text = message.text.strip()
+    # ⭐ هندلر دکمهٔ «بازگشت» در ابتدای فلو — بازگشت به منوی اصلی و حذف پنجره
+    if text == "🔙 بازگشت":
+        nid_fix_window.pop_tn_retrieve_fix(message.from_user.id)
+        await message.answer(
+            "🗑 ویرایش لغو شد؛ درخواست دعاوی اعتراضی حذف شد.\n"
+            "💰 مبلغ پیش‌پرداخت شما حفظ شده و در هزینه ثبت بعدی لحاظ می‌گردد.",
+            reply_markup=restart_kb)
+        await state.clear()
+        return
+
+    ok, result = _validate_judge_no(text)
+    if not ok:
+        await message.answer(result)
+        return
+
+    await state.update_data(_rtv_judge_no=result)
+    await message.answer(
+        "🔢 لطفاً *شماره پرونده* جدید را ارسال فرمایید:\n"
+        "_(۱۴۰۰ به بعد: ۱۸ رقمی | ۹۹ و قبل‌تر: ۱۶ رقمی)_")
+    await state.set_state(Form.tn_retrieve_fix_file_no)
+
+
+@tajdid_nazar_router.message(Form.tn_retrieve_fix_file_no)
+async def tn_rtv_file_no_handler(message: Message, state: FSMContext):
+    """دریافت شماره پرونده جدید (مرحله ۲ از ۳)."""
+    if not message.text:
+        return
+    ok, result = _validate_file_no(message.text.strip())
+    if not ok:
+        await message.answer(result)
+        return
+
+    await state.update_data(_rtv_file_no=result)
+    await message.answer(
+        "📅 لطفاً *تاریخ دادنامه* جدید را ارسال فرمایید:\n"
+        "_(مثال: 1403/09/15 — حتماً با ممیز)_")
+    await state.set_state(Form.tn_retrieve_fix_judge_date)
+
+
+@tajdid_nazar_router.message(Form.tn_retrieve_fix_judge_date)
+async def tn_rtv_judge_date_handler(message: Message, state: FSMContext, bot: Bot):
+    """دریافت تاریخ دادنامه جدید (مرحله ۳ از ۳) → وصلهٔ سه‌گانه + ارسال مجدد تسک."""
+    if not message.text:
+        return
+    ok, judge_date = normalize_jalali_date(message.text.strip())
+    if not ok:
+        await message.answer(
+            "⚠️ تاریخ نامعتبر است. لطفاً تاریخ دادنامه را با فرمت *YYYY/MM/DD* "
+            "و با ممیز وارد فرمایید (مثال: 1403/09/15):")
+        return
+
+    user_id = message.from_user.id
+    pending = nid_fix_window.pop_tn_retrieve_fix(user_id)
+    if not pending:
+        await message.answer(
+            "⚠️ درخواست منقضی شده است. لطفاً مجدداً اقدام فرمایید.",
+            reply_markup=restart_kb)
+        await state.clear()
+        return
+
+    fsm_data = await state.get_data()
+    judge_no = fsm_data.get("_rtv_judge_no", "")
+    file_no = fsm_data.get("_rtv_file_no", "")
+
+    task_data = pending.get("task_data") or {}
+    task_data["tn_judge_no"] = judge_no
+    task_data["tn_file_no"] = file_no
+    task_data["tn_judge_date"] = judge_date
+
+    await message.answer(
+        f"✅ اطلاعات به‌روزرسانی شد:\n"
+        f"• شماره دادنامه: `{judge_no}`\n"
+        f"• شماره پرونده: `{file_no}`\n"
+        f"• تاریخ دادنامه: `{judge_date}`\n\n"
+        f"⏳ ثبت با *همان اطلاعات سیو شده* و بدون طی مجدد سایر مراحل ادامه می‌یابد...",
         reply_markup=restart_kb)
 
     await runtime_state.job_queue.put(task_data)

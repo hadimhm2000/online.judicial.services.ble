@@ -756,7 +756,21 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
             pending_task_data["_sana_error_national_id"] = e.national_id
             pending_task_data["_sana_error_person_role"] = e.person_role
             pending_task_data["_sana_error_person_index"] = e.person_index
-            runtime_state.pending_ezhhar_sana_fix[user_id] = {
+
+            # ⭐ اصلاحیهٔ کارفرما: پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی + جریمهٔ نصف
+            # پیش‌پرداخت — ماندگار در persistence (حتی پس از کرش/قطعی ربات
+            # برای هر درخواست بعدی کاربر مورد محاسبه قرار می‌گیرد).
+            try:
+                import nid_fix_window
+                _win = nid_fix_window.start_window(
+                    user_id, flow=nid_fix_window.FLOW_EZHHARNAMEH,
+                    task_data=pending_task_data, error_text=str(e),
+                    national_id=e.national_id, person_role=e.person_role,
+                    person_index=e.person_index)
+            except Exception as _win_err:
+                logging.error(f"[EZHHAR] خطا در شروع پنجرهٔ ویرایش کدملی: {_win_err}")
+                _win = None
+            runtime_state.pending_ezhhar_sana_fix[user_id] = _win or {
                 "task_data": pending_task_data,
                 "created_at": asyncio.get_event_loop().time(),
             }
@@ -784,11 +798,11 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
                 f"لطفاً یکی از گزینه‌های زیر را انتخاب کنید:\n"
                 f"• *ویرایش شناسه ملی:* شناسه صحیح را ارسال کنید تا اظهارنامه با همان اطلاعات قبلی ثبت شود.\n"
                 f"• *حذف درخواست:* درخواست اظهارنامه حذف می‌شود.\n\n"
-                f"⏰ _توجه: اگر ظرف ۱ ساعت اقدامی نکنید، درخواست به‌صورت خودکار حذف خواهد شد._",
+                f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این صورت پس از ۳۰ دقیقه، "
+                f"*نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از هزینه کسر می‌گردد.",
                 reply_markup=kb)
-
-            # زمان‌بندی حذف خودکار پس از ۱ ساعت
-            asyncio.create_task(_auto_delete_pending_ezhhar(bot, user_id, 3600))
+            # ⭐ مهلت ۳۰ دقیقه‌ای/جریمه توسط nid_fix_window.sweep_expired
+            # (state_persister) مدیریت می‌شود — تایمر حذف ۱ ساعته قبلی حذف شد.
             return
 
         except EzhharFatalError as e:

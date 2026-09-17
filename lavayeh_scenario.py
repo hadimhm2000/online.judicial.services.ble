@@ -149,6 +149,28 @@ class LavayehServiceDownError(LavayehFatalError):
     pass
 
 
+class LavayehSanaDataError(LavayehFatalError):
+    """⭐ اصلاحیهٔ کارفرما — خطای داده‌ای ثنا در ثبت لایحه که با ویرایش
+    کدملی شخص قابل رفع است:
+
+      - kind="person_not_in_case": «شخص ارائه‌کننده لایحه به‌نام «X» در
+        فهرست اشخاص پرونده نیست و امکان ثبت لایحه دفاعیه وجود ندارد»
+      - kind="birthdate": «تاریخ تولد ارسالی مربوط به شماره ملی N اشتباه است»
+
+    طبق دستور کارفرما: کاربر ۳۰ دقیقه فرصت دارد کدملی شخص را ویرایش کند؛
+    در غیر این صورت پس از ۳۰ دقیقه نصف مبلغ پیش‌پرداخت برای موارد بعدی او
+    از هزینه کسر می‌گردد (مدیریت در nid_fix_window + هندلرهای lavayeh_handlers).
+    """
+    def __init__(self, message: str, kind: str = "other",
+                 national_id: str = "", person_index: int = -1,
+                 person_name: str = ""):
+        super().__init__(message)
+        self.kind = kind                    # person_not_in_case | birthdate | other
+        self.national_id = national_id
+        self.person_index = person_index
+        self.person_name = person_name
+
+
 # امضای متن‌های خطای سمت سرور سنا که نشان‌دهندهٔ قطعی سرویس (نه خطای داده)
 # هستند. هرگاه پاپ‌آپ خطا حاوی هرکدام از این عبارات باشد، یعنی مشکل از
 # سمت کاربر نیست و سامانه سنا موقتاً در دسترس نیست.
@@ -415,7 +437,7 @@ async def process_lavayeh_task(data: dict, bot: Bot):
             await _click_step_label(sana_page, "ارائه كننده لايحه", bot, user_id)
             await resilient_sleep(sana_page, 4, bot, user_id)
 
-            for person in persons:
+            for _person_idx, person in enumerate(persons):
                 ptype = person.get("person_type", "شخص حقیقی") or "شخص حقیقی"
 
                 if ptype == "وکیل":
@@ -445,7 +467,10 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                         )
                     await resilient_sleep(sana_page, 1, bot, user_id)
 
-                    await _click_sana_query_with_retry(sana_page, "actions.getLawyerDataWithSana", bot, user_id)
+                    await _click_sana_query_with_retry(
+                        sana_page, "actions.getLawyerDataWithSana", bot, user_id,
+                        current_national_id=person.get("national_id", ""),
+                        person_index=_person_idx)
                     await resilient_sleep(sana_page, 8, bot, user_id)
 
                 elif ptype == "شخص حقیقی":
@@ -455,7 +480,10 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                     await _fill_input(sana_page, "#txtRealIrNationalityCode1", person["national_id"], bot, user_id)
                     await resilient_sleep(sana_page, 1, bot, user_id)
 
-                    await _click_sana_query_with_retry(sana_page, "actions.callNationalityCode", bot, user_id)
+                    await _click_sana_query_with_retry(
+                        sana_page, "actions.callNationalityCode", bot, user_id,
+                        current_national_id=person.get("national_id", ""),
+                        person_index=_person_idx)
                     await resilient_sleep(sana_page, 8, bot, user_id)
 
                 elif ptype == "شخص حقوقی":
@@ -544,8 +572,9 @@ async def process_lavayeh_task(data: dict, bot: Bot):
 
                     await _click_sana_query_with_retry(
                         sana_page, "actions.callNationalityCode", bot, user_id,
-                        btn_id="btnCallNationalityCode"
-                    )
+                        btn_id="btnCallNationalityCode",
+                        current_national_id=person.get("national_id", ""),
+                        person_index=_person_idx)
                     await resilient_sleep(sana_page, 8, bot, user_id)
 
             await _click_step_label(sana_page, "متن", bot, user_id)
@@ -932,6 +961,77 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                 event_type="خطای سامانه", full_name=str(user_id), user_id=user_id,
                 trackingCode=tracking_code or "", documentCategory=title,
                 errorDetails="سرویس سنا (بازیابی واحدهای قضایی) قطع است", errorStep="SANA_SERVICE_DOWN")
+            return
+
+        except LavayehSanaDataError as e:
+            # ⭐ اصلاحیهٔ کارفرما: خطای داده‌ای ثنا («شخص ارائه‌کننده لایحه در
+            # فهرست اشخاص پرونده نیست» یا «تاریخ تولد ارسالی مربوط به شماره
+            # ملی ... اشتباه است») — پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی + جریمهٔ
+            # نصف پیش‌پرداخت برای موارد بعدی. پنجره در persistence ذخیره
+            # می‌شود تا حتی پس از کرش/قطعی ربات برای هر درخواست بعدیِ کاربر
+            # مورد محاسبه قرار گیرد.
+            logging.error(
+                f"[LAVAYEH] خطای داده‌ای ثنا user={user_id} (kind={e.kind}): {e}")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"⚠️ [LAVAYEH] خطای داده‌ای ثنا کاربر {user_id} "
+                    f"(kind={e.kind}, nid={e.national_id}): {str(e)[:200]}")
+            except Exception:
+                pass
+
+            task_data_snapshot = dict(data)
+            task_data_snapshot["_sana_error_national_id"] = e.national_id
+            task_data_snapshot["_sana_error_person_index"] = e.person_index
+            task_data_snapshot["_sana_error_kind"] = e.kind
+
+            # ثبت پنجرهٔ ۳۰ دقیقه‌ای (ماندگار در persistence)
+            try:
+                import nid_fix_window
+                _win = nid_fix_window.start_window(
+                    user_id, flow=nid_fix_window.FLOW_LAVAYEH,
+                    task_data=task_data_snapshot, error_text=str(e),
+                    national_id=e.national_id, person_index=e.person_index)
+            except Exception as _win_err:
+                logging.error(f"[LAVAYEH] خطا در شروع پنجرهٔ ویرایش کدملی: {_win_err}")
+                _win = None
+            runtime_state.pending_lavayeh_sana_fix[user_id] = _win or {
+                "task_data": task_data_snapshot,
+                "created_at": asyncio.get_event_loop().time(),
+            }
+
+            # کیبورد ویرایش — اگر ایندکس شخص مشخص باشد مستقیم کدملی پرسیده
+            # می‌شود؛ وگرنه کاربر در هندلر شخص را انتخاب می‌کند.
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            if e.person_index is not None and e.person_index >= 0:
+                fix_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(
+                        text="✏️ ویرایش کدملی",
+                        callback_data=f"lav_nid_fix:{user_id}")]])
+            else:
+                fix_kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text="✏️ ویرایش کدملی (انتخاب شخص)",
+                        callback_data=f"lav_nid_fix:{user_id}")]])
+            fix_kb.inline_keyboard.append([InlineKeyboardButton(
+                text="🗑 حذف درخواست",
+                callback_data=f"lav_nid_cancel:{user_id}")])
+            await bot.send_message(
+                user_id,
+                f"📝 برای ادامه، کدملی شخص را ویرایش کنید — اطلاعات سیو شده "
+                f"حفظ می‌شود و ثبت با همان اطلاعات ادامه می‌یابد:",
+                reply_markup=fix_kb)
+
+            runtime_state.active_lavayeh_users.discard(user_id)
+            await log_event(
+                "خطای سامانه", "لایحه", str(user_id), user_id,
+                tracking_code=tracking_code, doc_name=title,
+                note=f"خطای داده‌ای ثنا ({e.kind}): {str(e)[:200]}")
+            await _safe_register_case(
+                event_type="خطای سامانه", full_name=str(user_id), user_id=user_id,
+                trackingCode=tracking_code or "", documentCategory=title,
+                errorDetails=f"خطای داده‌ای ثنا ({e.kind}): {str(e)[:200]}",
+                errorStep="SANA_DATA_ERROR")
             return
 
         except LavayehFatalError as e:
@@ -1409,7 +1509,8 @@ async def _click_add_person(page, bot: Bot, user_id: int):
 
 async def _click_sana_query_with_retry(
     page, ng_click_contains: str, bot: Bot, user_id: int,
-    btn_id: str = None, max_retries: int = 5
+    btn_id: str = None, max_retries: int = 5,
+    current_national_id: str = "", person_index: int = -1
 ):
     for attempt in range(max_retries):
         # بررسی session expiry قبل از هر تلاش
@@ -1457,6 +1558,33 @@ async def _click_sana_query_with_retry(
             logging.info(f"[LAVAYEH] session renewed after query attempt {attempt+1}")
             continue
 
+        # ⭐ اصلاحیهٔ کارفرما: قبل از بستنِ بی‌صدای پاپ‌آپ، متن آن خوانده
+        # می‌شود — خطای «تاریخ تولد ارسالی مربوط به شماره ملی ... اشتباه
+        # است» retry بی‌فایده دارد؛ بلافاصله LavayehSanaDataError پرتاب
+        # می‌شود تا پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی برای کاربر باز شود.
+        popup_text = await page.evaluate('''() => {
+            const popup = document.querySelector('.sweet-alert.showSweetAlert');
+            if (!popup) return null;
+            const style = window.getComputedStyle(popup);
+            if (style.display === 'none' || style.visibility === 'hidden') return null;
+            const h2 = popup.querySelector('h2');
+            const p = popup.querySelector('p');
+            return [h2 ? h2.innerText : '', p ? p.innerText : '']
+                .filter(Boolean).join(' ').trim() || null;
+        }''')
+        if popup_text:
+            _kind = _classify_lavayeh_sana_popup(popup_text)
+            if _kind == "birthdate":
+                await _close_error_popup(page)
+                logging.warning(
+                    f"[LAVAYEH] خطای تاریخ تولد ثنا برای شناسه "
+                    f"{current_national_id}: {popup_text[:150]}")
+                raise LavayehSanaDataError(
+                    popup_text, kind="birthdate",
+                    national_id=current_national_id or
+                    _extract_lavayeh_nid(popup_text),
+                    person_index=person_index)
+
         closed = await _close_error_popup(page)
         if closed:
             await asyncio.sleep(5)
@@ -1474,6 +1602,64 @@ async def _click_sana_query_with_retry(
         await asyncio.sleep(3)
 
 
+def _classify_lavayeh_sana_popup(text: str) -> str:
+    """دسته‌بندی پاپ‌آپ خطای ثنا لایحه (نرمال‌سازی‌شده):
+    person_not_in_case | birthdate | other"""
+    if not text or not isinstance(text, str):
+        return "other"
+    try:
+        import error_catalog
+        if error_catalog.is_person_not_in_case(text):
+            return "person_not_in_case"
+        if error_catalog.is_birthdate_error(text):
+            return "birthdate"
+        return "other"
+    except Exception:
+        t = str(text).replace("ي", "ی").replace("ك", "ک").replace("‌", "")
+        if "در فهرست اشخاص پرونده نیست" in t:
+            return "person_not_in_case"
+        if "تاریخ تولد" in t and "اشتباه" in t:
+            return "birthdate"
+        return "other"
+
+
+def _extract_lavayeh_nid(text: str) -> str:
+    """استخراج شماره ملی از متن پاپ‌آپ خطا (فال‌بک ساده)."""
+    import re as _re
+    if not text:
+        return ""
+    m = _re.search(r"\d{10,}", str(text))
+    return m.group(0)[:10] if m else ""
+
+
+async def _raise_lavayeh_sana_data_error(bot: Bot, user_id: int, error_text: str,
+                                         kind: str, national_id: str = "",
+                                         person_index: int = -1):
+    """⭐ ارسال پیام خطای داده‌ای ثنا + raise کردن LavayehSanaDataError.
+
+    متن پیام شامل مهلت ۳۰ دقیقه‌ای ویرایش کدملی و جریمهٔ نصف پیش‌پرداخت است
+    (عین دستور کارفرما). خودِ پنجره در except LavayehSanaDataError در
+    process_lavayeh_task ثبت می‌شود (اینجا task_data در دسترس نیست).
+    """
+    if kind == "person_not_in_case":
+        head = "⚠️ *خطای ثبت لایحه در سامانه:*"
+        note = ("شخص ارائه‌کننده لایحه در فهرست اشخاص پرونده نیست و امکان ثبت "
+                "لایحه دفاعیه وجود ندارد.")
+    else:
+        head = "⚠️ *خطای استعلام ثنا:*"
+        note = "کدملی شما اشتباه می باشد."
+    await bot.send_message(
+        user_id,
+        f"{head}\n\n«{error_text}»\n\n"
+        f"{note}\n\n"
+        f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این "
+        f"صورت پس از ۳۰ دقیقه، *نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از "
+        f"هزینه کسر می‌گردد.")
+    raise LavayehSanaDataError(
+        error_text, kind=kind, national_id=national_id,
+        person_index=person_index)
+
+
 async def _raise_fatal_temp_save_error(bot: Bot, user_id: int, error_text: str):
     """
     ارسال پیام خطای «ثبت موقت» به کاربر و raise کردن LavayehFatalError.
@@ -1481,7 +1667,49 @@ async def _raise_fatal_temp_save_error(bot: Bot, user_id: int, error_text: str):
     ردیف/بچ/کد پرونده در دسترس نیست. اطلاع‌رسانی کامل به مدیر (با تمام
     جزئیات) در except LavayehFatalError در process_lavayeh_task انجام
     می‌شود تا مدیر فقط یک پیام کامل ببیند، نه دو پیام پراکنده.
+
+    ⭐ اصلاحیهٔ کارفرما: پیش از خطای عمومی، متن پاپ‌آپ دسته‌بندی می‌شود؛
+    اگر «شخص ارائه‌کننده لایحه ... در فهرست اشخاص پرونده نیست» یا «تاریخ
+    تولد ارسالی مربوط به شماره ملی ... اشتباه است» باشد، LavayehSanaDataError
+    پرتاب می‌شود تا پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی + جریمهٔ نصف پیش‌پرداخت
+    (عین دستور کارفرما) در process_lavayeh_task باز شود.
     """
+    _kind = _classify_lavayeh_sana_popup(error_text)
+    if _kind == "person_not_in_case":
+        # استخراج نام شخص از متن: «به‌نام «نام» در فهرست...»
+        _person_name = ""
+        try:
+            import re as _re
+            m = _re.search(r"به[\u200c ]?نام\s*«([^»]+)»", error_text)
+            if m:
+                _person_name = m.group(1).strip()
+        except Exception:
+            pass
+        await bot.send_message(
+            user_id,
+            f"⚠️ *خطای ثبت لایحه در سامانه:*\n\n«{error_text}»\n\n"
+            f"شخص ارائه‌کننده لایحه"
+            + (f" به‌نام «{_person_name}»" if _person_name else "")
+            + " در فهرست اشخاص پرونده نیست و امکان ثبت لایحه دفاعیه وجود ندارد.\n\n"
+            f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این "
+            f"صورت پس از ۳۰ دقیقه، *نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از "
+            f"هزینه کسر می‌گردد.")
+        raise LavayehSanaDataError(
+            error_text, kind="person_not_in_case",
+            national_id=_extract_lavayeh_nid(error_text),
+            person_name=_person_name)
+    if _kind == "birthdate":
+        _nid = _extract_lavayeh_nid(error_text)
+        await bot.send_message(
+            user_id,
+            f"⚠️ *خطای استعلام ثنا:*\n\n«{error_text}»\n\n"
+            f"❌ کدملی شما اشتباه می باشد.\n\n"
+            f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این "
+            f"صورت پس از ۳۰ دقیقه، *نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از "
+            f"هزینه کسر می‌گردد.")
+        raise LavayehSanaDataError(
+            error_text, kind="birthdate", national_id=_nid)
+
     await bot.send_message(
         user_id,
         f"⚠️ *خطا در ثبت موقت:*\n\n«{error_text}»\n\n"
