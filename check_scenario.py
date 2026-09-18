@@ -190,6 +190,57 @@ def _text_to_editor_html(text: str) -> str:
     return "".join(parts)
 
 
+def _check_temp_title(request_title: str, success: bool = True) -> str:
+    """عنوان پیام ثبت موقت — فقط برای عناوین چک «دادخواست چک»؛ برای سایر
+    عناوین (اعسار/خانواده/مطالبه وجه بابت...) عبارت «چک» حذف می‌شود.
+
+    نمونه:
+      - «صدور اجرائیه چک» → «ثبت موقت دادخواست چک موفق»
+      - «اعسار از پرداخت محکوم به» → «ثبت موقت دادخواست موفق»
+    """
+    is_cheque_title = request_title in ("صدور اجرائیه چک", "مطالبه وجه چک")
+    tail = " موفق" if success else ""
+    if is_cheque_title:
+        return f"ثبت موقت دادخواست چک{tail}"
+    return f"ثبت موقت دادخواست{tail}"
+
+
+async def _notify_check_partial_failure(bot: Bot, user_id: int, bill_no: str,
+                                        request_title: str, issues: list) -> None:
+    """⭐ دور ۳ (دستور کارفرما): وقتی ثبت دادخواست به باگ می‌خورد و «هزینه»
+    یا «چاپ» به‌طور کامل انجام نمی‌شود:
+      ۱. به مدیر اطلاع داده می‌شود که پرونده را دستی بررسی کند و کد رهگیری
+         را برای کاربر ارسال کند.
+      ۲. به کاربر گفته می‌شود اگر تا ۴۵ دقیقهٔ دیگر نسخهٔ چاپی و فاکتور
+         هزینه برایش ارسال نشد، به شمارهٔ پشتیبانی در واتساپ یا بله پیام دهد.
+    """
+    issues_text = " و ".join(issues) if issues else "اختلال در تکمیل مراحل پایانی"
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"⚠️ [CHECK] ثبت ناقص — کاربر {user_id} | نوع: {request_title} | "
+            f"کد رهگیری/بایگانی: {bill_no or 'نامشخص'}\n"
+            f"مشکل: {issues_text}\n"
+            "👉 لطفاً پرونده را در سامانه *دستی بررسی* کن و کد رهگیری و "
+            "فاکتور هزینه را برای کاربر ارسال کن.\n"
+            f"⏰ اگر تا ۴۵ دقیقهٔ دیگر ارسال نشود، کاربر به {SUPPORT_PHONE} "
+            "پیام خواهد داد.")
+    except Exception as e:
+        logging.error(f"[CHECK] خطا در ارسال اطلاع ناقص به مدیر: {e}")
+
+    try:
+        await bot.send_message(
+            user_id,
+            f"📋 *کد رهگیری دادخواست شما:* `{bill_no or 'در حال استخراج'}`\n\n"
+            f"⚠️ ثبت دادخواست شما انجام شد اما {issues_text}.\n"
+            "تیم پشتیبانی مطلع شد و به‌زودی نسخهٔ چاپی و فاکتور هزینه را "
+            "برای شما ارسال می‌کند.\n\n"
+            f"⏰ اگر تا *۴۵ دقیقهٔ دیگر* چاپ و هزینه برای شما ارسال نشد، "
+            f"لطفاً به شمارهٔ *{SUPPORT_PHONE}* در *واتساپ یا بله* پیام دهید.")
+    except Exception as e:
+        logging.error(f"[CHECK] خطا در ارسال اطلاع ناقص به کاربر: {e}")
+
+
 async def process_check_task(data: dict, bot: Bot):
     """پردازش تسک ثبت دادخواست چک"""
     sana_page = runtime_state.sana_page
@@ -826,16 +877,20 @@ async def process_check_task(data: dict, bot: Bot):
             # پیام‌های کاربر/مدیر داخل تابع ارسال شده‌اند.
             if not bill_no:
                 raise CheckAbortError(
-                    "ثبت موقت دادخواست چک پس از تلاش‌های مجدد موفق نشد "
-                    "(کد رهگیری قابل استخراج نبود)",
+                    f"{_check_temp_title(request_title, success=False)} پس از "
+                    "تلاش‌های مجدد موفق نشد (کد رهگیری قابل استخراج نبود)",
                     step="TEMP_SAVE_NO_BILL")
 
-            # ذخیره کدرهگیری در گوگل شیت + اطلاع به مدیر
-            await log_event("ثبت موقت", "دادخواست چک", str(user_id), user_id,
-                            tracking_code=bill_no, note=f"چک {request_title} | مبلغ: {amount:,}")
+            # ⭐ اصلاحیه: عنوان پیام مدیر — فقط برای عناوین چک «دادخواست چک»؛
+            # برای اعسار/خانواده/«مطالبه وجه بابت...» عبارت «چک» حذف می‌شود و
+            # پیام «ثبت موقت دادخواست موفق» ارسال می‌گردد (قبلاً برای پروندهٔ
+            # «اعسار از پرداخت محکوم به» هم «ثبت موقت دادخواست چک موفق» ارسال
+            # می‌شد که غلط بود).
+            await log_event("ثبت موقت", "دادخواست", str(user_id), user_id,
+                            tracking_code=bill_no, note=f"{request_title} | مبلغ: {amount:,}")
             await bot.send_message(
                 ADMIN_ID,
-                f"📋 *ثبت موقت دادخواست چک موفق*\n"
+                f"📋 *{_check_temp_title(request_title, success=True)}*\n"
                 f"👤 کاربر: {user_id}\n"
                 f"🔢 کد بایگانی: `{bill_no}`\n"
                 f"📝 نوع: {request_title}")
@@ -857,7 +912,8 @@ async def process_check_task(data: dict, bot: Bot):
                         bot=bot,
                         user_id=user_id,
                         bill_no=bill_no,
-                        plaintiffs=plaintiffs)
+                        plaintiffs=plaintiffs,
+                        defendants=defendants)
                 except CheckAbortError:
                     raise  # قطع‌های آگاهانه همان‌طور پاس داده می‌شوند
                 except Exception as att_err:
@@ -1013,13 +1069,21 @@ async def process_check_task(data: dict, bot: Bot):
                 f"fixedExtra={cost_data.get('fixedExtra')} final={final_total} "
                 f"ردیف‌های منطبق‌شده ({len(_matched)}): {_matched}"
             )
+            # ⭐ دور ۳ — جمع‌آوری مشکلات هزینه برای اطلاع‌رسانی «ثبت ناقص»
+            _cost_issues = []
             if len(_matched) != 4:
+                _cost_issues.append(
+                    f"هزینهٔ سامانه کامل استخراج نشد ({len(_matched)} ردیف از ۴)"
+                )
+            if not int(cost_data.get("costSum") or 0):
+                _cost_issues.append("مبلغ هزینهٔ سامانه (costSum) خوانده نشد")
+            if _cost_issues:
                 # اگر ۴ ردیف هزینهٔ خاص پیدا نشد، یا ساختار جدول عوض شده یا
                 # یکی از عناوین فرق کرده — باید فوراً به مدیر اطلاع داد.
                 await bot.send_message(
                     ADMIN_ID,
                     f"⚠️ [CHECK] هشدار محاسبهٔ هزینه: انتظار ۴ ردیف هزینهٔ خاص می‌رفت، "
-                    f"{len(_matched)} ردیف پیدا شد ({_matched}). "
+                    f"{len(_matched)} ردیف پیدا شد ({_matched}). costSum={cost_data.get('costSum')}. "
                     f"لطفاً مبلغ نهایی ({final_total:,} ریال) را دستی با سامانه تطبیق دهید. کاربر: {user_id}"
                 )
 
@@ -1044,6 +1108,19 @@ async def process_check_task(data: dict, bot: Bot):
             await resilient_sleep(sana_page, 4, bot, user_id)
 
             pdf_path = await _print_check(sana_page, browser_context, bill_no, bot, user_id)
+
+            # ⭐ دور ۳ (دستور کارفرما): اگر ثبت به باگ خورده و هزینه/چاپ کامل
+            # انجام نشده باشد — به مدیر اطلاع داده می‌شود که پرونده را دستی
+            # بررسی کند و کد رهگیری را برای کاربر بفرستد؛ و به کاربر گفته
+            # می‌شود اگر تا ۴۵ دقیقهٔ دیگر چاپ و هزینه ارسال نشد به شمارهٔ
+            # پشتیبانی در واتساپ/بله پیام دهد.
+            _pdf_ok = bool(pdf_path and os.path.exists(pdf_path))
+            _partial_issues = list(_cost_issues)
+            if not _pdf_ok:
+                _partial_issues.append("چاپ نسخهٔ PDF ناموفق بود")
+            if _partial_issues:
+                await _notify_check_partial_failure(
+                    bot, user_id, bill_no, request_title, _partial_issues)
 
             # ── ۱۶. ارسال نتیجه + درگاه پرداخت + فعال‌سازی امضا ──────────
             from lavayeh_handlers import send_lavayeh_result, send_bulk_item_result
@@ -1094,11 +1171,10 @@ async def process_check_task(data: dict, bot: Bot):
                 # چاپ PDF ناموفق — طبق مشخصات، درگاه پرداخت نسبت به مبلغ
                 # به‌هرحال باید برای کاربر ارسال شود و پس از تایید پرداخت،
                 # مرحلهٔ امضا فعال گردد.
-                await bot.send_message(
-                    user_id,
-                    f"⚠️ دادخواست چک با کد بایگانی `{bill_no}` ثبت شد "
-                    f"اما در چاپ PDF خطا رخ داد.\n"
-                    f"برای دریافت نسخهٔ چاپی با مدیریت تماس بگیرید.")
+                # ⭐ دور ۳: پیام قدیمی «برای دریافت نسخهٔ چاپی با مدیریت تماس
+                # بگیرید» حذف شد — پیام کامل‌تر «ثبت ناقص» (کد رهگیری + مهلت
+                # ۴۵ دقیقه + شمارهٔ پشتیبانی واتساپ/بله) بالاتر در
+                # _notify_check_partial_failure برای کاربر ارسال شده است.
                 try:
                     from panel_sync import upsert_case_to_panel
                     await upsert_case_to_panel(
@@ -1539,7 +1615,7 @@ async def _click_save_temp_check(page, bot: Bot, user_id: int,
     if not last_error:
         last_error = "سامانه پس از چند تلاش، پاسخ قطعی برای «ثبت موقت» نداد."
     user_msg = (
-        "⚠️ *خطا در ثبت موقت دادخواست چک:*\n\n"
+        "⚠️ *خطا در ثبت موقت دادخواست:*\n\n"
         "«" + last_error[:300] + "»\n\n"
         "لطفا 30 دقیقه دیگر مجددا مورد خود را ارسال بفرمائید.\n"
         "باتشکر"
@@ -1634,12 +1710,16 @@ _AASAR_FALLBACK = {t: ["اعسار"] for t in CHECK_AASAR_TITLES}
 _FAMILY_SEARCH = {"دادخواست طلاق توافقی": "طلاق", "دادخواست طلاق به درخواست زوجه": "طلاق",
                   "دادخواست طلاق به درخواست زوج": "طلاق", "دادخواست نفقه": "نفقه",
                   "دادخواست الزام به تمکین": "تمکین", "دادخواست مهریه": "مهریه"}
+# ⭐ اصلاحیه (کارفرما — دور ۳): گزینهٔ درست خواستهٔ مهریه «مطالبه مهریه»
+# است؛ قبلاً target «پرداخت مهریه» بود و چون تطبیق «includes» بود، اولین
+# ردیف حاوی «مهریه» (مثلاً «اثبات رجوع از بذل مهریه») به‌اشتباه انتخاب
+# می‌شد و سامانه سند طلاق می‌خواست. حالا target دقیق + تطبیق exact-first.
 _FAMILY_TARGET = {"دادخواست طلاق توافقی": ["طلاق توافقی"],
                   "دادخواست طلاق به درخواست زوجه": ["طلاق به درخواست زوجه"],
                   "دادخواست طلاق به درخواست زوج": ["طلاق به درخواست زوج"],
-                  "دادخواست نفقه": ["پرداخت نفقه", "نفقه"],
+                  "دادخواست نفقه": ["مطالبه نفقه", "پرداخت نفقه", "نفقه"],
                   "دادخواست الزام به تمکین": ["الزام به تمکین", "تمکین"],
-                  "دادخواست مهریه": ["پرداخت مهریه", "مهریه"]}
+                  "دادخواست مهریه": ["مطالبه مهریه"]}
 _FAMILY_FALLBACK = {"دادخواست طلاق توافقی": ["طلاق"], "دادخواست طلاق به درخواست زوجه": ["زوجه"],
                     "دادخواست طلاق به درخواست زوج": ["زوج"], "دادخواست نفقه": ["نفقه"],
                     "دادخواست الزام به تمکین": ["تمکین"], "دادخواست مهریه": ["مهریه"]}
@@ -1826,21 +1906,39 @@ async def _select_khasteh_option(page, request_title: str, bot: Bot, user_id: in
                     const r = el.getBoundingClientRect();
                     return r.width > 0 && r.height > 0;
                 });
+            // ⭐ دور ۳ — تطبیق exact-first با اولویت targetها: برای هر متن هدف
+            // ابتدا تساوی کامل، سپس «شروع‌شونده با»، در آخر «شامل». قبلاً فقط
+            // «includes» بود و برای مهریه اولین ردیف حاوی مهریه (مثل «اثبات
+            // رجوع از بذل مهریه») به‌اشتباه انتخاب می‌شد.
+            const normText = (el) => norm(el.innerText);
+            const findBy = (t, mode) => items.find(el => {
+                const s = normText(el);
+                if (mode === 'exact') return s === t;
+                if (mode === 'starts') return s.startsWith(t);
+                return s.includes(t);
+            });
+            const matchByPriority = (t) => findBy(t, 'exact') || findBy(t, 'starts') || findBy(t, 'includes');
             let target = null;
-            if (targets.length > 0) {
-                target = items.find(el => targets.some(t => t && norm(el.innerText).includes(t)));
+            for (const t of targets) {
+                if (!t) continue;
+                target = matchByPriority(t);
+                if (target) break;
             }
-            if (!target && fallbacks.length > 0) {
-                target = items.find(el => fallbacks.some(t => t && norm(el.innerText).includes(t)));
+            if (!target) {
+                for (const t of fallbacks) {
+                    if (!t) continue;
+                    target = matchByPriority(t);
+                    if (target) break;
+                }
             }
             if (!target && pickFirst) {
                 // گزینهٔ اول — ترجیحاً منطبق با عبارت جستجو
-                target = items.find(el => norm(el.innerText).includes(searchTerm)) || items[0] || null;
+                target = items.find(el => normText(el).includes(searchTerm)) || items[0] || null;
             }
             if (target) {
                 const row = target.closest('a, .ui-select-choices-row, li') || target;
                 row.click();
-                return norm(target.innerText);
+                return normText(target);
             }
             return null;
         }''', {"targets": target_texts or [], "fallbacks": fallback_texts or [],
@@ -2541,7 +2639,12 @@ async def _enter_attachments_section(page, bot: Bot, user_id: int, bill_no: str)
 
 async def _select_attachment_type(page, label: str) -> bool:
     """انتخاب نوع پیوست از #attachmentType — تطبیق دقیق برچسب تا
-    «تصوير چك» با «تصوير چك و گواهينامه عدم پرداخت» اشتباه گرفته نشد."""
+    «تصوير چك» با «تصوير چك و گواهينامه عدم پرداخت» اشتباه گرفته نشد.
+
+    ⭐ دور ۳: اگر گزینه پیدا نشد، فهرست کامل گزینه‌های موجود در لاگ
+    ثبت می‌شود تا علت واقعی (تغییر برچسب سامانه/نوع خواستهٔ اشتباه)
+    قابل تشخیص باشد.
+    """
     ok = await page.evaluate('''(label) => {
         const sel = document.querySelector('#attachmentType');
         if (!sel || sel.disabled) return false;
@@ -2563,7 +2666,19 @@ async def _select_attachment_type(page, label: str) -> bool:
         await wait_for_angular_idle(page)
         await asyncio.sleep(1)
     else:
-        logging.warning(f"[CHECK][منضمات] نوع پیوست «{label}» در لیست پیدا نشد")
+        # ⭐ دور ۳ — dump گزینه‌های موجود برای عیبیابی
+        try:
+            available = await page.evaluate('''() => {
+                const sel = document.querySelector('#attachmentType');
+                if (!sel || sel.tagName !== 'SELECT') return [];
+                return Array.from(sel.options || [])
+                    .map(o => (o.innerText || '').trim()).filter(t => t);
+            }''')
+            logging.warning(
+                f"[CHECK][منضمات] نوع پیوست «{label}» در لیست پیدا نشد — "
+                f"گزینه‌های موجود ({len(available)}): {available}")
+        except Exception:
+            logging.warning(f"[CHECK][منضمات] نوع پیوست «{label}» در لیست پیدا نشد")
     return ok
 
 
@@ -3049,10 +3164,23 @@ async def _upload_check_files(page, doc_title: str, image_paths: list,
 async def _fill_extra_attachment_form(page, doc_title: str, prepared_paths: list,
                                       force_page_count: int = None) -> bool:
     """فرم پیوست‌های اضافی چک — «تصوير مدرک نمايندگي» برای مدرک نمایندگی،
-    وگرنه «ساير ضمائم» + عنوان دلخواه (الگوی upload_helpers)."""
+    وگرنه «ساير ضمائم» + عنوان دلخواه (الگوی upload_helpers).
+
+    ⭐ اصلاحیه (طبق الگوی اظهارنامهٔ کارِکرده): قبلاً برای «مدرک نمایندگی»
+    فقط نوع پیوست انتخاب می‌شد و بقیهٔ فیلدهای الزامی فرم (#txtNo=۰،
+    #txtName، تقویم=امروز و تعداد صفحات #txt001/#incAttach0) خالی می‌ماند؛
+    در نتیجه #btnSaveDoc غیرفعال می‌ماند یا ردیف ناقص ثبت می‌شد. حالا عیناً
+    مسیر `_upload_representative_doc` اظهارنامه اجرا می‌شود:
+      ۱. انتخاب «تصوير مدرک نمايندگي» از #attachmentType
+      ۲. #txtNo = ۰
+      ۳. #txtName = عنوان مدرک (الزامی)
+      ۴. تقویم = امروز
+      ۵. تعداد صفحات: >۱ فایل → #txt001 + #incAttach0 | ۱ فایل → #txt001='1'
+    """
     page_count = force_page_count if force_page_count else len(prepared_paths or [])
 
     if "نمایندگی" in doc_title or "نمايندگي" in doc_title:
+        # ۱) انتخاب نوع پیوست «تصوير مدرک نمايندگي»
         ok = await page.evaluate('''() => {
             const sel = document.querySelector('#attachmentType');
             if (!sel || sel.disabled) return false;
@@ -3064,20 +3192,223 @@ async def _fill_extra_attachment_form(page, doc_title: str, prepared_paths: list
                 sel.value = opt.value;
                 sel.dispatchEvent(new Event("input", { bubbles: true }));
                 sel.dispatchEvent(new Event("change", { bubbles: true }));
+                try {
+                    if (typeof angular !== 'undefined') {
+                        const el = angular.element(sel);
+                        const ctrl = el.controller('ngModel');
+                        if (ctrl) { ctrl.$setViewValue(opt.value); ctrl.$render(); }
+                        const scope = el.scope();
+                        if (scope) scope.$apply();
+                    }
+                } catch (e) {}
                 return true;
             }
             return false;
         }''')
-        if ok:
-            logging.info("[CHECK][منضمات] نوع پیوست «تصوير مدرک نمايندگي» انتخاب شد")
-            await asyncio.sleep(3)
-            await wait_for_angular_idle(page)
+        if not ok:
+            logging.warning("[CHECK][منضمات] گزینهٔ «تصوير مدرک نمايندگي» پیدا نشد")
+            return False
+        logging.info("[CHECK][منضمات] نوع پیوست «تصوير مدرک نمايندگي» انتخاب شد")
+        await asyncio.sleep(3)
+        await wait_for_angular_idle(page)
+        await asyncio.sleep(1)
+
+        # ۲) شماره مدرک — #txtNo = ۰ (الگوی اظهارنامه)
+        await page.evaluate('''() => {
+            const inp = document.querySelector('#txtNo');
+            if (inp) {
+                inp.focus();
+                inp.value = "0";
+                inp.dispatchEvent(new Event("input", { bubbles: true }));
+                inp.dispatchEvent(new Event("change", { bubbles: true }));
+                try {
+                    if (typeof angular !== 'undefined') {
+                        const el = angular.element(inp);
+                        const ctrl = el.controller('ngModel');
+                        if (ctrl) { ctrl.$setViewValue("0"); ctrl.$render(); }
+                        const scope = el.scope();
+                        if (scope) scope.$apply();
+                    }
+                } catch (e) {}
+            }
+        }''')
+        await asyncio.sleep(1)
+
+        # ۳) عنوان مدرک — #txtName (الزامی — الگوی اظهارنامه)؛ عنوانِ گروه
+        # (مثل «مدرک نمایندگی (مدیرعامل ۱)») درج می‌شود تا هم فیلد الزامی پر
+        # شود و هم ردیف‌های چند نماینده از هم قابل تشخیص باشند.
+        await page.evaluate('''(val) => {
+            const inp = document.querySelector('#txtName');
+            if (inp) {
+                inp.focus();
+                inp.value = val;
+                inp.dispatchEvent(new Event("input", { bubbles: true }));
+                inp.dispatchEvent(new Event("change", { bubbles: true }));
+                try {
+                    if (typeof angular !== 'undefined') {
+                        const el = angular.element(inp);
+                        const ctrl = el.controller('ngModel');
+                        if (ctrl) { ctrl.$setViewValue(val); ctrl.$render(); }
+                        const scope = el.scope();
+                        if (scope) scope.$apply();
+                    }
+                } catch (e) {}
+            }
+        }''', doc_title)
+        await asyncio.sleep(1)
+
+        # ۴) تقویم = امروز (الگوی اظهارنامه)
+        try:
+            await page.evaluate('''() => {
+                const calBtn = document.querySelector('button.btn-primary i.glyphicon-calendar');
+                if (calBtn) calBtn.closest('button').click();
+            }''')
+            await asyncio.sleep(2)
+            await page.evaluate('''() => {
+                const btns = Array.from(document.querySelectorAll('button'));
+                const todayBtn = btns.find(b => b.innerText && b.innerText.trim() === "امروز");
+                if (todayBtn) todayBtn.click();
+            }''')
             await asyncio.sleep(1)
-        return ok
+        except Exception as cal_err:
+            logging.warning(f"[CHECK][منضمات] تنظیم تقویم مدرک نمایندگی ناموفق: {cal_err}")
+
+        # ۵) تعداد صفحات — >۱ فایل: #txt001 + افزودن (#incAttach0) |
+        #    ۱ فایل: #txt001='1' (فعال‌سازی #btnSaveDoc) و اسکیپ افزودن
+        if page_count > 1:
+            await page.evaluate('''(val) => {
+                const inp = document.querySelector('#txt001');
+                if (inp) {
+                    inp.focus();
+                    inp.value = String(val);
+                    inp.dispatchEvent(new Event("input", { bubbles: true }));
+                    inp.dispatchEvent(new Event("change", { bubbles: true }));
+                    try {
+                        if (typeof angular !== 'undefined') {
+                            const el = angular.element(inp);
+                            const ctrl = el.controller('ngModel');
+                            if (ctrl) { ctrl.$setViewValue(String(val)); ctrl.$render(); }
+                            const scope = el.scope();
+                            if (scope) scope.$apply();
+                        }
+                    } catch (e) {}
+                }
+            }''', page_count)
+            await asyncio.sleep(1)
+            await page.evaluate('''() => {
+                const btn = document.querySelector('#incAttach0');
+                if (btn && !btn.disabled) btn.click();
+            }''')
+            await asyncio.sleep(3)
+        else:
+            await page.evaluate('''() => {
+                const inp = document.querySelector('#txt001');
+                if (inp) {
+                    inp.focus();
+                    inp.value = "1";
+                    inp.dispatchEvent(new Event("input", { bubbles: true }));
+                    inp.dispatchEvent(new Event("change", { bubbles: true }));
+                    try {
+                        if (typeof angular !== 'undefined') {
+                            const el = angular.element(inp);
+                            const ctrl = el.controller('ngModel');
+                            if (ctrl) { ctrl.$setViewValue("1"); ctrl.$render(); }
+                            const scope = el.scope();
+                            if (scope) scope.$apply();
+                        }
+                    } catch (e) {}
+                }
+            }''')
+            logging.info(
+                f"[CHECK][منضمات] مدرک نمایندگی تک‌برگ ({page_count} فایل) — "
+                "#txt001='1' پر شد، #incAttach0 اسکیپ شد")
+        return True
 
     return await _default_fill_other_attachment_form(page, doc_title, page_count)
 
 
+
+
+async def _fill_doc_field_angular(page, field_name: str, value, prefix: str = "CHECK") -> bool:
+    """پر کردن یک فیلد فرم سند (#txtNo/#txtIssueDate/#txtUnit/#txtCourt/#txt001...)
+    با setter امن + سینک کامل AngularJS.
+
+    ⭐ اصلاحیه (کارفرما — دور ۳): رفع خطای
+      Page.evaluate: TypeError: Illegal invocation
+    هنگام وارد کردن اطلاعات دادنامه در منضمات. علت: فرمول
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+    روی عنصری که inputِ همان realm نیست (یا textarea است) با
+    «Illegal invocation» شکست می‌خورد و کل مرحلهٔ منضمات قطع می‌شد
+    (ATTACHMENTS_UNEXPECTED_ERROR). حالا:
+      ۱) نوع عنصر تشخیص داده می‌شود (input / textarea)
+      ۲) setter بومی داخل try/catch با فال‌بک انتساب مستقیم el.value
+      ۳) سینک AngularJS از طریق $setViewValue/$render + $apply (الگوی
+         اظهارنامهٔ کارکرده)
+    """
+    val = "" if value is None else str(value)
+    ok = await page.evaluate('''(a) => {
+        const el = document.querySelector('#' + a.n) ||
+                   document.querySelector('input[name="' + a.n + '"]') ||
+                   document.querySelector('textarea[name="' + a.n + '"]');
+        if (!el) return false;
+        let set_ok = false;
+        try {
+            const proto = (el.tagName === 'TEXTAREA')
+                ? window.HTMLTextAreaElement.prototype
+                : window.HTMLInputElement.prototype;
+            const d = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (d && d.set) { d.set.call(el, a.v); set_ok = true; }
+        } catch (e) { set_ok = false; }
+        if (!set_ok) {
+            try { el.value = a.v; } catch (e) {}
+        }
+        try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
+        try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+        try {
+            if (typeof angular !== 'undefined' && angular.element) {
+                const ngEl = angular.element(el);
+                const ctrl = ngEl.controller('ngModel');
+                if (ctrl) { ctrl.$setViewValue(a.v); ctrl.$render(); }
+                const scope = ngEl.scope();
+                if (scope) scope.$apply();
+            }
+        } catch (e) {}
+        return true;
+    }''', {"n": field_name, "v": val})
+    if not ok:
+        logging.warning(f"[{prefix}] فیلد #{field_name} پیدا نشد")
+    return bool(ok)
+
+
+async def _fill_attachment_count_and_add(page, count: int, prefix: str = "CHECK") -> None:
+    """⭐ دور ۳ — پر کردن «تعداد پیوست‌ها» (#txt001) و کلیک «افزودن پیوست»
+    (#incAttach0) قبل از «ثبت و ویرایش پیوست» (#btnSaveDoc).
+
+    طبق تشخیص کارفرما: بدون پر کردن فیلد تعداد و زدن «افزودن پیوست»،
+    سامانه فقط یک اسلات آپلود می‌سازد — مثلاً برای استشهادیه‌ای که ۲ تصویر
+    داشت فقط ۱ تصویر پیوست شد. الگو (عین اظهارنامه):
+      تعداد > ۱ → #txt001 = تعداد + کلیک #incAttach0
+      تعداد = ۱ → #txt001 = '1' (بدون incAttach0)
+    """
+    count = max(1, int(count or 1))
+    if count > 1:
+        await _fill_doc_field_angular(page, "txt001", count, prefix=prefix)
+        await asyncio.sleep(1)
+        clicked = await page.evaluate('''() => {
+            const btn = document.querySelector('#incAttach0');
+            if (btn && !btn.disabled) { btn.click(); return true; }
+            return false;
+        }''')
+        if clicked:
+            logging.info(f"[{prefix}] تعداد پیوست‌ها={count} + «افزودن پیوست» کلیک شد")
+            await asyncio.sleep(3)
+            await wait_for_angular_idle(page)
+            await asyncio.sleep(1)
+        else:
+            logging.warning(f"[{prefix}] دکمهٔ «افزودن پیوست» (#incAttach0) پیدا/کلیک نشد")
+    else:
+        await _fill_doc_field_angular(page, "txt001", "1", prefix=prefix)
+        logging.info(f"[{prefix}] تک‌برگ — #txt001='1' پر شد (#incAttach0 اسکیپ شد)")
 
 
 # شناسهٔ فیلدهای فرم «استشهاديه محلي» — طبق دستور کارفرما در همهٔ این فیلدها
@@ -3137,6 +3468,13 @@ async def _upload_esteshahadieh_attachment(page, image_paths: list, bot: Bot,
 
     # ۲) درج عدد ۱ در تمام فیلدهای استشهادیه
     await _fill_esteshahadieh_fields(page)
+
+    # ۲.۵) ⭐ دور ۳ — تعداد پیوست‌ها (#txt001) + «افزودن پیوست» (#incAttach0):
+    # طبق تشخیص کارفرما، بدون این مرحله فقط یک اسلات آپلود ساخته می‌شود و
+    # از چند تصویر فقط تصویر اول پیوست می‌شود (۲ تصویر ارسال شد، ۱ تصویر
+    # ثبت شد). ترتیب طبق مشخصات سامانه: فیلدها → تعداد → افزودن پیوست →
+    # ثبت و ویرایش پیوست.
+    await _fill_attachment_count_and_add(page, len(image_paths or []), prefix="CHECK")
 
     # ۳) «ثبت و ویرایش پیوست»
     save_ok = await click_save_doc_with_retry(page, bot, user_id, prefix="CHECK")
@@ -3213,17 +3551,17 @@ async def _upload_electronic_vakalaht_check(
         await wait_for_angular_idle(page)
         await asyncio.sleep(1)
 
-        # ۲) شماره قرارداد وکالت در #txtNo
-        if contract_number:
-            await page.evaluate('''(val) => {
-                const inp = document.querySelector('#txtNo');
-                if (inp) {
-                    inp.value = val;
-                    inp.dispatchEvent(new Event("input", { bubbles: true }));
-                    inp.dispatchEvent(new Event("change", { bubbles: true }));
-                }
-            }''', str(contract_number))
-            await asyncio.sleep(1)
+        # ۲) شماره قرارداد وکالت در #txtNo — طبق الگوی اظهارنامه اگر قرارداد
+        # خالی باشد مقدار «۰» درج می‌شود (فیلد خالی مانع ذخیره می‌شود)
+        await page.evaluate('''(val) => {
+            const inp = document.querySelector('#txtNo');
+            if (inp) {
+                inp.value = val;
+                inp.dispatchEvent(new Event("input", { bubbles: true }));
+                inp.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+        }''', str(contract_number) if contract_number else "0")
+        await asyncio.sleep(1)
 
         # ۳) مقدار تمبر در #txtLawyerAmount
         if lawyer_amount_value and lawyer_amount_value > 0:
@@ -3283,7 +3621,18 @@ async def _register_marriage_certificate(page, group, group_paths, bot, user_id,
         await asyncio.sleep(1)
 
     # ۲) انتخاب «سند ازدواج» در فهرست نوع سند
-    if not await _select_attachment_type(page, "سند ازدواج"):
+    #    ⭐ دور ۳: چند نامزد امتحان می‌شود — قبلاً اگر نوع خواستهٔ سامانه
+    #    اشتباه انتخاب می‌شد (مثل «اثبات رجوع از بذل مهریه»)، فهرست نوع
+    #    سند اصلاً «سند ازدواج» نداشت و ثبت متوقف می‌شد. با انتخاب درستِ
+    #    «مطالبه مهریه» (fix دور ۳ در _select_khasteh_option) این لیست
+    #    درست می‌شود؛ نامزدهای جایگزین برای مقاوم‌سازی بیشتر است.
+    _MARRIAGE_CERT_LABELS = ("سند ازدواج", "سند ازداج", "سند نکاح دائم", "سند نکاح")
+    type_selected = False
+    for _label in _MARRIAGE_CERT_LABELS:
+        if await _select_attachment_type(page, _label):
+            type_selected = True
+            break
+    if not type_selected:
         err = "گزینه «سند ازدواج» در فهرست نوع سند یافت نشد"
         logging.error(f"[CHECK][منضمات] {err}")
         try:
@@ -3294,19 +3643,13 @@ async def _register_marriage_certificate(page, group, group_paths, bot, user_id,
     await asyncio.sleep(1)
 
     # ۳) شماره سند + تاریخ عقد + فیلد ثابت «1» + تعداد برگ
-    fill_js = """(a) => {
-        const el = document.querySelector('#' + a.n) || document.querySelector('input[name="' + a.n + '"]');
-        if (!el) return false;
-        const s = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-        s.call(el, a.v);
-        el.dispatchEvent(new Event('input', {bubbles: true}));
-        el.dispatchEvent(new Event('change', {bubbles: true}));
-        return true;
-    }"""
+    #    ⭐ دور ۳: پر کردن فیلدها با setter امن + سینک AngularJS — رفع خطای
+    #    «Page.evaluate: TypeError: Illegal invocation» که احتمالاً در همین
+    #    فرمول setter بومی رخ می‌داد.
     if cert_no:
-        await page.evaluate(fill_js, {"n": "txtNo", "v": cert_no})
+        await _fill_doc_field_angular(page, "txtNo", cert_no)
     if cert_date:
-        await page.evaluate(fill_js, {"n": "txtIssueDate", "v": cert_date})
+        await _fill_doc_field_angular(page, "txtIssueDate", cert_date)
         await asyncio.sleep(0.5)
         try:
             await page.evaluate(
@@ -3314,8 +3657,8 @@ async def _register_marriage_certificate(page, group, group_paths, bot, user_id,
                 ".forEach(m => m.remove()); }")
         except Exception:
             pass
-    await page.evaluate(fill_js, {"n": "txtCourt", "v": "1"})
-    await page.evaluate(fill_js, {"n": "txt001", "v": str(len(group_paths))})
+    await _fill_doc_field_angular(page, "txtCourt", "1")
+    await _fill_doc_field_angular(page, "txt001", str(len(group_paths or [])))
     await asyncio.sleep(0.5)
 
     # ۴) «افزودن پیوست»
@@ -3410,20 +3753,17 @@ async def _register_dadnameh_attachment(page, group, group_paths, bot, user_id, 
     await asyncio.sleep(1)
 
     # ۳) تکمیل فیلدهای سند — شماره دادنامه / تاریخ / نام دادگاه / شماره شعبه
-    fill_js = """(a) => {
-        const el = document.querySelector('#' + a.n) || document.querySelector('input[name="' + a.n + '"]');
-        if (!el) return false;
-        const s = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-        s.call(el, a.v);
-        el.dispatchEvent(new Event('input', {bubbles: true}));
-        el.dispatchEvent(new Event('change', {bubbles: true}));
-        return true;
-    }"""
-    filled_no = await page.evaluate(fill_js, {"n": "txtNo", "v": dadnameh_no})
+    #    ⭐ دور ۳: با setter امن + سینک AngularJS (_fill_doc_field_angular) —
+    #    رفع خطای «Page.evaluate: TypeError: Illegal invocation» که در همین
+    #    فرمول setter بومی (HTMLInputElement.prototype.value.set) هنگام ورود
+    #    اطلاعات دادنامه رخ می‌داد و کل منضمات را قطع می‌کرد.
+    filled_no = await _fill_doc_field_angular(page, "txtNo", dadnameh_no)
     if not filled_no:
         logging.warning("[CHECK][منضمات] فیلد #txtNo (شماره دادنامه) پیدا نشد")
+    else:
+        await asyncio.sleep(0.5)
 
-    filled_date = await page.evaluate(fill_js, {"n": "txtIssueDate", "v": dadnameh_date})
+    filled_date = await _fill_doc_field_angular(page, "txtIssueDate", dadnameh_date)
     if filled_date:
         await asyncio.sleep(0.5)
         # بستن dropdown تقویم فارسی که ممکن است روی فرزندها باز شود
@@ -3437,17 +3777,17 @@ async def _register_dadnameh_attachment(page, group, group_paths, bot, user_id, 
         logging.warning("[CHECK][منضمات] فیلد #txtIssueDate (تاریخ دادنامه) پیدا نشد")
 
     if dadnameh_court:
-        filled_unit = await page.evaluate(fill_js, {"n": "txtUnit", "v": dadnameh_court})
+        filled_unit = await _fill_doc_field_angular(page, "txtUnit", dadnameh_court)
         if not filled_unit:
             logging.warning("[CHECK][منضمات] فیلد #txtUnit (نام دادگاه) پیدا نشد")
 
     if dadnameh_branch:
-        filled_court = await page.evaluate(fill_js, {"n": "txtCourt", "v": dadnameh_branch})
+        filled_court = await _fill_doc_field_angular(page, "txtCourt", dadnameh_branch)
         if not filled_court:
             logging.warning("[CHECK][منضمات] فیلد #txtCourt (شماره شعبه) پیدا نشد")
 
     # ۴) تعداد برگ پیوست (مثل سایر پیوست‌ها)
-    await page.evaluate(fill_js, {"n": "txt001", "v": str(len(group_paths))})
+    await _fill_doc_field_angular(page, "txt001", str(len(group_paths or [])))
     await asyncio.sleep(0.5)
 
     # ۵) «افزودن پیوست»
@@ -3513,8 +3853,9 @@ async def _process_check_attachments(
     bot: Bot,
     user_id: int,
     bill_no: str,
-    plaintiffs: list = None) -> bool:
-    """اجرای کامل مرحلهٔ «منضمات» دادخواست چک — طبق مشخصات کارفرما.
+    plaintiffs: list = None,
+    defendants: list = None) -> bool:
+    """اجرای کامل مرحلهٔ «منضمات» دادخواست — طبق مشخصات کارفرما.
 
     مسیر:
       ۱. ورود به باکس «منضمات» (با retry)
@@ -3665,6 +4006,10 @@ async def _process_check_attachments(
     # قرارداد وکالت و تمبر دارد؛ قبلاً فقط وکیل خواهان (و فقط اولین مورد)
     # پردازش می‌شد — حالا روی همهٔ وکلای خواهان و خوانده حلقه می‌زند تا
     # وکالت‌نامهٔ وکیل خوانده هم در سامانه ثبت شود.
+    # ⭐ اصلاحیه: قبلاً «defendants» در این تابع تعریف نشده بود و خطای
+    # NameError کل مرحلهٔ منضمات را قطع می‌کرد (هیچ تصویری پیوست نمی‌شد و
+    # پرونده با ATTACHMENTS_UNEXPECTED_ERROR متوقف می‌شد) — حالا به‌عنوان
+    # پارامتر دریافت می‌شود تا وکیل خوانده هم در وکالت‌نامه الکترونیک ثبت شود.
     lawyers = [p for p in (list(plaintiffs or []) + list(defendants or []))
                if p.get("person_type") == "وکیل"]
     for lawyer in lawyers:

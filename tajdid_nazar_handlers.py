@@ -61,6 +61,7 @@ from keyboards import (
     ezhhar_attachment_title_kb,
     ezhhar_attachment_more_kb,
     text_input_method_kb,
+    vakalat_ask_kb,
     tn_case_type_kb, tn_doc_type_kb, tn_amount_type_kb,
     tn_insolvency_kb, tn_extra_text_kb,
     tn_more_witnesses_kb, tn_confirm_kb, tn_edit_kb,
@@ -520,12 +521,8 @@ async def tn_province_handler(message: Message, state: FSMContext):
 
         labels = data.get("tn_labels", {})
         appellant_label = labels.get("appellant", "درخواست دهنده")
-        await message.answer(
-            f"✅ استان *{matched_province}* ثبت شد.\n\n"
-            f"*مرحله ۶:* لطفاً *نوع شخصیت {appellant_label}* را انتخاب فرمایید:\n\n"
-            f"⚠️ توجه: اگر *وکیل* را انتخاب می‌کنید، باید حداقل یک *شخص حقیقی یا حقوقی* نیز اضافه کنید.",
-            reply_markup=create_tn_appellant_person_type_kb(case_type=data.get("case_type", "")))
-        await state.set_state(Form.tn_appellant_person_type)
+        # ⭐ سوال وکالت پیش از بخش {appellant_label} (طبق دستور کارفرما)
+        await _ask_tn_vakalat(message, state, appellant_label)
     else:
         labels = data.get("tn_labels", {})
         await message.answer(
@@ -568,10 +565,9 @@ async def tn_order_no_handler(message: Message, state: FSMContext):
 
     await message.answer(
         f"✅ شماره قرار `{order_no}` ثبت شد.\n\n"
-        f"*مرحله ۶:* لطفاً *نوع شخصیت {appellant_label}* را انتخاب فرمایید:\n\n"
-        f"⚠️ توجه: اگر *وکیل* را انتخاب می‌کنید، باید حداقل یک *شخص حقیقی یا حقوقی* نیز اضافه کنید.",
-        reply_markup=create_tn_appellant_person_type_kb(case_type=data.get("case_type", "")))
-    await state.set_state(Form.tn_appellant_person_type)
+        f"*مرحله ۶:* اطلاعات *{appellant_label}*")
+    # ⭐ سوال وکالت پیش از بخش {appellant_label} (طبق دستور کارفرما)
+    await _ask_tn_vakalat(message, state, appellant_label)
 
 
 @tajdid_nazar_router.message(Form.tn_doc_type)
@@ -665,10 +661,146 @@ async def tn_insolvency_handler(message: Message, state: FSMContext):
     labels = data.get("tn_labels", {})
     appellant_label = labels.get("appellant", "تجدیدنظرخواه")
 
+    await message.answer("✅ ثبت شد.\n")
+    # ⭐ سوال وکالت پیش از بخش {appellant_label} (طبق دستور کارفرما)
+    await _ask_tn_vakalat(message, state, appellant_label)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# مرحله ۷.۵ — سوال وکالت پیش از تجدیدنظرخواه (ثبت به وکالت یا عادی)
+# ════════════════════════════════════════════════════════════════════════════
+async def _ask_tn_vakalat(message: Message, state: FSMContext, appellant_label: str = ""):
+    """سوال وکالت قبل از بخش تجدیدنظرخواه — طبق دستور کارفرما:
+    اگر ثبت «به وکالت» است → «وارد کردن کدملی وکیل»؛ در غیر این صورت «رد شدن».
+    (گزینهٔ «وکیل» از کیبورد نوع شخصیت حذف شده است.)"""
     await message.answer(
-        f"✅ ثبت شد.\n\n"
-        f"*مرحله ۸:* لطفاً *نوع شخصیت {appellant_label}* را انتخاب فرمایید:\n\n"
-        f"⚠️ توجه: اگر *وکیل* را انتخاب می‌کنید، باید حداقل یک *شخص حقیقی یا حقوقی* نیز اضافه کنید.",
+        f"👤 *مرحله ۸:* اطلاعات *{appellant_label or 'تجدیدنظرخواه'}*\n\n"
+        "در صورتی که این دعوی *به وکالت* ثبت می‌شود، گزینه *«وارد کردن کدملی وکیل»* را انتخاب کنید.\n"
+        "در غیر این صورت، گزینه *«رد شدن»* را انتخاب کنید:",
+        reply_markup=vakalat_ask_kb)
+    await state.set_state(Form.tn_appellant_vakalat_ask)
+
+
+@tajdid_nazar_router.message(Form.tn_appellant_vakalat_ask)
+async def tn_appellant_vakalat_ask_handler(message: Message, state: FSMContext):
+    """سوال وکالت قبل از بخش تجدیدنظرخواه:
+      - «وارد کردن کدملی وکیل» → کدملی وکیل → شماره قرارداد وکالت + تمبر خودکار
+      - «رد شدن» → مسیر عادیِ انتخاب نوع شخصیت تجدیدنظرخواه (حقیقی/حقوقی)
+    """
+    text = (message.text or "").strip()
+    data = await state.get_data()
+    labels = data.get("tn_labels", {})
+    appellant_label = labels.get("appellant", "تجدیدنظرخواه")
+
+    if text == "وارد کردن کدملی وکیل":
+        await message.answer(
+            "⚖️ ثبت *به وکالت* انتخاب شد.\n\n"
+            "🔢 لطفاً *کد ملی وکیل* را وارد کنید:\n_(۱۰ رقمی)_",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.tn_appellant_vakalat_nid)
+        return
+
+    if text == "رد شدن":
+        await message.answer(
+            f"👤 لطفاً *نوع شخصیت {appellant_label}* را انتخاب فرمایید:",
+            reply_markup=create_tn_appellant_person_type_kb(case_type=data.get("case_type", "")))
+        await state.set_state(Form.tn_appellant_person_type)
+        return
+
+    await message.answer(
+        "⚠️ لطفاً یکی از گزینه‌های زیر را انتخاب کنید:\n"
+        "_(اگر ثبت به وکالت است: «وارد کردن کدملی وکیل» — در غیر این صورت: «رد شدن»)_",
+        reply_markup=vakalat_ask_kb)
+
+
+@tajdid_nazar_router.message(Form.tn_appellant_vakalat_nid)
+async def tn_appellant_vakalat_nid_handler(message: Message, state: FSMContext):
+    """دریافت کدملی وکیل تجدیدنظرخواه — سپس شماره قرارداد وکالت."""
+    if not message.text:
+        return
+
+    if message.text == "🔙 بازگشت":
+        data = await state.get_data()
+        labels = data.get("tn_labels", {})
+        appellant_label = labels.get("appellant", "تجدیدنظرخواه")
+        await _ask_tn_vakalat(message, state, appellant_label)
+        return
+
+    nat_id = _to_en(message.text)
+    if not re.match(r"^[0-9]{10}$", nat_id):
+        await message.answer(
+            "⚠️ کد ملی وکیل باید *۱۰ رقمی* باشد:\n\nلطفاً مجدداً وارد فرمایید:",
+            reply_markup=back_only_kb)
+        return
+
+    await state.update_data(_tn_current_appellant={
+        "person_type": "وکیل",
+        "national_id": nat_id,
+    })
+
+    await message.answer(
+        "📑 لطفاً *شماره قرارداد وکالت* را وارد فرمایید:\n_(دقیقاً ۱۶ رقمی)_",
+        reply_markup=back_only_kb)
+    await state.set_state(Form.tn_appellant_vakalat_no)
+
+
+@tajdid_nazar_router.message(Form.tn_appellant_vakalat_no)
+async def tn_appellant_vakalat_no_handler(message: Message, state: FSMContext):
+    """دریافت شماره قرارداد وکالت (۱۶ رقمی) وکیلِ تجدیدنظرخواه + محاسبهٔ خودکار تمبر.
+
+    ⚠️ کلید ذخیره باید دقیقاً `contract_number` / `stamp_amount_value` باشد
+    چون tajdid_nazar_scenario.py مقدار وکالت‌نامهٔ الکترونیک را از همین دو
+    کلید روی شیء «وکیل» می‌خوانَد (_ezh_upload_vakalat).
+    """
+    if not message.text:
+        return
+
+    if message.text == "🔙 بازگشت":
+        await message.answer(
+            "🔢 لطفاً *کد ملی وکیل* را وارد کنید:\n_(۱۰ رقمی)_",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.tn_appellant_vakalat_nid)
+        return
+
+    contract_no = _to_en(message.text)
+    if not re.match(r"^[0-9]{16}$", contract_no):
+        await message.answer("⚠️ شماره قرارداد وکالت باید *دقیقاً ۱۶ رقمی* باشد:")
+        return
+
+    data = await state.get_data()
+    current = data.get("_tn_current_appellant") or {}
+    current["contract_number"] = contract_no
+
+    # ⭐ محاسبهٔ خودکار تمبر — اگر مبلغ دعوی موجود بود طبق مبلغ، وگرنه ثابت
+    from stamp_duty import calculate_stamp_duty
+    amount = int(data.get("tn_amount", 0) or 0)
+    if amount > 0:
+        try:
+            duty = calculate_stamp_duty(amount) or {}
+            stamp_rial = int(duty.get("tamber_bedvi", 0) or 0)
+            stamp_text = f"{stamp_rial // 10:,} تومان ({stamp_rial:,} ریال)" if stamp_rial else "بدون تمبر"
+        except Exception:
+            stamp_rial = 200_000
+            stamp_text = "۲۰,۰۰۰ تومان (۲۰۰,۰۰۰ ریال)"
+    else:
+        stamp_rial = 200_000
+        stamp_text = "۲۰,۰۰۰ تومان (۲۰۰,۰۰۰ ریال)"
+    current["stamp_amount_value"] = stamp_rial
+    current["stamp_amount_text"] = stamp_text
+
+    appellants = data.get("tn_appellants", [])
+    appellants.append(current)
+    await state.update_data(tn_appellants=appellants, _tn_current_appellant={})
+
+    labels = data.get("tn_labels", {})
+    appellant_label = labels.get("appellant", "تجدیدنظرخواه")
+
+    await message.answer(
+        f"✅ *وکیل* با کدملی `{current.get('national_id', '')}` ثبت شد.\n"
+        f"📑 شماره قرارداد وکالت: `{contract_no}`\n"
+        f"💰 مبلغ تمبر وکالت (خودکار محاسبه شد): *{stamp_text}*\n\n"
+        f"⚠️ چون *وکیل* اضافه کردید، *{appellant_label}* (شخص حقیقی یا حقوقی) نیز باید وارد شود.\n\n"
+        f"لطفاً نوع شخصیت {appellant_label} بعدی را انتخاب فرمایید:",
         reply_markup=create_tn_appellant_person_type_kb(case_type=data.get("case_type", "")))
     await state.set_state(Form.tn_appellant_person_type)
 
@@ -758,7 +890,9 @@ async def tn_appellant_person_type_handler(message: Message, state: FSMContext, 
         await _handle_query_persons(message, state, bot, "appellant")
         return
 
-    if text not in ["شخص حقیقی", "شخص حقوقی", "وکیل"]:
+    if text not in ["شخص حقیقی", "شخص حقوقی"]:
+        # ⭐ گزینهٔ «وکیل» حذف شد — ثبت به وکالت از سوال وکالت قبلی
+        # (tn_appellant_vakalat_ask) انجام می‌شود.
         await message.answer(
             "⚠️ لطفاً یکی از گزینه‌های موجود را انتخاب کنید:",
             reply_markup=create_tn_appellant_person_type_kb(
@@ -774,9 +908,8 @@ async def tn_appellant_person_type_handler(message: Message, state: FSMContext, 
             reply_markup=back_only_kb)
         await state.set_state(Form.tn_appellant_company_id)
     else:
-        type_label = "وکیل" if text == "وکیل" else "شخص"
         await message.answer(
-            f"🔢 لطفاً *کد ملی {type_label}* {appellant_label} را وارد کنید:\n_(۱۰ رقمی)_",
+            f"🔢 لطفاً *کد ملی شخص* {appellant_label} را وارد کنید:\n_(۱۰ رقمی)_",
             reply_markup=back_only_kb)
         await state.set_state(Form.tn_appellant_national_id)
 
@@ -957,7 +1090,9 @@ async def tn_appellant_more_handler(message: Message, state: FSMContext, bot: Bo
         await _handle_query_persons(message, state, bot, "appellant")
         return
 
-    if text not in ["شخص حقیقی", "شخص حقوقی", "وکیل"]:
+    if text not in ["شخص حقیقی", "شخص حقوقی"]:
+        # ⭐ گزینهٔ «وکیل» حذف شد — ثبت به وکالت از سوال وکالت قبلی
+        # (tn_appellant_vakalat_ask) انجام می‌شود.
         await message.answer(
             "⚠️ لطفاً یکی از گزینه‌های موجود را انتخاب کنید:",
             reply_markup=create_tn_appellant_person_type_kb(
@@ -973,9 +1108,8 @@ async def tn_appellant_more_handler(message: Message, state: FSMContext, bot: Bo
             reply_markup=back_only_kb)
         await state.set_state(Form.tn_appellant_company_id)
     else:
-        type_label = "وکیل" if text == "وکیل" else "شخص"
         await message.answer(
-            f"🔢 لطفاً *کد ملی {type_label}* {appellant_label} را وارد کنید:\n_(۱۰ رقمی)_",
+            f"🔢 لطفاً *کد ملی شخص* {appellant_label} را وارد کنید:\n_(۱۰ رقمی)_",
             reply_markup=back_only_kb)
         await state.set_state(Form.tn_appellant_national_id)
 
