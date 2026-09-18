@@ -999,9 +999,14 @@ async def process_flow_type(message: types.Message, state: FSMContext):
         # می‌توانست وارد شود و بقیه پیام «در حال توسعه» دریافت می‌کردند).
         from tajdid_nazar_handlers import tajdid_nazar_entry
         await tajdid_nazar_entry(message, state)
-    elif "دادخواست" in message.text:
+    elif "🏦 ثبت دادخواست" in message.text:
         # ⭐ اصلاحیه: این بخش برای همهٔ کاربران فعال است (قبلاً فقط مدیر
         # می‌توانست وارد شود و بقیه پیام «در حال توسعه» دریافت می‌کردند).
+        # ⭐ باگ‌فیکس: قبلاً با تطبیق زیررشتهٔ «دادخواست» (بدون ایموجی) هر
+        # پیامی که این کلمه را در خود داشت (مثلاً دکمهٔ «1️⃣ استعلام لوایح،
+        # اظهارنامه، دادخواست و ...» در منوی استعلام) به‌اشتباه وارد فلوی
+        # ثبت دادخواست چک می‌شد. تطبیق روی برچسب کامل دکمهٔ منوی اصلی
+        # («🏦 ثبت دادخواست») این تصادم را برطرف می‌کند.
         from check_handlers import check_entry
         await check_entry(message, state)
     elif "ارزش منطقه‌ای" in message.text:
@@ -1090,7 +1095,11 @@ async def process_main_menu(message: types.Message, state: FSMContext):
         from tajdid_nazar_handlers import tajdid_nazar_entry
         await tajdid_nazar_entry(message, state)
         return
-    elif "دادخواست" in message.text:
+    elif "🏦 ثبت دادخواست" in message.text:
+        # ⭐ باگ‌فیکس: زیررشتهٔ بدون ایموجی «دادخواست» با متن دکمهٔ
+        # «1️⃣ استعلام لوایح، اظهارنامه، دادخواست و ...» (منوی استعلام تکی)
+        # تصادم داشت و کاربر را به‌جای دریافت کدرهگیری، وارد فلوی ثبت
+        # دادخواست چک می‌کرد. تطبیق روی برچسب کامل دکمهٔ اصلی این را رفع می‌کند.
         from check_handlers import check_entry
         await check_entry(message, state)
         return
@@ -2727,6 +2736,11 @@ fallback_router = Router()
 
 @fallback_router.message(StateFilter(None), F.text)
 async def fallback_unmatched_none_state(message: types.Message, state: FSMContext):
+    # ⭐ اصلاحیه: قبلاً فقط state.set_state فراخوانی می‌شد و داده‌های قبلی
+    # (cart, flow_type, tracking_code و ...) در FSM باقی می‌ماندند. حالا
+    # state.clear() هم اجرا می‌شود تا کاربر واقعاً از صفر و با داده‌ای
+    # خالی از منوی اصلی شروع کند.
+    await state.clear()
     await message.answer(
         "❓ متوجه انتخاب شما نشدم یا این گزینه در این مرحله معتبر نیست.\n"
         "لطفاً یکی از گزینه‌های زیر را انتخاب فرمایید:",
