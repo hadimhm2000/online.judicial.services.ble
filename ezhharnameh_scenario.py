@@ -1520,9 +1520,8 @@ async def _upload_proxy_document(page, image_paths: list, bot: Bot, user_id: int
         click_save_doc_with_retry, close_success_popup, close_error_popup,
         wait_for_angular_idle, get_and_close_error_popup_text, detect_error_type,
         full_delete_attachment_row,
-        wait_for_upload_confirmation, wait_for_alerts_to_disappear,
-        click_apply_all_with_retry,
-        wait_for_loading_bar, detect_concurrent_login_popup,
+        click_upload_all_with_retry, click_apply_all_with_retry,
+        detect_concurrent_login_popup,
         click_edit_document_for_title)
 
     if not image_paths:
@@ -1651,128 +1650,69 @@ async def _upload_proxy_document(page, image_paths: list, bot: Bot, user_id: int
                 continue
             await asyncio.sleep(3)
 
-            # مرحله ۱۰: کلیک آپلود همه (#btnUploadAll)
-            # ⭐ از چند روش فال‌بک AngularJS استفاده می‌کند
-            clicked_method = await page.evaluate('''() => {
-                const btn = document.querySelector('#btnUploadAll');
-                if (!btn || btn.disabled) return 'disabled_or_missing';
+            # مرحله ۱۰: 🆕 کلیک آپلود همه (#btnUploadAll) با تابع مقاومِ مشترک
+            # ⭐ اصلاحیهٔ ۱۴۰۵/۰۶ (طبق دستور کارفرما — عین روند «سایر ضمائم»):
+            #   پیاده‌سازی محلی/دستی قبلی فقط ۱۵ ثانیه صبر می‌کرد و با اولین
+            #   نشانهٔ جزئی (حتی موقت) «شروع آپلود» را قطعی می‌دانست، بدون
+            #   انتظار واقعی برای اتمام کامل آپلود؛ اکنون از همان
+            #   `click_upload_all_with_retry` که در «سایر ضمائم» درست کار
+            #   می‌کند استفاده می‌شود (شمارش تجمعی alert، انتظار نوار لودینگ،
+            #   تشخیص ورود همزمان).
+            upload_all_result = await click_upload_all_with_retry(
+                page,
+                expected_file_count=image_count,
+                bot=bot,
+                user_id=user_id,
+                doc_title="مدرک نمایندگی",
+                prefix="EZHHAR")
 
-                // روش ۱: angular.element().scope().$apply
-                try {
-                    if (typeof angular !== 'undefined') {
-                        const ngEl = angular.element(btn);
-                        if (ngEl && ngEl.scope) {
-                            const scope = ngEl.scope();
-                            if (scope && scope.actions && typeof scope.actions.addMultipleDocumentFile === 'function') {
-                                scope.$apply(() => { scope.actions.addMultipleDocumentFile(scope.directivesApiSingleUpload); });
-                                return 'angular_apply_direct_call';
-                            }
-                            ngEl.scope().$apply(() => { btn.click(); });
-                            return 'angular_apply_click';
-                        }
-                    }
-                } catch(e) {}
-
-                // روش ۲: mouse events + $apply
-                try {
-                    btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-                    btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-                    btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                    if (typeof angular !== 'undefined') {
-                        const rootScope = angular.element(document).scope();
-                        if (rootScope) rootScope.$apply();
-                    }
-                    return 'mouse_events';
-                } catch(e) {}
-
-                btn.click();
-                btn.dispatchEvent(new Event('click', { bubbles: true }));
-                return 'fallback';
-            }''')
-            logging.info(f"[EZHHAR] آپلود همه (مدرک نمایندگی): روش {clicked_method}")
-
-            # ⭐ انتظار واقعی برای شروع آپلود
-            from upload_helpers import wait_for_loading_bar
-            upload_started = False
-            for _wait_i in range(15):
-                await asyncio.sleep(1)
-                ui_state = await page.evaluate('''() => {
-                    const blockUI = document.querySelector('.blockUI');
-                    if (blockUI && window.getComputedStyle(blockUI).display !== 'none') return 'blockui';
-                    const bars = document.querySelectorAll('.progress-bar.progress-bar-striped.progress-bar-animated');
-                    for (const bar of bars) {
-                        const rect = bar.getBoundingClientRect();
-                        if (rect.width > 0 && rect.height > 0) return 'progress_bar';
-                    }
-                    const btn = document.querySelector('#btnUploadAll');
-                    if (btn && btn.disabled) return 'btn_disabled';
-                    const alerts = Array.from(document.querySelectorAll('.alert-success [ng-bind-html]'));
-                    const upload_ok = alerts.some(el => el.innerText && el.innerText.includes("پیوست مورد نظر با موفقیت ثبت گردید"));
-                    if (upload_ok) return 'upload_confirmed';
-                    return null;
-                }''')
-                if ui_state:
-                    upload_started = True
-                    logging.info(f"[EZHHAR] آپلود مدرک نمایندگی: وضعیت = {ui_state}")
-                    if ui_state == 'upload_confirmed':
-                        break
-                    break
-
-            if not upload_started:
-                logging.warning("[EZHHAR] آپلود مدرک نمایندگی: هیچ علامتی از شروع آپلود دریافت نشد")
-
-            # مرحله ۱۰.۱: تشخیص فوری ورود همزمان
-            is_concurrent = await detect_concurrent_login_popup(page)
-            if is_concurrent:
-                logging.error("[EZHHAR] خطای ورود همزمان بعد از آپلود مدرک نمایندگی!")
-                await check_and_handle_expiry(page, bot, user_id)
+            if not upload_all_result["success"]:
+                error_type = upload_all_result.get("error_type", "unknown")
+                error_msg = upload_all_result.get("error", "نامشخص")
+                logging.warning(f"[EZHHAR] آپلود همه مدرک نمایندگی ناموفق: {error_msg} (نوع: {error_type})")
+                if error_type == "session":
+                    logging.warning("[EZHHAR] خطای ورود همزمان — حذف کامل ردیف و شروع مجدد")
                 await full_delete_attachment_row(page, "مدرک نمایندگی", bot, user_id, "EZHHAR")
                 await asyncio.sleep(2)
                 continue
 
-            had_expiry = await check_and_handle_expiry(page, bot, user_id)
-            if had_expiry:
-                logging.info("[EZHHAR] نشست حین آپلود مدرک نمایندگی تمدید شد")
-                await asyncio.sleep(3)
-                await full_delete_attachment_row(page, "مدرک نمایندگی", bot, user_id, "EZHHAR")
-                continue
+            # مرحله ۱۱: 🆕 کلیک تایید همه (#btnApplyAll) با تابع مقاومِ مشترک
+            # ⭐ اصلاحیهٔ ۱۴۰۵/۰۶: نسخهٔ قبلی `if confirmed:` را روی دیکشنریِ
+            #   بازگشتی چک می‌کرد (که همیشه truthy است، حتی وقتی
+            #   confirmed["success"] برابر False بود) — به همین دلیل حتی
+            #   بعد از ۵ تلاش ناموفقِ کامل (۰ alert دیده‌شده و دکمه ناپدیدشده)
+            #   پیام «با موفقیت آپلود شد» ثبت می‌شد. اکنون کلید success
+            #   واقعاً بررسی می‌شود.
+            apply_all_result = await click_apply_all_with_retry(
+                page,
+                expected_count=image_count,
+                bot=bot,
+                user_id=user_id,
+                doc_title="مدرک نمایندگی",
+                prefix="EZHHAR")
 
-            # مرحله ۱۱: انتظار تایید آپلود
-            all_ok = await wait_for_upload_confirmation(page, image_count, bot, user_id, prefix="EZHHAR")
-            if not all_ok:
-                error_text = await get_and_close_error_popup_text(page)
-                logging.warning(f"[EZHHAR] آپلود مدرک نمایندگی تایید نشد: {error_text}")
-                await full_delete_attachment_row(page, "مدرک نمایندگی", bot, user_id, "EZHHAR")
-                await asyncio.sleep(2)
-                continue
-
-            # انتظار ناپدید شدن کامل alertها قبل از تایید
-            alerts_gone = await wait_for_alerts_to_disappear(page, bot, user_id, prefix="EZHHAR")
-            if not alerts_gone:
-                logging.warning("[EZHHAR] alertهای مدرک نمایندگی ناپدید نشدند — ادامه با احتیاط")
-
-            await wait_for_angular_idle(page)
-            await asyncio.sleep(1)
-
-            # اعمال همه (#btnApplyAll)
-            confirmed = await click_apply_all_with_retry(page, image_count, bot, user_id, prefix="EZHHAR")
-            if confirmed:
+            if apply_all_result["success"]:
                 await close_success_popup(page)
                 await close_error_popup(page)
                 await wait_for_angular_idle(page)
                 logging.info("[EZHHAR] مدرک نمایندگی با موفقیت آپلود شد")
                 return
 
-            error_text = await get_and_close_error_popup_text(page)
-            error_type = detect_error_type(error_text) if error_text else "unknown"
+            error_type = apply_all_result.get("error_type", "unknown")
+            error_msg = apply_all_result.get("error", "نامشخص")
+            alerts_seen = apply_all_result.get("alerts_seen", 0)
+            logging.warning(
+                f"[EZHHAR] اعمال همه مدرک نمایندگی ناموفق: {error_msg} "
+                f"(نوع: {error_type}, alerts_seen={alerts_seen})")
+
             if error_type == "session":
                 # خطای ورود همزمان — فقط تلاش مجدد بدون حذف
                 logging.warning("[EZHHAR] ورود همزمان در اعمال همه — تلاش مجدد")
                 continue
 
-            logging.warning(f"[EZHHAR] اعمال همه مدرک نمایندگی ناموفق: {error_text}")
             await full_delete_attachment_row(page, "مدرک نمایندگی", bot, user_id, "EZHHAR")
             await asyncio.sleep(2)
+
 
         except Exception as e:
             logging.error(f"[EZHHAR] خطا در آپلود مدرک نمایندگی (تلاش {attempt}): {e}")

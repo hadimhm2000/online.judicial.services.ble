@@ -299,10 +299,9 @@ async def _register_new_contract(page, contract_number: str, stamp_amount_value:
         btn_visible = False
         for _btn_wait in range(3):
             btn_visible = await page.evaluate('''() => {
-                const el = document.querySelector('#btnSaveDoc');
-                if (!el) return false;
-                const st = window.getComputedStyle(el);
-                return st.display !== 'none' && st.visibility !== 'hidden';
+                const els = Array.from(document.querySelectorAll('#btnSaveDoc'));
+                return els.some(el => el.offsetParent !== null
+                    && window.getComputedStyle(el).visibility !== 'hidden');
             }''')
             if btn_visible:
                 break

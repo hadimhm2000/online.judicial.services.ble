@@ -1257,17 +1257,33 @@ async def fill_input_angular(page, selector: str, value, prefix: str = "UPLOAD",
 
 
 async def click_save_doc_once(page, prefix: str = "UPLOAD") -> bool:
-    """کلیک تک‌باره روی #btnSaveDoc (صبر تا فعال شدن دکمه).
+    """کلیک تک‌باره روی #btnSaveDoc (صبر تا فعال و نمایان شدن دکمه).
 
-    خروجی: True اگر کلیک انجام شد، False اگر دکمه پیدا/فعال نشد.
+    ⭐ اصلاحیهٔ ۱۴۰۵/۰۶ (طبق دستور کارفرما — یکسان‌سازی همهٔ مسیرها):
+      در این SPA گاهی چند المان با id یکسان «btnSaveDoc» هم‌زمان در DOM
+      باقی می‌مانند (مثلاً باقی‌ماندهٔ یک پنل/فرم قبلی که هنوز حذف نشده).
+      `querySelector('#btnSaveDoc')` همیشه اولین موردِ سند را برمی‌گرداند
+      که ممکن است مخفی/نامرتبط باشد؛ چون آن المان `disabled` نیست، تابع
+      قبلی فکر می‌کرد دکمه آماده است و روی همان المان مخفی کلیک می‌زد —
+      بدون هیچ اثری روی صفحه (ریشهٔ «بن‌بست» گزارش‌شده در ثبت قرارداد
+      وکالت). اکنون از میان همهٔ المان‌های #btnSaveDoc، فقط موردِ واقعاً
+      نمایان (`offsetParent !== null` و `visibility !== 'hidden'`) و
+      غیرفعال‌نبوده انتخاب و کلیک می‌شود. این تابع در همهٔ سناریوها
+      (لایحه/اظهارنامه/اعلام وکالت/چک/اصلاح قرارداد) مشترک است، پس این
+      اصلاح به‌صورت یکسان روی همهٔ آن‌ها اعمال می‌شود.
+
+    خروجی: True اگر کلیک انجام شد، False اگر دکمهٔ نمایان/فعال پیدا نشد.
     """
-    # صبر تا دکمه فعال شود (حداکثر ~۳۰ ثانیه)
+    # صبر تا دکمهٔ نمایان فعال شود (حداکثر ~۳۰ ثانیه)
     for _wait in range(10):
         try:
             btn_state = await page.evaluate('''() => {
-                const btn = document.querySelector('#btnSaveDoc');
-                if (!btn) return 'not_found';
-                return btn.disabled ? 'disabled' : 'ready';
+                const btns = Array.from(document.querySelectorAll('#btnSaveDoc'));
+                if (btns.length === 0) return 'not_found';
+                const visible = btns.find(b => b.offsetParent !== null
+                    && window.getComputedStyle(b).visibility !== 'hidden');
+                if (!visible) return 'hidden';
+                return visible.disabled ? 'disabled' : 'ready';
             }''')
         except Exception:
             btn_state = 'not_found'
@@ -1278,8 +1294,11 @@ async def click_save_doc_once(page, prefix: str = "UPLOAD") -> bool:
 
     try:
         clicked = await page.evaluate('''() => {
-            const btn = document.querySelector('#btnSaveDoc');
-            if (!btn || btn.disabled) return false;
+            const btns = Array.from(document.querySelectorAll('#btnSaveDoc'));
+            const btn = btns.find(b => b.offsetParent !== null
+                && window.getComputedStyle(b).visibility !== 'hidden'
+                && !b.disabled);
+            if (!btn) return false;
             try {
                 if (typeof angular !== 'undefined') {
                     const ngEl = angular.element(btn);
@@ -1299,6 +1318,8 @@ async def click_save_doc_once(page, prefix: str = "UPLOAD") -> bool:
 
     if clicked:
         _log(prefix, "کلیک #btnSaveDoc انجام شد")
+    else:
+        _log(prefix, "دکمهٔ نمایان/فعال #btnSaveDoc پیدا نشد", 'warning')
     return bool(clicked)
 
 
@@ -1306,10 +1327,19 @@ async def click_save_doc_with_retry(
     page, bot: Bot = None, user_id: int = None,
     max_retries: int = MAX_SAVE_DOC_RETRIES,
     prefix: str = "UPLOAD") -> bool:
-    """کلیک روی «ثبت و ویرایش پیوست» (#btnSaveDoc) با تلاش مجدد."""
+    """کلیک روی «ثبت و ویرایش پیوست» (#btnSaveDoc) با تلاش مجدد.
+
+    ⭐ اصلاحیهٔ ۱۴۰۵/۰۶ (طبق دستور کارفرما — یکسان‌سازی همهٔ مسیرها):
+      مانند `click_save_doc_once`، این تابع هم اکنون از میان همهٔ
+      المان‌های #btnSaveDoc (که گاهی به‌صورت تکراری/مخفی هم‌زمان در DOM
+      وجود دارند) فقط موردِ واقعاً نمایان را برای کلیک انتخاب می‌کند، تا
+      کلیک روی یک دکمهٔ مخفیِ بی‌اثر باعث بن‌بست بی‌صدا نشود.
+    """
     for attempt in range(max_retries):
         click_info = await page.evaluate('''() => {
-            const btn = document.querySelector('#btnSaveDoc');
+            const btns = Array.from(document.querySelectorAll('#btnSaveDoc'));
+            const btn = btns.find(b => b.offsetParent !== null
+                && window.getComputedStyle(b).visibility !== 'hidden');
             if (!btn) return {found: false};
             if (btn.disabled) {
                 // تشخیصی: چرا دکمه غیرفعال است؟ فیلدهای invalid/خالی نزدیک فرم را گزارش بده
