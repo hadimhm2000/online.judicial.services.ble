@@ -116,7 +116,9 @@ from keyboards import (
     check_attachment_more_kb,
     check_images_continue_kb,
     check_docx_option_kb,
-    bulk_input_method_kb)
+    text_input_method_kb,
+    bulk_input_method_kb,
+    vakalat_ask_kb)  # ⭐ سوال وکالت پیش از بخش خواهان
 from check_branches_tree import (
     create_check_branch_keyboard,
     ROOT_NODES as CHECK_ROOT_NODES,
@@ -178,6 +180,12 @@ async def check_entry(message: Message, state: FSMContext):
         check_text_html="",
         check_extra_text="",
         check_images=[],
+        check_cheque_items=[],       # ⭐ فلو جدید چک: [{tracking_no, images}, ...]
+        check_cheques_total=0,       # ⭐ تعداد فقرات چک (پرسش قبل از منضمات)
+        check_tracking_list=[],
+        _current_cheque_index=1,
+        _current_cheque_tracking="",
+        _current_cheque_images=[],
         check_esteshahadieh_images=[],
         check_marriage_cert_images=[],
         check_assets_list_images=[],
@@ -853,11 +861,78 @@ async def check_khasteh_title_handler(message: Message, state: FSMContext):
     if await _check_maybe_return_to_preview(message, state):
         return
 
-    # مرحله ۵ — اطلاعات خواهان (مانند اظهارکننده)
+    # ⭐ مرحله ۵ — پیش از بخش خواهان: سوال وکالت (طبق دستور کارفرما)
+    # اگر ثبت «به وکالت» است، کاربر کدملی وکیل را وارد می‌کند (مراحل کامل
+    # وکیل: کدملی + شماره قرارداد وکالت + تمبر خودکار)؛ در غیر این صورت «رد شدن»
+    # و ادامهٔ مسیر عادیِ خواهان (حقیقی/حقوقی — گزینهٔ «وکیل» دیگر در کیبورد نیست).
     await message.answer(
-        "👤 *مرحله ۵:* لطفاً *نوع شخصیت خواهان* را انتخاب فرمایید:",
-        reply_markup=create_check_person_type_kb())
-    await state.set_state(Form.check_plaintiff_person_type)
+        "👤 *مرحله ۵:* اطلاعات *خواهان*\n\n"
+        "در صورتی که این دادخواست *به وکالت* ثبت می‌شود، گزینه *«وارد کردن کدملی وکیل»* را انتخاب کنید.\n"
+        "در غیر این صورت، گزینه *«رد شدن»* را انتخاب کنید:",
+        reply_markup=vakalat_ask_kb)
+    await state.set_state(Form.check_plaintiff_vakalat_ask)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# مرحله ۴-الف — سوال وکالت پیش از خواهان (ثبت به وکالت یا عادی)
+# ════════════════════════════════════════════════════════════════════════════
+@check_router.message(Form.check_plaintiff_vakalat_ask)
+async def check_plaintiff_vakalat_ask_handler(message: Message, state: FSMContext):
+    """سوال وکالت قبل از بخش خواهان:
+      - «وارد کردن کدملی وکیل» → دریافت کدملی وکیل → شماره قرارداد وکالت + تمبر
+      - «رد شدن» → مسیر عادیِ انتخاب نوع شخصیت خواهان (حقیقی/حقوقی)
+    """
+    text = (message.text or "").strip()
+
+    if text == "وارد کردن کدملی وکیل":
+        await message.answer(
+            "⚖️ ثبت *به وکالت* انتخاب شد.\n\n"
+            "🆔 لطفاً *کد ملی وکیل* را وارد فرمایید:\n_(۱۰ رقمی)_",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.check_plaintiff_vakalat_nid)
+        return
+
+    if text == "رد شدن":
+        await message.answer(
+            "👤 لطفاً *نوع شخصیت خواهان* را انتخاب فرمایید:",
+            reply_markup=create_check_person_type_kb())
+        await state.set_state(Form.check_plaintiff_person_type)
+        return
+
+    await message.answer(
+        "⚠️ لطفاً یکی از گزینه‌های زیر را انتخاب کنید:\n"
+        "_(اگر ثبت به وکالت است: «وارد کردن کدملی وکیل» — در غیر این صورت: «رد شدن»)_",
+        reply_markup=vakalat_ask_kb)
+
+
+@check_router.message(Form.check_plaintiff_vakalat_nid)
+async def check_plaintiff_vakalat_nid_handler(message: Message, state: FSMContext):
+    """دریافت کدملی وکیل خواهان — سپس شماره قرارداد وکالت (همان مراحل قبلیِ وکیل)."""
+    text = _to_en(message.text or "")
+    data = await state.get_data()
+
+    if "بازگشت" in text:
+        await message.answer(
+            "👤 *مرحله ۵:* اطلاعات *خواهان*\n\n"
+            "در صورتی که این دادخواست *به وکالت* ثبت می‌شود، گزینه *«وارد کردن کدملی وکیل»* را انتخاب کنید.\n"
+            "در غیر این صورت، گزینه *«رد شدن»* را انتخاب کنید:",
+            reply_markup=vakalat_ask_kb)
+        await state.set_state(Form.check_plaintiff_vakalat_ask)
+        return
+
+    if not re.fullmatch(r"\d{10}", text):
+        await message.answer("⚠️ کد ملی وکیل باید *۱۰ رقم* باشد. دوباره وارد فرمایید:")
+        return
+
+    await state.update_data(_check_current_plaintiff={
+        "person_type": "وکیل",
+        "national_id": text,
+    })
+
+    await message.answer(
+        "📑 لطفاً *شماره قرارداد وکالت* را وارد فرمایید:\n_(دقیقاً ۱۶ رقمی)_",
+        reply_markup=back_only_kb)
+    await state.set_state(Form.check_plaintiff_vakalat_no)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -915,7 +990,9 @@ async def check_plaintiff_person_type_handler(message: Message, state: FSMContex
         await state.set_state(Form.check_defendant_person_type)
         return
 
-    if text not in ["شخص حقیقی", "شخص حقوقی", "وکیل"]:
+    if text not in ["شخص حقیقی", "شخص حقوقی"]:
+        # ⭐ گزینهٔ «وکیل» حذف شد — ثبت به وکالت از سوال وکالت قبلی
+        # (check_plaintiff_vakalat_ask) انجام می‌شود.
         await message.answer("⚠️ لطفاً از لیست، نوع شخصیت را انتخاب کنید:")
         return
 
@@ -981,16 +1058,21 @@ async def check_plaintiff_company_id_handler(message: Message, state: FSMContext
     current["company_id"] = text
     await state.update_data(_check_current_plaintiff=current)
 
+    # ⭐ اصلاحیه (کارفرما — دور ۳): سوال «نام شرکت/موسسه» حذف شد — نام
+    # شرکت بعد از استعلام شناسه ملی، خودکار از سامانه ثنا خوانده می‌شود
+    # و پرسیدن آن از کاربر زائد بود. مستقیم «نوع نماینده» پرسیده می‌شود.
     await message.answer(
-        "👤 لطفاً *نام شرکت/موسسه* (خواهان) را وارد فرمایید:",
-        reply_markup=back_only_kb)
-    await state.set_state(Form.check_plaintiff_representative_type)
+        "👥 لطفاً *نوع نماینده* شخص حقوقی را انتخاب کنید:",
+        reply_markup=representative_type_kb)
+    await state.set_state(Form.check_plaintiff_legal_rep_national_id)
 
 
+# ⚠️ state «check_plaintiff_representative_type» (گرفتن نام شرکت) منسوخ شد —
+# دیگر هیچ مسیری به آن نمی‌رود؛ هندلر فقط برای سازگاری با نشست‌های قدیمی
+# (کاربرانی که وسط فلو بودند) باقی مانده است و نام را نادیده می‌گیرد.
 @check_router.message(Form.check_plaintiff_representative_type)
 async def check_plaintiff_representative_type_handler(message: Message, state: FSMContext):
     text = message.text or ""
-    data = await state.get_data()
 
     if "بازگشت" in text:
         await message.answer(
@@ -999,14 +1081,8 @@ async def check_plaintiff_representative_type_handler(message: Message, state: F
         await state.set_state(Form.check_plaintiff_company_id)
         return
 
-    if not text.strip():
-        await message.answer("⚠️ نام شرکت نمی‌تواند خالی باشد. لطفاً وارد فرمایید:")
-        return
-
-    current = data.get("_check_current_plaintiff") or {}
-    current["name"] = text.strip()
-    await state.update_data(_check_current_plaintiff=current)
-
+    # سوال نام شرکت حذف شده — هر متن دریافتی نادیده گرفته می‌شود و مستقیم
+    # به انتخاب نوع نماینده می‌رویم.
     await message.answer(
         "👥 لطفاً *نوع نماینده* شخص حقوقی را انتخاب کنید:",
         reply_markup=representative_type_kb)
@@ -1064,19 +1140,9 @@ async def check_plaintiff_national_id_handler(message: Message, state: FSMContex
             await message.answer("⚠️ این کد ملی قبلاً برای خواهان ثبت شده است. لطفاً کد ملی دیگری وارد فرمایید:")
             return
 
-    # ⭐ مسیر وکیل — طبق دستور کارفرما: فقط شماره قرارداد وکالت گرفته
-    # می‌شود؛ مقدار تمبر خودکار محاسبه می‌گردد (بدون تصویر — ثبت به‌صورت
-    # «وکالت‌نامه الکترونیک» در سامانه انجام می‌شود، نه با آپلود تصویر).
-    if person_type == "وکیل":
-        current = data.get("_check_current_plaintiff") or {}
-        current["national_id"] = text
-        await state.update_data(_check_current_plaintiff=current)
-
-        await message.answer(
-            "📑 لطفاً *شماره قرارداد وکالت* را وارد فرمایید:\n_(دقیقاً ۱۶ رقمی)_",
-            reply_markup=back_only_kb)
-        await state.set_state(Form.check_plaintiff_vakalat_no)
-        return
+    # ⭐ مسیر وکیل از طریق همین state منسوخ شد — وکیل دیگر از بین گزینه‌های
+    # نوع شخصیت انتخاب نمی‌شود؛ مسیر آن: check_plaintiff_vakalat_ask →
+    # check_plaintiff_vakalat_nid → check_plaintiff_vakalat_no است.
 
     # مسیر شخص حقیقی — مثل اظهارنامه
     current = data.get("_check_current_plaintiff") or {}
@@ -1121,10 +1187,11 @@ async def check_plaintiff_vakalat_no_handler(message: Message, state: FSMContext
     data = await state.get_data()
 
     if "بازگشت" in text:
+        # ⭐ بازگشت به کدملی وکیل (مسیر جدید سوال وکالت)
         await message.answer(
-            "🆔 لطفاً *کد ملی* خواهان را وارد فرمایید:",
+            "🆔 لطفاً *کد ملی وکیل* را وارد فرمایید:\n_(۱۰ رقمی)_",
             reply_markup=back_only_kb)
-        await state.set_state(Form.check_plaintiff_national_id)
+        await state.set_state(Form.check_plaintiff_vakalat_nid)
         return
 
     contract_no = _to_en(text)
@@ -1215,7 +1282,23 @@ async def check_plaintiff_legal_rep_name_handler(message: Message, state: FSMCon
 
 @check_router.message(Form.check_plaintiff_legal_rep_doc_image)
 async def check_plaintiff_legal_rep_doc_image_handler(message: Message, state: FSMContext):
+    """دریافت تصاویر مدرک نمایندگی خواهان حقوقی.
+
+    ⭐ اصلاحیه (کارفرما — دور ۳ — باگ «دکمه اتمام ارسال تصویر کار نمی‌کند»):
+    قبلاً بعد از دریافت هر عکس state تغییر نمی‌کرد و دکمهٔ «✅ اتمام ارسال
+    تصاویر» (متن) توسط همین هندلر می‌افتاد و چون عکس نبود، همیشه اخطار
+    «⚠️ لطفاً عکس مدرک نماینده را ارسال فرمایید» می‌گرفت — یعنی کاربر
+    هرگز نمی‌توانست مرحله را تمام کند. حالا بعد از هر عکس state به
+    check_plaintiff_legal_rep_doc_images_more می‌رود (جایی که منطق دکمهٔ
+    اتمام/بازگشت است) و متن دکمه‌ها در همین state هم به همان هندلر
+    هدایت می‌شود (الگوی گواهی ازدواج/استشهادیه).
+    """
     if not message.photo:
+        text = (message.text or "").strip()
+        if text in ("✅ اتمام ارسال تصاویر", "🔙 بازگشت", "➕ افزودن تصویر دیگر"):
+            # دکمه‌های کیبورد در حالت دریافت تصویر — هدایت به منطق هندلر «بیشتر»
+            await check_plaintiff_legal_rep_doc_images_more_handler(message, state)
+            return
         await message.answer("⚠️ لطفاً *عکس* مدرک نماینده را ارسال فرمایید.")
         return
 
@@ -1228,6 +1311,8 @@ async def check_plaintiff_legal_rep_doc_image_handler(message: Message, state: F
         f"✅ تصویر شماره *{len(images)}* دریافت شد.\n\n"
         "می‌توانید تصویر دیگری ارسال کنید یا دکمه *«اتمام ارسال تصاویر»* را بفشارید:",
         reply_markup=check_rep_doc_images_kb)
+    # ⭐ بعد از هر عکس به state «بیشتر» می‌رویم تا دکمهٔ اتمام کار کند
+    await state.set_state(Form.check_plaintiff_legal_rep_doc_images_more)
 
 
 @check_router.message(Form.check_plaintiff_legal_rep_doc_images_more)
@@ -1236,6 +1321,12 @@ async def check_plaintiff_legal_rep_doc_images_more_handler(message: Message, st
     (۲) پس از آن، تصمیم «نمایندهٔ دیگری اضافه کنم یا خواهان را نهایی کنم؟»
     — چون هر دو مرحله با یک ‌ست دکمهٔ متفاوت (اما همین state) پیش می‌روند.
     ⭐ هر خواهان (شخص حقوقی) می‌تواند حداکثر ۵ نماینده/مدیرعامل داشته باشد."""
+    # ⭐ عکس در این state هم پذیرفته می‌شود — همان منطق هندلر تصویر اجرا
+    # می‌شود (کاربر ممکن است بدون زدن دکمه، مستقیماً عکس بعدی را بفرستد).
+    if message.photo:
+        await check_plaintiff_legal_rep_doc_image_handler(message, state)
+        return
+
     text = message.text.strip() if message.text else ""
     data = await state.get_data()
 
@@ -1439,18 +1530,34 @@ async def check_defendant_company_id_handler(message: Message, state: FSMContext
     current = data.get("_check_current_defendant") or {}
     # ⚠️ کلید باید دقیقاً «company_id» باشد — همان دلیل سمت خواهان.
     current["company_id"] = text
-    await state.update_data(_check_current_defendant=current)
+    # ⭐ اصلاحیه (کارفرما — دور ۳): برای خوانده حقوقی دیگر «نام شرکت»،
+    # «نوع نماینده»، «کدملی مدیرعامل/نماینده» و «مدرک نمایندگی» پرسیده
+    # نمی‌شود — عین الگوی مخاطبِ اظهارنامه و تجدیدنظرخوانده، فقط شناسه
+    # ملی شرکت ثبت می‌شود (نام/اطلاعات شرکت در سامانه از استعلام ثنا
+    # خودکار خوانده می‌شود؛ check_scenario._fill_legal_person مسیر بدون
+    # نماینده را کامل پشتیبانی می‌کند).
+    current["representative_type"] = ""
+    current["national_id"] = ""
+    defendants = data.get("check_defendants", [])
+    defendants.append(current)
+    await state.update_data(check_defendants=defendants, _check_current_defendant={})
 
     await message.answer(
-        "👤 لطفاً *نام شرکت/موسسه* (خوانده) را وارد فرمایید:",
-        reply_markup=back_only_kb)
-    await state.set_state(Form.check_defendant_representative_type)
+        f"✅ *شخص حقوقی (خوانده)* با شناسه ملی `{text}` ثبت شد.\n\n"
+        "آیا خوانده دیگری نیز وجود دارد؟\n"
+        "_(در غیر این صورت دکمهٔ «اتمام و ادامه» را بفشارید)_",
+        reply_markup=create_ezhhar_addressee_person_type_kb(show_finish=True))
+    await state.set_state(Form.check_defendant_person_type)
 
 
+# ⚠️ مسیر قدیمی «نوع نماینده / کدملی مدیرعامل / مدرک نمایندگی» برای خوانده
+# حقوقی حذف شد (دستور کارفرما — دور ۳). stateهای check_defendant_representative_type
+# و check_defendant_legal_rep_national_id دیگر از هیچ مسیری set نمی‌شوند؛ هندلرهای
+# زیر فقط برای نشست‌های قدیمیِ وسطِ فلو باقی مانده‌اند و کاربر را به مسیر جدید
+# هدایت می‌کنند.
 @check_router.message(Form.check_defendant_representative_type)
 async def check_defendant_representative_type_handler(message: Message, state: FSMContext):
     text = message.text or ""
-    data = await state.get_data()
 
     if "بازگشت" in text:
         await message.answer(
@@ -1459,45 +1566,30 @@ async def check_defendant_representative_type_handler(message: Message, state: F
         await state.set_state(Form.check_defendant_company_id)
         return
 
-    if not text.strip():
-        await message.answer("⚠️ نام شرکت نمی‌تواند خالی باشد. لطفاً وارد فرمایید:")
-        return
-
-    current = data.get("_check_current_defendant") or {}
-    current["name"] = text.strip()
-    await state.update_data(_check_current_defendant=current)
-
+    # مسیر منسوخ — به ثبت مستقیم خوانده حقوقی برگردان
     await message.answer(
-        "👥 لطفاً *نوع نماینده* شخص حقوقی را انتخاب کنید:",
-        reply_markup=representative_type_kb)
-    await state.set_state(Form.check_defendant_legal_rep_national_id)
+        "🏢 لطفاً *شناسه ملی* شخص حقوقی خوانده را وارد فرمایید:\n_(۱۱ رقم)_",
+        reply_markup=back_only_kb)
+    await state.set_state(Form.check_defendant_company_id)
 
 
 @check_router.message(Form.check_defendant_legal_rep_national_id)
 async def check_defendant_legal_rep_national_id_handler(message: Message, state: FSMContext):
-    """⚠️ دکمه‌های representative_type_kb متن ساده «مدیرعامل»/«نماینده»
-    دارند (بدون ایموجی) — قبلاً اینجا با «👤 مدیرعامل»/«👤 نماینده» مقایسه
-    می‌شد که هرگز True نمی‌شد."""
+    """⚠️ مسیر منسوخ (کارفرما — دور ۳): برای خوانده حقوقی دیگر نماینده/کدملی
+    مدیرعامل پرسیده نمی‌شود. فقط برای نشست‌های قدیمی به شناسه ملی برمی‌گردد."""
     text = (message.text or "").strip()
-    data = await state.get_data()
 
-    if text == "مدیرعامل":
-        await state.update_data(check_defendant_current_representative_type="مدیرعامل")
+    if text == "مدیرعامل" or text == "نماینده":
         await message.answer(
-            "🆔 لطفاً *کد ملی مدیرعامل* را وارد فرمایید:",
+            "🏢 لطفاً *شناسه ملی* شخص حقوقی خوانده را وارد فرمایید:\n_(۱۱ رقم)_",
             reply_markup=back_only_kb)
-        await state.set_state(Form.check_defendant_legal_rep_name)
+        await state.set_state(Form.check_defendant_company_id)
         return
 
-    if text == "نماینده":
-        await state.update_data(check_defendant_current_representative_type="نماینده")
-        await message.answer(
-            "🆔 لطفاً *کد ملی نماینده* را وارد فرمایید:",
-            reply_markup=back_only_kb)
-        await state.set_state(Form.check_defendant_legal_rep_name)
-        return
-
-    await message.answer("⚠️ لطفاً از لیست، نوع نماینده را انتخاب کنید:", reply_markup=representative_type_kb)
+    await message.answer(
+        "🏢 لطفاً *شناسه ملی* شخص حقوقی خوانده را وارد فرمایید:\n_(۱۱ رقم)_",
+        reply_markup=back_only_kb)
+    await state.set_state(Form.check_defendant_company_id)
 
 
 @check_router.message(Form.check_defendant_national_id)
@@ -1884,13 +1976,17 @@ async def check_witness_national_id_handler(message: Message, state: FSMContext)
     })
     await state.update_data(check_witnesses=witnesses)
 
-    # ⭐ عناوین اعسار — دقیقاً دو شاهد: پس از دومی مستقیم به شرح متن
+    # ⭐ عناوین اعسار — حداقل دو شاهد الزامی؛ پس از شاهد دوم (و هر شاهد
+    # بعدی) طبق دستور کارفرما (دور ۳) سوال «شاهد دیگری دارید؟» پرسیده می‌شود
+    # تا کاربر در صورت وجود، شهود بیشتری اضافه کند (پاسخ منفی → شرح متن).
     if is_aasar_title:
         if len(witnesses) >= 2:
             await message.answer(
-                f"✅ *شاهد دوم* با کدملی `{text}` ثبت شد.\n\n"
-                "✅ هر دو شاهد الزامی ثبت شدند.")
-            await _ask_check_text(message, state)
+                f"✅ *شاهد {len(witnesses)}* با کدملی `{text}` ثبت شد.\n\n"
+                "✅ هر دو شاهد الزامی ثبت شدند.\n\n"
+                "آیا *شاهد دیگری* نیز دارید؟",
+                reply_markup=check_addressee_add_more_kb)
+            await state.set_state(Form.check_more_witnesses)
             return
         await message.answer(
             f"✅ *شاهد اول* با کدملی `{text}` ثبت شد.\n\n"
@@ -1980,16 +2076,57 @@ async def check_more_witnesses_handler(message: Message, state: FSMContext):
 # مرحله ۸ — شرح متن دادخواست (متن یا فایل ورد)
 # ══════════════════════════════════════════════════════════════════════════════
 async def _ask_check_text(message: Message, state: FSMContext):
+    """⭐ دور ۳ (دستور کارفرما): در همهٔ بخش‌ها، قبل از دریافت متن/فایل ورد،
+    ابتدا «روش ارسال متن» از کاربر پرسیده می‌شود (تایپ مستقیم یا فایل ورد)
+    و فقط پس از انتخاب، متن/فایل دریافت می‌گردد — عین الگوی اظهارنامه/
+    لایحه/تجدیدنظر (ezhhar_text_choice / lavayeh_text_choice / tn_text_choice).
+    """
+    await message.answer(
+        "📄 *مرحله ۸:* شرح متن دادخواست\n\n"
+        "لطفاً *روش ارسال متن* خود را انتخاب فرمایید:",
+        reply_markup=text_input_method_kb)
+    await state.set_state(Form.check_text_choice)
+
+
+@check_router.message(Form.check_text_choice)
+async def check_text_choice_handler(message: Message, state: FSMContext):
+    """انتخاب روش ورود شرح متن دادخواست — تایپ مستقیم یا فایل ورد.
+
+    ⭐ دور ۳: تا کاربر یکی از دو گزینه را انتخاب نکرده، متن/فایل او
+    پذیرفته نمی‌شود و دوباره همان سوال تکرار می‌شود.
+    """
+    text = (message.text or "").strip()
+
+    if text == "🔙 بازگشت":
+        await message.answer(
+            "🔍 *مرحله ۷:* آیا *مطلع یا گواه* دارید؟\n\n"
+            "در صورت وجود، *کدملی* مطلع/گواه را ارسال فرمایید.\n"
+            "_(در غیر این صورت گزینه «اتمام» را انتخاب کنید)_",
+            reply_markup=check_addressee_add_more_kb)
+        await state.set_state(Form.check_witness_national_id)
+        return
+
+    if text == "⌨️ تایپ مستقیم متن":
+        await _prompt_check_text_typing(message, state)
+        return
+
+    if text == "📎 ارسال فایل ورد (.docx)":
+        await message.answer(
+            "📎 لطفاً *فایل ورد (.docx)* حاوی شرح متن دادخواست را ارسال فرمایید:\n\n"
+            "💡 متن داخل فایل عیناً (با حفظ فرمت بولد و ...) در سامانه درج خواهد شد.",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.check_text_input)
+        return
+
+    await message.answer(
+        "⚠️ لطفاً ابتدا *روش ارسال متن* را انتخاب فرمایید:",
+        reply_markup=text_input_method_kb)
+
+
+async def _prompt_check_text_typing(message: Message, state: FSMContext):
+    """نمایش اعلان تایپ متن (+ نمونه‌متن برای عناوین چک) بعد از «تایپ مستقیم»."""
     data = await state.get_data()
     request_title = data.get("check_request_title", "")
-
-    if request_title == "مطالبه وجه بابت...":
-        await message.answer(
-            "📄 *مرحله ۸:* شرح متن دادخواست\n\n"
-            "لطفاً *متن دادخواست* خود را وارد فرمایید:",
-            reply_markup=check_docx_option_kb)
-        await state.set_state(Form.check_text)
-        return
 
     # ⭐ نمونه‌متن فقط برای «صدور اجرائیه چک» و «مطالبه وجه چک»
     if request_title in CHECK_SAMPLE_TEXT_TITLES:
@@ -2009,16 +2146,16 @@ async def _ask_check_text(message: Message, state: FSMContext):
                 "لغایت زمان کامل اجرای حکم و حق الوکاله وکیل"
             )
         await message.answer(
-            "📄 *مرحله ۸:* شرح متن دادخواست\n\n"
             f"📝 *متن پیشنهادی:*\n\n{suggested}\n\n"
-            "💡 می‌توانید متن فوق را *ویرایش* و ارسال فرمایید یا اگر متنی دارید، مستقیماً وارد کنید:",
-            reply_markup=check_docx_option_kb)
+            "💡 می‌توانید متن فوق را *ویرایش* و ارسال فرمایید یا اگر متنی دارید، مستقیماً وارد کنید:\n"
+            "_(می‌توانید متن را در چند پیام ارسال کنید)_",
+            reply_markup=back_only_kb)
     else:
         # ⭐ سایر عناوین (طلاق، نفقه، تمکین، مهریه) — بدون متن نمونه
         await message.answer(
-            "📄 *مرحله ۸:* شرح متن دادخواست\n\n"
-            "لطفاً *متن دادخواست* خود را وارد فرمایید:",
-            reply_markup=check_docx_option_kb)
+            "📝 لطفاً *شرح متن دادخواست* خود را ارسال فرمایید:\n"
+            "_(می‌توانید در چند پیام ارسال کنید)_",
+            reply_markup=back_only_kb)
     await state.set_state(Form.check_text)
 
 
@@ -2123,6 +2260,11 @@ async def check_marriage_cert_image_handler(message: Message, state: FSMContext)
 
 @check_router.message(Form.check_marriage_cert_more)
 async def check_marriage_cert_more_handler(message: Message, state: FSMContext):
+    # ⭐ عکس در این state هم پذیرفته می‌شود — همان منطق هندلر تصویر اجرا می‌شود
+    if message.photo:
+        await check_marriage_cert_image_handler(message, state)
+        return
+
     text = message.text.strip() if message.text else ""
 
     if text == "➕ افزودن تصویر دیگر":
@@ -2198,7 +2340,10 @@ async def check_marriage_date_input_handler(message: Message, state: FSMContext)
         return
 
     await state.update_data(check_marriage_date=normalized)
-    await _ask_check_branch(message, state)
+    # ⭐ اصلاحیه (کارفرما — دور ۳): سوال «مدرک یا تصویر دیگری دارید؟» باید
+    # *قبل از انتخاب صلاحیت دادگاه* و درست بعد از اطلاعات سند ازدواج پرسیده
+    # شود (قبلاً بعد از صلاحیت پرسیده می‌شد که جای اشتباهی بود).
+    await _ask_check_extra_docs(message, state)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2220,20 +2365,24 @@ async def check_esteshahadieh_image_handler(message: Message, state: FSMContext)
     images.append(message.photo[-1].file_id)
     await state.update_data(check_esteshahadieh_images=images)
 
-    if len(images) == 1:
-        await message.answer("✅ تصویر اول دریافت شد. تصویر دوم استشهادیه را ارسال فرمایید:")
-    else:
-        # ⭐ اصلاحیه: قبلاً کیبورد check_more_docs_kb (با دکمه‌های بی‌هندلر)
-        # نمایش داده می‌شد و state عوض نمی‌شد → کاربر در بن‌بست می‌افتاد.
-        await message.answer(
-            "✅ تصاویر استشهادیه دریافت شد.\n\n"
-            "در صورت وجود تصویر دیگر، ارسال فرمایید یا *«ادامه»* را بفشارید:",
-            reply_markup=check_images_continue_kb)
-        await state.set_state(Form.check_esteshahadieh_more)
+    # ⭐ اصلاحیه (دستور کارفرما): یک تصویر هم کافی است — قبلاً تصویر دوم
+    # اجباری بود؛ حالا بعد از هر تصویر (حتی اولی) امکان «ادامه» وجود دارد.
+    # (قبلاً کیبورد check_more_docs_kb هم دکمه‌های بی‌هندلر داشت و کاربر در
+    # بن‌بست می‌افتاد.)
+    await message.answer(
+        f"✅ تصویر {len(images)} استشهادیه دریافت شد.\n\n"
+        "در صورت وجود تصویر دیگر، ارسال فرمایید یا *«ادامه»* را بفشارید:",
+        reply_markup=check_images_continue_kb)
+    await state.set_state(Form.check_esteshahadieh_more)
 
 
 @check_router.message(Form.check_esteshahadieh_more)
 async def check_esteshahadieh_more_handler(message: Message, state: FSMContext):
+    # ⭐ عکس در این state هم پذیرفته می‌شود — همان منطق هندلر تصویر اجرا می‌شود
+    if message.photo:
+        await check_esteshahadieh_image_handler(message, state)
+        return
+
     text = message.text.strip() if message.text else ""
 
     if text == "➕ افزودن تصویر دیگر":
@@ -2246,9 +2395,11 @@ async def check_esteshahadieh_more_handler(message: Message, state: FSMContext):
     if text == "✅ ادامه":
         data = await state.get_data()
         images = data.get("check_esteshahadieh_images", [])
-        if len(images) < 2:
+        # ⭐ اصلاحیه (دستور کارفرما): حداقل «یک» تصویر کافی است — قبلاً دو
+        # تصویر الزامی بود.
+        if not images:
             await message.answer(
-                "⚠️ حداقل *دو تصویر* استشهادیه الزامی است. لطفاً تصویر دوم را ارسال فرمایید:",
+                "⚠️ ارسال *حداقل یک تصویر* استشهادیه الزامی است. لطفاً تصویر آن را ارسال فرمایید:",
                 reply_markup=check_images_continue_kb)
             await state.set_state(Form.check_esteshahadieh_image)
             return
@@ -2276,7 +2427,7 @@ async def check_esteshahadieh_more_handler(message: Message, state: FSMContext):
             await state.update_data(check_esteshahadieh_images=images)
         await message.answer(
             "📷 لطفاً تصاویر *استشهادیه* را ارسال فرمایید:\n"
-            "_(حداقل دو تصویر)_",
+            "_(حداقل یک تصویر)_",
             reply_markup=check_images_continue_kb)
         await state.set_state(Form.check_esteshahadieh_image)
         return
@@ -2312,6 +2463,11 @@ async def check_assets_list_image_handler(message: Message, state: FSMContext):
 
 @check_router.message(Form.check_assets_list_more)
 async def check_assets_list_more_handler(message: Message, state: FSMContext):
+    # ⭐ عکس در این state هم پذیرفته می‌شود — همان منطق هندلر تصویر اجرا می‌شود
+    if message.photo:
+        await check_assets_list_image_handler(message, state)
+        return
+
     text = message.text.strip() if message.text else ""
 
     if text == "➕ افزودن تصویر دیگر":
@@ -2344,7 +2500,7 @@ async def check_assets_list_more_handler(message: Message, state: FSMContext):
         data = await state.get_data()
         await message.answer(
             "📷 لطفاً تصاویر *استشهادیه* را ارسال فرمایید:\n"
-            "_(حداقل دو تصویر)_",
+            "_(حداقل یک تصویر)_",
             reply_markup=check_images_continue_kb)
         await state.set_state(Form.check_esteshahadieh_image)
         return
@@ -2381,6 +2537,11 @@ async def check_judgment_image_handler(message: Message, state: FSMContext):
 
 @check_router.message(Form.check_judgment_more)
 async def check_judgment_more_handler(message: Message, state: FSMContext):
+    # ⭐ عکس در این state هم پذیرفته می‌شود — همان منطق هندلر تصویر اجرا می‌شود
+    if message.photo:
+        await check_judgment_image_handler(message, state)
+        return
+
     text = message.text.strip() if message.text else ""
 
     if text == "➕ افزودن تصویر دیگر":
@@ -2535,8 +2696,15 @@ async def check_judgment_branch_no_handler(message: Message, state: FSMContext):
 
     await state.update_data(check_judgment_branch_no=normalized)
 
-    # ⭐ ادامه: انتخاب صلاحیت دادگاه (عین سایر عناوین)
     if await _check_maybe_return_to_preview(message, state):
+        return
+
+    # ⭐ عناوین اعسار — طبق دستور کارفرما: بعد از تکمیل اطلاعات دادنامه،
+    # سوال «مدرک دیگری دارید؟» پرسیده می‌شود (نه بعد از صلاحیت دادگاه)؛
+    # سپس صلاحیت دادگاه → پیش‌نمایش. (از دور ۳ برای همهٔ عناوین یکسان است.)
+    data = await state.get_data()
+    if data.get("check_request_title") in CHECK_AASAR_TITLES:
+        await _ask_check_extra_docs(message, state)
         return
     await _ask_check_branch(message, state)
 
@@ -2685,13 +2853,36 @@ async def check_extra_text_handler(message: Message, state: FSMContext):
 # ══════════════════════════════════════════════════════════════════════════════
 # مرحله ۱۰ — تصاویر چک (به‌ازای هر فقره: کدرهگیری + دقیقاً ۳ تصویر)
 # ══════════════════════════════════════════════════════════════════════════════
+async def _ask_check_extra_docs(message: Message, state: FSMContext):
+    """⭐ سوال «مدرک دیگری دارید؟» — برای *همهٔ* عناوین دادخواست (دور ۳).
+
+    طبق دستور کارفرما این سوال باید *قبل از انتخاب صلاحیت دادگاه* و درست
+    بعد از اسناد اختصاصیِ همان نوع دادخواست پرسیده شود — نه بعد از صلاحیت:
+      - اجرائیه چک / مطالبه وجه چک → بعد از تکمیل تصاویر فقرات چک
+      - مهریه (و سایر عناوین خانواده) → بعد از تصاویر و اطلاعات سند ازدواج
+      - عناوین اعسار → بعد از تکمیل اطلاعات دادنامه (۴/۴)
+      - مطالبه وجه بابت... → بعد از توضیحات اضافی (سند اختصاصی ندارد)
+    پاسخ مثبت → فلوی پیوست (عنوان + تصاویر) و پاسخ منفی → انتخاب صلاحیت
+    دادگاه. (نام قدیمی این تابع _ask_check_aasar_extra_docs بود.)
+    """
+    await message.answer(
+        "📎 آیا *مدرک یا تصویر دیگری* برای دادخواست خود دارید؟",
+        reply_markup=check_attachment_title_kb_first)
+    await state.set_state(Form.check_attachment_title)
+
+
+# نام قدیمی — برای سازگاری با ارجاع‌های احتمالی باقی می‌ماند
+async def _ask_check_aasar_extra_docs(message: Message, state: FSMContext):
+    await _ask_check_extra_docs(message, state)
+
+
 async def _ask_check_next_after_images(message: Message, state: FSMContext):
     """
     انتخاب مسیر بعد از متن/توضیحات:
       - عناوین اعسار → تصاویر استشهادیه (الزامی — سپس لیست اموال و دادنامه)
       - اعسار=بله  → تصاویر استشهادیه (الزامی)
       - عنوان خانواده → تصاویر گواهی ازدواج (الزامی)
-      - «مطالبه وجه بابت...» → بدون تصویر چک — مستقیم انتخاب دادگاه
+      - «مطالبه وجه بابت...» → بدون سند اختصاصی — سوال «مدرک دیگری؟» → صلاحیت
       - سایر → تصاویر چک (به‌ازای هر فقره: کدرهگیری + دقیقاً ۳ تصویر)
     """
     data = await state.get_data()
@@ -2703,13 +2894,19 @@ async def _ask_check_next_after_images(message: Message, state: FSMContext):
     # نمی‌رسید.
     esteshahadieh_done = bool(data.get("check_esteshahadieh_images"))
     marriage_done = bool(data.get("check_marriage_cert_images"))
+    # ⭐ سوال «مدرک دیگری؟» فقط یک بار — برای همهٔ عناوین (فلگ عمومی دور ۳)
+    att_done = bool(data.get("check_att_done") or data.get("check_aasar_att_done"))
 
-    # ⭐ عناوین اعسار → زنجیرهٔ الزامی: استشهادیه → لیست اموال → دادنامه → دادگاه
+    # ⭐ عناوین اعسار → زنجیرهٔ الزامی:
+    #   استشهادیه → لیست اموال → دادنامه (تصاویر + ۴ فیلد) →
+    #   «مدرک دیگری دارید؟» → صلاحیت دادگاه → پیش‌نمایش
+    # (دستور کارفرما: سوال پیوست دیگر بعد از تکمیل اطلاعات دادنامه پرسیده
+    # می‌شود، نه بعد از صلاحیت دادگاه)
     if request_title in CHECK_AASAR_TITLES:
         if not esteshahadieh_done:
             await message.answer(
                 "📷 *مرحله ۹:* لطفاً تصاویر *استشهادیه* را ارسال فرمایید:\n"
-                "_(حداقل دو تصویر — اجباری)_",
+                "_(حداقل یک تصویر — اجباری)_",
                 reply_markup=check_images_continue_kb)
             await state.set_state(Form.check_esteshahadieh_image)
             return
@@ -2727,6 +2924,38 @@ async def _ask_check_next_after_images(message: Message, state: FSMContext):
                 reply_markup=check_images_continue_kb)
             await state.set_state(Form.check_judgment_image)
             return
+        # ⭐ اطلاعات سند دادنامه (۴ فیلد) — اگر ناقص باشد از همان فیلد ادامه
+        if not data.get("check_judgment_no"):
+            await message.answer(
+                "📄 *اطلاعات دادنامه/اجرائیه:*\n\n"
+                "۱/۴ — لطفاً *شماره دادنامه* را وارد فرمایید:\n"
+                "_(فقط عدد)_",
+                reply_markup=back_only_kb)
+            await state.set_state(Form.check_judgment_no)
+            return
+        if not data.get("check_judgment_date"):
+            await message.answer(
+                "۲/۴ — لطفاً *تاریخ دادنامه* را به‌صورت `1403/06/15` وارد فرمایید:",
+                reply_markup=back_only_kb)
+            await state.set_state(Form.check_judgment_date)
+            return
+        if not data.get("check_judgment_court_name"):
+            await message.answer(
+                "۳/۴ — لطفاً *نام دادگاه* صادرکنندهٔ دادنامه را وارد فرمایید:",
+                reply_markup=back_only_kb)
+            await state.set_state(Form.check_judgment_court_name)
+            return
+        if not data.get("check_judgment_branch_no"):
+            await message.answer(
+                "۴/۴ — لطفاً *شماره شعبه* را وارد فرمایید:\n"
+                "_(فقط عدد)_",
+                reply_markup=back_only_kb)
+            await state.set_state(Form.check_judgment_branch_no)
+            return
+        # ⭐ سوال «مدرک دیگری دارید؟» — قبل از صلاحیت دادگاه (فقط یک بار)
+        if not att_done:
+            await _ask_check_extra_docs(message, state)
+            return
         await _ask_check_branch(message, state)
         return
 
@@ -2734,7 +2963,7 @@ async def _ask_check_next_after_images(message: Message, state: FSMContext):
     if aasar and not esteshahadieh_done:
         await message.answer(
             "📷 *مرحله ۹:* لطفاً تصاویر *استشهادیه* را ارسال فرمایید:\n"
-            "_(حداقل دو تصویر — اجباری)_",
+            "_(حداقل یک تصویر — اجباری)_",
             reply_markup=check_images_continue_kb)
         await state.set_state(Form.check_esteshahadieh_image)
         return
@@ -2748,187 +2977,241 @@ async def _ask_check_next_after_images(message: Message, state: FSMContext):
         await state.set_state(Form.check_marriage_cert_image)
         return
 
-    # ⭐ «مطالبه وجه بابت...» → بدون تصویر چک
+    # ⭐ «مطالبه وجه بابت...» → بدون سند اختصاصی — سوال «مدرک دیگری؟» و سپس
+    # انتخاب صلاحیت دادگاه (دور ۳: این سوال حالا برای همهٔ عناوین *قبل از*
+    # صلاحیت پرسیده می‌شود، نه بعد از آن)
     if request_title == "مطالبه وجه بابت...":
+        if not att_done:
+            await _ask_check_extra_docs(message, state)
+            return
         await _ask_check_branch(message, state)
         return
 
-    # سایر عناوین → تصاویر چک
-    data = await state.get_data()
-    tracking = data.get("check_tracking_no", "")
-    if tracking:
-        await message.answer(
-            "📷 *مرحله ۱۰:* تصویر چک (۱ از ۳)\n\n"
-            f"کدرهگیری: `{tracking}`\n\n"
-            "لطفاً تصویر *روی چک* را ارسال فرمایید:",
-            reply_markup=check_more_images_kb)
-    else:
-        await message.answer(
-            "📷 *مرحله ۱۰:* تصویر چک (۱ از ۳)\n\n"
-            "لطفاً تصویر *روی چک* را ارسال فرمایید:",
-            reply_markup=check_more_images_kb)
-    await state.update_data(check_images=[], _current_cheque_index=1)
+    # ⭐ سایر عناوین (صدور اجرائیه چک / مطالبه وجه چک) — فلوی جدید طبق دستور
+    # کارفرما: قبل از ورود به منضمات، ابتدا «تعداد فقرات چک» پرسیده می‌شود؛
+    # سپس به‌ازای هر فقره، ابتدا «کدرهگیری» و بعد «تصویر چک» (۳ تصویر) دریافت
+    # می‌گردد. ساختار داده: check_cheque_items=[{tracking_no, images}, ...]
+    # ⭐ اصلاحیهٔ دور ۳: اگر فقرات چک قبلاً کامل گرفته شده (مسیر بازگشت/
+    # ویرایش)، دوباره از کاربر گرفته نمی‌شود — مستقیم سوال «مدرک دیگری؟»
+    # (یا صلاحیت، اگر قبلاً جواب داده شده) نمایش داده می‌شود.
+    cheque_items = data.get("check_cheque_items") or []
+    if cheque_items:
+        if not att_done:
+            await _ask_check_extra_docs(message, state)
+            return
+        await _ask_check_branch(message, state)
+        return
+
+    await state.update_data(
+        check_cheque_items=[],
+        check_tracking_list=[],
+        check_images=[],
+        check_tracking_no="",
+        check_cheques_total=0,
+        _current_cheque_index=1,
+        _current_cheque_tracking="",
+        _current_cheque_images=[])
+    await message.answer(
+        "🔢 *مرحله ۱۰:* لطفاً *تعداد فقرات چک* را وارد یا انتخاب فرمایید:\n"
+        "_(از ۱ تا ۳۰)_",
+        reply_markup=create_check_cheque_count_kb())
     await state.set_state(Form.check_cheques_count)
 
 
 @check_router.message(Form.check_cheques_count)
 async def check_cheques_count_handler(message: Message, state: FSMContext):
     """
-    شمارش فقرات چک — حلقه تصاویر چک بر اساس شمارندهٔ داخلی:
-      - هر ۳ تصویر → کدرهگیری بعدی
-      - «اتمام تصاویر چک» → ادامه
+    دریافت *تعداد فقرات چک* (۱ تا ۳۰) — آغاز حلقهٔ فقرات:
+    به‌ازای هر فقره: ابتدا کدرهگیری، سپس ۳ تصویر چک.
     """
-    if message.photo:
-        # ⭐ ذخیره تصویر در حلقهٔ فعلی
-        data = await state.get_data()
-        images = data.get("check_images", [])
-        images.append(message.photo[-1].file_id)
-        await state.update_data(check_images=images)
+    text = _to_en(message.text or "")
 
-        current_idx = data.get("_current_cheque_index", 1)
-        within_count = (len(images) - 1) % 3 + 1
-
-        if within_count < MAX_CHECK_IMAGES:
-            await message.answer(
-                f"📷 تصویر {within_count} از {MAX_CHECK_IMAGES} دریافت شد. "
-                f"تصویر {within_count + 1} را ارسال فرمایید:",
-                reply_markup=get_check_more_images_kb(within_count))
-            return
-
-        # ۳ تصویر کامل شد → کدرهگیری یا ادامه
-        kb = create_check_cheque_count_kb(count=current_idx, show_prev=True)
+    if "بازگشت" in text:
+        # بازگشت به سوال توضیحات اضافی (مرحله قبل)
         await message.answer(
-            f"✅ ۳ تصویر فقره {current_idx} دریافت شد.\n\n"
-            "لطفاً انتخاب کنید:",
-            reply_markup=kb)
-        await state.set_state(Form.check_cheque_tracking)
+            "📝 *مرحله ۹:* آیا *توضیحات اضافی* دارید؟",
+            reply_markup=check_extra_text_kb)
+        await state.set_state(Form.check_extra_text)
         return
 
-    if message.text and "اتمام تصاویر چک" in message.text:
-        # بررسی: حداقل ۳ تصویر
-        data = await state.get_data()
-        images = data.get("check_images", [])
-        if len(images) < 3:
-            await message.answer(
-                f"⚠️ حداقل *۳ تصویر* چک الزامی است. "
-                f"(تاکنون: {len(images)} تصویر)\n\n"
-                "لطفاً تصویر بعدی را ارسال فرمایید:",
-                reply_markup=check_more_images_kb)
-            return
-
-        if await _check_maybe_return_to_preview(message, state):
-            return
-        await _ask_check_branch(message, state)
+    if not re.fullmatch(r"\d{1,2}", text) or not (1 <= int(text) <= 30):
+        await message.answer(
+            "⚠️ لطفاً *تعداد فقرات چک* را به‌صورت عدد (۱ تا ۳۰) وارد یا از "
+            "کیبورد انتخاب فرمایید:",
+            reply_markup=create_check_cheque_count_kb())
         return
 
-    await message.answer("⚠️ لطفاً تصویر چک را ارسال فرمایید یا از دکمه‌ها استفاده کنید:")
+    total = int(text)
+    await state.update_data(
+        check_cheques_total=total,
+        check_cheque_items=[],
+        check_tracking_list=[],
+        check_images=[],
+        check_tracking_no="",
+        _current_cheque_index=1,
+        _current_cheque_tracking="",
+        _current_cheque_images=[])
+
+    await message.answer(
+        f"🔢 *فقره ۱ از {total}:*\n\n"
+        "لطفاً *کدرهگیری چک* را وارد فرمایید:\n_(فقط عدد)_",
+        reply_markup=back_only_kb)
+    await state.set_state(Form.check_cheque_tracking)
 
 
 @check_router.message(Form.check_cheque_tracking)
 async def check_cheque_tracking_handler(message: Message, state: FSMContext):
+    """
+    دریافت *کدرهگیری فقرهٔ جاری* — سپس درخواست تصاویر همان فقره (۳ تصویر).
+    ⭐ فلوی جدید: کدرهگیری برای هر فقره (از جمله فقرهٔ اول) پرسیده می‌شود.
+    """
     text = _to_en(message.text or "")
-
-    if "کدرهگیری" in text or "فقره بعدی" in text:
-        # فقره بعدی — شمارنده +۱
-        data = await state.get_data()
-        current_idx = data.get("_current_cheque_index", 1) + 1
-        await state.update_data(_current_cheque_index=current_idx)
-
-        await message.answer(
-            f"🔢 *فقره {current_idx}:* لطفاً *کدرهگیری* چک را وارد فرمایید:",
-            reply_markup=back_only_kb)
-        await state.set_state(Form.check_cheque_next_tracking)
-        return
-
-    if "اتمام تصاویر چک" in text:
-        data = await state.get_data()
-        images = data.get("check_images", [])
-        if len(images) < 3:
-            await message.answer(
-                f"⚠️ حداقل *۳ تصویر* چک الزامی است. (تاکنون: {len(images)} تصویر)")
-            return
-
-        if await _check_maybe_return_to_preview(message, state):
-            return
-        await _ask_check_branch(message, state)
-        return
-
-    await message.answer("⚠️ لطفاً از دکمه‌ها استفاده کنید:")
-
-
-@check_router.message(Form.check_cheque_next_tracking)
-async def check_cheque_next_tracking_handler(message: Message, state: FSMContext):
-    text = _to_en(message.text or "")
+    data = await state.get_data()
 
     if "بازگشت" in text:
-        # بازگشت به انتخاب کدرهگیری یا اتمام
-        data = await state.get_data()
-        current_idx = data.get("_current_cheque_index", 1)
-        kb = create_check_cheque_count_kb(count=current_idx, show_prev=True)
+        # بازگشت: اگر فقرهٔ قبلی‌ای ثبت شده، آخرین فقره را حذف و دوباره
+        # کدرهگیری همان فقره پرسیده می‌شود؛ در غیر این صورت بازگشت به تعداد.
+        items = data.get("check_cheque_items", [])
+        if items:
+            items.pop()
+            await state.update_data(
+                check_cheque_items=items,
+                check_images=[img for it in items for img in it.get("images", [])],
+                check_tracking_list=[it.get("tracking_no", "") for it in items],
+                _current_cheque_index=len(items) + 1,
+                _current_cheque_tracking="",
+                _current_cheque_images=[])
+            idx = len(items) + 1
+            total = data.get("check_cheques_total", 1)
+            await message.answer(
+                f"↩️ فقرهٔ {idx} حذف شد تا دوباره ثبت شود.\n\n"
+                f"🔢 *فقره {idx} از {total}:*\n\n"
+                "لطفاً *کدرهگیری چک* را وارد فرمایید:\n_(فقط عدد)_",
+                reply_markup=back_only_kb)
+            return
+        # هیچ فقره‌ای ثبت نشده → بازگشت به سوال تعداد فقرات
         await message.answer(
-            f"✅ ۳ تصویر فقره {current_idx} دریافت شد.\n\n"
-            "لطفاً انتخاب کنید:",
-            reply_markup=kb)
-        await state.set_state(Form.check_cheque_tracking)
+            "🔢 لطفاً *تعداد فقرات چک* را وارد یا انتخاب فرمایید:\n_(از ۱ تا ۳۰)_",
+            reply_markup=create_check_cheque_count_kb())
+        await state.set_state(Form.check_cheques_count)
         return
 
-    if not text:
-        await message.answer("⚠️ کدرهگیری نمی‌تواند خالی باشد. لطفاً وارد فرمایید:")
+    if not text or not re.fullmatch(r"\d{4,40}", text):
+        await message.answer(
+            "⚠️ کدرهگیری چک معتبر نیست.\n"
+            "_(کدرهگیری عددی است — لطفاً فقط عدد را وارد فرمایید)_")
         return
 
-    # ذخیره کدرهگیری فقره جدید
-    data = await state.get_data()
-    tracking_list = data.get("check_tracking_list", [])
-    tracking_list.append(text)
-    await state.update_data(check_tracking_list=tracking_list)
+    await state.update_data(_current_cheque_tracking=text)
+
+    current_idx = data.get("_current_cheque_index", 1)
+    total = data.get("check_cheques_total", 1)
 
     await message.answer(
-        f"✅ کدرهگیری فقره {data.get('_current_cheque_index', 1)} ثبت شد.\n\n"
-        "📷 تصویر چک (۱ از ۳):\n"
-        "لطفاً تصویر *روی چک* را ارسال فرمایید:",
+        f"✅ کدرهگیری فقره {current_idx} ثبت شد.\n\n"
+        f"📷 *فقره {current_idx} از {total}:* لطفاً *تصویر چک* را ارسال فرمایید:\n"
+        f"_(۳ تصویر — می‌توانید هر سه را یکجا هم ارسال کنید)_",
         reply_markup=check_more_images_kb)
-    await state.set_state(Form.check_cheques_count)
+    await state.set_state(Form.check_cheque_images)
 
 
-@check_router.message(Form.check_more_images)
-async def check_more_images_handler(message: Message, state: FSMContext):
-    text = message.text.strip() if message.text else ""
+# ⭐ قفل به‌ازای هر چت — برای پردازش امنِ گروه تصاویر (آلبوم):
+# وقتی کاربر ۳ عکس را همزمان می‌فرستد، هر عکس یک update جداگانه است؛
+# قفل تضمین می‌کند خواندن-تغییر-نوشتنِ check_images ترتیبی و بدون از
+# دست رفتن عکس انجام شود.
+_cheque_img_locks: dict = {}
+
+
+def _get_cheque_img_lock(chat_id: int) -> asyncio.Lock:
+    lock = _cheque_img_locks.get(chat_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _cheque_img_locks[chat_id] = lock
+    return lock
+
+
+@check_router.message(Form.check_cheque_images)
+async def check_cheque_images_handler(message: Message, state: FSMContext):
+    """
+    دریافت *تصاویر فقرهٔ جاری* (دقیقاً ۳ تصویر):
+      - هر عکس ذخیره و تأیید می‌شود (پردازش امن آلبوم/ارسال همزمان)
+      - تکمیل ۳ تصویر → ثبت فقره → فقرهٔ بعدی (کدرهگیری → تصاویر)
+        یا در صورت اتمام همهٔ فقرات → انتخاب صلاحیت دادگاه
+    """
+    if message.photo:
+        lock = _get_cheque_img_lock(message.chat.id)
+        async with lock:
+            data = await state.get_data()
+            images = data.get("_current_cheque_images", [])
+            images.append(message.photo[-1].file_id)
+            await state.update_data(_current_cheque_images=images)
+
+            current_idx = data.get("_current_cheque_index", 1)
+            total = data.get("check_cheques_total", 1)
+
+            if len(images) < MAX_CHECK_IMAGES:
+                await message.answer(
+                    f"✅ تصویر {len(images)} از {MAX_CHECK_IMAGES} دریافت شد.\n"
+                    f"لطفاً تصویر {len(images) + 1} را ارسال فرمایید:",
+                    reply_markup=get_check_more_images_kb(len(images)))
+                return
+
+            # ⭐ ۳ تصویر فقرهٔ جاری کامل شد → ثبت فقره
+            tracking = data.get("_current_cheque_tracking", "")
+            items = data.get("check_cheque_items", [])
+            items.append({"tracking_no": tracking, "images": list(images)})
+
+            # همگام‌سازی فیلدهای مسطح (سازگاری با سناریو/پیش‌نمایش/ادمین)
+            flat_images = [img for it in items for img in it.get("images", [])]
+            track_list = [it.get("tracking_no", "") for it in items]
+            await state.update_data(
+                check_cheque_items=items,
+                check_images=flat_images,
+                check_tracking_list=track_list,
+                check_tracking_no=(track_list[0] if track_list else ""),
+                _current_cheque_images=[],
+                _current_cheque_tracking="")
+
+            if current_idx < total:
+                # فقرهٔ بعدی — ابتدا کدرهگیری
+                await state.update_data(_current_cheque_index=current_idx + 1)
+                await message.answer(
+                    f"✅ ۳ تصویر فقره {current_idx} ثبت شد.\n\n"
+                    f"🔢 *فقره {current_idx + 1} از {total}:*\n\n"
+                    "لطفاً *کدرهگیری چک* را وارد فرمایید:\n_(فقط عدد)_",
+                    reply_markup=back_only_kb)
+                await state.set_state(Form.check_cheque_tracking)
+            else:
+                # تمام فقرات کامل شد → سوال «مدرک دیگری دارید؟» و سپس صلاحیت دادگاه
+                # ⭐ اصلاحیه (کارفرما — دور ۳): این سوال بعد از تکمیل تصاویر چک
+                # پرسیده می‌شود، نه بعد از انتخاب صلاحیت دادگاه.
+                await message.answer(
+                    f"✅ هر *{total}* فقره چک (کدرهگیری + ۳ تصویر) با موفقیت ثبت شد.")
+                if await _check_maybe_return_to_preview(message, state):
+                    return
+                await _ask_check_extra_docs(message, state)
+        return
+
+    text = (message.text or "").strip()
 
     if text == "🔙 بازگشت":
+        # حذف آخرین تصویر فقرهٔ جاری
         data = await state.get_data()
-        images = data.get("check_images", [])
+        images = data.get("_current_cheque_images", [])
         if images:
             images.pop()
-            await state.update_data(check_images=images)
+            await state.update_data(_current_cheque_images=images)
+        current_idx = data.get("_current_cheque_index", 1)
+        total = data.get("check_cheques_total", 1)
         await message.answer(
-            "📷 لطفاً تصویر چک را ارسال فرمایید:",
+            f"📷 *فقره {current_idx} از {total}:* لطفاً تصویر چک را ارسال فرمایید:\n"
+            f"_(۳ تصویر — {len(images)} تصویر تاکنون)_",
             reply_markup=check_more_images_kb)
-        await state.set_state(Form.check_cheques_count)
         return
 
-    if text == "➕ افزودن تصویر دیگر":
-        await message.answer(
-            "📷 تصویر چک بعدی را ارسال فرمایید:",
-            reply_markup=check_more_images_kb)
-        await state.set_state(Form.check_cheques_count)
-        return
-
-    if text == "✅ اتمام تصاویر چک":
-        data = await state.get_data()
-        images = data.get("check_images", [])
-        if len(images) < 3:
-            await message.answer(
-                f"⚠️ حداقل *۳ تصویر* چک الزامی است. (تاکنون: {len(images)} تصویر)\n\n"
-                "لطفاً تصویر بعدی را ارسال فرمایید:",
-                reply_markup=check_more_images_kb)
-            return
-
-        if await _check_maybe_return_to_preview(message, state):
-            return
-        await _ask_check_branch(message, state)
-        return
-
-    await message.answer("⚠️ لطفاً از دکمه‌ها استفاده کنید:")
+    await message.answer(
+        "⚠️ لطفاً *تصویر چک* را ارسال فرمایید (۳ تصویر برای هر فقره):",
+        reply_markup=check_more_images_kb)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2937,9 +3220,47 @@ async def check_more_images_handler(message: Message, state: FSMContext):
 @check_router.message(Form.check_attachment_title)
 async def check_attachment_title_handler(message: Message, state: FSMContext):
     text = message.text.strip() if message.text else ""
+    data = await state.get_data()
+    is_aasar_title = data.get("check_request_title") in CHECK_AASAR_TITLES
+    request_title = data.get("check_request_title", "")
 
     if text == "🔙 بازگشت":
-        await _ask_check_branch(message, state)
+        # ⭐ دور ۳ — سوال پیوست حالا برای همهٔ عناوین *قبل از* صلاحیت دادگاه
+        # پرسیده می‌شود؛ بازگشت به آخرین مرحلهٔ اختصاصی همان نوع دادخواست:
+        #   اعسار → ۴/۴ شماره شعبه | خانواده → تاریخ عقد |
+        #   بابت... → توضیحات اضافی | چک → فقرات چک (از ابتدا)
+        if is_aasar_title:
+            await message.answer(
+                "۴/۴ — لطفاً *شماره شعبه* را وارد فرمایید:\n"
+                "_(فقط عدد)_",
+                reply_markup=back_only_kb)
+            await state.set_state(Form.check_judgment_branch_no)
+            return
+        if request_title in CHECK_FAMILY_TITLES:
+            await message.answer(
+                "📅 لطفاً *تاریخ وقوع عقد* را به‌صورت `1403/06/15` وارد فرمایید:",
+                reply_markup=back_only_kb)
+            await state.set_state(Form.check_marriage_date)
+            return
+        if request_title == "مطالبه وجه بابت...":
+            await message.answer(
+                "📝 *مرحله ۹:* آیا *توضیحات اضافی* دارید؟",
+                reply_markup=check_extra_text_kb)
+            await state.set_state(Form.check_extra_text)
+            return
+        # عناوین چک — بازگشت به مرحلهٔ فقرات چک (فقرات قبلی حذف و از ابتدا)
+        await state.update_data(
+            check_cheque_items=[],
+            check_tracking_list=[],
+            check_images=[],
+            check_tracking_no="",
+            _current_cheque_index=1,
+            _current_cheque_tracking="",
+            _current_cheque_images=[])
+        await message.answer(
+            "🔢 لطفاً *تعداد فقرات چک* را وارد یا انتخاب فرمایید:\n_(از ۱ تا ۳۰)_",
+            reply_markup=create_check_cheque_count_kb())
+        await state.set_state(Form.check_cheques_count)
         return
 
     # ⭐ دکمه‌های شروع/ادامهٔ پیوست — رد کردن یا اتمام
@@ -2947,7 +3268,11 @@ async def check_attachment_title_handler(message: Message, state: FSMContext):
                 "⏭ رد کردن (بدون مدرک)", "⏭ رد کردن"):
         if await _check_maybe_return_to_preview(message, state):
             return
-        await _go_to_check_preview(message, state)
+        # ⭐ دور ۳ — برای همهٔ عناوین (نه فقط اعسار): بعد از پایان پیوست‌ها
+        # نوبت «صلاحیت دادگاه» است — چون این سوال حالا قبل از صلاحیت پرسیده
+        # می‌شود؛ پس از انتخاب صلاحیت، مستقیم پیش‌نمایش نمایش داده خواهد شد.
+        await state.update_data(check_att_done=True, check_aasar_att_done=True)
+        await _ask_check_branch(message, state)
         return
 
     # ⭐ دکمهٔ افزودن پیوست جدید → درخواست عنوان
@@ -3001,6 +3326,11 @@ async def check_attachment_image_handler(message: Message, state: FSMContext):
 
 @check_router.message(Form.check_attachment_more)
 async def check_attachment_more_handler(message: Message, state: FSMContext):
+    # ⭐ عکس در این state هم پذیرفته می‌شود — همان منطق هندلر تصویر اجرا می‌شود
+    if message.photo:
+        await check_attachment_image_handler(message, state)
+        return
+
     text = message.text.strip() if message.text else ""
 
     if text == "➕ افزودن تصویر دیگر":
@@ -3060,7 +3390,10 @@ async def check_more_attachments_handler(message: Message, state: FSMContext):
     if text in ("✅ اتمام و ادامه", "✅ خیر، ادامه به انتخاب دادگاه"):
         if await _check_maybe_return_to_preview(message, state):
             return
-        await _go_to_check_preview(message, state)
+        # ⭐ دور ۳ — برای همهٔ عناوین (نه فقط اعسار): سوال پیوست قبل از صلاحیت
+        # دادگاه پرسیده می‌شود، پس پس از اتمام پیوست‌ها نوبت انتخاب صلاحیت است.
+        await state.update_data(check_att_done=True, check_aasar_att_done=True)
+        await _ask_check_branch(message, state)
         return
 
     if text == "🔙 بازگشت":
@@ -3189,7 +3522,15 @@ async def _go_to_check_preview(message: Message, state: FSMContext):
         lines.append(f"\n📷 استشهادیه: {len(esteshahadieh)} تصویر")
     if marriage_cert:
         lines.append(f"💍 گواهی ازدواج: {len(marriage_cert)} تصویر")
-    if images:
+    # ⭐ فلوی جدید چک — نمایش فقرات (کدرهگیری + تعداد تصویر هر فقره)
+    cheque_items = data.get("check_cheque_items", [])
+    if cheque_items:
+        lines.append(f"\n🧾 فقرات چک ({len(cheque_items)} فقره):")
+        for i, q in enumerate(cheque_items, 1):
+            lines.append(
+                f"  {i}. کدرهگیری `{q.get('tracking_no', '')}` — "
+                f"{len(q.get('images', []))} تصویر")
+    elif images:
         lines.append(f"📷 تصاویر چک: {len(images)} تصویر")
     # ⭐ عناوین اعسار — مستندات الزامی
     if is_aasar_title:
@@ -3251,7 +3592,10 @@ async def _submit_check_request(message: Message, state: FSMContext, bot: Bot):
     check_images = data.get("check_images", [])
     if check_images:
         await message.answer("⏳ در حال آماده‌سازی تصاویر چک...")
-        check_image_paths = await download_images_from_bale(bot, check_images, user_id, "check")
+        try:
+            check_image_paths = await download_images_from_bale(bot, check_images, user_id, "check")
+        except Exception as dl_err:
+            logger.error(f"[CHECK] دانلود پیش‌نمایشی تصاویر چک ناموفق (ادامه بدون آن): {dl_err}")
 
     # ⚠️ مدارک نمایندگی (نماینده/مدیرعامل خواهان یا خوانده) دیگر اینجا
     # پردازش نمی‌شود — این تصاویر مستقیماً هنگام ثبتِ آن شخص، داخل
@@ -3330,6 +3674,19 @@ async def _submit_check_request(message: Message, state: FSMContext, bot: Bot):
         except ValueError as e:
             logger.error(f"[CHECK] خطا در محاسبه مالیات دادرسی (ثبت نهایی): {e}")
 
+    # ⭐ فقرات چک — ساخت check_cheque_items از دادهٔ فلو (file_id خام؛
+    # check_scenario.py خودش هر فقره را با _download_check_images دانلود
+    # می‌کند و کدرهگیری هر فقره را در منضمات درج/استعلام می‌نماید).
+    # قبلاً این ساختار هرگز ساخته نمی‌شد و کدرهگیری‌های فقرات دوم به بعد
+    # بی‌استفاده می‌ماندند (سناریو فقط یک فقرهٔ بدون کدرهگیری می‌ساخت).
+    cheque_items = [
+        {
+            "tracking_no": (q.get("tracking_no") or "").strip(),
+            "images": list(q.get("images") or []),
+        }
+        for q in data.get("check_cheque_items", [])
+    ]
+
     item = {
         "user_id": user_id,
         "query_type": "دادخواست_چک",
@@ -3346,6 +3703,7 @@ async def _submit_check_request(message: Message, state: FSMContext, bot: Bot):
         "check_extra_text": data.get("check_extra_text", ""),
         "check_tracking_no": data.get("check_tracking_no", ""),
         "check_tracking_list": data.get("check_tracking_list", []),
+        "check_cheque_items": cheque_items,  # ⭐ فلو جدید فقرات چک
         "check_plainiffs": plaintiffs,
         "check_defendants": defendants,
         "check_witnesses": data.get("check_witnesses", []),
@@ -3385,8 +3743,11 @@ async def _submit_check_request(message: Message, state: FSMContext, bot: Bot):
         pass
 
 
-@check_router.message(Form.check_confirm, F.text == "✅ تایید و ثبت نهایی")
+@check_router.message(Form.check_confirm, F.text.in_({"✅ تایید و ثبت نهایی", "✅ تایید و شروع ثبت"}))
 async def check_confirm_handler(message: Message, state: FSMContext):
+    """⭐ اصلاحیه: متن دکمهٔ check_confirm_kb «✅ تایید و شروع ثبت» بود ولی
+    هندلر فقط «✅ تایید و ثبت نهایی» را می‌شناخت — دکمهٔ تایید عملاً هیچ
+    واکنشی نداشت. اکنون هر دو متن پشتیبانی می‌شوند."""
     data = await state.get_data()
 
     # بررسی: حداقل یک خواهان و یک خوانده
@@ -3513,83 +3874,182 @@ async def check_cancel_handler(message: Message, state: FSMContext):
         reply_markup=main_menu_kb)
 
 
+# ⭐ اصلاحیه: دکمهٔ «✏️ ویرایش اطلاعات» در کیبورد پیش‌نمایش وجود داشت ولی
+# هیچ هندلری برای آن ثبت نشده بود (Form.check_edit_choice هرگز set نمی‌شد)
+# و منوی ویرایش عملاً غیرقابل‌دسترس بود.
+@check_router.message(Form.check_confirm, F.text == "✏️ ویرایش اطلاعات")
+async def check_confirm_edit_handler(message: Message, state: FSMContext):
+    await message.answer(
+        "✏️ کدام بخش را ویرایش می‌کنید؟",
+        reply_markup=check_edit_kb)
+    await state.set_state(Form.check_edit_choice)
+
+
 # ── بازگشت از انتخاب صلاحیت ───────────────────────────────────────────────────
 @check_router.message(Form.check_branch)
 async def check_branch_back_handler(message: Message, state: FSMContext):
     text = message.text.strip() if message.text else ""
     if text == "🔙 بازگشت":
-        data = await state.get_data()
-        request_title = data.get("check_request_title", "")
-        # ⭐ عناوین اعسار — بازگشت به آخرین فیلد دادنامه (شماره شعبه)
-        if request_title in CHECK_AASAR_TITLES:
-            await message.answer(
-                "۴/۴ — لطفاً *شماره شعبه* را وارد فرمایید:\n"
-                "_(فقط عدد)_",
-                reply_markup=back_only_kb)
-            await state.set_state(Form.check_judgment_branch_no)
-            return
-        # بازگشت به مرحله تصاویر چک یا گواهی/استشهادیه
-        if data.get("check_aasar"):
-            await message.answer(
-                "📷 لطفاً تصاویر *استشهادیه* را ارسال فرمایید:",
-                reply_markup=check_images_continue_kb)
-            await state.set_state(Form.check_esteshahadieh_more)
-        elif request_title in CHECK_FAMILY_TITLES:
-            await message.answer(
-                "💍 لطفاً تصاویر *گواهی ازدواج* را ارسال فرمایید:",
-                reply_markup=check_images_continue_kb)
-            await state.set_state(Form.check_marriage_cert_more)
-        elif request_title == "مطالبه وجه بابت...":
-            await message.answer(
-                "📝 *مرحله ۹:* آیا *توضیحات اضافی* دارید؟",
-                reply_markup=check_extra_text_kb)
-            await state.set_state(Form.check_extra_text)
-        else:
-            await message.answer(
-                "📷 لطفاً تصویر چک را ارسال فرمایید:",
-                reply_markup=check_more_images_kb)
-            await state.set_state(Form.check_cheques_count)
+        # ⭐ دور ۳ — برای همهٔ عناوین، مرحلهٔ قبل از صلاحیت دادگاه سوال
+        # «مدرک دیگری دارید؟» است (بعد از اسناد اختصاصی همان نوع) — بازگشت
+        # به همان سوال؛ کاربر می‌تواند پیوست دیگری اضافه کند یا با «رد کردن»
+        # مجدد به انتخاب صلاحیت برگردد (فقرات چک هم دیگر در این مسیر حذف
+        # نمی‌شوند چون مرحلهٔ تصاویر دو مرحله عقب‌تر است).
+        await _ask_check_extra_docs(message, state)
         return
     await message.answer("⚠️ لطفاً از کیبورد زیر، صلاحیت دادگاه را انتخاب کنید:")
 
 
 # ── انتخاب گره درخت صلاحیت ────────────────────────────────────────────────────
+def _cbr_int(value) -> "int | None":
+    """تبدیل امن متن به عدد — برای اجزای callback_data درخت صلاحیت."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _cbr_show_level(callback: CallbackQuery, nodes: list, page: int = 0,
+                          parent_path: str | None = None):
+    """نمایش یک سطح از درخت صلاحیت با ویرایش کیبورد پیام موجود."""
+    if not nodes:
+        await callback.answer("⚠️ زیرشاخه‌ای برای این گزینه یافت نشد", show_alert=True)
+        return False
+    kb = create_check_branch_keyboard(nodes, page=page, parent_path=parent_path)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=kb)
+    except Exception:
+        # پیام تغییر نکرد (مثلاً همان کیبورد) یا پیام قدیمی است — نادیده بگیر
+        pass
+    return True
+
+
 @check_router.callback_query(F.data.startswith("cbr:"))
 async def check_branch_callback(callback: CallbackQuery, state: FSMContext):
-    try:
-        idx = int(callback.data.split(":", 1)[1])
-    except Exception:
+    """
+    ناوبری درخت صلاحیت دادگاه (پیشوند cbr:).
+
+    ⭐ اصلاحیه: کیبورد create_check_branch_keyboard مقادیر زیر را تولید
+    می‌کند و قبلاً هندلر فقط `cbr:<idx>` را می‌فهمید — به همین دلیل «هر»
+    دکمه با خطای «⚠️ انتخاب نامعتبر» رد می‌شد و کاربر در مرحلهٔ صلاحیت
+    دادگاه گیر می‌کرد. اکنون تمام فرمت‌ها پشتیبانی می‌شوند:
+      cbr:open:{idx}:{page}     → باز کردن پوشهٔ idx، صفحهٔ page
+      cbr:sel:{idx}             → انتخاب گرهٔ نهایی (ذخیرهٔ صلاحیت)
+      cbr:page:{parent}:{page}  → صفحه‌بندی (parent = root یا idx پوشه)
+      cbr:back:{idx}:{page}     → بازگشت به فرزندانِ idx، صفحهٔ page
+      cbr:root:{page}           → بازگشت به ریشه (لیست استان‌ها)
+    """
+    parts = (callback.data or "").split(":")
+    if len(parts) < 3:
         await callback.answer("⚠️ انتخاب نامعتبر", show_alert=True)
         return
 
-    path = CHECK_INDEX_TO_PATH.get(idx)
-    if not path:
-        await callback.answer("⚠️ گزینه نامعتبر است", show_alert=True)
+    action = parts[1]
+
+    # ── بازگشت به ریشه (لیست استان‌ها) ─────────────────────────────────
+    if action == "root":
+        page = _cbr_int(parts[2]) or 0
+        if await _cbr_show_level(callback, CHECK_ROOT_NODES, page=page):
+            await callback.answer()
         return
 
-    if check_has_children(path):
+    # ── باز کردن پوشه ──────────────────────────────────────────────────
+    if action == "open":
+        idx = _cbr_int(parts[2])
+        page = _cbr_int(parts[3]) if len(parts) > 3 else 0
+        path = CHECK_INDEX_TO_PATH.get(idx) if idx is not None else None
+        if not path:
+            await callback.answer("⚠️ گزینه نامعتبر است", show_alert=True)
+            return
+        # ⚠️ INDEX_TO_PATH مقدار «مسیرِ نرمال‌شده» (str) می‌دهد؛ get_children
+        # همین مسیر را می‌پذیرد (برخلاف has_children که dict می‌خواهد).
         children = check_get_children(path)
-        kb = create_check_branch_keyboard(children)
-        await callback.message.edit_reply_markup(reply_markup=kb)
-        await callback.answer()
+        if not children:
+            await callback.answer("⚠️ زیرشاخه‌ای وجود ندارد", show_alert=True)
+            return
+        if await _cbr_show_level(callback, children, page=page or 0, parent_path=path):
+            await callback.answer()
         return
 
-    # گره نهایی — ذخیره صلاحیت
-    row = CHECK_PATH_TO_ROW.get(path) or {}
-    name = row.get("name", "")
-    code = row.get("code", "")
-    await state.update_data(
-        check_branch_name=name,
-        check_branch_code=code,
-        check_branch_path=path)
+    # ── صفحه‌بندی (parent می‌تواند «root» یا idx عددی پوشه باشد) ────────
+    if action == "page":
+        parent = parts[2]
+        page = _cbr_int(parts[3]) if len(parts) > 3 else 0
+        if parent == "root":
+            if await _cbr_show_level(callback, CHECK_ROOT_NODES, page=page or 0):
+                await callback.answer()
+            return
+        idx = _cbr_int(parent)
+        path = CHECK_INDEX_TO_PATH.get(idx) if idx is not None else None
+        if not path:
+            await callback.answer("⚠️ گزینه نامعتبر است", show_alert=True)
+            return
+        children = check_get_children(path)
+        if await _cbr_show_level(callback, children, page=page or 0, parent_path=path):
+            await callback.answer()
+        return
 
-    await callback.answer(f"✅ {name}")
+    # ── بازگشت به سطح بالاتر (فرزندانِ پدربزرگ) ─────────────────────────
+    if action == "back":
+        idx = _cbr_int(parts[2])
+        page = _cbr_int(parts[3]) if len(parts) > 3 else 0
+        path = CHECK_INDEX_TO_PATH.get(idx) if idx is not None else None
+        if not path:
+            # مسیر نامعتبر → بازگشت امن به ریشه
+            if await _cbr_show_level(callback, CHECK_ROOT_NODES, page=0):
+                await callback.answer()
+            return
+        nodes = check_get_children(path)
+        if not nodes:
+            if await _cbr_show_level(callback, CHECK_ROOT_NODES, page=0):
+                await callback.answer()
+            return
+        if await _cbr_show_level(callback, nodes, page=page or 0, parent_path=path):
+            await callback.answer()
+        return
 
-    # ⭐ ادامه: سوال پیوست
-    await callback.message.answer(
-        "📎 *مرحله ۱۳:* آیا *پیوستی* برای دادخواست خود دارید؟",
-        reply_markup=check_attachment_title_kb_first)
-    await state.set_state(Form.check_attachment_title)
+    # ── انتخاب گره (نهایی یا پوشه‌ای) ──────────────────────────────────
+    if action == "sel":
+        idx = _cbr_int(parts[2])
+        path = CHECK_INDEX_TO_PATH.get(idx) if idx is not None else None
+        if not path:
+            await callback.answer("⚠️ گزینه نامعتبر است", show_alert=True)
+            return
+
+        # اگر گره پوشه است → باز کن (⚠️ path رشتهٔ نرمال‌شده است؛ get_children
+        # مستقیماً همین را می‌پذیرد)
+        children = check_get_children(path)
+        if children:
+            if await _cbr_show_level(callback, children, page=0, parent_path=path):
+                await callback.answer()
+            return
+
+        # گره نهایی — ذخیره صلاحیت
+        row = CHECK_PATH_TO_ROW.get(path) or {}
+        name = row.get("name", "")
+        code = row.get("code", "")
+        await state.update_data(
+            check_branch_name=name,
+            check_branch_code=code,
+            check_branch_path=path)
+
+        await callback.answer(f"✅ {name}")
+
+        # ⭐ دور ۳ — برای همهٔ عناوین: سوال «مدرک دیگری دارید؟» حالا *قبل از*
+        # انتخاب صلاحیت پرسیده می‌شود (بعد از اسناد اختصاصی همان نوع) — اگر
+        # به هر دلیلی (مثلاً ورود مستقیم به ویرایش صلاحیت) هنوز پرسیده نشده
+        # بود همین‌جا پرسیده می‌شود؛ وگرنه مستقیم پیش‌نمایش.
+        data = await state.get_data()
+        att_done = bool(data.get("check_att_done") or data.get("check_aasar_att_done"))
+        if not att_done:
+            await _ask_check_extra_docs(callback.message, state)
+            return
+        if await _check_maybe_return_to_preview(callback.message, state):
+            return
+        await _go_to_check_preview(callback.message, state)
+        return
+
+    await callback.answer("⚠️ انتخاب نامعتبر", show_alert=True)
 
 
 # ── منوی ویرایش ───────────────────────────────────────────────────────────────
@@ -3670,10 +4130,20 @@ async def check_edit_choice_handler(message: Message, state: FSMContext):
 
     if text in ("📷 ویرایش تصاویر چک",
                 "🧾 ویرایش فقرات چک (کدرهگیری و تصاویر)"):
-        await state.update_data(check_images=[], _current_cheque_index=1)
+        # ⭐ فلوی جدید: ویرایش فقرات از ابتدا — ابتدا تعداد، سپس به‌ازای هر
+        # فقره کدرهگیری + ۳ تصویر (فقرات قبلی حذف می‌شوند)
+        await state.update_data(
+            check_cheque_items=[],
+            check_tracking_list=[],
+            check_images=[],
+            check_tracking_no="",
+            check_cheques_total=0,
+            _current_cheque_index=1,
+            _current_cheque_tracking="",
+            _current_cheque_images=[])
         await message.answer(
-            "📷 لطفاً تصویر چک را ارسال فرمایید:",
-            reply_markup=check_more_images_kb)
+            "🔢 لطفاً *تعداد فقرات چک* را وارد یا انتخاب فرمایید:\n_(از ۱ تا ۳۰)_",
+            reply_markup=create_check_cheque_count_kb())
         await state.set_state(Form.check_cheques_count)
         return
 

@@ -477,10 +477,23 @@ stamp_calc_claim_type_kb = ReplyKeyboardMarkup(
 # کیبوردهای بخش اظهارنامه
 # =========================================================
 
-EZHHAR_PERSON_TYPES = ["شخص حقیقی", "شخص حقوقی", "وکیل"]
+# ⭐ طبق دستور کارفرما: گزینه «وکیل» از کیبورد نوع شخصیت (خواهان/اظهارکننده/
+# تجدیدنظرخواه) حذف شد — به‌جای آن، قبل از ورود به بخش خواهان سوال وکالت
+# (vakalat_ask_kb) پرسیده می‌شود. لایحه (PERSON_TYPES) دست‌نخورده است.
+EZHHAR_PERSON_TYPES = ["شخص حقیقی", "شخص حقوقی"]
+
+# ⭐ سوال وکالت پیش از بخش خواهان/اظهارکننده/تجدیدنظرخواه (به‌جز لایحه):
+# اگر ثبت «به وکالت» است → «وارد کردن کدملی وکیل»؛ در غیر این صورت «رد شدن».
+vakalat_ask_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="وارد کردن کدملی وکیل")],
+        [KeyboardButton(text="رد شدن")],
+    ],
+    resize_keyboard=True
+)
 
 def create_ezhhar_declarant_person_type_kb(exclude: list = None):
-    """کیبورد نوع شخص اظهارکننده - همیشه سه گزینه اول را نشان می‌دهد"""
+    """کیبورد نوع شخص اظهارکننده/خواهان — حقیقی و حقوقی (بدون وکیل؛ وکالت از سوال قبلی)"""
     exclude = exclude or []
     available = [p for p in EZHHAR_PERSON_TYPES if p not in exclude]
     keyboard = []
@@ -936,9 +949,12 @@ def create_tn_appellant_person_type_kb(exclude: list = None, case_type: str = No
     ⚠ برای «اعتراض ثالث»، گزینه «استعلام افراد موجود در پرونده» در بخش
     «معترض ثالث» حذف می‌شود — معترض ثالث باید همیشه کدملی را دستی وارد کند
     (طبق دستور کارفرما). این محدودیت فقط شامل این نوع دعوی/بخش است.
+
+    ⭐ گزینه «وکیل» حذف شد — ثبت به وکالت از سوال قبلی (tn_appellant_vakalat_ask)
+    با کیبورد vakalat_ask_kb انجام می‌شود.
     """
     exclude = exclude or []
-    available = [p for p in ["شخص حقیقی", "شخص حقوقی", "وکیل"] if p not in exclude]
+    available = [p for p in ["شخص حقیقی", "شخص حقوقی"] if p not in exclude]
     keyboard = []
     for i in range(0, len(available), 2):
         row = [KeyboardButton(text=available[i])]

@@ -38,6 +38,7 @@ from keyboards import (
     lavayeh_attachment_more_kb,
     ezhhar_confirm_kb, ezhhar_edit_kb,
     ezhhar_subject_kb,
+    vakalat_ask_kb,
     ezhhar_declarant_add_more_kb,
     ezhhar_addressee_add_more_kb,
     ezhhar_attachment_title_kb_first,
@@ -115,12 +116,124 @@ async def ezhhar_bulk_choice_handler(message: Message, state: FSMContext):
 
 @ezhharnameh_router.message(Form.ezhhar_declarant_person_type, F.text == "1️⃣ ثبت تکی (روال عادی)")
 async def ezhhar_single_choice_handler(message: Message, state: FSMContext):
+    # ⭐ طبق دستور کارفرما: پیش از بخش اظهارکننده، سوال وکالت پرسیده می‌شود —
+    # اگر ثبت به وکالت است «وارد کردن کدملی وکیل»، در غیر این صورت «رد شدن».
     await message.answer(
         "📋 *ثبت اظهارنامه (روال تکی)*\n\n"
-        "*مرحله ۱:* لطفاً *نوع شخصیت اظهارکننده* را انتخاب فرمایید:\n\n"
-        "⚠️ توجه: اگر *وکیل* را انتخاب می‌کنید، باید حداقل یک *شخص حقیقی یا حقوقی* نیز اضافه کنید.",
+        "👤 *مرحله ۱:* اطلاعات *اظهارکننده*\n\n"
+        "در صورتی که این اظهارنامه *به وکالت* ثبت می‌شود، گزینه *«وارد کردن کدملی وکیل»* را انتخاب کنید.\n"
+        "در غیر این صورت، گزینه *«رد شدن»* را انتخاب کنید:",
+        reply_markup=vakalat_ask_kb)
+    await state.set_state(Form.ezhhar_declarant_vakalat_ask)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# مرحله ۰ — سوال وکالت پیش از اظهارکننده (ثبت به وکالت یا عادی)
+# ════════════════════════════════════════════════════════════════════════════
+@ezhharnameh_router.message(Form.ezhhar_declarant_vakalat_ask)
+async def ezhhar_declarant_vakalat_ask_handler(message: Message, state: FSMContext):
+    """سوال وکالت قبل از بخش اظهارکننده:
+      - «وارد کردن کدملی وکیل» → کدملی وکیل → شماره قرارداد وکالت + تمبر خودکار
+      - «رد شدن» → مسیر عادیِ انتخاب نوع شخصیت اظهارکننده (حقیقی/حقوقی)
+    """
+    text = (message.text or "").strip()
+
+    if text == "وارد کردن کدملی وکیل":
+        await message.answer(
+            "⚖️ ثبت *به وکالت* انتخاب شد.\n\n"
+            "🔢 لطفاً *کد ملی وکیل* را وارد کنید:\n_(۱۰ رقمی)_",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.ezhhar_declarant_vakalat_nid)
+        return
+
+    if text == "رد شدن":
+        await message.answer(
+            "📋 *مرحله ۱:* لطفاً *نوع شخصیت اظهارکننده* را انتخاب فرمایید:",
+            reply_markup=create_ezhhar_declarant_person_type_kb())
+        await state.set_state(Form.ezhhar_declarant_person_type)
+        return
+
+    await message.answer(
+        "⚠️ لطفاً یکی از گزینه‌های زیر را انتخاب کنید:\n"
+        "_(اگر ثبت به وکالت است: «وارد کردن کدملی وکیل» — در غیر این صورت: «رد شدن»)_",
+        reply_markup=vakalat_ask_kb)
+
+
+@ezhharnameh_router.message(Form.ezhhar_declarant_vakalat_nid)
+async def ezhhar_declarant_vakalat_nid_handler(message: Message, state: FSMContext):
+    """دریافت کدملی وکیل اظهارکننده — سپس شماره قرارداد وکالت."""
+    if not message.text:
+        return
+
+    if message.text == "🔙 بازگشت":
+        await message.answer(
+            "👤 *مرحله ۱:* اطلاعات *اظهارکننده*\n\n"
+            "در صورتی که این اظهارنامه *به وکالت* ثبت می‌شود، گزینه *«وارد کردن کدملی وکیل»* را انتخاب کنید.\n"
+            "در غیر این صورت، گزینه *«رد شدن»* را انتخاب کنید:",
+            reply_markup=vakalat_ask_kb)
+        await state.set_state(Form.ezhhar_declarant_vakalat_ask)
+        return
+
+    nat_id = _to_en(message.text)
+    if not re.match(r"^[0-9]{10}$", nat_id):
+        await message.answer("⚠️ کد ملی وکیل باید *۱۰ رقمی* باشد. دوباره وارد فرمایید:")
+        return
+
+    await state.update_data(_ezhhar_current_declarant={
+        "person_type": "وکیل",
+        "national_id": nat_id,
+    })
+
+    await message.answer(
+        "📑 لطفاً *شماره قرارداد وکالت* را وارد فرمایید:\n_(دقیقاً ۱۶ رقمی)_",
+        reply_markup=back_only_kb)
+    await state.set_state(Form.ezhhar_declarant_vakalat_no)
+
+
+@ezhharnameh_router.message(Form.ezhhar_declarant_vakalat_no)
+async def ezhhar_declarant_vakalat_no_handler(message: Message, state: FSMContext):
+    """دریافت شماره قرارداد وکالت (۱۶ رقمی) وکیلِ اظهارکننده + محاسبهٔ خودکار تمبر.
+
+    ⚠️ کلید ذخیره باید دقیقاً `contract_number` / `stamp_amount_value` باشد
+    چون ezhharnameh_scenario.py مقدار وکالت‌نامهٔ الکترونیک را از همین دو
+    کلید روی شیء «وکیل» می‌خوانَد (_upload_electronic_vakalaht).
+    """
+    if not message.text:
+        return
+
+    if message.text == "🔙 بازگشت":
+        await message.answer(
+            "🔢 لطفاً *کد ملی وکیل* را وارد کنید:\n_(۱۰ رقمی)_",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.ezhhar_declarant_vakalat_nid)
+        return
+
+    contract_no = _to_en(message.text)
+    if not re.match(r"^[0-9]{16}$", contract_no):
+        await message.answer("⚠️ شماره قرارداد وکالت باید *دقیقاً ۱۶ رقمی* باشد:")
+        return
+
+    data = await state.get_data()
+    current = data.get("_ezhhar_current_declarant") or {}
+    current["contract_number"] = contract_no
+
+    # ⭐ محاسبهٔ خودکار تمبر — اظهارنامه مبلغ ندارد؛ تمبر ثابت ۲۰٬۰۰۰ تومان
+    stamp_rial = 200_000
+    stamp_text = "۲۰,۰۰۰ تومان (۲۰۰,۰۰۰ ریال)"
+    current["stamp_amount_value"] = stamp_rial
+    current["stamp_amount_text"] = stamp_text
+
+    declarants = data.get("ezhhar_declarants", [])
+    declarants.append(current)
+    await state.update_data(ezhhar_declarants=declarants, _ezhhar_current_declarant={})
+
+    await message.answer(
+        f"✅ *وکیل* با کدملی `{current.get('national_id', '')}` ثبت شد.\n"
+        f"📑 شماره قرارداد وکالت: `{contract_no}`\n"
+        f"💰 مبلغ تمبر وکالت (خودکار محاسبه شد): *{stamp_text}*\n\n"
+        "⚠️ چون *وکیل* اضافه کردید، *اظهارکننده* (شخص حقیقی یا حقوقی) نیز باید وارد شود.\n\n"
+        "لطفاً نوع شخصیت اظهارکننده بعدی را انتخاب فرمایید:",
         reply_markup=create_ezhhar_declarant_person_type_kb())
-    # باقی ماندن در همین استیت برای دریافت نوع شخص اظهارکننده
     await state.set_state(Form.ezhhar_declarant_person_type)
 
 
@@ -165,7 +278,9 @@ async def ezhhar_declarant_person_type_handler(message: Message, state: FSMConte
         await state.set_state(Form.waiting_for_flow_type)
         return
 
-    if text not in ["شخص حقیقی", "شخص حقوقی", "وکیل"]:
+    if text not in ["شخص حقیقی", "شخص حقوقی"]:
+        # ⭐ گزینهٔ «وکیل» حذف شد — ثبت به وکالت از سوال وکالت قبلی
+        # (ezhhar_declarant_vakalat_ask) انجام می‌شود.
         await message.answer(
             "⚠️ لطفاً یکی از گزینه‌های موجود را انتخاب کنید:",
             reply_markup=create_ezhhar_declarant_person_type_kb(exclude=used_types if declarants else [])

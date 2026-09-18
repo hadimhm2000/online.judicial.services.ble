@@ -234,6 +234,18 @@ class Form(StatesGroup):
     tn_appellee_vakalat_no = State()     # شماره قرارداد وکالت تجدیدنظرخوانده
     check_plaintiff_vakalat_no = State() # شماره قرارداد وکالت خواهان چک
     check_defendant_vakalat_no = State() # شماره قرارداد وکالت خوانده چک
+
+    # ⭐ سوال وکالت پیش از بخش خواهان/اظهارکننده/تجدیدنظرخواه (به‌جز لایحه) —
+    # طبق دستور کارفرما: گزینه «وکیل» از کیبورد نوع شخصیت حذف شد و به‌جای
+    # آن، قبل از ورود به بخش خواهان این سوال پرسیده می‌شود:
+    #   «وارد کردن کدملی وکیل» (ثبت به وکالت) یا «رد شدن» (ثبت عادی)
+    check_plaintiff_vakalat_ask = State()  # سوال وکالت قبل از خواهان (ثبت دادخواست)
+    check_plaintiff_vakalat_nid = State() # کدملی وکیل (ثبت دادخواست)
+    ezhhar_declarant_vakalat_ask = State()  # سوال وکالت قبل از اظهارکننده (اظهارنامه)
+    ezhhar_declarant_vakalat_nid = State() # کدملی وکیل (اظهارنامه)
+    ezhhar_declarant_vakalat_no = State()  # شماره قرارداد وکالت وکیل اظهارکننده (اظهارنامه)
+    tn_appellant_vakalat_ask = State()  # سوال وکالت قبل از تجدیدنظرخواه (دعاوی اعتراضی)
+    tn_appellant_vakalat_nid = State() # کدملی وکیل (دعاوی اعتراضی)
     # ⭐ فلو نمایندگان شخص حقوقی خواهان چک (مدیرعامل + تا ۵ نماینده — مشابه اظهارنامه)
     check_legal_rep_doc_images = State() # تصاویر مدرک نمایندگی نمایندهٔ شرکت خواهان چک
     check_legal_rep_more = State()       # افزودن نمایندهٔ دیگر / اتمام
@@ -292,7 +304,7 @@ class Form(StatesGroup):
     check_khasteh_title = State()         # عنوان خواسته (ویرایش متن پیشنهادی)
     check_tracking_no = State()           # (منسوخ - دیگر در ابتدای فلو استفاده نمی‌شود، برای سازگاری نگه داشته شده)
     check_esteshahadieh_images = State()  # تصاویر استشهادیه (الزامی در صورت درخواست اعسار)
-    check_cheques_count = State()         # تعداد فقرات چک برای پیوست (۱ تا ۳۰)
+    check_cheques_count = State()         # تعداد فقرات چک (۱ تا ۳۰) — پرسش تعداد قبل از منضمات
     check_cheque_tracking_no = State()    # کدرهگیری فقره چک جاری
     check_cheque_images = State()         # تصاویر فقره چک جاری (دقیقاً ۳ تصویر)
     check_plaintiff_person_type = State() # نوع شخصیت خواهان
@@ -307,6 +319,7 @@ class Form(StatesGroup):
     check_defendant_more = State()        # افزودن خوانده دیگر
     check_witness_national_id = State()   # کدملی مطلع/گواه
     check_more_witnesses = State()        # افزودن مطلع دیگر
+    check_text_choice = State()            # ⭐ دور ۳ — انتخاب روش ورود متن (تایپ مستقیم / فایل ورد)
     check_text = State()                  # شرح متن دادخواست
     check_text_input = State()       # دریافت متن تایپ‌شده یا فایل ورد
     check_extra_text = State()            # توضیحات جداگانه برای مقام قضائی
