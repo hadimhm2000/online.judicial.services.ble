@@ -29,6 +29,9 @@ def get_flow_type_kb(user_id: int) -> ReplyKeyboardMarkup:
         [KeyboardButton(text=_tn), KeyboardButton(text=_chk)],
         [KeyboardButton(text="💰 محاسبه تمبر"), KeyboardButton(text="🔧 ابزار فایل")],
         [KeyboardButton(text="🗺️ ارزش منطقه‌ای")],
+        # ⭐ گزینهٔ «شروع مجدد» (۱۴۰۵/۰۶) — صرفاً کاربر را به منوی اصلی برمی‌گرداند
+        # (از هر مرحله‌ای از هر فلوی — هندلر سراسری در handlers.py)
+        [KeyboardButton(text="🔄 شروع مجدد")],
     ]
     if _is_admin:
         rows.append([KeyboardButton(text="🧪 تست")])
@@ -57,6 +60,8 @@ flow_type_kb = ReplyKeyboardMarkup(
         [KeyboardButton(text="✍️ ثبت لایحه"), KeyboardButton(text="📄 ثبت اظهارنامه")],
         [KeyboardButton(text="⚖️ دعاوی اعتراضی"), KeyboardButton(text="🏦 ثبت دادخواست")],
         [KeyboardButton(text="💰 محاسبه تمبر"), KeyboardButton(text="🔧 ابزار فایل")],
+        # ⭐ گزینهٔ «شروع مجدد» — بازگشت صرف به منوی اصلی (۱۴۰۵/۰۶)
+        [KeyboardButton(text="🔄 شروع مجدد")],
     ], resize_keyboard=True)
 
 # =========================================================
@@ -77,7 +82,9 @@ main_menu_kb = ReplyKeyboardMarkup(
         [KeyboardButton(text="1️⃣ استعلام لوایح، اظهارنامه، دادخواست و ...")],
         [KeyboardButton(text="2️⃣ استعلام براساس شماره تماس")],
         [KeyboardButton(text="3️⃣ استعلام براساس کدملی")],
-        [KeyboardButton(text="🔙 بازگشت به منوی اصلی")]
+        [KeyboardButton(text="🔙 بازگشت به منوی اصلی")],
+        # ⭐ گزینهٔ «شروع مجدد» — بازگشت صرف به منوی اصلی از هر مرحله‌ای (۱۴۰۵/۰۶)
+        [KeyboardButton(text="🔄 شروع مجدد")]
     ], resize_keyboard=True)
 
 # کیبورد منوی «چند مورد همزمان» — دقیقاً مثل main_menu_kb + گزینه‌ی چهارم
@@ -88,7 +95,9 @@ cart_main_menu_kb = ReplyKeyboardMarkup(
         [KeyboardButton(text="2️⃣ استعلام براساس شماره تماس")],
         [KeyboardButton(text="3️⃣ استعلام براساس کدملی")],
         [KeyboardButton(text="4️⃣ استعلام دسته‌جمعی (فایل اکسل)")],
-        [KeyboardButton(text="🔙 بازگشت به منوی اصلی")]
+        [KeyboardButton(text="🔙 بازگشت به منوی اصلی")],
+        # ⭐ گزینهٔ «شروع مجدد» — بازگشت صرف به منوی اصلی (۱۴۰۵/۰۶)
+        [KeyboardButton(text="🔄 شروع مجدد")]
     ], resize_keyboard=True)
 
 doc_category_kb = ReplyKeyboardMarkup(

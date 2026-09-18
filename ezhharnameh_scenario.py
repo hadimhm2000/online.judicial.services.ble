@@ -496,7 +496,10 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
                 paths = await _download_images(bot, group.get("images", []), user_id)
                 groups_with_paths.append({"title": group.get("title", "مستندات"), "paths": paths})
 
-            if has_legal_declarant or attachment_groups:
+            # ⭐ اصلاحیه ۱۴۰۵/۰۶ (باگ ۳): «has_lawyer» هم اضافه شد — اگر
+            # اظهارنامه فقط وکیل داشت (بدون اظهارکنندهٔ حقوقی و بدون پیوست)،
+            # قبلاً اصلاً وارد منضمات نمی‌شد و شماره قرارداد وکالت ثبت نمی‌گردید.
+            if has_legal_declarant or has_lawyer or attachment_groups:
                 # تلاش برای ورود به منضمات (با retry در صورت خطای سامانه)
                 attachments_ok = False
                 for _attach_retry in range(3):
@@ -548,12 +551,29 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
                     remaining_groups = groups_with_paths
 
                 # اگر وکیل داشتیم، وکالت‌نامه الکترونیک
+                contract_fix_pending = False
                 if has_lawyer:
                     # یافتن اولین وکیل برای شماره قرارداد
                     first_lawyer = next((p for p in declarants if p.get("person_type") == "وکیل"), {})
                     contract_no = first_lawyer.get("contract_number", "")
                     stamp_val = first_lawyer.get("stamp_amount_value", 0)
-                    await _upload_electronic_vakalaht(sana_page, contract_no, stamp_val, bot, user_id)
+                    vakalaht_status = await _upload_electronic_vakalaht(sana_page, contract_no, stamp_val, bot, user_id)
+                    if vakalaht_status == "invalid_contract":
+                        # ⭐ اصلاحیه ۱۴۰۵/۰۶: اسکیپ مرحله + ادامه با سایر پیوست‌ها
+                        # + اعلام ۴۵ دقیقه‌ای پس از اتمام پیوست‌ها
+                        contract_fix_pending = True
+                        logging.error(
+                            f"[EZHHAR][منضمات] شماره قرارداد وکالت «{contract_no}» معتبر نمی باشد — "
+                            f"اسکیپ مرحله و ادامه با سایر پیوست‌ها (کاربر {user_id})")
+                        await log_event(
+                            "خطای سامانه", "اظهارنامه", str(user_id), user_id,
+                            tracking_code=bill_no, note=f"شماره قرارداد وکالت «{contract_no}» معتبر نمی باشد")
+                    elif vakalaht_status != "success":
+                        logging.error(f"[EZHHAR] ذخیرهٔ وکالت‌نامه الکترونیک ناموفق (قرارداد: {contract_no})")
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"⚠️ [EZHHAR] ثبت وکالت‌نامه الکترونیک (قرارداد `{contract_no}`) "
+                            f"برای کاربر {user_id} ناموفق بود. کد: {bill_no}")
 
                 # سایر پیوست‌ها
                 for idx, group in enumerate(remaining_groups):
@@ -619,6 +639,44 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
 
                 await _click_goto_main(sana_page, bot, user_id)
                 await resilient_sleep(sana_page, 4, bot, user_id)
+
+                # ══════════════════════════════════════════════════════════
+                # ⭐ اصلاحیه ۱۴۰۵/۰۶ — شماره قرارداد وکالت نامعتبر بود:
+                # پس از انجام سایر پیوست‌ها، اعلام ۴۵ دقیقه‌ای به کاربر و
+                # توقف (آماده‌سازی/هزینه/چاپ پس از ثبت قرارداد جدید انجام
+                # می‌شود — تسک CONTRACT_FIX_SUBMIT).
+                # ══════════════════════════════════════════════════════════
+                if contract_fix_pending:
+                    try:
+                        import nid_fix_window
+                        first_lawyer = next(
+                            (p for p in declarants if p.get("person_type") == "وکیل"), {})
+                        nid_fix_window.start_contract_fix(
+                            user_id, flow="ezhharnameh", task_data=dict(data),
+                            bill_no=bill_no or "",
+                            old_contract=first_lawyer.get("contract_number", ""),
+                            stamp_amount_value=int(first_lawyer.get("stamp_amount_value", 0) or 0),
+                            error_text="شماره قرارداد الکترونیک وکالت معتبر نمی باشد")
+                        from contract_fix_handlers import contract_fix_inline_kb
+                        await bot.send_message(
+                            user_id,
+                            f"❌ *شماره قرارداد اشتباه می باشد.*\n\n"
+                            f"شماره قرارداد وکالت «{first_lawyer.get('contract_number', '')}» "
+                            f"در سامانه معتبر نیست و ثبت نشد.\n"
+                            f"🔢 کد رهگیری اظهارنامه: `{bill_no}`\n\n"
+                            f"{nid_fix_window.contract_fix_deadline_text()}\n\n"
+                            f"پس از ارسال کد قرارداد جدید، ثبت قرارداد و ادامهٔ "
+                            f"آماده‌سازی، هزینه و چاپ به‌صورت خودکار انجام می‌شود.",
+                            parse_mode="Markdown",
+                            reply_markup=contract_fix_inline_kb(user_id))
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"⚠️ [EZHHAR] شماره قرارداد وکالت «{first_lawyer.get('contract_number', '')}» "
+                            f"برای کاربر {user_id} معتبر نبود | کد: {bill_no}\n"
+                            f"پنجرهٔ ۴۵ دقیقه‌ای کد قرارداد جدید باز شد.")
+                    except Exception as cf_err:
+                        logging.error(f"[EZHHAR] خطا در شروع پنجرهٔ کد قرارداد جدید: {cf_err}")
+                    return
 
             # ── ۱۰. آماده‌سازی ───────────────────────────────────────────
             # نام صحیح: «آماده سازي جهت دريافت وجه» (نه محاسبه هزينه و ارسال)
@@ -1736,9 +1794,22 @@ async def _upload_proxy_document(page, image_paths: list, bot: Bot, user_id: int
         pass
 
 
-async def _upload_electronic_vakalaht(page, contract_number: str, lawyer_amount_value: int, bot: Bot, user_id: int):
-    """آپلود وکالت‌نامه الکترونیک (مقاوم — با retry ذخیره و تشخیص خطا)"""
-    from upload_helpers import click_save_doc_with_retry, close_success_popup, get_and_close_error_popup_text
+async def _upload_electronic_vakalaht(page, contract_number: str, lawyer_amount_value: int, bot: Bot, user_id: int) -> str:
+    """آپلود وکالت‌نامه الکترونیک (مقاوم — با retry ذخیره و تشخیص خطا)
+
+    ⭐ اصلاحیه ۱۴۰۵/۰۶ (طبق دستور کارفرما — عین روند لایحه/اعلام وکالت):
+      - پس از درج شماره قرارداد و مبلغ حق‌الوکاله، مستقیماً «ثبت و ویرایش
+        پیوست» (#btnSaveDoc) کلیک و با انتظار قطعی (پولینگ تا ۴۵ ثانیه)
+        پاپ‌آپ «پیوست « تصوير الكترونيك وكالت نامه » با موفقیت ثبت گردید .»
+        بسته می‌شود؛ روند ثبت قرارداد همین‌جا به اتمام می‌رسد.
+      - «شماره قرارداد الکترونیک وکالت «...» معتبر نمی باشد» → "invalid_contract"
+      - «ورود به سامانه در صفحه یا رایانه ای دیگر...» → لاگین مجدد و تلاش دوباره
+
+    خروجی: "success" | "invalid_contract" | "failed"
+    """
+    from upload_helpers import (
+        click_save_doc_once, wait_save_doc_popup_result, close_save_doc_popup,
+        fill_input_angular)
 
     try:
         had_expiry = await check_and_handle_expiry(page, bot, user_id)
@@ -1746,61 +1817,80 @@ async def _upload_electronic_vakalaht(page, contract_number: str, lawyer_amount_
             logging.info("[EZHHAR][منضمات] نشست قبل از وکالت‌نامه الکترونیک تمدید شد")
             await asyncio.sleep(2)
 
-        selected = await page.evaluate('''() => {
-            const sel = document.querySelector('#attachmentType');
-            if (!sel) return false;
-            const opts = Array.from(sel.options);
-            const opt = opts.find(o =>
-                o.text.includes("تصوير الكترونيك وكالت نامه") ||
-                o.text.includes("تصویر الکترونیک وکالت نامه")
-            );
-            if (opt) { sel.value = opt.value; sel.dispatchEvent(new Event("change")); return true; }
-            return false;
-        }''')
-        if not selected:
-            logging.warning("[EZHHAR] گزینه تصویر الکترونیک وکالت‌نامه پیدا نشد")
-            return
-        await asyncio.sleep(3)
-
-        if contract_number:
-            await page.evaluate(f'''() => {{
-                const inp = document.querySelector('#txtNo');
-                if (inp) {{
-                    inp.value = "{contract_number}";
-                    inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
-                    inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
-                }}
-            }}''')
-        else:
-            await page.evaluate('''() => {
-                const inp = document.querySelector('#txtNo');
-                if (inp) {
-                    inp.value = "0";
-                    inp.dispatchEvent(new Event("input", { bubbles: true }));
-                    inp.dispatchEvent(new Event("change", { bubbles: true }));
-                }
+        for attempt in range(3):
+            selected = await page.evaluate('''() => {
+                const sel = document.querySelector('#attachmentType');
+                if (!sel) return false;
+                const opts = Array.from(sel.options);
+                const opt = opts.find(o =>
+                    o.text.includes("تصوير الكترونيك وكالت نامه") ||
+                    o.text.includes("تصویر الکترونیک وکالت نامه")
+                );
+                if (opt) { sel.value = opt.value; sel.dispatchEvent(new Event("change")); return true; }
+                return false;
             }''')
-        await asyncio.sleep(1)
+            if not selected:
+                logging.warning(f"[EZHHAR] گزینه تصویر الکترونیک وکالت‌نامه پیدا نشد (تلاش {attempt+1})")
+                await asyncio.sleep(5)
+                continue
+            await asyncio.sleep(3)
 
-        if lawyer_amount_value > 0:
-            await page.evaluate(f'''() => {{
-                const inp = document.querySelector('#txtLawyerAmount');
-                if (inp) {{
-                    inp.removeAttribute('disabled');
-                    inp.value = "{lawyer_amount_value}";
-                    inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
-                    inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
-                }}
-            }}''')
+            # ⭐ شماره قرارداد (#txtNo) — همگام‌سازی کامل AngularJS؛ اگر خالی باشد «۰»
+            await fill_input_angular(page, "#txtNo", contract_number or "0", prefix="EZHHAR")
             await asyncio.sleep(1)
 
-        # ذخیره سند با retry
-        save_ok = await click_save_doc_with_retry(page, bot, user_id, prefix="EZHHAR")
-        if not save_ok:
-            error_text = await get_and_close_error_popup_text(page)
-            logging.error(f"[EZHHAR] ذخیره وکالت‌نامه الکترونیک ناموفق: {error_text}")
-            return
-        logging.info("[EZHHAR] وکالت‌نامه الکترونیک با موفقیت ثبت شد")
+            # ⭐ مبلغ حق‌الوکاله/تمبر (#txtLawyerAmount) — بلافاصله قبل از ثبت
+            #    در صورت نبود مقدار، «۱» درج می‌شود (الگوی لایحه/اعلام) تا فیلد
+            #    الزامی (ng-required) فرم را بی‌صدا رد نکند
+            if not lawyer_amount_value or lawyer_amount_value <= 0:
+                logging.warning("[EZHHAR][منضمات] مقدار تمبر صفر بود — مقدار «۱» درج می‌شود")
+                lawyer_amount_value = 1
+            await fill_input_angular(page, "#txtLawyerAmount", lawyer_amount_value, prefix="EZHHAR")
+            await asyncio.sleep(1)
+
+            # ⭐ کلیک «ثبت و ویرایش پیوست» (#btnSaveDoc) — تک‌کلیک + انتظار قطعی پاپ‌آپ
+            clicked = await click_save_doc_once(page, prefix="EZHHAR")
+            if not clicked:
+                logging.warning(f"[EZHHAR][منضمات] کلیک #btnSaveDoc انجام نشد (تلاش {attempt+1})")
+                await asyncio.sleep(5)
+                continue
+
+            popup = await wait_save_doc_popup_result(page, timeout_sec=45, prefix="EZHHAR")
+
+            if popup["status"] == "success":
+                from upload_helpers import close_success_popup as _uh_close_success
+                await _uh_close_success(page)
+                logging.info("[EZHHAR] وکالت‌نامه الکترونیک با موفقیت ثبت شد")
+                return "success"
+
+            if popup["status"] == "invalid_contract":
+                await close_save_doc_popup(page)
+                logging.error(
+                    f"[EZHHAR] شماره قرارداد وکالت «{popup.get('contract_no') or contract_number}» "
+                    f"معتبر نمی باشد: {popup['text'][:200]}")
+                return "invalid_contract"
+
+            if popup["status"] == "session":
+                logging.warning(f"[EZHHAR][منضمات] ورود همزمان/انقضای نشست — لاگین مجدد: {popup['text'][:150]}")
+                await close_save_doc_popup(page)
+                try:
+                    from browser_helpers import handle_session_expired
+                    await handle_session_expired(bot, user_id, page=page)
+                except Exception:
+                    pass
+                await asyncio.sleep(5)
+                continue
+
+            if popup["status"] == "error":
+                logging.warning(f"[EZHHAR] خطای ثبت وکالت‌نامه: {popup['text'][:200]} (تلاش {attempt+1})")
+                await close_save_doc_popup(page)
+                await asyncio.sleep(5)
+                continue
+
+            logging.warning(f"[EZHHAR][منضمات] پس از کلیک #btnSaveDoc پاپ‌آپی ظاهر نشد (تلاش {attempt+1})")
+            await asyncio.sleep(5)
+
+        return "failed"
 
     except Exception as e:
         logging.error(f"[EZHHAR] خطا در آپلود وکالت‌نامه الکترونیک: {e}")
@@ -1811,6 +1901,7 @@ async def _upload_electronic_vakalaht(page, contract_number: str, lawyer_amount_
                              page=getattr(runtime_state, "sana_page", None))
         except Exception:
             pass
+        return "failed"
 
 
 async def _upload_other_attachment(page, title: str, image_paths: list, bot: Bot, user_id: int) -> dict:

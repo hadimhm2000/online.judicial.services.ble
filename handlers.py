@@ -50,6 +50,7 @@ from file_tools_handlers import file_tools_router, file_tools_entry
 from subscription_handlers import subscription_router, subscription_expiry_checker
 from check_handlers import check_router
 from regional_value_handlers import regional_value_router
+from contract_fix_handlers import contract_fix_router, try_handle_stateless_contract_code
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,8 @@ router.include_router(file_tools_router)
 router.include_router(subscription_router)
 router.include_router(check_router)
 router.include_router(regional_value_router)
+# ⭐ اصلاحیه ۱۴۰۵/۰۶ — پنجرهٔ ۴۵ دقیقه‌ای کد قرارداد وکالت جدید
+router.include_router(contract_fix_router)
 
 
 # ── نگهبان: مسدودسازی کاربرانی که فاکتور لایحه کنسل‌شده را پرداخت نکرده‌اند ──
@@ -159,6 +162,33 @@ class WorkingHoursMiddleware(BaseMiddleware):
             return
 
 router.message.middleware(WorkingHoursMiddleware())
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ⭐ گزینهٔ «شروع مجدد» (۱۴۰۵/۰۶) — بازگشت صرف به منوی اصلی
+#
+# طبق دستور کارفرما: دکمهٔ «🔄 شروع مجدد» صرفاً کاربر را به منوی اصلی
+# برمی‌گرداند — بدون هیچ پیام اطلاع‌رسانی اضافه.
+# این هندلر در ابتدای روتر اصلی و با StateFilter("*") ثبت شده تا از
+# «هر مرحله‌ای از هر فلوی» (قبل از روترهای زیرمجموعه و همهٔ stateها)
+# قابل دسترس باشد. state کاربر کامل پاک می‌شود (داده‌های فلو قبلی هم
+# پاک می‌شوند) و کاربر دقیقاً مثل شروع، به صفحهٔ انتخاب نوع خدمت می‌رود.
+# ⚠️ تطبیق فقط روی «متن کوتاه» (≤۲۰ کاراکتر) انجام می‌شود تا اگر کلمهٔ
+# «شروع مجدد» داخل متن‌های بلند (شرح لایحه/دادخواست/اظهارنامه و ...)
+# آمده باشد، فلوی کاربر ربوده نشود.
+# ══════════════════════════════════════════════════════════════════════════════
+def _is_restart_text(message: types.Message) -> bool:
+    t = (message.text or "").strip()
+    return bool(t) and "شروع مجدد" in t and len(t) <= 20
+
+
+@router.message(StateFilter("*"), _is_restart_text)
+async def restart_to_main_menu(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "❓ *لطفاً نحوه ثبت درخواست خود را انتخاب فرمایید:*",
+        reply_markup=get_flow_type_kb(message.from_user.id))
+    await state.set_state(Form.waiting_for_flow_type)
 
 
 
@@ -2736,6 +2766,15 @@ fallback_router = Router()
 
 @fallback_router.message(StateFilter(None), F.text)
 async def fallback_unmatched_none_state(message: types.Message, state: FSMContext):
+    # ⭐ اصلاحیه ۱۴۰۵/۰۶ — اگر کاربر پنجرهٔ فعال «کد قرارداد وکالت جدید»
+    # داشته باشد و عدد ۱۶ رقمی بفرستد، همان کد پردازش می‌شود (بدون دکمه)
+    try:
+        from contract_fix_handlers import try_handle_stateless_contract_code as _cf_try
+        if await _cf_try(message, state):
+            return
+    except Exception as _cf_err:
+        logger.warning(f"خطا در بررسی پنجرهٔ کد قرارداد در fallback: {_cf_err}")
+
     # ⭐ اصلاحیه: قبلاً فقط state.set_state فراخوانی می‌شد و داده‌های قبلی
     # (cart, flow_type, tracking_code و ...) در FSM باقی می‌ماندند. حالا
     # state.clear() هم اجرا می‌شود تا کاربر واقعاً از صفر و با داده‌ای

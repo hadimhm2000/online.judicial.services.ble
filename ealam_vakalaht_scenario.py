@@ -275,11 +275,76 @@ async def process_ealam_vakalaht_task(data: dict, bot: Bot):
             # شماره قرارداد اول
             first_contract = contracts[0] if contracts else ""
 
-            vakalaht_ok = await _upload_electronic_vakalaht(
+            vakalaht_status = await _upload_electronic_vakalaht(
                 sana_page, first_contract, lawyer_amount_value, bot, user_id
             )
 
-            if not vakalaht_ok:
+            if vakalaht_status == "invalid_contract":
+                # ⭐ اصلاحیه ۱۴۰۵/۰۶ — دستور کارفرما: مرحلهٔ ثبت قرارداد اسکیپ
+                # می‌شود؛ ابتدا سایر پیوست‌های کاربر انجام و سپس اعلام
+                # ۴۵ دقیقه‌ای ارسال کد قرارداد جدید انجام می‌شود.
+                # آماده‌سازی/هزینه/چاپ تا پس از ثبت قرارداد جدید به تعویق می‌افتد.
+                logging.error(
+                    f"[EALAM] شماره قرارداد وکالت «{first_contract}» معتبر نمی باشد — "
+                    f"اسکیپ مرحله و ادامه با سایر پیوست‌ها (کاربر {user_id})")
+                await log_event(
+                    "خطای سامانه", "اعلام وکالت", str(user_id), user_id,
+                    tracking_code=tracking_code, doc_name="اعلام وکالت",
+                    note=f"شماره قرارداد وکالت «{first_contract}» معتبر نمی باشد (کد: {lavayeh_bill_no})")
+
+                # سایر پیوست‌ها (در صورت وجود)
+                if attachment_groups:
+                    groups_with_paths = []
+                    for group in attachment_groups:
+                        group_paths = await _download_images_from_bale(
+                            bot, group.get("images", []), user_id
+                        )
+                        groups_with_paths.append({"title": group.get("title", "مستندات"), "paths": group_paths})
+
+                    for group in groups_with_paths:
+                        await _upload_other_attachment(
+                            sana_page, group["title"], group["paths"], bot, user_id
+                        )
+                        for p in group["paths"]:
+                            try:
+                                if os.path.exists(p):
+                                    os.remove(p)
+                            except Exception:
+                                pass
+
+                    await _click_goto_main(sana_page, bot, user_id)
+                    await resilient_sleep(sana_page, 4, bot, user_id)
+
+                # پنجرهٔ ۴۵ دقیقه‌ای + اعلام به کاربر
+                try:
+                    import nid_fix_window
+                    nid_fix_window.start_contract_fix(
+                        user_id, flow="ealam", task_data=dict(data),
+                        bill_no=lavayeh_bill_no or "",
+                        old_contract=first_contract or "",
+                        stamp_amount_value=lawyer_amount_value,
+                        error_text="شماره قرارداد الکترونیک وکالت معتبر نمی باشد")
+                    from contract_fix_handlers import contract_fix_inline_kb
+                    await bot.send_message(
+                        user_id,
+                        f"❌ *شماره قرارداد اشتباه می باشد.*\n\n"
+                        f"شماره قرارداد وکالت «{first_contract or ''}» در سامانه معتبر نیست و ثبت نشد.\n"
+                        f"🔢 کد رهگیری: `{lavayeh_bill_no}`\n\n"
+                        f"{nid_fix_window.contract_fix_deadline_text()}\n\n"
+                        f"پس از ارسال کد قرارداد جدید، ثبت قرارداد و ادامهٔ "
+                        f"آماده‌سازی، هزینه و چاپ به‌صورت خودکار انجام می‌شود.",
+                        parse_mode="Markdown",
+                        reply_markup=contract_fix_inline_kb(user_id))
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"⚠️ [EALAM] شماره قرارداد وکالت «{first_contract or ''}» برای کاربر "
+                        f"{user_id} معتبر نبود | کد: {lavayeh_bill_no}\n"
+                        f"پنجرهٔ ۴۵ دقیقه‌ای کد قرارداد جدید باز شد.")
+                except Exception as cf_err:
+                    logging.error(f"[EALAM] خطا در شروع پنجرهٔ کد قرارداد جدید: {cf_err}")
+                return
+
+            if vakalaht_status != "success":
                 # اطلاع به کاربر و پایان
                 bill_no = await _extract_bill_no(sana_page)
                 await bot.send_message(
@@ -949,10 +1014,26 @@ async def _click_goto_main(page, bot: Bot, user_id: int):
 
 async def _upload_electronic_vakalaht(
     page, contract_number: str, lawyer_amount_value: int, bot: Bot, user_id: int
-) -> bool:
+) -> str:
     """
-    انتخاب «تصویر الکترونیک وکالت نامه» و پر کردن فیلدهای مربوطه
+    انتخاب «تصویر الکترونیک وکالت نامه» و پر کردن فیلدهای مربوطه.
+
+    ⭐ اصلاحیه ۱۴۰۵/۰۶ (طبق دستور کارفرما):
+      - پس از درج شماره قرارداد و مبلغ حق‌الوکاله، مستقیماً «ثبت و ویرایش
+        پیوست» (#btnSaveDoc) کلیک می‌شود و روند ثبت قرارداد به اتمام می‌رسد.
+      - پاپ‌آپ موفقیت («پیوست « تصوير الكترونيك وكالت نامه » با موفقیت
+        ثبت گردید .») با انتظار قطعی (پولینگ تا ۴۵ ثانیه) منتظر و بسته
+        می‌شود — تا دکمه چندبار کلیک نشود.
+      - «شماره قرارداد الکترونیک وکالت «...» معتبر نمی باشد» →
+        خروجی "invalid_contract" (اسکیپ مرحله + پنجرهٔ ۴۵ دقیقه‌ای).
+      - «ورود به سامانه در صفحه یا رایانه ای دیگر...» → لاگین مجدد و تلاش دوباره.
+
+    خروجی: "success" | "invalid_contract" | "failed"
     """
+    from upload_helpers import (
+        click_save_doc_once, wait_save_doc_popup_result, close_save_doc_popup,
+        fill_input_angular)
+
     for attempt in range(3):
         try:
             # بررسی انقضای نشست قبل از شروع این پیوست (بخش منضمات قبلاً این چک را نداشت)
@@ -985,91 +1066,65 @@ async def _upload_electronic_vakalaht(
 
             await asyncio.sleep(3)
 
-            # پر کردن شماره وکالت‌نامه (txtNo)
+            # ⭐ پر کردن شماره وکالت‌نامه (#txtNo) — همگام‌سازی کامل AngularJS
             if contract_number:
-                await page.evaluate(f'''() => {{
-                    const inp = document.querySelector('#txtNo');
-                    if (inp) {{
-                        inp.value = "{contract_number}";
-                        inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
-                        inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
-                    }}
-                }}''')
+                await fill_input_angular(page, "#txtNo", contract_number, prefix="EALAM")
                 await asyncio.sleep(1)
 
-            # پر کردن مبلغ تمبر (txtLawyerAmount) — فقط عدد، بدون کاراکتر
-            if lawyer_amount_value > 0:
-                await page.evaluate(f'''() => {{
-                    const inp = document.querySelector('#txtLawyerAmount');
-                    if (inp) {{
-                        // حذف disabled موقت
-                        inp.removeAttribute('disabled');
-                        inp.removeAttribute('ng-disabled');
-                        inp.value = "{lawyer_amount_value}";
-                        inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
-                        inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
-                    }}
-                }}''')
+            # ⭐ پر کردن مبلغ حق‌الوکاله/تمبر (#txtLawyerAmount) — بلافاصله قبل از ثبت
+            if lawyer_amount_value and lawyer_amount_value > 0:
+                await fill_input_angular(page, "#txtLawyerAmount", lawyer_amount_value, prefix="EALAM")
                 await asyncio.sleep(1)
+            else:
+                logging.warning("[EALAM][منضمات] مبلغ حق‌الوکاله ارسال نشده (۰) — فیلد مبلغ خالی می‌ماند")
 
-            # کلیک «ثبت و ویرایش پیوست» (#btnSaveDoc)
-            # صبر می‌کنیم تا دکمه فعال (non-disabled) شود
-            btn_clicked = False
-            for _wait in range(10):
-                btn_state = await page.evaluate('''() => {
-                    const btn = document.querySelector('#btnSaveDoc');
-                    if (!btn) return 'not_found';
-                    return btn.disabled ? 'disabled' : 'ready';
-                }''')
-                if btn_state == 'ready':
-                    break
-                elif btn_state == 'not_found':
-                    logging.warning(f"[EALAM][منضمات] #btnSaveDoc پیدا نشد (تلاش {_wait+1})")
-                    await asyncio.sleep(3)
-                else:
-                    logging.info(f"[EALAM][منضمات] #btnSaveDoc هنوز disabled است (تلاش {_wait+1})")
-                    await asyncio.sleep(3)
+            # کلیک «ثبت و ویرایش پیوست» (#btnSaveDoc) — تک‌کلیک با صبر تا فعال شدن
+            clicked = await click_save_doc_once(page, prefix="EALAM")
+            if not clicked:
+                logging.warning(f"[EALAM][منضمات] کلیک #btnSaveDoc انجام نشد (تلاش {attempt+1})")
+                await asyncio.sleep(5)
+                continue
 
-            await page.evaluate('''() => {
-                const btn = document.querySelector('#btnSaveDoc');
-                if (!btn || btn.disabled) return;
-                try {
-                    if (typeof angular !== 'undefined') {
-                        const ngEl = angular.element(btn);
-                        if (ngEl && ngEl.scope) {
-                            ngEl.scope().$apply(() => { btn.click(); });
-                            return;
-                        }
-                    }
-                } catch(e) {}
-                btn.click();
-                btn.dispatchEvent(new Event('click', { bubbles: true }));
-            }''')
-            logging.info("[EALAM][منضمات] کلیک #btnSaveDoc انجام شد")
-            had_expiry = await resilient_sleep(page, 8, bot, user_id)
-            if had_expiry:
+            had_expiry = await resilient_sleep(page, 4, bot, user_id)
+
+            # ⭐ انتظار قطعی برای پاپ‌آپ نتیجه (تا ۴۵ ثانیه — پولینگ ثانیه‌ای)
+            popup = await wait_save_doc_popup_result(page, timeout_sec=45, prefix="EALAM")
+
+            if had_expiry and popup["status"] == "none":
                 logging.info("[EALAM][منضمات] نشست حین انتظار برای ذخیره‌ی وکالت‌نامه تمدید شد؛ تلاش دوباره...")
                 continue
 
-            # بررسی نتیجه
-            success = await page.evaluate('''() => {
-                const popup = document.querySelector('.sweet-alert.showSweetAlert');
-                if (!popup) return false;
-                const icon = popup.querySelector('.sa-icon.sa-success');
-                return icon && window.getComputedStyle(icon).display !== 'none';
-            }''')
-
-            if success:
+            if popup["status"] == "success":
                 await _close_success_popup(page)
-                logging.info("[EALAM] ثبت وکالت‌نامه الکترونیک موفق.")
-                return True
+                logging.info("[EALAM] ثبت وکالت‌نامه الکترونیک موفق (پاپ‌آپ موفقیت بسته شد).")
+                return "success"
 
-            # خطا — بخوان و retry
-            error_text = await _get_and_close_error_popup_text(page)
-            if error_text:
-                logging.warning(f"[EALAM] خطای ثبت وکالت‌نامه: {error_text} (تلاش {attempt+1})")
+            if popup["status"] == "invalid_contract":
+                await close_save_doc_popup(page)
+                logging.error(
+                    f"[EALAM] شماره قرارداد وکالت «{popup.get('contract_no') or contract_number}» "
+                    f"معتبر نمی باشد: {popup['text'][:200]}")
+                return "invalid_contract"
+
+            if popup["status"] == "session":
+                logging.warning(f"[EALAM][منضمات] ورود همزمان/انقضای نشست در ثبت وکالت‌نامه — لاگین مجدد: {popup['text'][:150]}")
+                await close_save_doc_popup(page)
+                try:
+                    from browser_helpers import handle_session_expired
+                    await handle_session_expired(bot, user_id, page=page)
+                except Exception as _se:
+                    logging.warning(f"[EALAM] خطا در لاگین مجدد: {_se}")
                 await asyncio.sleep(5)
                 continue
+
+            if popup["status"] == "error":
+                logging.warning(f"[EALAM] خطای ثبت وکالت‌نامه: {popup['text'][:200]} (تلاش {attempt+1})")
+                await close_save_doc_popup(page)
+                await asyncio.sleep(5)
+                continue
+
+            logging.warning(f"[EALAM][منضمات] پس از کلیک #btnSaveDoc پاپ‌آپی ظاهر نشد (تلاش {attempt+1})")
+            await asyncio.sleep(5)
 
         except Exception as e:
             logging.error(f"[EALAM] _upload_electronic_vakalaht تلاش {attempt+1}: {e}")
@@ -1082,7 +1137,7 @@ async def _upload_electronic_vakalaht(
                 pass
             await asyncio.sleep(5)
 
-    return False
+    return "failed"
 
 
 async def _upload_other_attachment(page, title: str, image_paths: list, bot: Bot, user_id: int):

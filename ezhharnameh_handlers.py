@@ -217,9 +217,12 @@ async def ezhhar_declarant_vakalat_no_handler(message: Message, state: FSMContex
     current = data.get("_ezhhar_current_declarant") or {}
     current["contract_number"] = contract_no
 
-    # ⭐ محاسبهٔ خودکار تمبر — اظهارنامه مبلغ ندارد؛ تمبر ثابت ۲۰٬۰۰۰ تومان
-    stamp_rial = 200_000
-    stamp_text = "۲۰,۰۰۰ تومان (۲۰۰,۰۰۰ ریال)"
+    # ⭐ قاعدهٔ کارفرما (۱۴۰۵/۰۶): فقط برای «اظهارنامه» عدد یک (۱ ریال)
+    # در نظر گرفته می‌شود — اظهارنامه بهای خواسته/مبلغ ندارد.
+    # همین مقدار (۱) در فیلد «مبلغ حق الوکاله» پورتال (#txtLawyerAmount)
+    # نیز درج می‌شود.
+    stamp_rial = 1
+    stamp_text = "۱ ریال"
     current["stamp_amount_value"] = stamp_rial
     current["stamp_amount_text"] = stamp_text
 

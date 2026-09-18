@@ -1066,6 +1066,242 @@ async def full_delete_attachment_row(
 # ۵. کلیک ذخیره سند
 # =========================================================
 
+# ⭐ اصلاحیه ۱۴۰۵/۰۶ (بخش ثبت قرارداد وکالت در منضمات):
+#   پس از کلیک «ثبت و ویرایش پیوست» (#btnSaveDoc)، پاپ‌آپ sweet-alert
+#   یکی از سه حالت زیر را دارد و روند باید بر اساس آن ادامه یابد:
+#   ۱) موفقیت (آیکون success + متن «با موفقیت ثبت گردید») → بستن پاپ‌آپ؛
+#      روند ثبت قرارداد همین‌جا تمام می‌شود.
+#   ۲) خطای «شماره قرارداد الکترونیک وکالت «...» معتبر نمی باشد» →
+#      اسکیپ مرحله و بازگشت وضعیت invalid_contract به سناریو.
+#   ۳) خطای ورود همزمان/انقضای نشست («ورود به سامانه در صفحه یا رایانه
+#      ای دیگر انجام شده...») → لاگین مجدد و تلاش دوباره.
+#   قبلاً فقط ۸ ثانیه صبر می‌شد و یک‌بار چک می‌شد؛ اگر سامانه دیرتر پاسخ
+#   می‌داد، دکمه دوباره و دوباره کلیک می‌شد (ثبت تکراری/خطا).
+
+INVALID_CONTRACT_SIGNATURE = "معتبر نمی باشد"
+SUCCESS_SAVE_SIGNATURE = "با موفقیت ثبت گردید"
+CONCURRENT_LOGIN_SIGNATURES = (
+    "رایانه ای دیگر",
+    "رایانه‌ای دیگر",
+    "رایانه ای ديگر",
+    "اعتبار ورود قبلی",
+    "ورود به سامانه در صفحه",
+)
+
+
+def _classify_save_popup_text(text: str) -> str:
+    """دسته‌بندی متن پاپ‌آپ پس از ذخیره سند (نرمال‌سازی فارسی/عربی)."""
+    t = _normalize_fa_text(text or "")
+    if INVALID_CONTRACT_SIGNATURE in t and "قرارداد" in t:
+        return "invalid_contract"
+    if any(sig in t for sig in CONCURRENT_LOGIN_SIGNATURES) or \
+       ("منقضی" in t and "ورود" in t) or ("منقضي" in t and "ورود" in t):
+        return "session"
+    return "error"
+
+
+async def read_save_doc_popup(page) -> Optional[Dict[str, Any]]:
+    """خواندن پاپ‌آپ باز sweet-alert (بدون بستن) + دسته‌بندی آن.
+
+    خروجی: {"status": "success"|"invalid_contract"|"session"|"error",
+            "text": str, "contract_no": str}
+            یا None اگر پاپ‌آپی باز نباشد.
+    """
+    try:
+        result = await page.evaluate('''() => {
+            const popup = document.querySelector('.sweet-alert.showSweetAlert');
+            if (!popup) return null;
+            const style = window.getComputedStyle(popup);
+            if (style.display === 'none' || style.visibility === 'hidden') return null;
+            const h2 = popup.querySelector('h2');
+            const p = popup.querySelector('p');
+            const successIcon = popup.querySelector('.sa-icon.sa-success');
+            const errorIcon = popup.querySelector('.sa-icon.sa-error');
+            return {
+                text: ((h2 ? h2.innerText : '') + ' ' + (p ? p.innerText : '')).trim(),
+                isSuccess: !!(successIcon &&
+                              window.getComputedStyle(successIcon).display !== 'none'),
+                isError: !!(errorIcon &&
+                            window.getComputedStyle(errorIcon).display !== 'none'),
+            };
+        }''')
+    except Exception:
+        return None
+
+    if not result:
+        return None
+
+    text = (result.get("text") or "").strip()
+    if not text and not result.get("isSuccess") and not result.get("isError"):
+        return None
+
+    if result.get("isSuccess") and SUCCESS_SAVE_SIGNATURE in _normalize_fa_text(text):
+        status = "success"
+    elif result.get("isSuccess") and not text:
+        # پاپ‌آپ موفقیت بدون متن — در سامانه‌های قدیمی رخ می‌دهد
+        status = "success"
+    else:
+        status = _classify_save_popup_text(text)
+
+    contract_no = ""
+    if status == "invalid_contract":
+        import re as _re
+        m = _re.search(r"«\s*(\d{10,20})\s*»", text)
+        if not m:
+            m = _re.search(r"(\d{16})", text)
+        if m:
+            contract_no = m.group(1)
+
+    return {"status": status, "text": text, "contract_no": contract_no}
+
+
+async def close_save_doc_popup(page) -> bool:
+    """بستن پاپ‌آپ sweet-alert با کلیک دکمهٔ «بستن»/confirm."""
+    try:
+        closed = await page.evaluate('''() => {
+            const popup = document.querySelector('.sweet-alert.showSweetAlert');
+            if (!popup) return false;
+            const btn = popup.querySelector('button.confirm');
+            if (btn) { btn.click(); return true; }
+            return false;
+        }''')
+        if closed:
+            await asyncio.sleep(1)
+        return bool(closed)
+    except Exception:
+        return False
+
+
+async def wait_save_doc_popup_result(
+        page, timeout_sec: int = 45, prefix: str = "UPLOAD") -> Dict[str, Any]:
+    """انتظار قطعی برای پاپ‌آپ نتیجهٔ «ثبت و ویرایش پیوست» و دسته‌بندی آن.
+
+    برخلاف نسخهٔ قبلی (یک چک بعد از ۸ ثانیه)، تا timeout_sec هر ثانیه
+    صفحه پول می‌شود تا سامانه فرصت کامل پاسخ‌دادن داشته باشد؛ به این
+    ترتیب دکمهٔ #btnSaveDoc به‌اشتباه چندبار کلیک نمی‌شود.
+
+    خروجی: {"status": "success"|"invalid_contract"|"session"|"error"|"none",
+            "text": str, "contract_no": str}
+    """
+    deadline = asyncio.get_event_loop().time() + timeout_sec
+    last: Optional[Dict[str, Any]] = None
+    while asyncio.get_event_loop().time() < deadline:
+        last = await read_save_doc_popup(page)
+        if last:
+            _log(prefix, f"پاپ‌آپ نتیجهٔ ذخیره: [{last['status']}] {last['text'][:160]}")
+            return last
+        await asyncio.sleep(1)
+    return {"status": "none", "text": (last or {}).get("text", ""), "contract_no": ""}
+
+
+# ── ⭐ درج مطمئن مقادیر فرم پیوست با همگام‌سازی کامل AngularJS ──
+# (طبق دستور کارفرما: بعد از درج مبلغ حق‌الوکاله بلافاصله #btnSaveDoc کلیک شود؛
+#  برای اینکه مقدار واقعاً در ng-model بنشیند — مثل #txtLawyerAmount با
+#  دایرکتیوهای jud-currency/persioanval — این helper از $setViewValue و
+#  رویدادهای focus/blur هم استفاده و ماندگاری مقدار را کنترل می‌کند)
+
+_INPUT_ANGULAR_FILL_JS = '''(args) => {
+    const sel = args.selector;
+    const val = String(args.value);
+    const inp = document.querySelector(sel);
+    if (!inp) return {found: false};
+    inp.removeAttribute('disabled');
+    inp.removeAttribute('ng-disabled');
+    inp.focus();
+    inp.value = val;
+    inp.dispatchEvent(new Event("input", { bubbles: true }));
+    inp.dispatchEvent(new Event("change", { bubbles: true }));
+    try {
+        if (typeof angular !== 'undefined') {
+            const ctrl = angular.element(inp).controller('ngModel');
+            if (ctrl) { ctrl.$setViewValue(val); ctrl.$render(); }
+        }
+    } catch(e) {}
+    inp.dispatchEvent(new Event("blur", { bubbles: true }));
+    return {found: true, value: (inp.value || '').trim()};
+}'''
+
+
+async def fill_input_angular(page, selector: str, value, prefix: str = "UPLOAD",
+                             max_fills: int = 3) -> bool:
+    """⭐ درج مطمئن مقدار در فیلد فرم سامانه با همگام‌سازی کامل AngularJS.
+
+    ترتیب: focus → حذف disabled → value → input/change → $setViewValue/$render
+    → blur؛ سپس ماندگاری مقدار کنترل و در صورت خالی ماندن، دوباره درج می‌شود.
+
+    خروجی: True اگر فیلد موجود بود و مقدار در آن ماند.
+    """
+    for _try in range(max(1, max_fills)):
+        try:
+            res = await page.evaluate(_INPUT_ANGULAR_FILL_JS,
+                                      {"selector": selector, "value": str(value)})
+        except Exception as e:
+            _log(prefix, f"خطا در درج {selector}: {e}", 'warning')
+            res = None
+        if res and res.get("found"):
+            await asyncio.sleep(0.5)
+            try:
+                now = await page.evaluate(
+                    '''(sel) => { const i = document.querySelector(sel);
+                                  return i ? (i.value || '').trim() : ''; }''',
+                    selector)
+            except Exception:
+                now = ''
+            if now:
+                return True
+            _log(prefix, f"مقدار فیلد {selector} نماند — درج مجدد ({_try + 1}/{max_fills})", 'warning')
+        else:
+            _log(prefix, f"فیلد {selector} در صفحه یافت نشد ({_try + 1}/{max_fills})", 'warning')
+            await asyncio.sleep(1)
+    return False
+
+
+async def click_save_doc_once(page, prefix: str = "UPLOAD") -> bool:
+    """کلیک تک‌باره روی #btnSaveDoc (صبر تا فعال شدن دکمه).
+
+    خروجی: True اگر کلیک انجام شد، False اگر دکمه پیدا/فعال نشد.
+    """
+    # صبر تا دکمه فعال شود (حداکثر ~۳۰ ثانیه)
+    for _wait in range(10):
+        try:
+            btn_state = await page.evaluate('''() => {
+                const btn = document.querySelector('#btnSaveDoc');
+                if (!btn) return 'not_found';
+                return btn.disabled ? 'disabled' : 'ready';
+            }''')
+        except Exception:
+            btn_state = 'not_found'
+        if btn_state == 'ready':
+            break
+        _log(prefix, f"#btnSaveDoc هنوز آماده نیست ({btn_state}) — تلاش {_wait+1}/10")
+        await asyncio.sleep(3)
+
+    try:
+        clicked = await page.evaluate('''() => {
+            const btn = document.querySelector('#btnSaveDoc');
+            if (!btn || btn.disabled) return false;
+            try {
+                if (typeof angular !== 'undefined') {
+                    const ngEl = angular.element(btn);
+                    if (ngEl && ngEl.scope) {
+                        ngEl.scope().$apply(() => { btn.click(); });
+                        return true;
+                    }
+                }
+            } catch(e) {}
+            btn.click();
+            btn.dispatchEvent(new Event('click', { bubbles: true }));
+            return true;
+        }''')
+    except Exception as e:
+        _log(prefix, f"خطا در کلیک #btnSaveDoc: {e}", 'error')
+        return False
+
+    if clicked:
+        _log(prefix, "کلیک #btnSaveDoc انجام شد")
+    return bool(clicked)
+
+
 async def click_save_doc_with_retry(
     page, bot: Bot = None, user_id: int = None,
     max_retries: int = MAX_SAVE_DOC_RETRIES,
@@ -1101,19 +1337,28 @@ async def click_save_doc_with_retry(
         else:
             await asyncio.sleep(3)
 
-        success = await page.evaluate('''() => {
-            const popup = document.querySelector('.sweet-alert.showSweetAlert');
-            if (!popup) return false;
-            const icon = popup.querySelector('.sa-icon.sa-success');
-            return icon && window.getComputedStyle(icon).display !== 'none';
-        }''')
-        if success:
+        # ⭐ اصلاحیه: به‌جای یک چکِ فوری، منتظر پاپ‌آپ نتیجه می‌مانیم و آن را
+        # دسته‌بندی می‌کنیم (موفقیت / قرارداد نامعتبر / ورود همزمان / خطا)
+        popup = await wait_save_doc_popup_result(page, timeout_sec=30, prefix=prefix)
+
+        if popup["status"] == "success":
             await close_success_popup(page)
             return True
 
-        error_text = await get_and_close_error_popup_text(page)
-        if error_text:
-            _log(prefix, f"خطا در ذخیره سند (تلاش {attempt+1}/{max_retries}): {error_text}", 'warning')
+        if popup["status"] == "session":
+            _log(prefix, f"خطای ورود همزمان/انقضای نشست در ذخیره سند: {popup['text'][:150]}", 'warning')
+            if bot and user_id:
+                from browser_helpers import handle_session_expired
+                try:
+                    await handle_session_expired(bot, user_id, page=page)
+                except Exception:
+                    pass
+            await asyncio.sleep(4)
+            continue
+
+        if popup["status"] in ("error", "invalid_contract"):
+            _log(prefix, f"خطا در ذخیره سند (تلاش {attempt+1}/{max_retries}): {popup['text'][:200]}", 'warning')
+            await close_save_doc_popup(page)
             await asyncio.sleep(4)
             continue
 

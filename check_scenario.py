@@ -620,6 +620,9 @@ async def process_check_task(data: dict, bot: Bot):
             # ⚠️ طبق مشخصات: کدملی وارد شود و سپس «گزینه استعلام» زده شود —
             # دکمهٔ استعلام در این بخش id ندارد و از طریق ng-click کلیک می‌شود.
             # اگر خواهان دیگری وجود داشت، همان مراحل با انتخاب «افزودن».
+            # ⭐ باگ ۵: وضعیت ثبتِ نمایندهٔ اول هر شخص حقوقی ذخیره می‌شود تا
+            # تب «نماينده» در صورت ثبت‌نشدن، آن را دوباره ثبت کند.
+            plaintiff_first_rep_registered = False
             for idx, person in enumerate(plaintiffs):
                 ptype = person.get("person_type", "شخص حقیقی")
                 if ptype == "وکیل":
@@ -633,7 +636,9 @@ async def process_check_task(data: dict, bot: Bot):
                 await resilient_sleep(sana_page, 3, bot, user_id)
 
                 if ptype == "شخص حقوقی":
-                    await _fill_legal_person(sana_page, person, bot, user_id, role="خواهان", idx=idx)
+                    rep_ok = await _fill_legal_person(sana_page, person, bot, user_id, role="خواهان", idx=idx)
+                    if rep_ok:
+                        plaintiff_first_rep_registered = True
                 else:
                     await _fill_real_person(sana_page, person["national_id"], bot, user_id,
                                             role="خواهان", idx=idx)
@@ -651,6 +656,7 @@ async def process_check_task(data: dict, bot: Bot):
                 await safe_click_by_text(sana_page, "خوانده", bot, user_id)
             await resilient_sleep(sana_page, 4, bot, user_id)
 
+            defendant_first_rep_registered = False
             for idx, person in enumerate(defendants):
                 ptype = person.get("person_type", "شخص حقیقی")
 
@@ -661,7 +667,9 @@ async def process_check_task(data: dict, bot: Bot):
                 await resilient_sleep(sana_page, 3, bot, user_id)
 
                 if ptype == "شخص حقوقی":
-                    await _fill_legal_person(sana_page, person, bot, user_id, role="خوانده", idx=idx)
+                    rep_ok = await _fill_legal_person(sana_page, person, bot, user_id, role="خوانده", idx=idx)
+                    if rep_ok:
+                        defendant_first_rep_registered = True
                 else:
                     await _fill_real_person(sana_page, person["national_id"], bot, user_id,
                                             role="خوانده", idx=idx)
@@ -707,24 +715,50 @@ async def process_check_task(data: dict, bot: Bot):
                     await safe_click_by_text(sana_page, "نماينده", bot, user_id)
                 await resilient_sleep(sana_page, 4, bot, user_id)
 
-                def _collect_legal_reps(persons):
+                def _collect_legal_reps(persons, first_registered: bool):
+                    """جمع‌آوری نمایندگان شخص حقوقی برای تب «نماينده».
+
+                    ⭐ اصلاحیه ۱۴۰۵/۰۶ (باگ ۵ — دعاوی اعسار): قبلاً همیشه
+                    «reps[1:]» برگردانده می‌شد — یعنی نمایندهٔ اول کورکورانه
+                    اسکیپ می‌شد حتی اگر در مرحلهٔ خواهان/خوانده واقعاً ثبت
+                    نشده بود؛ نتیجه: بخش نماینده اسکیپ و کدملی مدیرعامل/
+                    نماینده اصلاً وارد نمی‌شد. حالا نمایندهٔ اول فقط وقتی
+                    اسکیپ می‌شود که «first_registered» (خروجی _fill_legal_person)
+                    True باشد؛ در غیر این صورت همهٔ نمایندگان از اول ثبت می‌شوند.
+                    """
                     legal_person = next((p for p in persons if p.get("person_type") == "شخص حقوقی"), {})
+                    if not legal_person:
+                        return []
+
                     reps = list(legal_person.get("representatives") or [])
+
                     if not reps:
+                        # ساختار قدیمی (تک‌نماینده در فیلدهای تخت)
                         rep_type_legacy = legal_person.get("representative_type", "")
                         nat_id_legacy = legal_person.get("national_id", "")
-                        if nat_id_legacy:
-                            reps = [{
-                                "representative_type": rep_type_legacy,
-                                "national_id": nat_id_legacy,
-                            }]
-                    # ⭐ نمایندهٔ اول همین الان همراه با خودِ مرحلهٔ «خواهان»/
-                    # «خوانده» توسط _fill_legal_person پر شده — اینجا فقط از
-                    # نمایندهٔ دوم به بعد پردازش می‌شود تا تکراری ثبت نشود.
-                    return reps[1:]
+                        if not nat_id_legacy:
+                            return []
+                        reps = [{
+                            "representative_type": rep_type_legacy,
+                            "national_id": nat_id_legacy,
+                        }]
+                        # در ساختار قدیمی، نمایندهٔ اول فقط اگر واقعاً در
+                        # مرحلهٔ خواهان/خوانده ثبت شده بود، اسکیپ می‌شود.
+                        return reps[1:] if first_registered else reps
 
-                # ⭐ لیست نمایندگان (فلو جدید) — فال‌بک به ساختار قدیمی تک‌نماینده
-                legal_reps = _collect_legal_reps(plaintiffs) + _collect_legal_reps(defendants)
+                    # ساختار جدید (لیست representatives):
+                    # اگر نمایندهٔ اول در مرحلهٔ خواهان/خوانده واقعاً ثبت شده
+                    # (flat national_id همان reps[0])، از دوم به بعد؛ وگرنه
+                    # همهٔ نمایندگان از اول ثبت می‌شوند تا هیچ‌کس جا نماند.
+                    flat_nid = (legal_person.get("national_id") or "").strip()
+                    if first_registered and reps and \
+                       (reps[0].get("national_id") or "").strip() == flat_nid and flat_nid:
+                        return reps[1:]
+                    return reps
+
+                # ⭐ لیست نمایندگان — فال‌بک به ساختار قدیمی تک‌نماینده
+                legal_reps = (_collect_legal_reps(plaintiffs, plaintiff_first_rep_registered) +
+                              _collect_legal_reps(defendants, defendant_first_rep_registered))
 
                 for rep_idx, rep in enumerate(legal_reps):
                     rep_type = rep.get("representative_type", "")
@@ -904,7 +938,7 @@ async def process_check_task(data: dict, bot: Bot):
             # وکالت‌نامه الکترونیک وارد منضمات می‌شویم.
             if cheque_items or attachment_groups or has_lawyer:
                 try:
-                    attachments_ok = await _process_check_attachments(
+                    attachments_ok, contract_fix_lawyer = await _process_check_attachments(
                         sana_page,
                         request_title=request_title,
                         cheque_items=cheque_items,
@@ -939,6 +973,49 @@ async def process_check_task(data: dict, bot: Bot):
                     raise CheckAbortError(
                         "مرحلهٔ منضمات چک کامل نشد — پیام مربوطه برای کاربر ارسال شد",
                         step="ATTACHMENTS_ABORTED")
+
+                # ══════════════════════════════════════════════════════════
+                # ⭐ اصلاحیه ۱۴۰۵/۰۶ — شماره قرارداد وکالت نامعتبر بود:
+                # پس از انجام سایر پیوست‌ها، پنجرهٔ ۴۵ دقیقه‌ای ارسال کد
+                # قرارداد جدید باز می‌شود و آماده‌سازی/هزینه/چاپ تا پس از
+                # ثبت قرارداد جدید (تسک CONTRACT_FIX_SUBMIT) به تعویق می‌افتد.
+                # ══════════════════════════════════════════════════════════
+                if attachments_ok == "contract_fix":
+                    try:
+                        import nid_fix_window
+                        cf_lawyer = contract_fix_lawyer or {}
+                        cf_task_data = dict(data)
+                        # مسیر منو برای استعلام کدرهگیری در سناریوی قرارداد جدید
+                        cf_task_data["_contract_fix_menu_path"] = list(sign_menu_path)
+                        nid_fix_window.start_contract_fix(
+                            user_id, flow="check", task_data=cf_task_data,
+                            bill_no=bill_no or "",
+                            old_contract=cf_lawyer.get("contract_number", ""),
+                            stamp_amount_value=int(cf_lawyer.get("stamp_amount_value", 0) or 0),
+                            error_text="شماره قرارداد الکترونیک وکالت معتبر نمی باشد")
+                        from contract_fix_handlers import contract_fix_inline_kb
+                        await bot.send_message(
+                            user_id,
+                            f"❌ *شماره قرارداد اشتباه می باشد.*\n\n"
+                            f"شماره قرارداد وکالت «{cf_lawyer.get('contract_number', '')}» "
+                            f"در سامانه معتبر نیست و ثبت نشد.\n"
+                            f"🔢 کد بایگانی دادخواست: `{bill_no}`\n\n"
+                            f"{nid_fix_window.contract_fix_deadline_text()}\n\n"
+                            f"پس از ارسال کد قرارداد جدید، ثبت قرارداد و ادامهٔ "
+                            f"آماده‌سازی، هزینه و چاپ به‌صورت خودکار انجام می‌شود.",
+                            parse_mode="Markdown",
+                            reply_markup=contract_fix_inline_kb(user_id))
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"⚠️ [CHECK] شماره قرارداد وکالت «{cf_lawyer.get('contract_number', '')}» "
+                            f"برای کاربر {user_id} معتبر نبود | کد بایگانی: {bill_no}\n"
+                            f"پنجرهٔ ۴۵ دقیقه‌ای کد قرارداد جدید باز شد.")
+                    except Exception as cf_err:
+                        logging.error(f"[CHECK] خطا در شروع پنجرهٔ کد قرارداد جدید: {cf_err}")
+                    raise CheckAbortError(
+                        "ثبت قرارداد وکالت ناموفق (شماره قرارداد نامعتبر) — "
+                        "ادامه پس از دریافت کد قرارداد جدید",
+                        step="CONTRACT_FIX_PENDING")
 
                 # بازگشت به فهرست
                 await _click_goto_main(sana_page, bot, user_id)
@@ -2421,7 +2498,7 @@ async def _set_legal_economic_code_one_check(page):
 
 
 async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
-                             role: str = "", idx: int = 0):
+                             role: str = "", idx: int = 0) -> bool:
     """پر کردن اطلاعات شخص حقوقی + استعلام شرکت و نماینده.
 
     ⭐ رفع باگ: این تابع دقیقاً مطابق _fill_legal_person در
@@ -2436,6 +2513,15 @@ async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
       ۳. نوع نماینده (دراپ‌داون AgentTypeId) قبل از استعلام شرکت انتخاب
          می‌شد، در حالی که این فیلد معمولاً فقط بعد از پاسخ موفق استعلام
          شرکت در صفحه ظاهر می‌شود.
+
+    ⭐ اصلاحیه ۱۴۰۵/۰۶ (باگ ۵ — دعاوی اعسار): خروجی تابع نشان می‌دهد آیا
+    نمایندهٔ اول واقعاً در همین مرحله ثبت/استعلام شده است یا نه — تا حلقهٔ
+    تب «نماينده» در صورت ثبت‌نشدن، نمایندهٔ اول را هم ثبت کند (قبلاً
+    نمایندهٔ اول کورکورانه اسکیپ می‌شد و کدملی مدیرعامل/نماینده وارد
+    نمی‌شد).
+
+    خروجی: True اگر نمایندهٔ اول با موفقیت وارد و استعلام شد؛ در غیر این
+    صورت False (شامل حالت «بدون کدملی نماینده»).
     """
     company_id = person.get("company_id", "")
     nat_id = person.get("national_id", "")
@@ -2486,38 +2572,77 @@ async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
     if not nat_id:
         # بدون کدملی نماینده — فقط ثبت شناسه ملی شرکت کافی است
         logging.info(f"[CHECK] شخص حقوقی {role} بدون کدملی نماینده — فقط شناسه ملی شرکت ثبت شد")
-        return
+        return False
 
     await asyncio.sleep(3)
 
     # انتخاب نوع نماینده (مدیرعامل یا نماینده) — بعد از استعلام موفق شرکت،
     # چون این دراپ‌داون معمولاً فقط پس از پاسخ موفق شرکت رندر می‌شود
+    # ⭐ باگ ۵: انتخاب دراپ‌داون چندتلاشی شد (قبلاً یک‌بارِ بی‌retry بود و
+    # اگر فیلد دیر رندر می‌شد، نمایندهٔ اول هرگز وارد نمی‌شد)
     agent_value = "0091000010000008" if rep_type == "مدیرعامل" else "0091000010000010"
-    await page.evaluate('''(val) => {
-        const sel = document.querySelector('select[ng-model*="AgentTypeId"]');
-        if (sel && !sel.disabled) {
-            sel.value = val;
-            sel.dispatchEvent(new Event("input", { bubbles: true }));
-            sel.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-    }''', agent_value)
+    agent_set = False
+    for _agent_try in range(5):
+        agent_set = await page.evaluate('''(val) => {
+            const sel = document.querySelector('select[ng-model*="AgentTypeId"]');
+            if (sel && !sel.disabled) {
+                sel.focus();
+                sel.value = val;
+                sel.dispatchEvent(new Event("input", { bubbles: true }));
+                sel.dispatchEvent(new Event("change", { bubbles: true }));
+                try {
+                    if (typeof angular !== 'undefined') {
+                        const ctrl = angular.element(sel).controller('ngModel');
+                        if (ctrl) { ctrl.$setViewValue(val); ctrl.$render(); }
+                        const scope = angular.element(sel).scope();
+                        if (scope && scope.$root && !scope.$root.$$phase) scope.$apply();
+                    }
+                } catch(e) {}
+                return true;
+            }
+            return false;
+        }''', agent_value)
+        if agent_set:
+            break
+        logging.warning(
+            f"[CHECK] دراپ‌داون نوع نماینده ({role}) آماده نشد — تلاش {_agent_try + 1}/5")
+        await asyncio.sleep(3)
     await asyncio.sleep(2)
 
     # وارد کردن کدملی نماینده
+    rep_set = False
     for _try in range(5):
-        set_ok = await page.evaluate('''(val) => {
+        rep_set = await page.evaluate('''(val) => {
             const inp = document.querySelector('#txtRealIrNationalityCode');
             if (inp && !inp.disabled) {
+                inp.focus();
                 inp.value = val;
                 inp.dispatchEvent(new Event("input", { bubbles: true }));
                 inp.dispatchEvent(new Event("change", { bubbles: true }));
+                try {
+                    if (typeof angular !== 'undefined') {
+                        const ctrl = angular.element(inp).controller('ngModel');
+                        if (ctrl) { ctrl.$setViewValue(val); ctrl.$render(); }
+                        const scope = angular.element(inp).scope();
+                        if (scope && scope.$root && !scope.$root.$$phase) scope.$apply();
+                    }
+                } catch(e) {}
                 return true;
             }
             return false;
         }''', nat_id)
-        if set_ok:
+        if rep_set:
             break
         await asyncio.sleep(3)
+
+    if not rep_set or not agent_set:
+        logging.error(
+            f"[CHECK] کدملی نمایندهٔ {role} ({nat_id}) در مرحلهٔ "
+            f"خواهان/خوانده وارد نشد (agent_set={agent_set}, rep_set={rep_set}) — "
+            f"در تب «نماينده» دوباره تلاش می‌شود")
+        # ⭐ باگ ۵: بدون استعلامِ بی‌فایده — نمایندهٔ اول در تب «نماينده»
+        # دوباره کامل (دراپ‌داون + کدملی + استعلام) ثبت خواهد شد.
+        return False
 
     # ⭐ استعلام نماینده
     rep_status = await _query_sana_check(
@@ -2528,6 +2653,10 @@ async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
         raise CheckAbortError(
             f"استعلام ثنا برای نمایندهٔ {role} (کدملی {nat_id}) ناموفق",
             step="SANA_QUERY_FAILED")
+
+    # نمایندهٔ اول فقط در صورتی «ثبت‌شده» محسوب می‌شود که کدملی واقعاً
+    # وارد شده باشد؛ در غیر این صورت تب «نماينده» آن را دوباره ثبت می‌کند.
+    return True
 
 
 async def _fill_lawyer_person(page, national_id: str, bot: Bot, user_id: int):
@@ -3515,75 +3644,111 @@ async def _upload_esteshahadieh_attachment(page, image_paths: list, bot: Bot,
 
 async def _upload_electronic_vakalaht_check(
         page, contract_number: str, lawyer_amount_value: int,
-        bot: Bot, user_id: int, bill_no: str = "") -> bool:
-    """آپلود وکالت‌نامه الکترونیک برای دادخواست چک (الگوی اظهارنامه/lایحه).
+        bot: Bot, user_id: int, bill_no: str = "") -> str:
+    """آپلود وکالت‌نامه الکترونیک برای دادخواست چک (الگوی اظهارنامه/لایحه).
 
     ⭐ طبق دستور کارفرما: وقتی وکیل انتخاب شده، شماره قرارداد وکالت و
     مقدار تمبر (خودکار محاسبه‌شده) در فرم «تصوير الكترونيك وكالت نامه»
     درج می‌شود:
       - #txtNo ← شماره قرارداد (۱۶ رقمی)
       - #txtLawyerAmount ← مقدار تمبر (ریال)
+    سپس «ثبت و ویرایش پیوست» (#btnSaveDoc) کلیک و با انتظار قطعی
+    (پولینگ تا ۴۵ ثانیه) پاپ‌آپ نتیجه بسته می‌شود.
+
+    ⭐ اصلاحیه ۱۴۰۵/۰۶:
+      - «شماره قرارداد الکترونیک وکالت «...» معتبر نمی باشد» → "invalid_contract"
+      - «ورود به سامانه در صفحه یا رایانه ای دیگر...» → لاگین مجدد و تلاش دوباره
+
+    خروجی: "success" | "invalid_contract" | "failed"
     """
-    from upload_helpers import get_and_close_error_popup_text as _uh_err
+    from upload_helpers import (
+        click_save_doc_once, wait_save_doc_popup_result, close_save_doc_popup,
+        fill_input_angular)
 
     try:
         had_expiry = await check_and_handle_expiry(page, bot, user_id)
         if had_expiry:
             await asyncio.sleep(2)
 
-        # ۱) انتخاب «تصوير الكترونيك وكالت نامه» از نوع پیوست
-        selected = await page.evaluate('''() => {
-            const sel = document.querySelector('#attachmentType');
-            if (!sel || sel.disabled) return false;
-            if (sel.tagName !== 'SELECT') return false;
-            const opts = Array.from(sel.options || []);
-            const opt = opts.find(o =>
-                (o.text || '').includes("تصوير الكترونيك وكالت نامه") ||
-                (o.text || '').includes("تصویر الکترونیک وکالت نامه")
-            );
-            if (opt) { sel.value = opt.value; sel.dispatchEvent(new Event("change")); return true; }
-            return false;
-        }''')
-        if not selected:
-            logging.warning("[CHECK] گزینه «تصویر الکترونیک وکالت‌نامه» پیدا نشد")
-            return False
-        await asyncio.sleep(3)
-        await wait_for_angular_idle(page)
-        await asyncio.sleep(1)
-
-        # ۲) شماره قرارداد وکالت در #txtNo — طبق الگوی اظهارنامه اگر قرارداد
-        # خالی باشد مقدار «۰» درج می‌شود (فیلد خالی مانع ذخیره می‌شود)
-        await page.evaluate('''(val) => {
-            const inp = document.querySelector('#txtNo');
-            if (inp) {
-                inp.value = val;
-                inp.dispatchEvent(new Event("input", { bubbles: true }));
-                inp.dispatchEvent(new Event("change", { bubbles: true }));
-            }
-        }''', str(contract_number) if contract_number else "0")
-        await asyncio.sleep(1)
-
-        # ۳) مقدار تمبر در #txtLawyerAmount
-        if lawyer_amount_value and lawyer_amount_value > 0:
-            await page.evaluate('''(val) => {
-                const inp = document.querySelector('#txtLawyerAmount');
-                if (inp) {
-                    inp.removeAttribute('disabled');
-                    inp.value = String(val);
-                    inp.dispatchEvent(new Event("input", { bubbles: true }));
-                    inp.dispatchEvent(new Event("change", { bubbles: true }));
-                }
-            }''', int(lawyer_amount_value))
+        for attempt in range(3):
+            # ۱) انتخاب «تصوير الكترونيك وكالت نامه» از نوع پیوست
+            selected = await page.evaluate('''() => {
+                const sel = document.querySelector('#attachmentType');
+                if (!sel || sel.disabled) return false;
+                if (sel.tagName !== 'SELECT') return false;
+                const opts = Array.from(sel.options || []);
+                const opt = opts.find(o =>
+                    (o.text || '').includes("تصوير الكترونيك وكالت نامه") ||
+                    (o.text || '').includes("تصویر الکترونیک وکالت نامه")
+                );
+                if (opt) { sel.value = opt.value; sel.dispatchEvent(new Event("change")); return true; }
+                return false;
+            }''')
+            if not selected:
+                logging.warning(f"[CHECK] گزینه «تصویر الکترونیک وکالت‌نامه» پیدا نشد (تلاش {attempt+1})")
+                await asyncio.sleep(5)
+                continue
+            await asyncio.sleep(3)
+            await wait_for_angular_idle(page)
             await asyncio.sleep(1)
 
-        # ۴) ذخیرهٔ سند با retry
-        save_ok = await click_save_doc_with_retry(page, bot, user_id, prefix="CHECK")
-        if not save_ok:
-            error_text = await _uh_err(page)
-            logging.error(f"[CHECK] ذخیرهٔ وکالت‌نامه الکترونیک ناموفق: {error_text!r}")
-            return False
-        logging.info("[CHECK] وکالت‌نامه الکترونیک با موفقیت ثبت شد")
-        return True
+            # ۲) ⭐ شماره قرارداد وکالت در #txtNo — همگام‌سازی کامل AngularJS؛
+            #    اگر قرارداد خالی باشد «۰»
+            await fill_input_angular(page, "#txtNo", contract_number or "0", prefix="CHECK")
+            await asyncio.sleep(1)
+
+            # ۳) ⭐ مقدار تمبر در #txtLawyerAmount — بلافاصله قبل از ثبت؛
+            #    در صورت نبود مقدار، «۱» درج می‌شود (الگوی لایحه/اعلام) تا فیلد
+            #    الزامی (ng-required) فرم را بی‌صدا رد نکند
+            if not lawyer_amount_value or lawyer_amount_value <= 0:
+                logging.warning("[CHECK][منضمات] مقدار تمبر صفر بود — مقدار «۱» درج می‌شود")
+                lawyer_amount_value = 1
+            await fill_input_angular(page, "#txtLawyerAmount", lawyer_amount_value, prefix="CHECK")
+            await asyncio.sleep(1)
+
+            # ۴) کلیک «ثبت و ویرایش پیوست» (#btnSaveDoc) — تک‌کلیک + انتظار قطعی پاپ‌آپ
+            clicked = await click_save_doc_once(page, prefix="CHECK")
+            if not clicked:
+                logging.warning(f"[CHECK][منضمات] کلیک #btnSaveDoc انجام نشد (تلاش {attempt+1})")
+                await asyncio.sleep(5)
+                continue
+
+            popup = await wait_save_doc_popup_result(page, timeout_sec=45, prefix="CHECK")
+
+            if popup["status"] == "success":
+                from upload_helpers import close_success_popup as _uh_close_success
+                await _uh_close_success(page)
+                logging.info("[CHECK] وکالت‌نامه الکترونیک با موفقیت ثبت شد")
+                return "success"
+
+            if popup["status"] == "invalid_contract":
+                await close_save_doc_popup(page)
+                logging.error(
+                    f"[CHECK] شماره قرارداد وکالت «{popup.get('contract_no') or contract_number}» "
+                    f"معتبر نمی باشد: {popup['text'][:200]}")
+                return "invalid_contract"
+
+            if popup["status"] == "session":
+                logging.warning(f"[CHECK][منضمات] ورود همزمان/انقضای نشست — لاگین مجدد: {popup['text'][:150]}")
+                await close_save_doc_popup(page)
+                try:
+                    from browser_helpers import handle_session_expired
+                    await handle_session_expired(bot, user_id, page=page)
+                except Exception:
+                    pass
+                await asyncio.sleep(5)
+                continue
+
+            if popup["status"] == "error":
+                logging.warning(f"[CHECK] خطای ثبت وکالت‌نامه: {popup['text'][:200]} (تلاش {attempt+1})")
+                await close_save_doc_popup(page)
+                await asyncio.sleep(5)
+                continue
+
+            logging.warning(f"[CHECK][منضمات] پس از کلیک #btnSaveDoc پاپ‌آپی ظاهر نشد (تلاش {attempt+1})")
+            await asyncio.sleep(5)
+
+        return "failed"
 
     except Exception as e:
         logging.error(f"[CHECK] خطا در آپلود وکالت‌نامه الکترونیک: {e}")
@@ -3594,7 +3759,7 @@ async def _upload_electronic_vakalaht_check(
                              page=getattr(runtime_state, "sana_page", None))
         except Exception:
             pass
-        return False
+        return "failed"
 
 
 
@@ -3854,7 +4019,7 @@ async def _process_check_attachments(
     user_id: int,
     bill_no: str,
     plaintiffs: list = None,
-    defendants: list = None) -> bool:
+    defendants: list = None):
     """اجرای کامل مرحلهٔ «منضمات» دادخواست — طبق مشخصات کارفرما.
 
     مسیر:
@@ -3876,14 +4041,16 @@ async def _process_check_attachments(
       ۳. پیوست‌های اضافی کاربر (check_attachment_groups) با «سایر ضمائم»
          (و «تصوير مدرک نمايندگي» برای مدرک نمایندگی) — الگوی اظهارنامه
 
-    خروجی: True = ادامهٔ فرآیند | False = قطع (پیام‌ها ارسال شده‌اند)
+    خروجی: (status, contract_fix_lawyer)
+      - status: True = ادامهٔ فرآیند | False = قطع (پیام‌ها ارسال شده‌اند) | "contract_fix" = شماره قرارداد نامعتبر (پنجرهٔ ۴۵ دقیقه‌ای باز می‌شود)
+      - contract_fix_lawyer: {"contract_number", "stamp_amount_value"} وکیلِ قراردادش نامعتبر بود
     """
     is_ejra = (request_title == "صدور اجرائیه چک")
     attachment_label = ("تصوير چك و گواهينامه عدم پرداخت" if is_ejra else "تصوير چك")
 
     # ۱) ورود به منضمات
     if not await _enter_attachments_section(page, bot, user_id, bill_no):
-        return False
+        return False, {}
 
     # ۲) فقرات چک
     for item_idx, cheque in enumerate(cheque_items):
@@ -3921,10 +4088,10 @@ async def _process_check_attachments(
                 page, item_tracking, bot, user_id, bill_no)
             if inquiry_status == "wrong_code":
                 # پیام کاربر داخل _central_bank_inquiry ارسال شده — توقف کل فرآیند
-                return False
+                return False, {}
             if inquiry_status == "failed":
                 # پیام «سامانه قطع» برای کاربر ارسال شده — توقف کل فرآیند
-                return False
+                return False, {}
             # 'ok' → ادامهٔ مراحل (فیلدها + ثبت + آپلود)
         else:
             # مطالبه وجه چک — بدون کدرهگیری/استعلام بانک مرکزی؛ فقط درج
@@ -4010,6 +4177,8 @@ async def _process_check_attachments(
     # NameError کل مرحلهٔ منضمات را قطع می‌کرد (هیچ تصویری پیوست نمی‌شد و
     # پرونده با ATTACHMENTS_UNEXPECTED_ERROR متوقف می‌شد) — حالا به‌عنوان
     # پارامتر دریافت می‌شود تا وکیل خوانده هم در وکالت‌نامه الکترونیک ثبت شود.
+    contract_fix_pending = False
+    contract_fix_lawyer = {}
     lawyers = [p for p in (list(plaintiffs or []) + list(defendants or []))
                if p.get("person_type") == "وکیل"]
     for lawyer in lawyers:
@@ -4029,9 +4198,23 @@ async def _process_check_attachments(
             await asyncio.sleep(3)
             await wait_for_angular_idle(page)
             await asyncio.sleep(1)
-        vakalaht_ok = await _upload_electronic_vakalaht_check(
+        vakalaht_status = await _upload_electronic_vakalaht_check(
             page, contract_no, stamp_val, bot, user_id, bill_no)
-        if not vakalaht_ok:
+        if vakalaht_status == "invalid_contract":
+            # ⭐ اصلاحیه ۱۴۰۵/۰۶ — دستور کارفرما: این مرحله اسکیپ می‌شود؛
+            # ابتدا سایر پیوست‌های کاربر انجام و سپس اعلام ۴۵ دقیقه‌ای
+            # ارسال کد قرارداد جدید می‌شود. آماده‌سازی/هزینه/چاپ تا پس از
+            # ثبت قرارداد جدید به تعویق می‌افتد.
+            contract_fix_pending = True
+            contract_fix_lawyer = {"contract_number": contract_no, "stamp_amount_value": stamp_val}
+            logging.error(
+                f"[CHECK][منضمات] شماره قرارداد وکالت «{contract_no}» معتبر نمی باشد — "
+                f"اسکیپ مرحله و ادامه با سایر پیوست‌ها (کاربر {user_id})")
+            await log_event(
+                "خطای سامانه", "دادخواست", str(user_id), user_id,
+                tracking_code=bill_no, doc_name=request_title,
+                note=f"شماره قرارداد وکالت «{contract_no}» معتبر نمی باشد (کد بایگانی: {bill_no})")
+        elif vakalaht_status != "success":
             # شکست وکالت‌نامه فرآیند کلی را قطع نمی‌کند — مدیر مطلع می‌شود
             await bot.send_message(
                 ADMIN_ID,
@@ -4126,7 +4309,14 @@ async def _process_check_attachments(
             except Exception:
                 pass
 
-    return True
+    # ⭐ اصلاحیه ۱۴۰۵/۰۶ — اگر شماره قرارداد وکالت نامعتبر بود، وضعیت
+    # "contract_fix" برگردانده می‌شود تا فراخواننده (process_check_task)
+    # پنجرهٔ ۴۵ دقیقه‌ای کد قرارداد جدید را باز کند و مراحل آماده‌سازی/
+    # هزینه/چاپ را تا پس از ثبت قرارداد جدید به تعویق بیندازد.
+    if contract_fix_pending:
+        return "contract_fix", contract_fix_lawyer
+
+    return True, {}
 
 
 async def _extract_cost_data(page) -> dict:
