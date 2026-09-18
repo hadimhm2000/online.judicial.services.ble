@@ -550,32 +550,121 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                             break
                         await resilient_sleep(sana_page, 1, bot, user_id)
 
-                    await sana_page.evaluate('''() => {
-                        const rdb = document.querySelector('input[type="radio"][value="7"]');
-                        if (rdb) rdb.click();
+                    # ══════════════════════════════════════════════════════
+                    # ⭐ اصلاحیه ۱۴۰۵/۰۶ (باگ ۴) — درج مدیرعامل/نماینده شخص حقوقی:
+                    # طبق دستور کارفرما، پس از اتمام مراحل شخص حقوقی، برای
+                    # درج مدیرعامل یا نماینده باید:
+                    #   ۱) دکمهٔ «افزودن» (#btnAddSection / actions.addSection)
+                    #      کلیک شود تا سکشن شخص جدید باز شود؛
+                    #   ۲) سپس گزینهٔ رادیو «نماینده/مدیرعامل» (#rdb7 / value=7)
+                    #      انتخاب شود؛
+                    #   ۳) سپس مانند پر کردن بخش نماینده در اظهارنامه عمل شود
+                    #      (انتخاب نوع نماینده از dropdown AgentTypeId + کدملی
+                    #      در #txtRealIrNationalityCode + استعلام ثنا).
+                    # قبلاً مستقیماً radio value=7 کلیک و بلافاصله #txtRealIrNationalityCode
+                    # با page.fill پر می‌شد؛ چون سکشن جدید باز نشده بود، فیلد
+                    # رندر نمی‌شد و «Timeout 30000ms exceeded» می‌داد.
+                    # ⚠️ در لایحه نیازی به پیوست کردن مدرک نمایندگی نمی‌باشد.
+                    # ══════════════════════════════════════════════════════
+                    await _click_add_person(sana_page, bot, user_id)
+                    await resilient_sleep(sana_page, 3, bot, user_id)
+                    await wait_for_angular_idle(sana_page)
+
+                    # کلیک رادیو «نماینده قانونی» (#rdb7) — با فال‌بک
+                    rdb7_clicked = await sana_page.evaluate('''() => {
+                        const rdb = document.querySelector('input[type="radio"][name="personType"]#rdb7') ||
+                                    document.querySelector('#rdb7') ||
+                                    document.querySelector('input[type="radio"][value="7"]');
+                        if (rdb && !rdb.disabled) {
+                            rdb.click();
+                            try {
+                                if (typeof angular !== 'undefined') {
+                                    const scope = angular.element(rdb).scope();
+                                    if (scope && scope.$root && !scope.$root.$$phase) scope.$apply();
+                                }
+                            } catch(e) {}
+                            return true;
+                        }
+                        return false;
                     }''')
+                    if not rdb7_clicked:
+                        logging.warning("[LAVAYEH] رادیو #rdb7 (نماینده قانونی) پیدا/کلیک نشد")
+                    await resilient_sleep(sana_page, 3, bot, user_id)
+                    await wait_for_angular_idle(sana_page)
                     await resilient_sleep(sana_page, 2, bot, user_id)
 
+                    # انتخاب نوع نماینده (مدیرعامل/قائم مقام/نماینده) — مانند اظهارنامه
                     rep_type = person.get("representative_type", "نماینده")
                     agent_value = AGENT_TYPE_VALUES.get(rep_type, "0091000010000007")
-                    await sana_page.evaluate(f'''() => {{
-                        const sel = document.querySelector('select[ng-model="viewModel.currentDeclarantPerson.AgentTypeId"]');
-                        if (sel) {{
-                            sel.value = "{agent_value}";
-                            sel.dispatchEvent(new Event("change"));
-                        }}
-                    }}''')
+                    for _ in range(5):
+                        _agent_ok = await sana_page.evaluate('''(val) => {
+                            const sel = document.querySelector('select[ng-model="viewModel.currentDeclarantPerson.AgentTypeId"], select[ng-model*="AgentTypeId"]');
+                            if (sel && !sel.disabled) {
+                                sel.focus();
+                                sel.value = val;
+                                sel.dispatchEvent(new Event("input", { bubbles: true }));
+                                sel.dispatchEvent(new Event("change", { bubbles: true }));
+                                try {
+                                    if (typeof angular !== 'undefined') {
+                                        const ctrl = angular.element(sel).controller('ngModel');
+                                        if (ctrl) { ctrl.$setViewValue(val); ctrl.$render(); }
+                                        const scope = angular.element(sel).scope();
+                                        if (scope && scope.$root && !scope.$root.$$phase) scope.$apply();
+                                    }
+                                } catch(e) {}
+                                return true;
+                            }
+                            return false;
+                        }''', agent_value)
+                        if _agent_ok:
+                            logging.info(f"[LAVAYEH] نوع نماینده انتخاب شد: {rep_type} -> {agent_value}")
+                            break
+                        await resilient_sleep(sana_page, 2, bot, user_id)
                     await resilient_sleep(sana_page, 1, bot, user_id)
 
-                    await _fill_input(sana_page, "#txtRealIrNationalityCode", person["national_id"], bot, user_id)
-                    await resilient_sleep(sana_page, 1, bot, user_id)
+                    # کدملی نماینده/مدیرعامل — با evaluate چندتلاشی (بدون page.fill
+                    # که در صورت رندر نشدن فیلد، Timeout 30s کل تسک را می‌بُرد)
+                    rep_nid = person.get("national_id", "")
+                    if rep_nid:
+                        rep_filled = False
+                        for _try in range(6):
+                            rep_filled = await sana_page.evaluate('''(val) => {
+                                const inp = document.querySelector('#txtRealIrNationalityCode');
+                                if (inp && !inp.disabled && inp.offsetParent !== null) {
+                                    inp.focus();
+                                    inp.value = val;
+                                    inp.dispatchEvent(new Event("input", { bubbles: true }));
+                                    inp.dispatchEvent(new Event("change", { bubbles: true }));
+                                    try {
+                                        if (typeof angular !== 'undefined') {
+                                            const ctrl = angular.element(inp).controller('ngModel');
+                                            if (ctrl) { ctrl.$setViewValue(val); ctrl.$render(); }
+                                            const scope = angular.element(inp).scope();
+                                            if (scope && scope.$root && !scope.$root.$$phase) scope.$apply();
+                                        }
+                                    } catch(e) {}
+                                    return true;
+                                }
+                                return false;
+                            }''', rep_nid)
+                            if rep_filled:
+                                break
+                            logging.warning(
+                                f"[LAVAYEH] فیلد کدملی نماینده (#txtRealIrNationalityCode) "
+                                f"آماده نشد — تلاش {_try + 1}/6")
+                            await resilient_sleep(sana_page, 3, bot, user_id)
+                        if not rep_filled:
+                            logging.error(
+                                f"[LAVAYEH] کدملی نماینده/مدیرعامل «{rep_nid}» پس از ۶ تلاش وارد نشد")
+                        await resilient_sleep(sana_page, 1, bot, user_id)
 
-                    await _click_sana_query_with_retry(
-                        sana_page, "actions.callNationalityCode", bot, user_id,
-                        btn_id="btnCallNationalityCode",
-                        current_national_id=person.get("national_id", ""),
-                        person_index=_person_idx)
-                    await resilient_sleep(sana_page, 8, bot, user_id)
+                        # استعلام نماینده از ثنا — مانند اظهارنامه
+                        await _click_sana_query_with_retry(
+                            sana_page, "actions.callNationalityCode", bot, user_id,
+                            btn_id="btnCallNationalityCode",
+                            current_national_id=rep_nid,
+                            person_index=_person_idx)
+                        await resilient_sleep(sana_page, 8, bot, user_id)
 
             await _click_step_label(sana_page, "متن", bot, user_id)
             await resilient_sleep(sana_page, 4, bot, user_id)
@@ -666,6 +755,7 @@ async def process_lavayeh_task(data: dict, bot: Bot):
             await _click_goto_main(sana_page, bot, user_id)
             await resilient_sleep(sana_page, 4, bot, user_id)
 
+            contract_fix_pending = False
             if has_images or has_ealam_contract:
                 await _click_step_box(sana_page, "منضمات", bot, user_id)
                 await resilient_sleep(sana_page, 5, bot, user_id)
@@ -684,10 +774,28 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                         lawyer_amount_value = int(ealam_stamp_amount * 100 / 3)
 
                     first_contract = ealam_contracts[0]
-                    vakalaht_ok = await _upload_electronic_vakalaht(
+                    vakalaht_status = await _upload_electronic_vakalaht(
                         sana_page, first_contract, lawyer_amount_value, bot, user_id
                     )
-                    if not vakalaht_ok:
+                    if vakalaht_status == "invalid_contract":
+                        # ⭐ دستور کارفرما: این مرحله اسکیپ می‌شود؛ ابتدا سایر
+                        # پیوست‌های کاربر انجام و سپس اعلام ۴۵ دقیقه‌ای می‌شود.
+                        contract_fix_pending = True
+                        logging.error(
+                            f"[LAVAYEH][منضمات] شماره قرارداد وکالت «{first_contract}» "
+                            f"معتبر نمی باشد — اسکیپ مرحله و ادامه با سایر پیوست‌ها (کاربر {user_id})"
+                        )
+                        await log_event(
+                            "خطای سامانه", "لایحه", str(user_id), user_id,
+                            tracking_code=tracking_code, doc_name=title,
+                            note=f"شماره قرارداد وکالت «{first_contract}» معتبر نمی باشد (کد لایحه: {lavayeh_bill_no})"
+                        )
+                    elif vakalaht_status == "success":
+                        logging.info(
+                            f"[LAVAYEH][منضمات] وکالت‌نامه الکترونیک (شماره قرارداد "
+                            f"{first_contract}) با موفقیت ثبت شد."
+                        )
+                    else:
                         logging.error(
                             f"[LAVAYEH][منضمات] ثبت وکالت‌نامه الکترونیک (شماره قرارداد "
                             f"{first_contract}) ناموفق برای کاربر {user_id}"
@@ -701,11 +809,6 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                             "خطای سامانه", "لایحه", str(user_id), user_id,
                             tracking_code=tracking_code, doc_name=title,
                             note=f"ثبت وکالت‌نامه الکترونیک ناموفق (شماره قرارداد: {first_contract})"
-                        )
-                    else:
-                        logging.info(
-                            f"[LAVAYEH][منضمات] وکالت‌نامه الکترونیک (شماره قرارداد "
-                            f"{first_contract}) با موفقیت ثبت شد."
                         )
                     await resilient_sleep(sana_page, 2, bot, user_id)
 
@@ -772,6 +875,47 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                     await sana_page.reload()
                     await asyncio.sleep(5)
                 await resilient_sleep(sana_page, 4, bot, user_id)
+
+            # ══════════════════════════════════════════════════════════
+            # ⭐ اصلاحیه ۱۴۰۵/۰۶ — شماره قرارداد وکالت نامعتبر بود:
+            # پس از انجام سایر پیوست‌ها، به کاربر اعلام می‌شود شماره
+            # قرارداد اشتباه است و ۴۵ دقیقه فرصت دارد کد قرارداد جدید را
+            # ارسال کند. آماده‌سازی/هزینه/چاپ تا پس از ثبت قرارداد جدید
+            # (تسک CONTRACT_FIX_SUBMIT) به تعویق می‌افتد.
+            # ══════════════════════════════════════════════════════════
+            if contract_fix_pending:
+                try:
+                    import nid_fix_window
+                    lawyer_amount_value = 1
+                    if ealam_stamp_type != "بدون تمبر" and ealam_stamp_amount:
+                        lawyer_amount_value = int(ealam_stamp_amount * 100 / 3)
+                    nid_fix_window.start_contract_fix(
+                        user_id, flow="lavayeh", task_data=dict(data),
+                        bill_no=lavayeh_bill_no or "",
+                        old_contract=ealam_contracts[0] if ealam_contracts else "",
+                        stamp_amount_value=lawyer_amount_value,
+                        error_text="شماره قرارداد الکترونیک وکالت معتبر نمی باشد")
+                    from contract_fix_handlers import contract_fix_inline_kb
+                    await bot.send_message(
+                        user_id,
+                        f"❌ *شماره قرارداد اشتباه می باشد.*\n\n"
+                        f"شماره قرارداد وکالت «{ealam_contracts[0] if ealam_contracts else ''}» "
+                        f"در سامانه معتبر نیست و ثبت نشد.\n"
+                        f"🔢 کد رهگیری لایحه: `{lavayeh_bill_no}`\n\n"
+                        f"{nid_fix_window.contract_fix_deadline_text()}\n\n"
+                        f"پس از ارسال کد قرارداد جدید، ثبت قرارداد و ادامهٔ "
+                        f"آماده‌سازی، هزینه و چاپ به‌صورت خودکار انجام می‌شود.",
+                        parse_mode="Markdown",
+                        reply_markup=contract_fix_inline_kb(user_id))
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"⚠️ [LAVAYEH] شماره قرارداد وکالت «{ealam_contracts[0] if ealam_contracts else ''}» "
+                        f"برای کاربر {user_id} معتبر نبود | کد لایحه: {lavayeh_bill_no}\n"
+                        f"پنجرهٔ ۴۵ دقیقه‌ای کد قرارداد جدید باز شد.")
+                except Exception as cf_err:
+                    logging.error(f"[LAVAYEH] خطا در شروع پنجرهٔ کد قرارداد جدید: {cf_err}")
+                runtime_state.active_lavayeh_users.discard(user_id)
+                return
 
             await _click_step_box(sana_page, "آماده سازي جهت محاسبه هزينه و ارسال", bot, user_id)
             await resilient_sleep(sana_page, 5, bot, user_id)
@@ -1950,15 +2094,36 @@ def _compress_image_if_needed(path: str, max_bytes: int = MAX_IMAGE_BYTES) -> st
 
 async def _upload_electronic_vakalaht(
     page, contract_number: str, lawyer_amount_value: int, bot: Bot, user_id: int
-) -> bool:
+) -> str:
     """
     ثبت «شماره قرارداد وکالت» در مرحله منضمات: انتخاب نوع پیوست
     «تصویر الکترونیک وکالت نامه» و پر کردن فیلدهای #txtNo (شماره قرارداد)
-    و #txtLawyerAmount (مبلغ تمبر وکیل)، سپس ذخیره با #btnSaveDoc.
+    و #txtLawyerAmount (مبلغ تمبر/حق‌الوکاله وکیل)، سپس ذخیره با #btnSaveDoc.
+
+    ⭐ اصلاحیه ۱۴۰۵/۰۶ (طبق دستور کارفرما):
+      - روش وارد کردن شماره قرارداد درست است؛ پس از درج مبلغ حق‌الوکاله
+        مستقیماً «ثبت و ویرایش پیوست» (#btnSaveDoc) کلیک می‌شود و روند
+        ثبت قرارداد همین‌جا به اتمام می‌رسد.
+      - بعد از کلیک، پاپ‌آپ «پیوست « تصوير الكترونيك وكالت نامه » با
+        موفقیت ثبت گردید .» ظاهر و بسته می‌شود — با انتظار قطعی (پولینگ
+        تا ۴۵ ثانیه) به‌جای یک چکِ ۸ ثانیه‌ای تا دکمه چندبار کلیک نشود.
+      - اگر پاپ‌آپ «شماره قرارداد الکترونیک وکالت «...» معتبر نمی باشد»
+        باشد، وضعیت "invalid_contract" برگردانده می‌شود تا سناریو این
+        مرحله را اسکیپ، سایر پیوست‌ها را انجام و پنجرهٔ ۴۵ دقیقه‌ای کد
+        قرارداد جدید را برای کاربر باز کند.
+      - پاپ‌آپ ورود همزمان («...ورود به سامانه در صفحه یا رایانه ای
+        دیگر انجام شده...») یعنی باید لاگین مجدد صورت گیرد — نشست
+        تمدید و تلاش دوباره انجام می‌شود.
+
+    خروجی: "success" | "invalid_contract" | "failed"
 
     توجه: این تابع باید *داخل* مرحله «منضمات» (بعد از کلیک روی همان
     step-box) فراخوانی شود؛ صفحه باید از قبل روی این مرحله باشد.
     """
+    from upload_helpers import (
+        click_save_doc_once, wait_save_doc_popup_result, close_save_doc_popup,
+        fill_input_angular)
+
     for attempt in range(3):
         try:
             had_expiry = await check_and_handle_expiry(page, bot, user_id)
@@ -1990,91 +2155,72 @@ async def _upload_electronic_vakalaht(
 
             await asyncio.sleep(3)
 
-            # پر کردن شماره قرارداد وکالت (txtNo)
+            # ⭐ پر کردن شماره قرارداد وکالت (#txtNo) — همگام‌سازی کامل AngularJS
             if contract_number:
-                await page.evaluate('''(val) => {
-                    const inp = document.querySelector('#txtNo');
-                    if (inp) {
-                        inp.value = val;
-                        inp.dispatchEvent(new Event("input", { bubbles: true }));
-                        inp.dispatchEvent(new Event("change", { bubbles: true }));
-                    }
-                }''', contract_number)
+                await fill_input_angular(page, "#txtNo", contract_number, prefix="LAVAYEH")
                 await asyncio.sleep(1)
 
-            # پر کردن مبلغ تمبر (txtLawyerAmount) — فقط عدد
+            # ⭐ پر کردن مبلغ حق‌الوکاله/تمبر (#txtLawyerAmount) — بلافاصله قبل از ثبت
             if lawyer_amount_value and lawyer_amount_value > 0:
-                await page.evaluate('''(val) => {
-                    const inp = document.querySelector('#txtLawyerAmount');
-                    if (inp) {
-                        inp.removeAttribute('disabled');
-                        inp.removeAttribute('ng-disabled');
-                        inp.value = val;
-                        inp.dispatchEvent(new Event("input", { bubbles: true }));
-                        inp.dispatchEvent(new Event("change", { bubbles: true }));
-                    }
-                }''', str(lawyer_amount_value))
+                await fill_input_angular(page, "#txtLawyerAmount", lawyer_amount_value, prefix="LAVAYEH")
                 await asyncio.sleep(1)
+            else:
+                logging.warning("[LAVAYEH][منضمات] مبلغ حق‌الوکاله ارسال نشده (۰) — فیلد مبلغ خالی می‌ماند")
 
-            # کلیک «ثبت و ویرایش پیوست» (#btnSaveDoc) — صبر تا فعال شود
-            for _wait in range(10):
-                btn_state = await page.evaluate('''() => {
-                    const btn = document.querySelector('#btnSaveDoc');
-                    if (!btn) return 'not_found';
-                    return btn.disabled ? 'disabled' : 'ready';
-                }''')
-                if btn_state == 'ready':
-                    break
-                elif btn_state == 'not_found':
-                    logging.warning(f"[LAVAYEH][منضمات] #btnSaveDoc پیدا نشد (تلاش {_wait+1})")
-                    await asyncio.sleep(3)
-                else:
-                    await asyncio.sleep(3)
+            # کلیک «ثبت و ویرایش پیوست» (#btnSaveDoc) — تک‌کلیک با صبر تا فعال شدن
+            clicked = await click_save_doc_once(page, prefix="LAVAYEH")
+            if not clicked:
+                logging.warning(f"[LAVAYEH][منضمات] کلیک #btnSaveDoc انجام نشد (تلاش {attempt+1})")
+                await asyncio.sleep(5)
+                continue
 
-            await page.evaluate('''() => {
-                const btn = document.querySelector('#btnSaveDoc');
-                if (!btn || btn.disabled) return;
-                try {
-                    if (typeof angular !== 'undefined') {
-                        const ngEl = angular.element(btn);
-                        if (ngEl && ngEl.scope) {
-                            ngEl.scope().$apply(() => { btn.click(); });
-                            return;
-                        }
-                    }
-                } catch(e) {}
-                btn.click();
-                btn.dispatchEvent(new Event('click', { bubbles: true }));
-            }''')
-            logging.info("[LAVAYEH][منضمات] کلیک #btnSaveDoc انجام شد")
-            had_expiry = await resilient_sleep(page, 8, bot, user_id)
-            if had_expiry:
+            had_expiry = await resilient_sleep(page, 4, bot, user_id)
+
+            # ⭐ انتظار قطعی برای پاپ‌آپ نتیجه (تا ۴۵ ثانیه — پولینگ ثانیه‌ای)
+            popup = await wait_save_doc_popup_result(page, timeout_sec=45, prefix="LAVAYEH")
+
+            if had_expiry and popup["status"] == "none":
                 logging.info("[LAVAYEH][منضمات] نشست حین انتظار برای ذخیره‌ی وکالت‌نامه تمدید شد؛ تلاش دوباره...")
                 continue
 
-            success = await page.evaluate('''() => {
-                const popup = document.querySelector('.sweet-alert.showSweetAlert');
-                if (!popup) return false;
-                const icon = popup.querySelector('.sa-icon.sa-success');
-                return icon && window.getComputedStyle(icon).display !== 'none';
-            }''')
-
-            if success:
+            if popup["status"] == "success":
                 await _close_success_popup(page)
-                logging.info("[LAVAYEH] ثبت وکالت‌نامه الکترونیک موفق.")
-                return True
+                logging.info("[LAVAYEH] ثبت وکالت‌نامه الکترونیک موفق (پاپ‌آپ موفقیت بسته شد).")
+                return "success"
 
-            error_text = await _get_and_close_error_popup_text(page)
-            if error_text:
-                logging.warning(f"[LAVAYEH] خطای ثبت وکالت‌نامه: {error_text} (تلاش {attempt+1})")
+            if popup["status"] == "invalid_contract":
+                await close_save_doc_popup(page)
+                logging.error(
+                    f"[LAVAYEH] شماره قرارداد وکالت «{popup.get('contract_no') or contract_number}» "
+                    f"معتبر نمی باشد: {popup['text'][:200]}")
+                return "invalid_contract"
+
+            if popup["status"] == "session":
+                logging.warning(f"[LAVAYEH][منضمات] ورود همزمان/انقضای نشست در ثبت وکالت‌نامه — لاگین مجدد و تلاش دوباره: {popup['text'][:150]}")
+                await close_save_doc_popup(page)
+                try:
+                    from browser_helpers import handle_session_expired
+                    await handle_session_expired(bot, user_id, page=page)
+                except Exception as _se:
+                    logging.warning(f"[LAVAYEH] خطا در لاگین مجدد: {_se}")
                 await asyncio.sleep(5)
                 continue
+
+            if popup["status"] == "error":
+                logging.warning(f"[LAVAYEH] خطای ثبت وکالت‌نامه: {popup['text'][:200]} (تلاش {attempt+1})")
+                await close_save_doc_popup(page)
+                await asyncio.sleep(5)
+                continue
+
+            # status == "none" — سامانه پاسخ نداد؛ تلاش دوباره
+            logging.warning(f"[LAVAYEH][منضمات] پس از کلیک #btnSaveDoc پاپ‌آپی ظاهر نشد (تلاش {attempt+1})")
+            await asyncio.sleep(5)
 
         except Exception as e:
             logging.error(f"[LAVAYEH] _upload_electronic_vakalaht تلاش {attempt+1}: {e}")
             await asyncio.sleep(5)
 
-    return False
+    return "failed"
 
 
 async def _download_images_from_bale(bot: Bot, file_ids: list, user_id: int) -> list:

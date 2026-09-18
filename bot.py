@@ -26,6 +26,7 @@ from admin_relay import admin_relay_router
 # فعال‌سازی لاگ فایل چرخشی در اولین فرصت (قابل آپلود مستمر خطاها)
 init_file_logging()
 import runtime_state
+import user_activity
 from persistence import (
     load_into_runtime_state, save_runtime_state, was_crash,
     cleanup_expired_disrupted, cleanup_expired_inquiry_attempts,
@@ -39,6 +40,15 @@ dp.include_router(admin_relay_router)
 # نشد، اجرا شود — نه زودتر.
 dp.include_router(fallback_router)
 runtime_state.dp = dp
+
+# ⭐ گیت بی‌کاری ۱ ساعته (۱۴۰۵/۰۶) — هر پیام/کال‌بک «اقدام» کاربر ثبت
+# می‌شود؛ اگر بیش از یک ساعت از آخرین اقدامش گذشته باشد، state او بی‌صدا
+# پاک می‌شود تا مستقیماً در منوی اصلی قرار بگیرد — بدون هیچ پیام
+# اطلاع‌رسانیِ «بازگشت به منوی اصلی». ثبت به‌صورت outer middleware تا
+# قبل از همهٔ روترها اجرا شود (بعد از middleware سطح update که state را
+# تزریق می‌کند).
+dp.message.outer_middleware(user_activity.InactivityGate())
+dp.callback_query.outer_middleware(user_activity.InactivityGate())
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -177,6 +187,12 @@ async def state_persister(bot: Bot):
             except Exception as _sw_err:
                 logging.error(f"[PERSIST] خطا در sweep پنجره‌های ویرایش: {_sw_err}")
             cleanup_expired_pending_entries()
+            # ⭐ سوئیپر بی‌کاری ۱ ساعته — پاک‌سازی proactive state کاربران
+            # غایب (>۱ ساعت) تا در منوی اصلی قرار بگیرند (بی‌صدا، بدون پیام)
+            try:
+                await user_activity.sweep_inactive_users(bot)
+            except Exception as _ia_err:
+                logging.error(f"[PERSIST] خطا در سوئیپ بی‌کاری: {_ia_err}")
             logging.debug("[PERSIST] ذخیره‌ی دوره‌ی انجام شد.")
         except asyncio.CancelledError:
             logging.info("[PERSIST] state_persister لغو شد.")

@@ -577,7 +577,11 @@ async def check_request_title_handler(message: Message, state: FSMContext):
 
     # ⭐ عناوین اعسار — ابتدا نوع دادگاه (حقوقی/صلح) پرسیده می‌شود؛
     # مبلغ / تامین خواسته / اعسار به‌کلی حذف می‌شود.
+    # ⭐ صفرکردن صریح check_amount — اگر کاربر قبلاً برای عنوان دیگری مبلغ
+    # وارد کرده و برگشته باشد، مبلغ کهنه نباید در قاعدهٔ «اول مبلغ»
+    # محاسبهٔ تمبر (۱۴۰۵/۰۶) استفاده شود؛ عناوین اعسار همیشه ۲۰۰,۰۰۰ ریال.
     if text in CHECK_AASAR_TITLES:
+        await state.update_data(check_amount=0)
         await message.answer(
             f"⭕ عنوان انتخاب‌شده: *{_escape_md(text)}*\n\n"
             "🏛 *مرحله ۲:* این دادخواست مربوط به کدام دادگاه است؟",
@@ -1202,26 +1206,28 @@ async def check_plaintiff_vakalat_no_handler(message: Message, state: FSMContext
     current = data.get("_check_current_plaintiff") or {}
     current["contract_number"] = contract_no
 
-    # ⭐ محاسبهٔ خودکار تمبر — بدون پرسیدن از کاربر
-    # عناوینی که مبلغ ندارند (خانواده: طلاق/نفقه/تمکین/مهریه)، «صدور
-    # اجرائیه چک» و عناوین اعسار ← تمبر ثابت ۲۰ تومان؛ بقیه (مطالبه وجه
-    # چک با مبلغ) ← طبق خود مبلغ محاسبه می‌شود.
-    request_title = data.get("check_request_title", "")
+    # ⭐ محاسبهٔ خودکار تمبر — قاعدهٔ یکسان کارفرما (۱۴۰۵/۰۶) برای «کلیهٔ
+    # عناوین ثبت دادخواست»: اگر مبلغ (بهای خواسته) وارد شده باشد ← تمبر
+    # طبق همان مبلغ محاسبه می‌شود؛ اگر مبلغی وارد نشده باشد یا آن عنوان
+    # کلاً مبلغی نداشته باشد ← تمبر ثابت ۲۰۰,۰۰۰ ریال (۲۰ تومان).
+    # (تفکیک عنوانی قبلی حذف شد؛ چون عناوین بی‌مبلغ در فلو check_amount=0
+    #  دارند و با قاعدهٔ «اول مبلغ» خودکار پوشش داده می‌شوند.)
     amount = int(data.get("check_amount", 0) or 0)
-    if (request_title == "صدور اجرائیه چک"
-            or request_title in CHECK_NO_AMOUNT_TITLES
-            or request_title in CHECK_AASAR_TITLES):
-        stamp_rial = 200_000
-        stamp_text = "۲۰,۰۰۰ تومان (۲۰۰,۰۰۰ ریال)"
-    else:
+    if amount > 0:
         try:
-            duty = calculate_stamp_duty(amount) if amount else {}
-            stamp_rial = int((duty or {}).get("tamber_bedvi", 0) or 0)
-            stamp_text = f"{stamp_rial // 10:,} تومان ({stamp_rial:,} ریال)" if stamp_rial else "بدون تمبر"
+            duty = calculate_stamp_duty(amount) or {}
+            stamp_rial = int(duty.get("tamber_bedvi", 0) or 0)
+            if stamp_rial <= 0:
+                # محاسبه هرگز نباید صفر بدهد؛ سقف پایین: ۲۰۰,۰۰۰ ریال
+                stamp_rial = 200_000
+            stamp_text = f"{stamp_rial // 10:,} تومان ({stamp_rial:,} ریال)"
         except Exception as calc_err:
             logger.error(f"[CHECK] خطا در محاسبه تمبر وکالت: {calc_err}")
-            stamp_rial = 0
-            stamp_text = "بدون تمبر (خطا در محاسبه — به مدیریت اطلاع داده شد)"
+            stamp_rial = 200_000
+            stamp_text = "۲۰,۰۰۰ تومان (۲۰۰,۰۰۰ ریال)"
+    else:
+        stamp_rial = 200_000
+        stamp_text = "۲۰,۰۰۰ تومان (۲۰۰,۰۰۰ ریال)"
 
     current["stamp_amount_value"] = stamp_rial
     current["stamp_amount_text"] = stamp_text
@@ -1676,26 +1682,25 @@ async def check_defendant_vakalat_no_handler(message: Message, state: FSMContext
     current = data.get("_check_current_defendant") or {}
     current["contract_number"] = contract_no
 
-    # ⭐ محاسبهٔ خودکار تمبر — بدون پرسیدن از کاربر
-    # عناوینی که مبلغ ندارند (خانواده: طلاق/نفقه/تمکین/مهریه)، «صدور
-    # اجرائیه چک» و عناوین اعسار ← تمبر ثابت ۲۰ تومان؛ بقیه (مطالبه وجه
-    # چک با مبلغ) ← طبق خود مبلغ محاسبه می‌شود.
-    request_title = data.get("check_request_title", "")
+    # ⭐ محاسبهٔ خودکار تمبر — قاعدهٔ یکسان کارفرما (۱۴۰۵/۰۶) برای «کلیهٔ
+    # عناوین ثبت دادخواست» (سمت خوانده): مبلغ وارد شده ← تمبر طبق همان
+    # مبلغ؛ بدون مبلغ / عنوان بی‌مبلغ ← تمبر ثابت ۲۰۰,۰۰۰ ریال (۲۰ تومان).
     amount = int(data.get("check_amount", 0) or 0)
-    if (request_title == "صدور اجرائیه چک"
-            or request_title in CHECK_NO_AMOUNT_TITLES
-            or request_title in CHECK_AASAR_TITLES):
-        stamp_rial = 200_000
-        stamp_text = "۲۰,۰۰۰ تومان (۲۰۰,۰۰۰ ریال)"
-    else:
+    if amount > 0:
         try:
-            duty = calculate_stamp_duty(amount) if amount else {}
-            stamp_rial = int((duty or {}).get("tamber_bedvi", 0) or 0)
-            stamp_text = f"{stamp_rial // 10:,} تومان ({stamp_rial:,} ریال)" if stamp_rial else "بدون تمبر"
+            duty = calculate_stamp_duty(amount) or {}
+            stamp_rial = int(duty.get("tamber_bedvi", 0) or 0)
+            if stamp_rial <= 0:
+                # محاسبه هرگز نباید صفر بدهد؛ سقف پایین: ۲۰۰,۰۰۰ ریال
+                stamp_rial = 200_000
+            stamp_text = f"{stamp_rial // 10:,} تومان ({stamp_rial:,} ریال)"
         except Exception as calc_err:
             logger.error(f"[CHECK] خطا در محاسبه تمبر وکالت (خوانده): {calc_err}")
-            stamp_rial = 0
-            stamp_text = "بدون تمبر (خطا در محاسبه — به مدیریت اطلاع داده شد)"
+            stamp_rial = 200_000
+            stamp_text = "۲۰,۰۰۰ تومان (۲۰۰,۰۰۰ ریال)"
+    else:
+        stamp_rial = 200_000
+        stamp_text = "۲۰,۰۰۰ تومان (۲۰۰,۰۰۰ ریال)"
 
     current["stamp_amount_value"] = stamp_rial
     current["stamp_amount_text"] = stamp_text

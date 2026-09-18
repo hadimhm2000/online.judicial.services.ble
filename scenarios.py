@@ -1170,6 +1170,24 @@ async def process_task(data, bot: Bot):
             await bot.send_message(user_id, f"❌ خطایی در فرآیند ثبت دعوی اعتراضی رخ داد. فرآیند متوقف شد.\nلطفاً مجدداً از ابتدا اقدام فرمایید.")
         return
 
+    # ── ⭐ تسک تکمیل «کد قرارداد وکالت جدید» (اصلاحیه ۱۴۰۵/۰۶) ─────────
+    # پس از پنجرهٔ ۴۵ دقیقه‌ای و ارسال کد جدید توسط کاربر:
+    # استعلام کدرهگیری → منضمات → فقط شماره قرارداد → پیام تایید →
+    # آماده‌سازی → هزینه → چاپ → ادامهٔ مراحل
+    if task_type == "CONTRACT_FIX_SUBMIT":
+        try:
+            from contract_fix_scenario import process_contract_fix_task
+            await process_contract_fix_task(data, bot)
+        except Exception as e:
+            logging.error(f"[CONTRACT_FIX_SUBMIT] خطا: {e}", exc_info=True)
+            try:
+                await bot.send_message(
+                    user_id,
+                    "❌ خطایی در فرآیند ثبت کد قرارداد جدید رخ داد. پشتیبانی پیگیری خواهد کرد.")
+            except Exception:
+                pass
+        return
+
     # ── سناریوی ارسال کد امضا ─────────────────────────────────────────────
     if task_type == "LAVAYEH_SEND_SIGN_CODE":
         await _process_lavayeh_send_sign_code(data, bot)

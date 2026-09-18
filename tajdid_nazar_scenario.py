@@ -2520,6 +2520,11 @@ async def _upload_tn_attachments(page, data: dict, groups_with_paths: list,
 
     از توابع اثبات‌شده ezhharnameh_scenario استفاده می‌کند (همان صفحه
     منضمات مشترک سامانه است).
+
+    خروجی: (status, contract_fix_lawyer)
+      - status: True = موفق | False = شکست (پیام‌ها ارسال شده‌اند) |
+                "contract_fix" = شماره قرارداد وکالت نامعتبر بود
+      - contract_fix_lawyer: {"contract_number", "stamp_amount_value"}
     """
     # ایمپورت کاهنده وابستگی (جلوگیری از import cycle)
     from ezhharnameh_scenario import (
@@ -2539,11 +2544,21 @@ async def _upload_tn_attachments(page, data: dict, groups_with_paths: list,
         remaining_groups = groups_with_paths
 
     # ۲. وکالت‌نامه الکترونیک (اگر وکیل داشت)
+    # ⭐ اصلاحیه ۱۴۰۵/۰۶: اگر سامانه بگوید «شماره قرارداد الکترونیک وکالت
+    # «...» معتبر نمی باشد»، این مرحله اسکیپ و سایر پیوست‌ها انجام می‌شود؛
+    # در پایان وضعیت "contract_fix" برگردانده می‌شود تا پنجرهٔ ۴۵ دقیقه‌ای
+    # کد قرارداد جدید برای کاربر باز شود.
+    contract_fix_lawyer = {}
     if has_lawyer:
         first_lawyer = next((p for p in appellants if p.get("person_type") == "وکیل"), {})
         contract_no = first_lawyer.get("contract_number", "")
         stamp_val = first_lawyer.get("stamp_amount_value", 0)
-        await _ezh_upload_vakalat(page, contract_no, stamp_val, bot, user_id)
+        vakalaht_status = await _ezh_upload_vakalat(page, contract_no, stamp_val, bot, user_id)
+        if vakalaht_status == "invalid_contract":
+            contract_fix_lawyer = {"contract_number": contract_no, "stamp_amount_value": stamp_val}
+            logging.error(
+                f"[TN][منضمات] شماره قرارداد وکالت «{contract_no}» معتبر نمی باشد — "
+                f"اسکیپ مرحله و ادامه با سایر پیوست‌ها (کاربر {user_id})")
 
     # ۳. سایر پیوست‌ها — با retry محلی
     for idx, group in enumerate(remaining_groups):
@@ -2589,7 +2604,7 @@ async def _upload_tn_attachments(page, data: dict, groups_with_paths: list,
                         "task_data": data, "created_at": time.time(),
                         "attachment_groups": remaining_groups[idx:],
                     }
-                return False  # توقف بدون retry
+                return False, {}  # توقف بدون retry
 
             # خطای غیر کدنویسی — ادامه با گروه بعدی
             logging.warning(
@@ -2604,7 +2619,11 @@ async def _upload_tn_attachments(page, data: dict, groups_with_paths: list,
             except Exception:
                 pass
 
-    return True
+    # ⭐ اصلاحیه ۱۴۰۵/۰۶ — وضعیت قرارداد نامعتبر به فراخواننده برگردانده می‌شود
+    if contract_fix_lawyer:
+        return "contract_fix", contract_fix_lawyer
+
+    return True, {}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3035,9 +3054,42 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                     }
                     return
 
-                attachments_ok = await _upload_tn_attachments(
+                attachments_ok, contract_fix_lawyer = await _upload_tn_attachments(
                     sana_page, data, groups_with_paths, has_legal, has_lawyer,
                     bot, user_id, bill_no)
+                if attachments_ok == "contract_fix":
+                    # ⭐ اصلاحیه ۱۴۰۵/۰۶ — شماره قرارداد وکالت نامعتبر بود:
+                    # پنجرهٔ ۴۵ دقیقه‌ای کد قرارداد جدید باز و آماده‌سازی/
+                    # هزینه/چاپ تا پس از ثبت قرارداد جدید به تعویق می‌افتد.
+                    try:
+                        import nid_fix_window
+                        cf = contract_fix_lawyer or {}
+                        nid_fix_window.start_contract_fix(
+                            user_id, flow="tn", task_data=dict(data),
+                            bill_no=bill_no or "",
+                            old_contract=cf.get("contract_number", ""),
+                            stamp_amount_value=int(cf.get("stamp_amount_value", 0) or 0),
+                            error_text="شماره قرارداد الکترونیک وکالت معتبر نمی باشد")
+                        from contract_fix_handlers import contract_fix_inline_kb
+                        await bot.send_message(
+                            user_id,
+                            f"❌ *شماره قرارداد اشتباه می باشد.*\n\n"
+                            f"شماره قرارداد وکالت «{cf.get('contract_number', '')}» "
+                            f"در سامانه معتبر نیست و ثبت نشد.\n"
+                            f"🔢 کد رهگیری: `{bill_no}`\n\n"
+                            f"{nid_fix_window.contract_fix_deadline_text()}\n\n"
+                            f"پس از ارسال کد قرارداد جدید، ثبت قرارداد و ادامهٔ "
+                            f"آماده‌سازی، هزینه و چاپ به‌صورت خودکار انجام می‌شود.",
+                            parse_mode="Markdown",
+                            reply_markup=contract_fix_inline_kb(user_id))
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"⚠️ [TN] شماره قرارداد وکالت «{cf.get('contract_number', '')}» "
+                            f"برای کاربر {user_id} معتبر نبود | کد: {bill_no}\n"
+                            f"پنجرهٔ ۴۵ دقیقه‌ای کد قرارداد جدید باز شد.")
+                    except Exception as cf_err:
+                        logging.error(f"[TN] خطا در شروع پنجرهٔ کد قرارداد جدید: {cf_err}")
+                    return
                 if not attachments_ok:
                     # ⭐ اصلاحیهٔ کارفرما: اطلاع شکست منضمات به مدیر
                     try:

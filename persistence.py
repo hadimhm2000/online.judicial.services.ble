@@ -206,6 +206,12 @@ def save_runtime_state():
         tn_rtv_fix[str(uid)] = info
     data["pending_tn_retrieve_fix"] = tn_rtv_fix
 
+    # 6-و. ⭐ پنجرهٔ ۴۵ دقیقه‌ای ارسال کد قرارداد جدید (اصلاحیه ۱۴۰۵/۰۶)
+    contract_fix = {}
+    for uid, info in getattr(runtime_state, "pending_contract_fix", {}).items():
+        contract_fix[str(uid)] = info
+    data["pending_contract_fix"] = contract_fix
+
     # 7. استفاده رایگان کاربران
     free_usage = {}
     for uid, info in runtime_state.user_free_usage.items():
@@ -357,6 +363,12 @@ def load_into_runtime_state():
     for uid_str, info in data.get("pending_tn_retrieve_fix", {}).items():
         info = _deserialize_all_datetimes(info, ["created_at", "deadline"])
         runtime_state.pending_tn_retrieve_fix[int(uid_str)] = info
+        active_submitted.append(int(uid_str))
+
+    # 6-و. ⭐ pending_contract_fix — پنجرهٔ ۴۵ دقیقه‌ای ارسال کد قرارداد جدید
+    for uid_str, info in data.get("pending_contract_fix", {}).items():
+        info = _deserialize_all_datetimes(info, ["created_at", "deadline"])
+        runtime_state.pending_contract_fix[int(uid_str)] = info
         active_submitted.append(int(uid_str))
 
     # 7. user_free_usage

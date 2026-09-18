@@ -53,6 +53,7 @@ _FLOW_LABELS = {
     FLOW_EZHHARNAMEH: "ثبت اظهارنامه",
     FLOW_TN: "دعاوی اعتراضی",
     FLOW_CHECK: "ثبت دادخواست",
+    "ealam": "اعلام وکالت",
 }
 
 
@@ -184,7 +185,63 @@ def pop_tn_retrieve_fix(user_id: int):
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# ۳) اسوئپر دوره‌ای — بستن پنجره‌های منقضی (پس از کرش/ری‌استارت هم کار می‌کند)
+# ۴) ⭐ پنجرهٔ ۴۵ دقیقه‌ای ویرایش «شماره قرارداد وکالت» (اصلاحیه ۱۴۰۵/۰۶)
+# ════════════════════════════════════════════════════════════════════════════
+# وقتی در بخش منضمات (ثبت لایحه / اعلام وکالت / اظهارنامه / دادخواست /
+# دعاوی اعتراضی) پس از درج شماره قرارداد و مبلغ حق‌الوکاله و کلیک
+# «ثبت و ویرایش پیوست»، پاپ‌آپ «شماره قرارداد الکترونیک وکالت «...»
+# معتبر نمی باشد» نمایش داده شود:
+#   - مرحلهٔ ثبت قرارداد اسکیپ و سایر پیوست‌ها انجام می‌شود
+#   - به کاربر اعلام می‌شود شماره قرارداد اشتباه است و ۴۵ دقیقه فرصت دارد
+#     کد قرارداد جدید را ارسال کند
+#   - پس از ارسال کد جدید: با کدرهگیری ثبت‌شده (bill_no) همان پرونده
+#     استعلام، در منضمات فقط شماره قرارداد درج و پس از پیام تایید،
+#     آماده‌سازی/هزینه/چاپ و ادامهٔ مراحل انجام می‌شود
+#   (contract_fix_scenario.py — تسک CONTRACT_FIX_SUBMIT)
+
+CONTRACT_FIX_MINUTES = 45             # مهلت ارسال کد قرارداد جدید
+
+
+def start_contract_fix(user_id: int, flow: str, task_data: dict, bill_no: str,
+                       old_contract: str, stamp_amount_value: int = 0,
+                       error_text: str = "") -> dict:
+    """شروع پنجرهٔ ۴۵ دقیقه‌ای ارسال کد قرارداد جدید."""
+    now = datetime.datetime.now()
+    win = {
+        "flow": flow,
+        "task_data": task_data or {},
+        "bill_no": str(bill_no or ""),
+        "old_contract": str(old_contract or ""),
+        "stamp_amount_value": int(stamp_amount_value or 0),
+        "error_text": error_text or "",
+        "created_at": now,
+        "deadline": now + datetime.timedelta(minutes=CONTRACT_FIX_MINUTES),
+    }
+    runtime_state.pending_contract_fix[user_id] = win
+    logger.info(
+        f"[CONTRACT-FIX] پنجرهٔ {CONTRACT_FIX_MINUTES} دقیقه‌ای شماره قرارداد شروع شد: "
+        f"user={user_id}, flow={flow}, bill_no={bill_no}, old={old_contract}, "
+        f"deadline={win['deadline'].strftime('%H:%M:%S')}")
+    return win
+
+
+def get_contract_fix(user_id: int):
+    return runtime_state.pending_contract_fix.get(user_id)
+
+
+def pop_contract_fix(user_id: int):
+    return runtime_state.pending_contract_fix.pop(user_id, None)
+
+
+def contract_fix_deadline_text() -> str:
+    """متن استاندارد اعلام مهلت ۴۵ دقیقه‌ای — عین دستور کارفرما."""
+    return (
+        f"⏰ شما *{CONTRACT_FIX_MINUTES} دقیقه* فرصت دارید کد قرارداد جدید را ارسال فرمائید."
+    )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# ۵) اسوئپر دوره‌ای — بستن پنجره‌های منقضی (پس از کرش/ری‌استارت هم کار می‌کند)
 # ════════════════════════════════════════════════════════════════════════════
 
 async def sweep_expired(bot) -> int:
@@ -265,5 +322,39 @@ async def sweep_expired(bot) -> int:
             closed += 1
         except Exception as e:
             logger.error(f"[TN-RTV-FIX] خطا در sweep پنجرهٔ کاربر {uid}: {e}")
+
+    # ── ⭐ پنجرهٔ ۴۵ دقیقه‌ای ارسال کد قرارداد جدید (اصلاحیه ۱۴۰۵/۰۶) ─────
+    # بدون جریمه — ثبت موقت پرونده در سامانه انجام شده و پیش‌پرداخت دست‌نخورده
+    # می‌ماند؛ فقط پنجره بسته و به کاربر/مدیر اطلاع داده می‌شود.
+    for uid in list(runtime_state.pending_contract_fix.keys()):
+        try:
+            win = runtime_state.pending_contract_fix.get(uid)
+            if not win or not is_expired(win, now):
+                continue
+            runtime_state.pending_contract_fix.pop(uid, None)
+            flow = win.get("flow", "")
+            bill_no = win.get("bill_no", "")
+            label = flow_label(flow)
+            try:
+                await bot.send_message(
+                    uid,
+                    f"⌛ *مهلت {CONTRACT_FIX_MINUTES} دقیقه‌ای ارسال کد قرارداد جدید به پایان رسید.*\n\n"
+                    f"امکان ثبت خودکار قرارداد برای درخواست «{label}» با کد رهگیری "
+                    f"`{bill_no}` وجود ندارد.\n\n"
+                    "برای ثبت شماره قرارداد و ادامهٔ مراحل، با پشتیبانی در تماس باشید.",
+                    parse_mode="Markdown")
+            except Exception as e:
+                logger.warning(f"[CONTRACT-FIX] خطا در اطلاع به کاربر {uid}: {e}")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"⌛ [CONTRACT-FIX] مهلت ارسال کد قرارداد کاربر {uid} ({label}) "
+                    f"به پایان رسید | کد رهگیری: {bill_no} | "
+                    f"قرارداد نامعتبر: {win.get('old_contract', '')} — پیگیری دستی لازم است.")
+            except Exception:
+                pass
+            closed += 1
+        except Exception as e:
+            logger.error(f"[CONTRACT-FIX] خطا در sweep پنجرهٔ کاربر {uid}: {e}")
 
     return closed
