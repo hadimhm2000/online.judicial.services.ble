@@ -61,7 +61,9 @@ NESHAN_API_KEY = os.environ.get("NESHAN_API_KEY", "")
 REGIONAL_VALUE_FEE = 200000
 
 # توکن کیف پول بله برای پرداخت آنلاین
-BALE_WALLET_TOKEN = "WALLET-ROTATED-REDACTED"
+BALE_WALLET_TOKEN = os.environ.get("BALE_WALLET_TOKEN", "")
+
+ 
 
 DEBUG_LOG_REQUESTS = False
 
