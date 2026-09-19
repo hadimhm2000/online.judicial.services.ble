@@ -13,7 +13,7 @@ from aiogram import Bot
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 import runtime_state
-from config import ADMIN_ID
+from config import ADMIN_ID, temp_path
 from sheets import log_event
 from panel_sync import upsert_case_to_panel
 
@@ -2130,39 +2130,135 @@ async def _upload_electronic_vakalaht(
             if had_expiry:
                 logging.info("[LAVAYEH][منضمات] نشست در ابتدای ثبت وکالت‌نامه الکترونیک تمدید شد؛ ادامه از همین‌جا...")
 
+            # ══════════════════════════════════════════════════════════
+            # ⭐ اصلاحیهٔ ۱۴۰۵/۰۶ — مقاوم‌سازی مسیر retry (الگوی چک/اظهارنامه):
+            # اگر تلاش قبلی فیلدها را پر کرده باشد (یا در آینده پیوست دیگری
+            # قبل از این مرحله ثبت شده باشد)، فرم در حالت ویرایش/پر است و
+            # کلیک #btnSaveDoc بی‌صدا بی‌اثر می‌شود — بدون «پیوست جدید».
+            # فقط وقتی فرم واقعاً پر باشد بازنشانی می‌کنیم تا رفتار فرم
+            # خالی (حالت عادی لایحه) تغییر نکند.
+            # ══════════════════════════════════════════════════════════
+            form_dirty = await page.evaluate('''() => {
+                const val = s => { const el = document.querySelector(s);
+                                   return el ? String(el.value || '').trim() : ''; };
+                return !!(val('#txtNo') || val('#txtName') || val('#txtLawyerAmount'));
+            }''')
+            if form_dirty:
+                await asyncio.sleep(2)
+                clicked_new = await page.evaluate('''() => {
+                    const btn = document.querySelector('#newAttachmentType');
+                    if (btn && !btn.disabled) { btn.click(); return true; }
+                    return false;
+                }''')
+                if not clicked_new:
+                    clicked_new = await soft_click_if_exists(page, "پیوست جدید")
+                if clicked_new:
+                    logging.info("[LAVAYEH][منضمات] کلیک «پیوست جدید» قبل از وکالت‌نامه الکترونیک (فرم در حالت ویرایش بود)")
+                    await asyncio.sleep(3)
+                    await wait_for_angular_idle(page)
+                    await asyncio.sleep(1)
+                else:
+                    logging.warning("[LAVAYEH][منضمات] فرم پر بود ولی دکمهٔ «پیوست جدید» پیدا نشد")
+
             # انتخاب نوع پیوست «تصوير الكترونيك وكالت نامه»
-            selected = await page.evaluate('''() => {
-                const sel = document.querySelector('#attachmentType');
-                if (!sel) return false;
-                const opts = Array.from(sel.options);
-                const opt = opts.find(o =>
-                    o.text.includes("تصوير الكترونيك وكالت نامه") ||
-                    o.text.includes("تصویر الکترونیک وکالت نامه") ||
-                    o.text.includes("الكترونيك وكالت")
-                );
-                if (opt) {
+            select_result = await page.evaluate('''() => {
+                // ⭐ اصلاحیهٔ ۱۴۰۵/۰۶ (دور دوم) — ریشهٔ واقعی خطای
+                // «نوع پیوست را مشخص نمایید»: این select با ng-options روی
+                // آرایه‌ای از آبجکت‌ها کار می‌کند؛ ست‌کردن sel.value با
+                // hashKey داخلی AngularJS + $setViewValue(همان رشته) مدل
+                // واقعی (viewModel.selectedAttachmentType) را به‌روز نمی‌کند.
+                // روش قطعی: آبجکت واقعی را از روی «عنوان» پیدا کن و مستقیماً
+                // اکشن Angular را با همان آبجکت صدا بزن — دقیقاً همان الگوی
+                // اثبات‌شدهٔ کلیک #btnSaveDoc/#btnUploadAll.
+                const sels = Array.from(document.querySelectorAll('#attachmentType'));
+                const sel = sels.find(s => s.offsetParent !== null
+                    && window.getComputedStyle(s).visibility !== 'hidden');
+                if (!sel) return {found: false, reason: 'no_visible_select'};
+
+                const matchesTitle = (t) => t && (
+                    t.includes("تصوير الكترونيك وكالت نامه") ||
+                    t.includes("تصویر الکترونیک وکالت نامه") ||
+                    t.includes("الكترونيك وكالت"));
+
+                let method = null;
+                try {
+                    if (typeof angular !== 'undefined') {
+                        const el = angular.element(sel);
+                        let scope = el.scope();
+                        let list = null, cur = scope;
+                        for (let i = 0; i < 6 && cur; i++) {
+                            if (cur.Model && Array.isArray(cur.Model.theJSSPetitionAttachment)) {
+                                list = cur.Model.theJSSPetitionAttachment;
+                                break;
+                            }
+                            cur = cur.$parent;
+                        }
+                        const item = list && list.find(a => matchesTitle(a.Title));
+                        if (item && scope) {
+                            scope.$apply(() => {
+                                scope.viewModel.selectedAttachmentType = item;
+                                if (scope.actions && typeof scope.actions.changeAttachmentTypeList === 'function') {
+                                    scope.actions.changeAttachmentTypeList(item);
+                                }
+                            });
+                            method = 'scope_direct';
+                        }
+                    }
+                } catch (e) {}
+
+                if (!method) {
+                    const opt = Array.from(sel.options).find(o => matchesTitle(o.text));
+                    if (!opt) return {found: false, reason: 'option_not_found'};
                     sel.value = opt.value;
-                    sel.dispatchEvent(new Event("change"));
-                    return true;
+                    sel.dispatchEvent(new Event("change", { bubbles: true }));
+                    try {
+                        if (typeof angular !== 'undefined') {
+                            const el = angular.element(sel);
+                            const ctrl = el.controller('ngModel');
+                            if (ctrl) { ctrl.$setViewValue(opt.value); ctrl.$render(); }
+                            const scope = el.scope();
+                            if (scope) scope.$apply();
+                        }
+                    } catch (e) {}
+                    method = 'dom_fallback';
                 }
-                return false;
+
+                const selectedOpt = sel.options[sel.selectedIndex];
+                const stuck = !!(selectedOpt && matchesTitle(selectedOpt.text));
+                return {found: true, method: method, stuck: stuck};
             }''')
 
-            if not selected:
-                logging.warning(f"[LAVAYEH] گزینه «تصویر الکترونیک وکالت نامه» یافت نشد (تلاش {attempt+1})")
+            if not select_result.get("found"):
+                logging.warning(f"[LAVAYEH] گزینه «تصویر الکترونیک وکالت نامه» یافت نشد (تلاش {attempt+1}): {select_result.get('reason')}")
                 await asyncio.sleep(5)
                 continue
+            logging.info(f"[LAVAYEH] انتخاب نوع پیوست وکالت‌نامه: روش={select_result.get('method')}, نشست={select_result.get('stuck')}")
+            if not select_result.get("stuck"):
+                logging.warning(f"[LAVAYEH] انتخاب نوع پیوست ماندگار نشد (تلاش {attempt+1}) — تلاش مجدد")
+                await asyncio.sleep(3)
+                continue
+            selected = True
 
             await asyncio.sleep(3)
+            await wait_for_angular_idle(page)
+            await asyncio.sleep(1)
 
             # ⭐ پر کردن شماره قرارداد وکالت (#txtNo) — همگام‌سازی کامل AngularJS
             if contract_number:
-                await fill_input_angular(page, "#txtNo", contract_number, prefix="LAVAYEH")
+                filled_no = await fill_input_angular(page, "#txtNo", contract_number, prefix="LAVAYEH")
+                if not filled_no:
+                    logging.warning(f"[LAVAYEH][منضمات] شماره قرارداد در #txtNo نماند — تلاش مجدد (تلاش {attempt+1})")
+                    await asyncio.sleep(2)
+                    continue
                 await asyncio.sleep(1)
 
             # ⭐ پر کردن مبلغ حق‌الوکاله/تمبر (#txtLawyerAmount) — بلافاصله قبل از ثبت
             if lawyer_amount_value and lawyer_amount_value > 0:
-                await fill_input_angular(page, "#txtLawyerAmount", lawyer_amount_value, prefix="LAVAYEH")
+                filled_amount = await fill_input_angular(page, "#txtLawyerAmount", lawyer_amount_value, prefix="LAVAYEH")
+                if not filled_amount:
+                    logging.warning(f"[LAVAYEH][منضمات] مبلغ حق‌الوکاله در #txtLawyerAmount نماند — تلاش مجدد (تلاش {attempt+1})")
+                    await asyncio.sleep(2)
+                    continue
                 await asyncio.sleep(1)
             else:
                 logging.warning("[LAVAYEH][منضمات] مبلغ حق‌الوکاله ارسال نشده (۰) — فیلد مبلغ خالی می‌ماند")
@@ -2739,7 +2835,7 @@ async def _print_lavayeh(page, browser_context, tracking_code, bot: Bot, user_id
     _code = str(tracking_code or "").strip()
     if not _code or _code.lower() == "none":
         _code = f"u{user_id}-{int(time.time())}"
-    pdf_path = f"lavayeh_{_code}.pdf"
+    pdf_path = temp_path(f"lavayeh_{_code}.pdf")
 
     async def click_print():
         await page.evaluate('''() => {

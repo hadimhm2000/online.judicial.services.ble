@@ -30,7 +30,7 @@ from aiogram import Bot
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 import runtime_state
-from config import ADMIN_ID
+from config import ADMIN_ID, temp_path
 from sheets import log_event
 from browser_helpers import (
     resilient_sleep, check_and_handle_expiry, soft_click_if_exists,
@@ -1758,25 +1758,142 @@ async def _upload_electronic_vakalaht(page, contract_number: str, lawyer_amount_
             await asyncio.sleep(2)
 
         for attempt in range(3):
-            selected = await page.evaluate('''() => {
-                const sel = document.querySelector('#attachmentType');
-                if (!sel) return false;
-                const opts = Array.from(sel.options);
-                const opt = opts.find(o =>
-                    o.text.includes("تصوير الكترونيك وكالت نامه") ||
-                    o.text.includes("تصویر الکترونیک وکالت نامه")
-                );
-                if (opt) { sel.value = opt.value; sel.dispatchEvent(new Event("change")); return true; }
-                return false;
+            # ══════════════════════════════════════════════════════════
+            # ⭐ اصلاحیهٔ ۱۴۰۵/۰۶ — ریشهٔ «بن‌بست» ثبت وکالت‌نامه الکترونیک:
+            # وقتی پیش از این تابع پیوست دیگری (مثل «مدرک نمایندگی» برای
+            # اظهارکنندهٔ حقوقی) ثبت و ویرایش شده باشد، فرم منضمات همچنان
+            # در حالتِ ویرایشِ همان ردیف قبلی است. در این وضعیت صرفِ تغییر
+            # #attachmentType و کلیک #btnSaveDoc هیچ اثری ندارد —
+            # actions.insertEditDocument() فرم را بی‌صدا رد می‌کند، نه
+            # درخواستی به سرور می‌رود و نه پاپ‌آپی ظاهر می‌شود (سه تلاش
+            # ناموفق و «بازگشت به فهرست»). سناریوی چک — که پیوست‌ها را قبل
+            # از وکالت‌نامه الکترونیک ثبت می‌کند — دقیقاً به همین دلیل قبل
+            # از این مرحله «پیوست جدید» (#newAttachmentType) را می‌زند؛
+            # همان الگو اینجا هم اعمال می‌شود، اما فقط وقتی فرم واقعاً
+            # پر/در حالت ویرایش باشد تا رفتار حالتِ فرمِ خالی (لایحه/اعلام)
+            # تغییر نکند. (این چک در تلاش‌های ۲ و ۳ هم فرمِ به‌جامانده از
+            # تلاش قبلی را بازنشانی می‌کند.)
+            # ══════════════════════════════════════════════════════════
+            form_dirty = await page.evaluate('''() => {
+                const val = s => { const el = document.querySelector(s);
+                                   return el ? String(el.value || '').trim() : ''; };
+                return !!(val('#txtNo') || val('#txtName') || val('#txtLawyerAmount'));
             }''')
-            if not selected:
-                logging.warning(f"[EZHHAR] گزینه تصویر الکترونیک وکالت‌نامه پیدا نشد (تلاش {attempt+1})")
+            if form_dirty:
+                await asyncio.sleep(2)
+                clicked_new = await page.evaluate('''() => {
+                    const btn = document.querySelector('#newAttachmentType');
+                    if (btn && !btn.disabled) { btn.click(); return true; }
+                    return false;
+                }''')
+                if not clicked_new:
+                    clicked_new = await soft_click_if_exists(page, "پیوست جدید")
+                if clicked_new:
+                    logging.info("[EZHHAR][منضمات] کلیک «پیوست جدید» قبل از وکالت‌نامه الکترونیک (فرم در حالت ویرایش بود)")
+                    await asyncio.sleep(3)
+                    await wait_for_angular_idle(page)
+                    await asyncio.sleep(1)
+                else:
+                    logging.warning("[EZHHAR][منضمات] فرم پر بود ولی دکمهٔ «پیوست جدید» پیدا نشد")
+
+            select_result = await page.evaluate('''() => {
+                // ⭐ اصلاحیهٔ ۱۴۰۵/۰۶ (دور دوم) — ریشهٔ واقعی خطای
+                // «نوع پیوست را مشخص نمایید»:
+                // این select با ng-options روی یک آرایه از آبجکت‌ها کار
+                // می‌کند (نه رشته‌های ساده)؛ AngularJS به هر <option> یک
+                // value داخلی به‌شکل «object:HASHKEY» می‌دهد که فقط برای
+                // خودِ AngularJS معنا دارد. ست‌کردن sel.value روی همین
+                // رشته + ctrl.$setViewValue(opt.value) مقدار مدل
+                // (viewModel.selectedAttachmentType) را به‌جای آبجکت واقعی،
+                // به یک رشتهٔ بی‌معنا تبدیل می‌کند — ng-change هم یا اصلاً
+                // اجرا نمی‌شود یا با ورودی نامعتبر اجرا می‌شود، در نتیجه
+                // سرور «نوع پیوست را مشخص نمایید» برمی‌گرداند (دقیقاً مثل
+                // «سایر ضمائم» که چون آن گزینه هم از همین ترفند استفاده
+                // می‌کند ممکن است گاه‌به‌گاه با همین علامت شکست بخورد، اما
+                // آنجا معمولاً کار می‌کند چون فرم همیشه تازه است).
+                //
+                // روش قطعی: دقیقاً مثل کلیک #btnSaveDoc/#btnUploadAll —
+                // آبجکت واقعی را از روی «عنوان» در آرایهٔ منبع (نه hashKey)
+                // پیدا کن و مستقیماً اکشن Angular را با همان آبجکت صدا بزن.
+                const sels = Array.from(document.querySelectorAll('#attachmentType'));
+                const sel = sels.find(s => s.offsetParent !== null
+                    && window.getComputedStyle(s).visibility !== 'hidden');
+                if (!sel) return {found: false, reason: 'no_visible_select'};
+
+                const matchesTitle = (t) => t && (
+                    t.includes("تصوير الكترونيك وكالت نامه") ||
+                    t.includes("تصویر الکترونیک وکالت نامه") ||
+                    t.includes("الكترونيك وكالت"));
+
+                let method = null;
+                try {
+                    if (typeof angular !== 'undefined') {
+                        const el = angular.element(sel);
+                        let scope = el.scope();
+                        let list = null, cur = scope;
+                        for (let i = 0; i < 6 && cur; i++) {
+                            if (cur.Model && Array.isArray(cur.Model.theJSSPetitionAttachment)) {
+                                list = cur.Model.theJSSPetitionAttachment;
+                                break;
+                            }
+                            cur = cur.$parent;
+                        }
+                        const item = list && list.find(a => matchesTitle(a.Title));
+                        if (item && scope) {
+                            scope.$apply(() => {
+                                scope.viewModel.selectedAttachmentType = item;
+                                if (scope.actions && typeof scope.actions.changeAttachmentTypeList === 'function') {
+                                    scope.actions.changeAttachmentTypeList(item);
+                                }
+                            });
+                            method = 'scope_direct';
+                        }
+                    }
+                } catch (e) {}
+
+                if (!method) {
+                    // فال‌بک: روش قبلی (DOM value + $setViewValue)
+                    const opt = Array.from(sel.options).find(o => matchesTitle(o.text));
+                    if (!opt) return {found: false, reason: 'option_not_found'};
+                    sel.value = opt.value;
+                    sel.dispatchEvent(new Event("change", { bubbles: true }));
+                    try {
+                        if (typeof angular !== 'undefined') {
+                            const el = angular.element(sel);
+                            const ctrl = el.controller('ngModel');
+                            if (ctrl) { ctrl.$setViewValue(opt.value); ctrl.$render(); }
+                            const scope = el.scope();
+                            if (scope) scope.$apply();
+                        }
+                    } catch (e) {}
+                    method = 'dom_fallback';
+                }
+
+                // ─── تأیید نهایی: آیا انتخاب واقعاً روی صفحه نشست؟ ───
+                const selectedOpt = sel.options[sel.selectedIndex];
+                const stuck = !!(selectedOpt && matchesTitle(selectedOpt.text));
+                return {found: true, method: method, stuck: stuck};
+            }''')
+            if not select_result.get("found"):
+                logging.warning(f"[EZHHAR] گزینه تصویر الکترونیک وکالت‌نامه پیدا نشد (تلاش {attempt+1}): {select_result.get('reason')}")
                 await asyncio.sleep(5)
                 continue
+            logging.info(f"[EZHHAR] انتخاب نوع پیوست وکالت‌نامه: روش={select_result.get('method')}, نشست={select_result.get('stuck')}")
+            if not select_result.get("stuck"):
+                logging.warning(f"[EZHHAR] انتخاب نوع پیوست ماندگار نشد (تلاش {attempt+1}) — تلاش مجدد")
+                await asyncio.sleep(3)
+                continue
+            selected = True
             await asyncio.sleep(3)
+            await wait_for_angular_idle(page)
+            await asyncio.sleep(1)
 
             # ⭐ شماره قرارداد (#txtNo) — همگام‌سازی کامل AngularJS؛ اگر خالی باشد «۰»
-            await fill_input_angular(page, "#txtNo", contract_number or "0", prefix="EZHHAR")
+            filled_no = await fill_input_angular(page, "#txtNo", contract_number or "0", prefix="EZHHAR")
+            if not filled_no:
+                logging.warning(f"[EZHHAR][منضمات] شماره قرارداد در #txtNo نماند — تلاش مجدد (تلاش {attempt+1})")
+                await asyncio.sleep(2)
+                continue
             await asyncio.sleep(1)
 
             # ⭐ مبلغ حق‌الوکاله/تمبر (#txtLawyerAmount) — بلافاصله قبل از ثبت
@@ -1785,7 +1902,11 @@ async def _upload_electronic_vakalaht(page, contract_number: str, lawyer_amount_
             if not lawyer_amount_value or lawyer_amount_value <= 0:
                 logging.warning("[EZHHAR][منضمات] مقدار تمبر صفر بود — مقدار «۱» درج می‌شود")
                 lawyer_amount_value = 1
-            await fill_input_angular(page, "#txtLawyerAmount", lawyer_amount_value, prefix="EZHHAR")
+            filled_amount = await fill_input_angular(page, "#txtLawyerAmount", lawyer_amount_value, prefix="EZHHAR")
+            if not filled_amount:
+                logging.warning(f"[EZHHAR][منضمات] مبلغ حق‌الوکاله در #txtLawyerAmount نماند — تلاش مجدد (تلاش {attempt+1})")
+                await asyncio.sleep(2)
+                continue
             await asyncio.sleep(1)
 
             # ⭐ کلیک «ثبت و ویرایش پیوست» (#btnSaveDoc) — تک‌کلیک + انتظار قطعی پاپ‌آپ
@@ -2329,7 +2450,7 @@ async def _calculate_cost(page, bot: Bot, user_id: int, max_retries: int = 3) ->
 
 async def _print_ezhharnameh(page, browser_context, bill_no: str, bot: Bot, user_id: int) -> str:
     from lavayeh_scenario import _is_valid_pdf_file
-    pdf_path = f"ezhharnameh_{bill_no}.pdf"
+    pdf_path = temp_path(f"ezhharnameh_{bill_no}.pdf")
 
     async def click_print():
         await page.evaluate('''() => {

@@ -50,7 +50,7 @@ from aiogram import Bot
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 import runtime_state
-from config import ADMIN_ID
+from config import ADMIN_ID, temp_path
 from sheets import log_event
 from browser_helpers import (
     resilient_sleep, check_and_handle_expiry,
@@ -2386,7 +2386,7 @@ async def _print_tn_pdf(page, browser_context, bill_no: str, bot: Bot, user_id: 
     طبق سند راهنما: «بعد گزینه چاپ را بزن ... و چاپ و مبلغ را به کاربر
     اعلام کن»
     """
-    pdf_path = f"tn_{bill_no}_{int(time.time())}.pdf"
+    pdf_path = temp_path(f"tn_{bill_no}_{int(time.time())}.pdf")
 
     async def click_print():
         await page.evaluate('''() => {

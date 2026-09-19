@@ -249,10 +249,9 @@ async def _register_new_contract(page, contract_number: str, stamp_amount_value:
 
         # ۰) اطمینان از باز بودن فرم منضمات — بازیابی از حالت خراب تلاش قبل
         form_open = await page.evaluate('''() => {
-            const el = document.querySelector('#attachmentType');
-            if (!el) return false;
-            const st = window.getComputedStyle(el);
-            return st.display !== 'none' && st.visibility !== 'hidden';
+            const els = Array.from(document.querySelectorAll('#attachmentType'));
+            return els.some(el => el.offsetParent !== null
+                && window.getComputedStyle(el).visibility !== 'hidden');
         }''')
         if not form_open:
             logging.info("[CONTRACT-FIX] فرم منضمات باز نیست — بازگشایی...")
@@ -261,21 +260,106 @@ async def _register_new_contract(page, contract_number: str, stamp_amount_value:
                 await asyncio.sleep(5)
                 continue
 
-        # ۱) انتخاب نوع پیوست
-        selected = await page.evaluate('''() => {
-            const sel = document.querySelector('#attachmentType');
-            if (!sel) return false;
-            const opts = Array.from(sel.options);
-            const opt = opts.find(o =>
-                o.text.includes("تصوير الكترونيك وكالت نامه") ||
-                o.text.includes("تصویر الکترونیک وکالت نامه") ||
-                o.text.includes("الكترونيك وكالت"));
-            if (opt) { sel.value = opt.value; sel.dispatchEvent(new Event("change")); return true; }
-            return false;
+        # ۰.۵) ⭐ اصلاحیهٔ ۱۴۰۵/۰۶ (طبق دستور کارفرما — یکسان‌سازی همهٔ مسیرها):
+        # همان الگوی «پیوست جدید» که در ezhharnameh/ealam/lavayeh برای فرم
+        # در حالت ویرایشِ ردیف قبلی اضافه شد؛ اگر فرم منضمات از تلاش قبلی
+        # (یا از پیوستی دیگر) هنوز پر/دیرتی است، همان مشکلِ «نوع پیوست را
+        # مشخص نمایید» می‌تواند اینجا هم رخ دهد.
+        form_dirty = await page.evaluate('''() => {
+            const val = s => { const el = document.querySelector(s);
+                               return el ? String(el.value || '').trim() : ''; };
+            return !!(val('#txtNo') || val('#txtName') || val('#txtLawyerAmount'));
         }''')
-        if not selected:
-            logging.warning(f"[CONTRACT-FIX] گزینه «تصویر الکترونیک وکالت نامه» پیدا نشد (تلاش {attempt+1})")
+        if form_dirty:
+            await asyncio.sleep(2)
+            clicked_new = await page.evaluate('''() => {
+                const btn = document.querySelector('#newAttachmentType');
+                if (btn && !btn.disabled) { btn.click(); return true; }
+                return false;
+            }''')
+            if clicked_new:
+                logging.info("[CONTRACT-FIX] کلیک «پیوست جدید» قبل از انتخاب نوع پیوست (فرم در حالت ویرایش بود)")
+                await asyncio.sleep(3)
+                await wait_for_angular_idle(page)
+                await asyncio.sleep(1)
+            else:
+                logging.warning("[CONTRACT-FIX] فرم پر بود ولی دکمهٔ «پیوست جدید» پیدا نشد")
+
+        # ۱) انتخاب نوع پیوست
+        # ⭐ اصلاحیهٔ ۱۴۰۵/۰۶ (طبق دستور کارفرما — یکسان‌سازی همهٔ مسیرها):
+        # همان اصلاحی که در ezhharnameh/ealam/lavayeh اعمال شد، اینجا هم لازم
+        # است: این select با ng-options روی آرایه‌ای از آبجکت‌ها کار می‌کند؛
+        # ست‌کردن sel.value با hashKey داخلی AngularJS مدل واقعی
+        # (viewModel.selectedAttachmentType) را به‌روز نمی‌کند و سرور
+        # «نوع پیوست را مشخص نمایید» برمی‌گرداند. روش قطعی: آبجکت واقعی را
+        # از روی «عنوان» پیدا کن و مستقیماً اکشن Angular را با همان آبجکت
+        # صدا بزن (همان الگوی اثبات‌شدهٔ کلیک #btnSaveDoc).
+        select_result = await page.evaluate('''() => {
+            const sels = Array.from(document.querySelectorAll('#attachmentType'));
+            const sel = sels.find(s => s.offsetParent !== null
+                && window.getComputedStyle(s).visibility !== 'hidden');
+            if (!sel) return {found: false, reason: 'no_visible_select'};
+
+            const matchesTitle = (t) => t && (
+                t.includes("تصوير الكترونيك وكالت نامه") ||
+                t.includes("تصویر الکترونیک وکالت نامه") ||
+                t.includes("الكترونيك وكالت"));
+
+            let method = null;
+            try {
+                if (typeof angular !== 'undefined') {
+                    const el = angular.element(sel);
+                    let scope = el.scope();
+                    let list = null, cur = scope;
+                    for (let i = 0; i < 6 && cur; i++) {
+                        if (cur.Model && Array.isArray(cur.Model.theJSSPetitionAttachment)) {
+                            list = cur.Model.theJSSPetitionAttachment;
+                            break;
+                        }
+                        cur = cur.$parent;
+                    }
+                    const item = list && list.find(a => matchesTitle(a.Title));
+                    if (item && scope) {
+                        scope.$apply(() => {
+                            scope.viewModel.selectedAttachmentType = item;
+                            if (scope.actions && typeof scope.actions.changeAttachmentTypeList === 'function') {
+                                scope.actions.changeAttachmentTypeList(item);
+                            }
+                        });
+                        method = 'scope_direct';
+                    }
+                }
+            } catch (e) {}
+
+            if (!method) {
+                const opt = Array.from(sel.options).find(o => matchesTitle(o.text));
+                if (!opt) return {found: false, reason: 'option_not_found'};
+                sel.value = opt.value;
+                sel.dispatchEvent(new Event("change", { bubbles: true }));
+                try {
+                    if (typeof angular !== 'undefined') {
+                        const el = angular.element(sel);
+                        const ctrl = el.controller('ngModel');
+                        if (ctrl) { ctrl.$setViewValue(opt.value); ctrl.$render(); }
+                        const scope = el.scope();
+                        if (scope) scope.$apply();
+                    }
+                } catch (e) {}
+                method = 'dom_fallback';
+            }
+
+            const selectedOpt = sel.options[sel.selectedIndex];
+            const stuck = !!(selectedOpt && matchesTitle(selectedOpt.text));
+            return {found: true, method: method, stuck: stuck};
+        }''')
+        if not select_result.get("found"):
+            logging.warning(f"[CONTRACT-FIX] گزینه «تصویر الکترونیک وکالت نامه» پیدا نشد (تلاش {attempt+1}): {select_result.get('reason')}")
             await asyncio.sleep(5)
+            continue
+        logging.info(f"[CONTRACT-FIX] انتخاب نوع پیوست وکالت‌نامه: روش={select_result.get('method')}, نشست={select_result.get('stuck')}")
+        if not select_result.get("stuck"):
+            logging.warning(f"[CONTRACT-FIX] انتخاب نوع پیوست ماندگار نشد (تلاش {attempt+1}) — تلاش مجدد")
+            await asyncio.sleep(3)
             continue
         await asyncio.sleep(3)
 
