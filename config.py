@@ -7,6 +7,22 @@ from dotenv import load_dotenv
 # مقادیر رو از فایل .env (کنار همین فایل‌ها) می‌خونه، اگه .env نبود چیزی رو خراب نمی‌کنه
 load_dotenv()
 
+# ================= پوشهٔ مشترک فایل‌های موقت =================
+# ⭐ اصلاحیهٔ ۱۴۰۵/۰۶ (طبق دستور کارفرما): تصاویر/فایل‌های دانلودشده از
+# کاربر و فایل‌های موقتِ تولیدشده (PDF، اکسل، تصاویر فشرده‌شده و ...)
+# دیگر مستقیماً در پوشهٔ اصلی پروژه ذخیره نمی‌شوند؛ همه در همین یک پوشه
+# قرار می‌گیرند تا هر وقت لازم شد، فقط کافی است *محتویات* این پوشه پاک
+# شود (خودِ پوشه دست‌نخورده می‌ماند).
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TEMP_FILES_DIR = os.path.join(BASE_DIR, "temp_files")
+os.makedirs(TEMP_FILES_DIR, exist_ok=True)
+
+
+def temp_path(filename: str) -> str:
+    """مسیر کامل یک فایل موقت داخل پوشهٔ temp_files (نه ریشهٔ پروژه)."""
+    return os.path.join(TEMP_FILES_DIR, filename)
+
+
 
 # ================= تنظیمات اصلی ربات =================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -61,9 +77,7 @@ NESHAN_API_KEY = os.environ.get("NESHAN_API_KEY", "")
 REGIONAL_VALUE_FEE = 200000
 
 # توکن کیف پول بله برای پرداخت آنلاین
-BALE_WALLET_TOKEN = os.environ.get("BALE_WALLET_TOKEN", "")
-
- 
+BALE_WALLET_TOKEN = "WALLET-eg5yrAJGzAu1tDAn"
 
 DEBUG_LOG_REQUESTS = False
 

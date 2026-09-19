@@ -11,7 +11,7 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 import runtime_state
 import error_catalog
 from bale_file_sender import send_document_direct
-from config import ADMIN_ID, DEBUG_LOG_REQUESTS, FEES, get_fee
+from config import ADMIN_ID, DEBUG_LOG_REQUESTS, FEES, get_fee, temp_path
 from sheets import log_event
 from panel_sync import register_case_to_panel as _register_case_to_panel_sync
 from panel_sync import register_failed_inquiry_to_panel
@@ -1461,7 +1461,7 @@ async def process_task(data, bot: Bot):
                                 f"⚠️ استخراج اطلاعات پروفایل {nat_id} ناموفق بود (ساختار صفحه یافت نشد)."
                             )
                         else:
-                            pdf_path = f"report_phone_{phone_number}_{idx}.pdf"
+                            pdf_path = temp_path(f"report_phone_{phone_number}_{idx}.pdf")
                             built = await build_sana_profile_pdf(
                                 browser_context, profile_data, pdf_path, national_id=nat_id
                             )
@@ -1576,7 +1576,7 @@ async def process_task(data, bot: Bot):
                     await sana_page.goto("https://sakha2.adliran.ir/Offices/Index")
                     return
 
-                pdf_path = f"report_national_{national_id}.pdf"
+                pdf_path = temp_path(f"report_national_{national_id}.pdf")
                 built = await build_sana_profile_pdf(
                     browser_context, profile_data, pdf_path, national_id=national_id
                 )
@@ -1817,7 +1817,7 @@ async def process_task(data, bot: Bot):
                         # چون print_page ممکن است به Offices/Index ریدایرکت
                         # شده باشد (نه سند واقعی)، تلاش دوم صفحه‌ی چاپ را از
                         # نو باز می‌کند تا PDF واقعی گرفته شود.
-                        pdf_path = f"report_{tracking_code}.pdf"
+                        pdf_path = temp_path(f"report_{tracking_code}.pdf")
                         for _print_attempt in range(1, 3):
                             print_page = None
                             async with browser_context.expect_page(timeout=15000) as new_page_info:
@@ -2050,7 +2050,7 @@ async def process_task(data, bot: Bot):
                                                         return null;
                                                     }''')
 
-                                                    att_pdf_path = f"attachment_{tracking_code}_{row_idx}_{btn_idx}.pdf"
+                                                    att_pdf_path = temp_path(f"attachment_{tracking_code}_{row_idx}_{btn_idx}.pdf")
                                                     if pdf_data_base64:
                                                         with open(att_pdf_path, 'wb') as pdf_file:
                                                             pdf_file.write(base64.b64decode(pdf_data_base64))

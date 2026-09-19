@@ -25,7 +25,7 @@ from aiogram.types import (
 
 import runtime_state
 from bale_file_sender import send_document_direct
-from config import ADMIN_ID, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, REGIONAL_VALUE_FEE
+from config import ADMIN_ID, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, REGIONAL_VALUE_FEE, temp_path
 from exempt_users import is_exempt_user
 from keyboards import back_only_kb, get_main_menu_kb
 from panel_sync import register_case_to_panel, update_case_in_panel
@@ -431,7 +431,7 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
         # ── تولید PDF ──
         def _build_pdf():
             from regional_value_pdf import build_regional_value_pdf
-            pdf_path = f"/tmp/regional_value_{user_id}_{message.message_id}.pdf"
+            pdf_path = temp_path(f"regional_value_{user_id}_{message.message_id}.pdf")
 
             header_img = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)),

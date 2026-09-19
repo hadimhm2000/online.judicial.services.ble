@@ -18,6 +18,7 @@ from aiogram.fsm.context import FSMContext
 from PIL import Image
 import numpy as np
 import runtime_state
+from config import temp_path
 from bale_file_sender import send_document_direct, send_photo_direct
 from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME
 from states import Form
@@ -207,8 +208,8 @@ async def file_tools_receive_image(message: Message, state: FSMContext, bot: Bot
 
     # افزایش شمارنده استفاده
     runtime_state.increment_usage(user_id, "tools")
-    src_path = f"filetools_src_{user_id}.jpg"
-    dst_path = f"filetools_compressed_{user_id}.jpg"
+    src_path = temp_path(f"filetools_src_{user_id}.jpg")
+    dst_path = temp_path(f"filetools_compressed_{user_id}.jpg")
 
     try:
         file_info = await bot.get_file(file_id)
@@ -278,7 +279,7 @@ async def file_tools_receive_pdf(message: Message, state: FSMContext, bot: Bot):
         return
 
     user_id = message.from_user.id
-    pdf_path = f"filetools_src_{user_id}.pdf"
+    pdf_path = temp_path(f"filetools_src_{user_id}.pdf")
     page_paths: list[str] = []  # مسیر هر صفحه به‌صورت جداگانه
 
     # افزایش شمارنده استفاده
@@ -318,7 +319,7 @@ async def file_tools_receive_pdf(message: Message, state: FSMContext, bot: Bot):
 
             for sub_idx, sub_img in enumerate(sub_images):
                 suffix = f"p{i + 1:03d}" if len(sub_images) == 1 else f"p{i + 1:03d}_{sub_idx + 1}"
-                page_path = f"filetools_pdf2img_{user_id}_{suffix}.jpg"
+                page_path = temp_path(f"filetools_pdf2img_{user_id}_{suffix}.jpg")
                 sub_img.save(page_path, format="JPEG", quality=85, optimize=True)
                 if os.path.getsize(page_path) > 9 * 1024 * 1024:
                     _compress_image(page_path, page_path, target_kb=8000)

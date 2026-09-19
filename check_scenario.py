@@ -109,7 +109,7 @@ from aiogram import Bot
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 import runtime_state
-from config import ADMIN_ID
+from config import ADMIN_ID, temp_path
 from sheets import log_event
 from browser_helpers import (
     resilient_sleep, check_and_handle_expiry, soft_click_if_exists,
@@ -4415,7 +4415,7 @@ async def _print_check(page, browser_context, bill_no: str, bot: Bot, user_id: i
     برداشته شده است (کلیک باکس → expect_page → PDF → بستن صفحهٔ جدید).
     """
     from lavayeh_scenario import _is_valid_pdf_file
-    pdf_path = f"check_{bill_no or user_id}_{int(time.time())}.pdf"
+    pdf_path = temp_path(f"check_{bill_no or user_id}_{int(time.time())}.pdf")
 
     async def click_print():
         await page.evaluate('''() => {

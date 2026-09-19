@@ -18,6 +18,7 @@
 
 import os
 import logging
+from config import temp_path
 
 logger = logging.getLogger(__name__)
 
@@ -346,7 +347,7 @@ async def download_docx_from_bale(bot, file_id: str, user_id: int) -> str:
             logger.error(f"[DOCX] مسیر فایل تلگرام خالی است برای {file_id}")
             return None
 
-        filename = f"docx_{user_id}_{int(time.time()*1000)}.docx"
+        filename = temp_path(f"docx_{user_id}_{int(time.time()*1000)}.docx")
         await bot.download_file(file_info.file_path, filename)
         return filename
     except Exception as e:

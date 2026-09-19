@@ -66,6 +66,8 @@ from typing import Optional, Callable, Tuple, List, Dict, Any
 
 from aiogram import Bot
 
+from config import temp_path
+
 from browser_helpers import (
     resilient_sleep, check_and_handle_expiry, wait_for_angular_idle,
     soft_click_if_exists, dismiss_expiry_popup,
@@ -317,7 +319,7 @@ async def download_images_from_bale(
                 if ext not in ("jpg", "jpeg", "png"):
                     ext = "jpg"
 
-            path = f"attach_img_{user_id}_{i}_{int(time.time()*1000)}.{ext}"
+            path = temp_path(f"attach_img_{user_id}_{i}_{int(time.time()*1000)}.{ext}")
             await bot.download_file(file_info.file_path, path)
             path = _compress_image(path)
             paths.append(path)
@@ -1203,7 +1205,16 @@ async def wait_save_doc_popup_result(
 _INPUT_ANGULAR_FILL_JS = '''(args) => {
     const sel = args.selector;
     const val = String(args.value);
-    const inp = document.querySelector(sel);
+    // ⭐ اصلاحیهٔ ۱۴۰۵/۰۶ (طبق دستور کارفرما — یکسان‌سازی همهٔ مسیرها):
+    // بعد از بازنشانی فرم منضمات (مثلاً کلیک «پیوست جدید»)، ممکن است
+    // چند المان با id یکسان هم‌زمان در DOM باقی بمانند (یکی مخفی/قدیمی).
+    // querySelector همیشه اولین مورد را برمی‌گرداند که می‌تواند همان
+    // المان مخفی/قطع‌شده از اسکوپ زندهٔ AngularJS باشد؛ در این حالت مقدار
+    // در ظاهر «می‌ماند» ولی هرگز به scope واقعی نمی‌رسد. اکنون فقط موردِ
+    // واقعاً نمایان انتخاب می‌شود.
+    const all = Array.from(document.querySelectorAll(sel));
+    const inp = all.find(el => el.offsetParent !== null
+        && window.getComputedStyle(el).visibility !== 'hidden') || all[0];
     if (!inp) return {found: false};
     inp.removeAttribute('disabled');
     inp.removeAttribute('ng-disabled');
@@ -1242,7 +1253,9 @@ async def fill_input_angular(page, selector: str, value, prefix: str = "UPLOAD",
             await asyncio.sleep(0.5)
             try:
                 now = await page.evaluate(
-                    '''(sel) => { const i = document.querySelector(sel);
+                    '''(sel) => { const all = Array.from(document.querySelectorAll(sel));
+                                  const i = all.find(el => el.offsetParent !== null
+                                      && window.getComputedStyle(el).visibility !== 'hidden') || all[0];
                                   return i ? (i.value || '').trim() : ''; }''',
                     selector)
             except Exception:
@@ -1299,15 +1312,39 @@ async def click_save_doc_once(page, prefix: str = "UPLOAD") -> bool:
                 && window.getComputedStyle(b).visibility !== 'hidden'
                 && !b.disabled);
             if (!btn) return false;
+
+            // ⭐ اصلاحیهٔ ۱۴۰۵/۰۶ (دور سوم) — روش قطعی: دقیقاً مثل
+            // #btnUploadAll/#btnApplyAll/#attachmentType، اکشن Angular
+            // مستقیماً از روی scope صدا زده می‌شود. تجربه نشان داد
+            // btn.click() (حتی داخل $apply) گاهی روی این دکمهٔ خاص
+            // ng-click را واقعاً اجرا نمی‌کند — کد فکر می‌کند کلیک شد
+            // (چون خطایی رخ نداد) ولی هیچ درخواستی به سرور نمی‌رود و فقط
+            // با کلیک دستی واقعی کاربر مشکل حل می‌شود.
             try {
                 if (typeof angular !== 'undefined') {
                     const ngEl = angular.element(btn);
                     if (ngEl && ngEl.scope) {
-                        ngEl.scope().$apply(() => { btn.click(); });
-                        return true;
+                        const scope = ngEl.scope();
+                        if (scope && scope.actions && typeof scope.actions.insertEditDocument === 'function') {
+                            scope.$apply(() => { scope.actions.insertEditDocument(); });
+                            return true;
+                        }
                     }
                 }
             } catch(e) {}
+
+            // فال‌بک: کلیک واقعیِ mouse event کامل (نه فقط btn.click())
+            try {
+                btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+                btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+                btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                if (typeof angular !== 'undefined') {
+                    const rootScope = angular.element(document).scope();
+                    if (rootScope) rootScope.$apply();
+                }
+                return true;
+            } catch(e) {}
+
             btn.click();
             btn.dispatchEvent(new Event('click', { bubbles: true }));
             return true;
@@ -1349,8 +1386,31 @@ async def click_save_doc_with_retry(
                     .slice(0, 10);
                 return {found: true, disabled: true, invalids: invalids};
             }
-            btn.click();
-            return {found: true, disabled: false, clicked: true};
+            // ⭐ اصلاحیهٔ ۱۴۰۵/۰۶ (دور سوم) — همان روش قطعیِ اثبات‌شده:
+            // اکشن Angular مستقیماً از روی scope صدا زده می‌شود، نه صرفِ
+            // btn.click() که گاهی روی این دکمهٔ خاص ng-click را اجرا
+            // نمی‌کند.
+            let method = 'none';
+            try {
+                if (typeof angular !== 'undefined') {
+                    const ngEl = angular.element(btn);
+                    if (ngEl && ngEl.scope) {
+                        const scope = ngEl.scope();
+                        if (scope && scope.actions && typeof scope.actions.insertEditDocument === 'function') {
+                            scope.$apply(() => { scope.actions.insertEditDocument(); });
+                            method = 'scope_direct';
+                        }
+                    }
+                }
+            } catch(e) {}
+            if (method === 'none') {
+                btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+                btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+                btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                btn.click();
+                method = 'mouse_events';
+            }
+            return {found: true, disabled: false, clicked: true, method: method};
         }''')
         if not click_info.get("found"):
             _log(prefix, "دکمه #btnSaveDoc در صفحه یافت نشد", 'warning')

@@ -18,7 +18,7 @@ from aiogram.types import Message, ReplyKeyboardRemove, InlineKeyboardMarkup, In
 
 import runtime_state
 from bale_file_sender import send_document_direct
-from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, calculate_lavayeh_fee, format_lavayeh_fee_explanation, LAVAYEH_SERVICE_FEE, EZHHARNAMEH_SERVICE_FEE, BULK_PREPAY_PER_ROW_TOMAN
+from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, calculate_lavayeh_fee, format_lavayeh_fee_explanation, LAVAYEH_SERVICE_FEE, EZHHARNAMEH_SERVICE_FEE, BULK_PREPAY_PER_ROW_TOMAN, temp_path
 from exempt_users import is_exempt_user
 from sheets import log_event
 
@@ -419,7 +419,7 @@ async def bulk_file_upload_handler(message: Message, state: FSMContext):
         bot = message.bot
         file_id = doc.file_id
         file_info = await bot.get_file(file_id)
-        local_path = f"/tmp/{doc.file_name}"
+        local_path = temp_path(doc.file_name)
         await bot.download_file(file_info.file_path, local_path)
         parse_result = parse_excel_file(local_path, service_type)
         items = parse_result.get("valid_items", [])
