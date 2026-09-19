@@ -700,9 +700,11 @@ bulk_attachment_all_title_kb = ReplyKeyboardMarkup(
 )
 
 # کیبورد حین ارسال تصاویر پیوست مشترک (دکمه اتمام)
+# ⭐ اصلاحیه (۱۴۰۵/۰۶/۲۸): دکمهٔ «افزودن پیوست دیگر» در حین دریافت تصویر
+# هندلر نداشت (هندلر فقط تصویر/اتمام/انصراف می‌پذیرفت) — حذف شد؛ سوال
+# «پیوست دیگری هم هست؟» بعد از اتمام با کیبورد بله/خیر پرسیده می‌شود.
 bulk_attachment_all_more_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="➕ افزودن پیوست دیگر (برای همه ردیف‌ها)"  )],
         [KeyboardButton(text="✅ اتمام ارسال مدارک")],
         [KeyboardButton(text="❌ انصراف")],
     ],
@@ -1174,23 +1176,23 @@ check_extra_text_kb = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# ⭐ اصلاحیه (۱۴۰۵/۰۶/۲۸): در این حالت باید دقیقاً ۳ تصویر برای هر فقره
+# ارسال شود؛ دکمه‌های «تصویر چک بعدی/مدرک دیگر/ادامه به انتخاب دادگاه»
+# هندلر ندارند و کاربر را در بن‌بست می‌انداختند. فقط «بازگشت» (حذف آخرین
+# تصویر) در این مرحله معنا دارد — همان چیزی که هندلر پشتیبانی می‌کند.
 check_more_images_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="➕ تصویر چک بعدی")],
-        [KeyboardButton(text="📎 تصویر یا مدرک دیگر دارم")],
-        [KeyboardButton(text="✅ خیر، ادامه به انتخاب دادگاه")],
+        [KeyboardButton(text="🔙 بازگشت")],
     ],
     resize_keyboard=True
 )
 
 def get_check_more_images_kb(image_count: int, max_images: int = 3) -> ReplyKeyboardMarkup:
-    """کیبورد داینامیک — دکمه «تصویر چک بعدی» فقط وقتی هنوز جای هست نمایش داده شود."""
-    rows = []
-    if image_count < max_images:
-        rows.append([KeyboardButton(text="➕ تصویر چک بعدی")])
-    rows.append([KeyboardButton(text="📎 تصویر یا مدرک دیگر دارم")])
-    rows.append([KeyboardButton(text="✅ خیر، ادامه به انتخاب دادگاه")])
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+    """کیبورد داینامیک حالت دریافت تصاویر فقره — فقط «بازگشت» (حذف آخرین
+    تصویر). قبلاً دکمه‌های بی‌هندلر («تصویر چک بعدی» و ...) نشان داده
+    می‌شد و کاربر با فشردن آن‌ها در بن‌بست می‌افتاد."""
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="🔙 بازگشت")]], resize_keyboard=True)
 
 
 def create_check_cheque_count_kb() -> ReplyKeyboardMarkup:
@@ -1208,11 +1210,13 @@ def create_check_cheque_count_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
+# ⭐ اصلاحیه (۱۴۰۵/۰۶/۲۸): این کیبورد فقط در جایی استفاده می‌شد که هندلر
+# state بعدی دکمه‌های دیگری انتظار داشت (بن‌بست). محتوا هم‌سطح
+# check_images_continue_kb (همان چیزی که هندلر می‌پذیرد) تنظیم شد.
 check_more_docs_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="📎 تصویر یا مدرک دیگر دارم")],
-        [KeyboardButton(text="✅ خیر، ادامه به انتخاب دادگاه")],
-        [KeyboardButton(text="👥 افزودن شهود (مطلع/گواه)")],
+        [KeyboardButton(text="➕ افزودن تصویر دیگر")],
+        [KeyboardButton(text="✅ ادامه")],
         [KeyboardButton(text="🔙 بازگشت")],
     ],
     resize_keyboard=True

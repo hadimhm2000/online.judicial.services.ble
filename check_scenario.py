@@ -1364,15 +1364,26 @@ async def process_check_task(data: dict, bot: Bot):
                     text="🗑 حذف درخواست",
                     callback_data=f"chk_nid_cancel:{user_id}")],
             ])
-            await bot.send_message(
-                user_id,
-                f"⚠️ *خطای استعلام ثنا:*\n\n«{str(sana_err)[:250]}»\n\n"
-                f"❌ کدملی ({sana_err.role or 'شخص'}) اشتباه می باشد.\n\n"
-                f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این "
-                f"صورت پس از ۳۰ دقیقه، *نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما "
-                f"از هزینه کسر می‌گردد.\n"
-                f"✅ پس از ویرایش، ثبت با همان اطلاعات سیو شده ادامه می‌یابد.",
-                reply_markup=chk_kb)
+            # ⭐ اصلاحیهٔ کارفرما (۱۴۰۵/۰۶/۲۸): عین روند لایحه — اگر خطای
+            # «شخص ... در فهرست اشخاص پرونده نیست» باشد، پیام به سبک
+            # «خطای ثبت دادخواست در سامانه» ارسال می‌شود.
+            if getattr(sana_err, "kind", "") == "person_not_in_case":
+                chk_sana_msg = (
+                    f"⚠️ *خطای ثبت دادخواست در سامانه:*\n\n«{str(sana_err)[:300]}»\n\n"
+                    f"شخص ({sana_err.role or 'شخص'}) در فهرست اشخاص پرونده نیست و امکان ثبت دادخواست وجود ندارد.\n\n"
+                    f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این "
+                    f"صورت پس از ۳۰ دقیقه، *نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما "
+                    f"از هزینه کسر می‌گردد.\n"
+                    f"✅ پس از ویرایش، ثبت با همان اطلاعات سیو شده ادامه می‌یابد.")
+            else:
+                chk_sana_msg = (
+                    f"⚠️ *خطای استعلام ثنا:*\n\n«{str(sana_err)[:250]}»\n\n"
+                    f"❌ کدملی ({sana_err.role or 'شخص'}) اشتباه می باشد.\n\n"
+                    f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این "
+                    f"صورت پس از ۳۰ دقیقه، *نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما "
+                    f"از هزینه کسر می‌گردد.\n"
+                    f"✅ پس از ویرایش، ثبت با همان اطلاعات سیو شده ادامه می‌یابد.")
+            await bot.send_message(user_id, chk_sana_msg, reply_markup=chk_kb)
             try:
                 from panel_sync import upsert_case_to_panel
                 await upsert_case_to_panel(
@@ -2229,6 +2240,15 @@ def _sana_popup_kind(popup_text: str) -> str:
             "رایانه ای دیگر" in popup_text or "رایانه اي ديگر" in popup_text or
             "اعتبار ورود" in popup_text or "ورود قبلی" in popup_text or "ورود قبلي" in popup_text):
         return "session"
+    # ⭐ اصلاحیهٔ کارفرما (۱۴۰۵/۰۶/۲۸): تشخیص «شخص ... در فهرست اشخاص
+    # پرونده نیست» با کاتالوگ نرمال‌سازی‌شده (مقاوم به ي/ک عربی)
+    try:
+        import error_catalog
+        _cat_kind = error_catalog.classify_sana_popup(popup_text)
+    except Exception:
+        _cat_kind = "other"
+    if _cat_kind == "person_not_in_case":
+        return "person_not_in_case"
     if ("اطلاعاتی با این شناسه ملی ثبت نشده است" in popup_text or
             "اطلاعاتي با اين شناسه ملي ثبت نشده است" in popup_text):
         return "not_registered"
@@ -2318,10 +2338,11 @@ async def _query_sana_check(page, ng_click: str, bot: Bot, user_id: int,
                 continue
 
             # ⭐ اصلاحیهٔ کارفرما: خطای «تاریخ تولد ارسالی مربوط به شماره ملی
-            # ... اشتباه است» یا «اطلاعاتی با این شناسه ملی ثبت نشده است» —
-            # retry بی‌فایده است؛ بلافاصله CheckSanaDataError پرتاب می‌شود تا
-            # پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی برای کاربر باز شود.
-            if kind in ("birthdate", "not_registered"):
+            # ... اشتباه است» یا «اطلاعاتی با این شناسه ملی ثبت نشده است» یا
+            # «شخص ... در فهرست اشخاص پرونده نیست» — retry بی‌فایده است؛
+            # بلافاصله CheckSanaDataError پرتاب می‌شود تا پنجرهٔ ۳۰ دقیقه‌ای
+            # ویرایش کدملی برای کاربر باز شود (عین روند لایحه).
+            if kind in ("birthdate", "not_registered", "person_not_in_case"):
                 logging.warning(
                     f"[CHECK][{role}] خطای داده‌ای ثنا برای کدملی {national_id}: "
                     f"{popup_text!r}")

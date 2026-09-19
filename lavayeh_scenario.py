@@ -1718,6 +1718,20 @@ async def _click_sana_query_with_retry(
         }''')
         if popup_text:
             _kind = _classify_lavayeh_sana_popup(popup_text)
+            if _kind == "person_not_in_case":
+                # ⭐ اصلاحیهٔ کارفرما (۱۴۰۵/۰۶/۲۸): خطای «شخص ... در فهرست
+                # اشخاص پرونده نیست» در زمان استعلام هم بلافاصله raise
+                # می‌شود (عین روند ثبت موقت) تا پیام خطا + پنجرهٔ ۳۰ دقیقه‌ای
+                # ویرایش کدملی باز شود — بدون retry بی‌فایده.
+                await _close_error_popup(page)
+                logging.warning(
+                    f"[LAVAYEH] خطای فهرست اشخاص پرونده در زمان استعلام برای شناسه "
+                    f"{current_national_id}: {popup_text[:150]}")
+                raise LavayehSanaDataError(
+                    popup_text, kind="person_not_in_case",
+                    national_id=current_national_id or
+                    _extract_lavayeh_nid(popup_text),
+                    person_index=person_index)
             if _kind == "birthdate":
                 await _close_error_popup(page)
                 logging.warning(

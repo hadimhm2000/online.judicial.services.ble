@@ -266,6 +266,13 @@ async def ezhhar_declarant_person_type_handler(message: Message, state: FSMConte
                 reply_markup=create_ezhhar_declarant_person_type_kb(exclude=used_types))
             return
 
+        # ⭐ حالت ویرایش: بازگشت مستقیم به پیش‌نمایش (نه مرحله مخاطب)
+        if data.get("_ezhhar_edit_mode"):
+            await state.update_data(_ezhhar_edit_mode=False)
+            await message.answer("✅ ویرایش اظهارکننده(ها) ثبت شد.")
+            await _go_to_ezhhar_preview(message, state)
+            return
+
         # رفتن به مرحله مخاطب
         await message.answer(
             "*مرحله ۲:* لطفاً *نوع شخصیت مخاطب* اظهارنامه را انتخاب فرمایید:\n\n"
@@ -432,6 +439,12 @@ async def ezhhar_addressee_person_type_handler(message: Message, state: FSMConte
                 reply_markup=create_ezhhar_addressee_person_type_kb()
             )
             return
+        # ⭐ حالت ویرایش: بازگشت مستقیم به پیش‌نمایش (نه مرحله عنوان)
+        if data.get("_ezhhar_edit_mode"):
+            await state.update_data(_ezhhar_edit_mode=False)
+            await message.answer("✅ ویرایش مخاطب(ها) ثبت شد.")
+            await _go_to_ezhhar_preview(message, state)
+            return
         # رفتن به مرحله عنوان
         await message.answer(
             "*مرحله ۳:* لطفاً *عنوان (موضوع) اظهارنامه* را وارد فرمایید:\n\n"
@@ -576,6 +589,14 @@ async def ezhhar_subject_handler(message: Message, state: FSMContext):
 
     await state.update_data(ezhhar_subject=subject)
 
+    # ⭐ حالت ویرایش: بازگشت مستقیم به پیش‌نمایش (نه مرحله متن)
+    _edit_data = await state.get_data()
+    if _edit_data.get("_ezhhar_edit_mode"):
+        await state.update_data(_ezhhar_edit_mode=False)
+        await message.answer(f"✅ عنوان «{subject}» ویرایش شد.")
+        await _go_to_ezhhar_preview(message, state)
+        return
+
     await message.answer(
         f"✅ عنوان «*{subject}*» ثبت شد.\n\n"
         "*مرحله ۴:* لطفاً روش ورود *شرح متن اظهارنامه* را انتخاب فرمایید:\n\n"
@@ -635,6 +656,13 @@ async def ezhhar_text_handler(message: Message, state: FSMContext, bot: Bot):
             declarants = data.get("ezhhar_declarants", [])
             has_legal = any(p.get("person_type") == "شخص حقوقی" for p in declarants)
 
+            # ⭐ حالت ویرایش: اگر شخص حقوقی نیست، مستقیم به پیش‌نمایش برگرد
+            if data.get("_ezhhar_edit_mode") and not has_legal:
+                await st.update_data(_ezhhar_edit_mode=False)
+                await b.send_message(cid, "✅ ویرایش شرح متن ثبت شد.")
+                await _go_to_ezhhar_preview(message, st)
+                return
+
             if has_legal:
                 await b.send_message(
                     cid,
@@ -683,6 +711,13 @@ async def ezhhar_text_handler(message: Message, state: FSMContext, bot: Bot):
         data = await st.get_data()
         declarants = data.get("ezhhar_declarants", [])
         has_legal = any(p.get("person_type") == "شخص حقوقی" for p in declarants)
+
+        # ⭐ حالت ویرایش: اگر شخص حقوقی نیست، مستقیم به پیش‌نمایش برگرد
+        if data.get("_ezhhar_edit_mode") and not has_legal:
+            await st.update_data(_ezhhar_edit_mode=False)
+            await b.send_message(cid, "✅ ویرایش شرح متن ثبت شد.")
+            await _go_to_ezhhar_preview(message, st)
+            return
 
         if has_legal:
             await b.send_message(
@@ -1022,6 +1057,9 @@ async def ezhhar_confirm_handler(message: Message, state: FSMContext, bot: Bot):
         return
 
     if text == "✏️ ویرایش اطلاعات":
+        # ⭐ اصلاحیه: در حالت ویرایش، بعد از تایید هر بخش باید مستقیماً
+        # به پیش‌نمایش برگشت (نه ادامهٔ مراحل تسک).
+        await state.update_data(_ezhhar_edit_mode=True)
         await message.answer(
             "✏️ *ویرایش اطلاعات:*\n\nکدام بخش را می‌خواهید ویرایش کنید؟",
             reply_markup=ezhhar_edit_kb)
@@ -1194,6 +1232,7 @@ async def ezhhar_edit_choice_handler(message: Message, state: FSMContext):
     text = message.text or ""
 
     if text == "🔙 بازگشت به پیش‌نمایش":
+        await state.update_data(_ezhhar_edit_mode=False)
         await _go_to_ezhhar_preview(message, state)
         return
 

@@ -767,6 +767,97 @@ async def admin_reject_bulk(message: types.Message, bot: Bot):
         await message.answer(f"⚠️ خطا در رد درخواست: {e}")
 
 
+# ================= ⭐ دستورات مدیر: مدیریت مبالغ مانده (اصلاحیه ۱۴۰۵/۰۶/۲۸) =================
+# مواردی که مدیر به‌صورت دستی (خارج از ربات) انجام می‌دهد، مبالغ ماندهٔ
+# ثبت‌شده (prepaid_registrations — پیش‌پرداخت/باقی‌مانده‌ای که ربات در
+# موارد بعدی از هزینه کسر می‌کند) باید قابل حذف/ویرایش باشند تا ربات
+# دیگر آن‌ها را برای موارد بعدی محاسبه نکند.
+@router.message(F.from_user.id == ADMIN_ID, F.text == "/prepaid")
+async def admin_list_prepaid(message: types.Message):
+    """نمایش لیست مبالغ ماندهٔ کاربران (پیش‌پرداخت‌های در انتظار کسر)"""
+    prepaid = getattr(runtime_state, "prepaid_registrations", {})
+    if not prepaid:
+        await message.answer("✅ هیچ مبلغ مانده‌ای ثبت نشده است.")
+        return
+
+    lines = ["💰 *مبالغ ماندهٔ ثبت‌شده (قابل کسر در موارد بعدی):*\n"]
+    for uid, info in prepaid.items():
+        amount_rial = int(info.get("amount_rial", 0) or 0)
+        amount_toman = int(info.get("amount_toman", amount_rial // 10) or 0)
+        svc = info.get("service_label") or info.get("service", "؟")
+        paid_at = info.get("paid_at", "")
+        paid_str = paid_at.strftime("%Y/%m/%d %H:%M") if hasattr(paid_at, "strftime") else str(paid_at)
+        lines.append(
+            f"• کاربر `{uid}` — {amount_rial:,} ریال ({amount_toman:,} تومان) | "
+            f"سرویس: {svc} | زمان: {paid_str}")
+    lines.append(
+        "\n🗑 حذف: `/prepaid_clear <user_id>`\n"
+        "✏️ ویرایش مبلغ (ریال): `/prepaid_set <user_id> <مبلغ_ریال>`")
+    await message.answer("\n".join(lines), parse_mode="Markdown")
+
+
+@router.message(F.from_user.id == ADMIN_ID, F.text.startswith("/prepaid_clear"))
+async def admin_clear_prepaid(message: types.Message):
+    """حذف مبلغ ماندهٔ یک کاربر — دیگر از هزینه موارد بعدی کسر نمی‌شود"""
+    parts = message.text.split()
+    if len(parts) < 2 or not parts[1].lstrip("-").isdigit():
+        await message.answer("⚠️ فرمت صحیح: `/prepaid_clear <user_id>`")
+        return
+    target_uid = int(parts[1])
+    prepaid = getattr(runtime_state, "prepaid_registrations", {})
+    removed = prepaid.pop(target_uid, None)
+    if not removed:
+        await message.answer(f"⚠️ مبلغ مانده‌ای برای کاربر `{target_uid}` ثبت نشده است.")
+        return
+    amount_rial = int(removed.get("amount_rial", 0) or 0)
+    await message.answer(
+        f"✅ مبلغ ماندهٔ کاربر `{target_uid}` ({amount_rial:,} ریال) حذف شد.\n"
+        f"دیگر از هزینه موارد بعدی این کاربر کسر نمی‌شود.")
+    logging.info(
+        f"[ADMIN-PREPAID] مبلغ مانده حذف شد: user={target_uid}, "
+        f"مبلغ={amount_rial:,} ریال (توسط مدیر)")
+
+
+@router.message(F.from_user.id == ADMIN_ID, F.text.startswith("/prepaid_set"))
+async def admin_set_prepaid(message: types.Message):
+    """ویرایش مبلغ ماندهٔ یک کاربر (مبلغ جدید به ریال)"""
+    parts = message.text.split()
+    if len(parts) < 3 or not parts[1].lstrip("-").isdigit() or not parts[2].lstrip("-").isdigit():
+        await message.answer("⚠️ فرمت صحیح: `/prepaid_set <user_id> <مبلغ_ریال>`\n"
+                             "مثال: `/prepaid_set 164366255 50000`")
+        return
+    target_uid = int(parts[1])
+    new_rial = int(parts[2])
+    if new_rial < 0:
+        await message.answer("⚠️ مبلغ نمی‌تواند منفی باشد.")
+        return
+    prepaid = getattr(runtime_state, "prepaid_registrations", {})
+    existing = prepaid.get(target_uid)
+    if not existing:
+        prepaid[target_uid] = {
+            "amount_toman": new_rial // 10,
+            "amount_rial": new_rial,
+            "service": "manual",
+            "service_label": "ثبت دستی مدیر",
+            "charge_id": "",
+            "paid_at": datetime.datetime.now(),
+            "manual": True,
+        }
+        await message.answer(
+            f"✅ مبلغ ماندهٔ جدید برای کاربر `{target_uid}` ثبت شد: {new_rial:,} ریال.")
+    else:
+        old_rial = int(existing.get("amount_rial", 0) or 0)
+        existing["amount_rial"] = new_rial
+        existing["amount_toman"] = new_rial // 10
+        existing["manual"] = True
+        await message.answer(
+            f"✅ مبلغ ماندهٔ کاربر `{target_uid}` ویرایش شد: "
+            f"{old_rial:,} → {new_rial:,} ریال.")
+    logging.info(
+        f"[ADMIN-PREPAID] مبلغ مانده ویرایش شد: user={target_uid}, "
+        f"مبلغ جدید={new_rial:,} ریال (توسط مدیر)")
+
+
 # ================= بخش مکالمات تلگرام =================
 
 # ================= دستورات مدیر: مشاهده و ادامه تسک‌های ناقص =================
@@ -2203,6 +2294,14 @@ async def test_mode_ealam_stamp(message: types.Message, state: FSMContext):
 
     if "بدون تمبر" in text:
         await state.update_data(test_ealam_stamp_amount=0, test_ealam_stamp_type="بدون تمبر")
+        await _test_mode_ealam_goto_attachments(message, state)
+        return
+
+    # ⭐ اصلاحیه (۱۴۰۵/۰۶/۲۸): دکمهٔ «نیاز به محاسبه دارم» کیبورد نشان
+    # داده می‌شد ولی هندلر آن را نمی‌پذیرفت (بن‌بست). اکنون مانند روال
+    # عادی اعلام وکالت، مبلغ صفر و نوع «نیاز به محاسبه» ثبت می‌شود.
+    if "نیاز به محاسبه" in text:
+        await state.update_data(test_ealam_stamp_amount=0, test_ealam_stamp_type="نیاز به محاسبه")
         await _test_mode_ealam_goto_attachments(message, state)
         return
 

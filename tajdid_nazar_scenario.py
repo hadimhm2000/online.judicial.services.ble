@@ -36,7 +36,7 @@
 #   ۱۱. «ثبت موقت» (#btnSave) → هشدارها/خطاها + کد رهگیری (مانند اظهارنامه)
 #   ۱۲. «منضمات» — عیناً مانند اظهارنامه (مدرک نمایندگی/وکالت‌نامه/سایر)
 #   ۱۳. «آماده‌سازی» — تایید اطلاعات → پاپ‌آپ → «بستن» → بازگشت به فهرست
-#   ۱۴. «هزینه» — جدول هزینه + فرمول (جمع ۵ ردیف + ۵۰ ریال + جمع کل، رند بالا)
+#   ۱۴. «هزینه» — جدول هزینه + فرمول (جمع ۵ ردیف + ۵۰۰,۰۰۰ ریال + جمع کل، رند بالا)
 #   ۱۵. «چاپ اولیه» → PDF → ارسال نتیجه (پرداخت/امضا طبق روال مستقل)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -66,12 +66,15 @@ class TajdidFatalError(Exception):
 
 
 class TajdidSanaQueryError(Exception):
-    """خطای استعلام ثنا — شناسه ملی ثبت نشده یا تاریخ تولد اشتباه."""
-    def __init__(self, message: str, national_id: str = "", person_role: str = "", person_index: int = 0):
+    """خطای استعلام ثنا — شناسه ملی ثبت نشده، تاریخ تولد اشتباه یا
+    شخص در فهرست اشخاص پرونده نیست (kind برای پیام‌دهی صحیح)."""
+    def __init__(self, message: str, national_id: str = "", person_role: str = "", person_index: int = 0,
+                 kind: str = ""):
         super().__init__(message)
         self.national_id = national_id
         self.person_role = person_role
         self.person_index = person_index
+        self.kind = kind                    # person_not_in_case | birthdate | not_registered | ""
 
 
 class TajdidRetrieveDataError(TajdidFatalError):
@@ -254,7 +257,7 @@ def resolve_ground_indices(reasons, case_type: str) -> list:
 #   ۲. این ۵ ردیف با هم جمع می‌شوند:
 #      بهاي اوراق دادخواست + افزودن پيوست + ثبت اطلاعات اشخاص
 #      + تنظيم دادخواست/شكواييه + خدمات الكترونيك قضايي
-#   ۳. در آخر ۵۰ ریال اضافه می‌شود
+#   ۳. در آخر ۵۰۰,۰۰۰ ریال اضافه می‌شود (اصلاحیه: قبلاً ۵۰ بود که اشتباه بود)
 #   ۴. با عدد اصلی (جمع کل) جمع و «رند به بالا» می‌شود
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -265,7 +268,10 @@ TN_COST_FORMULA_LABELS = [
     "تنظيم دادخواست",       # هزينه تنظيم دادخواست/شكواييه در خدمات قضايي
     "الكترونيك قضايي",      # هزينه خدمات الكترونيك قضايي
 ]
-TN_COST_SMS_SURCHARGE = 50  # ریال — «و در اخر به اضافه 50 میکنی»
+# ⭐ اصلاحیه ۱۴۰۵/۰۶/۲۸: سورچارج عمومی دعاوی اعتراضی (تجدیدنظرخواهی،
+#   واخواهی، فرجام‌خواهی، اعتراض ثالث، اعتراض به قرار دادسرا) باید
+#   ۵۰۰,۰۰۰ ریال باشد — قبلاً ۵۰ ریال بود که خطا بود.
+TN_COST_SMS_SURCHARGE = 500000  # ریال — «در آخر به اضافه 500,000 ریال کنی»
 
 # ⭐ فرمول اختصاصی اعاده دادرسی مدنی/کیفری (دستور کارفرما ۱۴۰۵/۰۶):
 #   - مبلغ سامانه (جمع کل هزینه) — همان عدد جدول، بدون تغییر
@@ -809,14 +815,26 @@ async def _query_sana(page, ng_click: str, bot: Bot, user_id: int,
                                 ("اطلاعاتی با این شناسه ملی ثبت نشده است" in popup_error)
             is_birthdate_error = "تاریخ تولد" in popup_error and "اشتباه" in popup_error
 
-            if is_not_registered or is_birthdate_error:
+            # ⭐ اصلاحیهٔ کارفرما (۱۴۰۵/۰۶/۲۸): خطای «شخص ... در فهرست اشخاص
+            # پرونده نیست» — عین روند لایحه؛ بلافاصله خطای داده‌ای پرتاب
+            # می‌شود تا پیام خطا + پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی باز شود.
+            try:
+                import error_catalog as _ec
+                _popup_kind = _ec.classify_sana_popup(popup_error)
+            except Exception:
+                _popup_kind = "other"
+            if _popup_kind == "other" and (is_not_registered or is_birthdate_error):
+                _popup_kind = "birthdate" if is_birthdate_error else "not_registered"
+
+            if _popup_kind in ("person_not_in_case", "birthdate", "not_registered"):
                 await _close_popup(page)
-                logging.warning(f"[TN] خطای ثنا برای شناسه {current_national_id}: {popup_error}")
+                logging.warning(f"[TN] خطای ثنا ({_popup_kind}) برای شناسه {current_national_id}: {popup_error}")
                 raise TajdidSanaQueryError(
                     popup_error,
                     national_id=current_national_id,
                     person_role=person_role,
-                    person_index=person_index)
+                    person_index=person_index,
+                    kind=_popup_kind)
 
         # بستن هر پاپ‌آپ خطای دیگر
         await _close_popup(page)
@@ -2128,7 +2146,7 @@ async def _calculate_cost(page, bot: Bot, user_id: int, max_retries: int = 3,
       ۱. عدد «جمع کل هزینه» جدول (td سبز) یادداشت می‌شود
       ۲. جمع ۵ ردیف: اوراق دادخواست + افزودن پیوست + ثبت اطلاعات اشخاص
          + تنظیم دادخواست + خدمات الکترونیک قضایی
-      ۳. + ۵۰ ریال
+      ۳. + ۵۰۰,۰۰۰ ریال
       ۴. + جمع کل → رند به بالا (۱۰,۰۰۰ ریال)
 
     ⭐ فرمول اختصاصی اعاده دادرسی مدنی/کیفری (دستور کارفرما ۱۴۰۵/۰۶):
@@ -2333,7 +2351,7 @@ async def _calculate_cost(page, bot: Bot, user_id: int, max_retries: int = 3,
                         matched_rows.append(item)
                         break
 
-            # فرمول: جمع کل + جمع ردیف‌های خاص + ۵۰ ریال → رند به بالا
+            # فرمول: جمع کل + جمع ردیف‌های خاص + ۵۰۰,۰۰۰ ریال → رند به بالا
             raw_total = main_total + formula_sum + TN_COST_SMS_SURCHARGE
             final_total = round_up_to_ten_thousand(raw_total)
 
@@ -3320,16 +3338,26 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                     text="🗑 حذف درخواست",
                     callback_data=f"tn_del_req:{user_id}")],
             ])
-            await bot.send_message(
-                user_id,
-                f"⚠️ *خطای استعلام ثنا*\n\n"
-                f"شناسه ملی `{e.national_id}` ({role_label}) ثبت‌نام ثنا ندارد یا اشتباه است.\n\n"
-                f"لطفاً یکی از گزینه‌های زیر را انتخاب کنید:\n"
-                f"• *ویرایش شناسه ملی:* شناسه صحیح را ارسال کنید تا ثبت با همان اطلاعات سیو شده ادامه یابد.\n"
-                f"• *حذف درخواست:* درخواست حذف می‌شود.\n\n"
-                f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این صورت پس از ۳۰ دقیقه، "
-                f"*نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از هزینه کسر می‌گردد.",
-                reply_markup=kb)
+            # ⭐ اصلاحیهٔ کارفرما (۱۴۰۵/۰۶/۲۸): عین روند لایحه — اگر خطای
+            # «شخص ... در فهرست اشخاص پرونده نیست» باشد، پیام به سبک
+            # «خطای ثبت دعوی اعتراضی در سامانه» ارسال می‌شود.
+            if getattr(e, "kind", "") == "person_not_in_case":
+                tn_sana_msg = (
+                    f"⚠️ *خطای ثبت دعوی اعتراضی در سامانه:*\n\n"
+                    f"«{str(e)[:300]}»\n\n"
+                    f"شخص ({role_label}) در فهرست اشخاص پرونده نیست و امکان ثبت وجود ندارد.\n\n"
+                    f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این صورت پس از ۳۰ دقیقه، "
+                    f"*نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از هزینه کسر می‌گردد.")
+            else:
+                tn_sana_msg = (
+                    f"⚠️ *خطای استعلام ثنا*\n\n"
+                    f"شناسه ملی `{e.national_id}` ({role_label}) ثبت‌نام ثنا ندارد یا اشتباه است.\n\n"
+                    f"لطفاً یکی از گزینه‌های زیر را انتخاب کنید:\n"
+                    f"• *ویرایش شناسه ملی:* شناسه صحیح را ارسال کنید تا ثبت با همان اطلاعات سیو شده ادامه یابد.\n"
+                    f"• *حذف درخواست:* درخواست حذف می‌شود.\n\n"
+                    f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این صورت پس از ۳۰ دقیقه، "
+                    f"*نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از هزینه کسر می‌گردد.")
+            await bot.send_message(user_id, tn_sana_msg, reply_markup=kb)
             return  # متوقف — منتظر اصلاح کاربر
 
         except TajdidRetrieveDataError as e:
