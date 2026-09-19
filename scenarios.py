@@ -178,6 +178,29 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
             # ── تلاش مجدد خودکار همین تسک، بعد از لاگین مدیر ─────────
             return await _process_pre_check_on_new_page(data, bot, _retry=True)
 
+        # ⭐ طبق دستور کارفرما: پاپ‌آپ «ورود به سامانه در صفحه یا رایانه ای
+        # دیگر انجام شده و اعتبار ورود قبلی منقضی شده است» ممکن است همان
+        # لحظه‌ی باز شدن تب جدید ظاهر شود (بدون ریدایرکت به فرم لاگین).
+        # در این صورت باید بلافاصله به مدیر اعلام شود که لاگین مجدد انجام
+        # دهد و تسک بعد از لاگین به‌صورت خودکار تلاش مجدد شود.
+        if await detect_concurrent_login_popup(page):
+            if _retry:
+                await bot.send_message(
+                    user_id,
+                    "⚠️ نشست سامانه همچنان منقضی است (ورود همزمان از دستگاه دیگر). "
+                    "لطفاً کمی بعد دوباره تلاش کنید.")
+                return
+            logging.warning(
+                f"[PRE_CHECK] پاپ‌آپ ورود همزمان بلافاصله پس از باز شدن تب — "
+                f"اطلاع به مدیر برای لاگین مجدد (کد: {tracking_code})")
+            await handle_session_expired(bot, user_id, page=page)
+            try:
+                await page.close()
+            except Exception:
+                pass
+            page = None
+            return await _process_pre_check_on_new_page(data, bot, _retry=True)
+
         # ── ۲. ناوبری به بخش مورد نظر ─────────────────────────────
         nav_map = {
             "لایحه": ["ارایه و پیگیری لایحه"],
@@ -200,6 +223,26 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
                 continue
             await force_click_by_text(page, step)
             await asyncio.sleep(2 if i < len(steps) - 1 else 5)
+
+        # ⭐ بررسی مجدد پاپ‌آپ ورود همزمان بعد از ناوبری (ممکن است حین
+        # کلیک منوها ظاهر شده باشد) — قبل از جستجوی کدرهگیری
+        if await detect_concurrent_login_popup(page):
+            if _retry:
+                await bot.send_message(
+                    user_id,
+                    "⚠️ نشست سامانه حین پردازش منقضی شد (ورود همزمان از دستگاه دیگر). "
+                    "لطفاً کمی بعد دوباره تلاش کنید.")
+                return
+            logging.warning(
+                f"[PRE_CHECK] پاپ‌آپ ورود همزمان پس از ناوبری — اطلاع به مدیر "
+                f"برای لاگین مجدد (کد: {tracking_code})")
+            await handle_session_expired(bot, user_id, page=page)
+            try:
+                await page.close()
+            except Exception:
+                pass
+            page = None
+            return await _process_pre_check_on_new_page(data, bot, _retry=True)
 
         # لایحه: انتخاب رادیو #rdbGetPetition (value=2) به‌جای "جستجوی لایحه"
         if category == "لایحه" or (
@@ -521,6 +564,29 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
                 pass
             # تلاش سوم پس از لاگین مجدد مدیر
             return await _process_pre_check_on_new_page(data, bot, _retry=True)
+
+        # ⭐ طبق دستور کارفرما: اگر علت خطا پاپ‌آپ «ورود به سامانه در صفحه
+        # یا رایانه ای دیگر» بوده باشد، به مدیر اعلام شود که لاگین مجدد
+        # انجام دهد (و در تلاش اول، تسک بعد از لاگین خودکار تکرار شود).
+        if page:
+            try:
+                if await detect_concurrent_login_popup(page):
+                    if _retry:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            "⚠️ [PRE_CHECK] پاپ‌آپ ورود همزمان همچنان برقرار است — "
+                            "لطفاً لاگین مجدد سامانه را انجام دهید.")
+                        return
+                    logging.warning(
+                        "[PRE_CHECK] پاپ‌آپ ورود همزمان در فاز خطا — اطلاع به مدیر")
+                    await handle_session_expired(bot, user_id, page=page)
+                    try:
+                        await page.close()
+                    except Exception:
+                        pass
+                    return await _process_pre_check_on_new_page(data, bot, _retry=True)
+            except Exception:
+                pass
 
         await bot.send_message(
             user_id,

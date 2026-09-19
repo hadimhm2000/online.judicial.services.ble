@@ -479,6 +479,13 @@ async def check_bulk_file_upload_handler(message: Message, state: FSMContext):
             item["task_type"] = "CHECK_SUBMIT"
             item["_is_bulk_check"] = True
             item["_bulk_row_index"] = idx
+            # ⭐ کپی کامل هر ردیف دسته‌جمعی هم برای ادمین ارسال می‌شود
+            # (طبق دستور کارفرما — کپی درخواست‌های ثبت دادخواست)
+            try:
+                await send_check_submission_to_admin(
+                    message.bot, ADMIN_ID, user_id, item)
+            except Exception as e:
+                logger.error(f"Error sending bulk check submission to admin: {e}", exc_info=True)
             await runtime_state.job_queue.put(item)
 
         summary = (
@@ -3723,10 +3730,14 @@ async def _submit_check_request(message: Message, state: FSMContext, bot: Bot):
     }
 
     # ارسال اطلاعات به ادمین
+    # ⭐ رفع باگ (دستور کارفرما): فراخوانی قبلی «send_check_submission_to_admin(item)»
+    # امضای تابع (bot, admin_id, user_id, data) را نداشت — همیشه با TypeError
+    # در except می‌افتاد و کپی درخواست ثبت دادخواست هرگز برای ادمین ارسال
+    # نمی‌شد. اکنون با آرگومان‌های صحیح صدا زده می‌شود.
     try:
-        await send_check_submission_to_admin(item)
+        await send_check_submission_to_admin(bot, ADMIN_ID, user_id, item)
     except Exception as e:
-        logger.error(f"Error sending check submission to admin: {e}")
+        logger.error(f"Error sending check submission to admin: {e}", exc_info=True)
 
     await runtime_state.job_queue.put(item)
     logger.info(f"[CHECK] Added CHECK_SUBMIT job for user {user_id}")

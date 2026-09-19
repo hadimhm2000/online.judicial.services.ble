@@ -65,7 +65,8 @@ from browser_helpers import (
     goto_url_with_retry, human_delay, force_click_by_text,
     safe_click_by_text, safe_type, wait_for_angular_idle,
     wait_for_horizontal_loading_bar, handle_session_expired,
-    detect_concurrent_login_popup, click_sana_main_menu)
+    detect_concurrent_login_popup, click_sana_main_menu,
+    readd_person_section, dismiss_sana_error_popup)
 
 import json
 
@@ -1656,6 +1657,11 @@ async def _click_sana_query_with_retry(
     btn_id: str = None, max_retries: int = 5,
     current_national_id: str = "", person_index: int = -1
 ):
+    # ⭐ طبق دستور کارفرما (تمام بخش‌های سامانه): اولین پاپ‌آپ بعد از استعلام
+    # کدملی/شناسه — بستن پاپ‌آپ + حذف سکشن (onRemoveItem) + افزودن مجدد
+    # (#btnAddSection) + ورود مجدد شناسه؛ اگر باز هم پاپ‌آپ آمد، متن خطا
+    # برای مدیر و کاربر ارسال می‌شود.
+    readd_done = False
     for attempt in range(max_retries):
         # بررسی session expiry قبل از هر تلاش
         had_expiry = await check_and_handle_expiry(page, bot, user_id)
@@ -1719,24 +1725,58 @@ async def _click_sana_query_with_retry(
         if popup_text:
             _kind = _classify_lavayeh_sana_popup(popup_text)
             if _kind == "person_not_in_case":
-                # ⭐ اصلاحیهٔ کارفرما (۱۴۰۵/۰۶/۲۸): خطای «شخص ... در فهرست
-                # اشخاص پرونده نیست» در زمان استعلام هم بلافاصله raise
-                # می‌شود (عین روند ثبت موقت) تا پیام خطا + پنجرهٔ ۳۰ دقیقه‌ای
-                # ویرایش کدملی باز شود — بدون retry بی‌فایده.
+                # ⭐ طبق دستور کارفرما: اولین پاپ‌آپ → روند حذف/افزودن مجدد
+                # سکشن و تلاش مجدد؛ دفعهٔ دوم → خطای قطعی + اطلاع مدیر/کاربر
+                if not readd_done:
+                    readd_done = True
+                    logging.warning(
+                        f"[LAVAYEH] پاپ‌آپ «فهرست اشخاص پرونده» برای شناسه "
+                        f"{current_national_id} — روند حذف/افزودن مجدد سکشن")
+                    await dismiss_sana_error_popup(page)
+                    await readd_person_section(
+                        page, current_national_id, ng_click_contains,
+                        log_prefix="LAVAYEH")
+                    await asyncio.sleep(2)
+                    continue
                 await _close_error_popup(page)
                 logging.warning(
                     f"[LAVAYEH] خطای فهرست اشخاص پرونده در زمان استعلام برای شناسه "
-                    f"{current_national_id}: {popup_text[:150]}")
+                    f"{current_national_id} بعد از بازیابی سکشن: {popup_text[:150]}")
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"⚠️ [LAVAYEH] خطای استعلام ثنا کاربر {user_id} — شناسه "
+                        f"{current_national_id}: «{popup_text[:200]}»")
+                except Exception:
+                    pass
                 raise LavayehSanaDataError(
                     popup_text, kind="person_not_in_case",
                     national_id=current_national_id or
                     _extract_lavayeh_nid(popup_text),
                     person_index=person_index)
             if _kind == "birthdate":
+                if not readd_done:
+                    readd_done = True
+                    logging.warning(
+                        f"[LAVAYEH] پاپ‌آپ تاریخ تولد برای شناسه "
+                        f"{current_national_id} — روند حذف/افزودن مجدد سکشن")
+                    await dismiss_sana_error_popup(page)
+                    await readd_person_section(
+                        page, current_national_id, ng_click_contains,
+                        log_prefix="LAVAYEH")
+                    await asyncio.sleep(2)
+                    continue
                 await _close_error_popup(page)
                 logging.warning(
                     f"[LAVAYEH] خطای تاریخ تولد ثنا برای شناسه "
-                    f"{current_national_id}: {popup_text[:150]}")
+                    f"{current_national_id} بعد از بازیابی سکشن: {popup_text[:150]}")
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"⚠️ [LAVAYEH] خطای استعلام ثنا کاربر {user_id} — شناسه "
+                        f"{current_national_id}: «{popup_text[:200]}»")
+                except Exception:
+                    pass
                 raise LavayehSanaDataError(
                     popup_text, kind="birthdate",
                     national_id=current_national_id or
@@ -1745,6 +1785,29 @@ async def _click_sana_query_with_retry(
 
         closed = await _close_error_popup(page)
         if closed:
+            # ⭐ محافظ: اگر پاپ‌آپ خطا نبوده و استعلام موفق بوده، سکشن حذف/افزودن نمی‌شود
+            if popup_text:
+                success_now = await page.evaluate('''() => {
+                    const disabled = document.querySelector(
+                        'input[ng-disabled*="ExtractedFromSana"][ng-disabled*="1"], input[disabled]'
+                    );
+                    return disabled !== null;
+                }''')
+                if success_now:
+                    logging.info("[LAVAYEH] پاپ‌آپ خطا نبود — استعلام قبلاً موفق بود")
+                    return
+            # ⭐ طبق دستور کارفرما: پاپ‌آپ خطای دیگر (غیر نشست/داده‌ای) — اولین بار
+            # روند حذف/افزودن مجدد سکشن انجام می‌شود و استعلام تکرار می‌گردد.
+            if not readd_done and popup_text:
+                readd_done = True
+                logging.warning(
+                    f"[LAVAYEH] پاپ‌آپ خطای دیگر بعد از استعلام — روند "
+                    f"حذف/افزودن مجدد سکشن: {popup_text or ''}")
+                await readd_person_section(
+                    page, current_national_id, ng_click_contains,
+                    log_prefix="LAVAYEH")
+                await asyncio.sleep(2)
+                continue
             await asyncio.sleep(5)
             continue
 
@@ -1758,6 +1821,24 @@ async def _click_sana_query_with_retry(
         if extracted:
             return
         await asyncio.sleep(3)
+
+    # ⭐ طبق دستور کارفرما: اگر بعد از بازیابی سکشن هم استعلام پاسخ قطعی
+    # نداد، متن وضعیت برای مدیر و کاربر ارسال می‌شود.
+    if readd_done:
+        _msg = (
+            f"⚠️ استعلام ثنا برای شناسه `{current_national_id or '—'}` پس از "
+            "تلاش مجدد (حذف و افزودن مجدد سکشن) نتیجه نداد.")
+        try:
+            await bot.send_message(user_id, _msg)
+        except Exception:
+            pass
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"⚠️ [LAVAYEH] استعلام ثنا کاربر {user_id} نتیجه نداد — "
+                f"شناسه {current_national_id}")
+        except Exception:
+            pass
 
 
 def _classify_lavayeh_sana_popup(text: str) -> str:

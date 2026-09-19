@@ -309,6 +309,165 @@ async def detect_concurrent_login_popup(page) -> bool:
     return bool(is_concurrent)
 
 
+async def dismiss_sana_error_popup(page) -> bool:
+    """
+    بستن یک‌بارهٔ پاپ‌آپ خطای sweet-alert سامانه (دکمهٔ «بستن»).
+
+    طبق دستور کارفرما: هرگاه بعد از استعلام کدملی/شناسه ملی پاپ‌آپی ظاهر شد،
+    ابتدا یک‌بار پاپ‌آپ با کلیک روی «بستن» (button.confirm) بسته می‌شود و
+    سپس روند حذف/افزودن مجدد سکشن (readd_person_section) انجام می‌شود.
+    """
+    try:
+        closed = await page.evaluate('''() => {
+            const popup = document.querySelector('.sweet-alert.showSweetAlert');
+            if (!popup) return false;
+            const style = window.getComputedStyle(popup);
+            if (style.display === 'none' || style.visibility === 'hidden') return false;
+            // دکمهٔ «بستن» — button.confirm (شامل متن بستن در اکثر پاپ‌آپ‌ها)
+            const btn = popup.querySelector('button.confirm') ||
+                        popup.querySelector('button.cancel');
+            if (btn) { btn.click(); return true; }
+            // فال‌بک: هر دکمهٔ visible با متن «بستن»
+            const btns = Array.from(popup.querySelectorAll('button'));
+            const bastan = btns.find(b => (b.innerText || '').trim() === 'بستن');
+            if (bastan) { bastan.click(); return true; }
+            return false;
+        }''')
+    except Exception as e:
+        logging.warning(f"dismiss_sana_error_popup: {e}")
+        return False
+    if closed:
+        logging.info("dismiss_sana_error_popup: پاپ‌آپ خطا بسته شد")
+        await asyncio.sleep(1.5)
+    return bool(closed)
+
+
+async def readd_person_section(page, national_id: str = "", ng_click: str = "",
+                               log_prefix: str = "SANA") -> bool:
+    """
+    ⭐ طبق دستور کارفرما — بازیابی سکشن شخص بعد از پاپ‌آپ خطای استعلام ثنا.
+
+    روند دستور کارفرما (تمام بخش‌های سامانه که کدملی/شناسه ملی استعلام می‌شود):
+      ۱. پاپ‌آپ خطا یک‌بار بسته شود (کلیک روی «بستن»)
+      ۲. روی دکمهٔ حذف سکشن کلیک شود:
+             <div class="btn btn-danger btn-sm pull-left"
+                  ng-click="navListCtrl.onRemoveItem($index)"><i class="fa fa-close"></i></div>
+      ۳. دکمهٔ «افزودن» (#btnAddSection) دوباره انتخاب شود
+      ۴. کدملی/شناسه ملی مجدداً در فیلد مربوطه وارد شود
+    سپس فراخوان‌ده استعلام ثنا را از نو کلیک می‌کند؛ اگر باز هم پاپ‌آپ آمد،
+    متن خطا برای مدیر و کاربر ارسال می‌شود.
+
+    ng_click: نوع استعلام — «callNationalityCode» (شخص حقیقی/وکیل) یا
+              «callLegalNationalityCode» (شخص حقوقی/شناسه ملی شرکت).
+    خروجی: True اگر هر ۴ مرحله با موفقیت انجام شد.
+    """
+    ok_close = await dismiss_sana_error_popup(page)
+    await asyncio.sleep(1)
+
+    is_legal = "callLegalNationalityCode" in (ng_click or "")
+
+    # ── ۲. حذف سکشنِ فعلی (آخرین دکمهٔ حذف visible) ─────────────────────
+    try:
+        removed = await page.evaluate('''() => {
+            // اولویت ۱: دکمه‌های ng-click شامل onRemoveItem
+            const els = Array.from(
+                document.querySelectorAll('[ng-click*="onRemoveItem"]')
+            );
+            const visible = els.filter(el => {
+                const r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0 &&
+                       window.getComputedStyle(el).display !== 'none';
+            });
+            const target = visible.length > 0 ? visible[visible.length - 1] : null;
+            if (target) { target.click(); return true; }
+            // فال‌بک: دکمهٔ خطر (btn-danger) با آیکون fa-close
+            const dangers = Array.from(
+                document.querySelectorAll('.btn-danger .fa-close, .btn-danger')
+            );
+            const visDanger = dangers.filter(el => {
+                const r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0 &&
+                       window.getComputedStyle(el).display !== 'none';
+            });
+            if (visDanger.length > 0) {
+                visDanger[visDanger.length - 1].click();
+                return true;
+            }
+            return false;
+        }''')
+    except Exception as e:
+        logging.warning(f"[{log_prefix}] readd: خطا در حذف سکشن: {e}")
+        removed = False
+    await asyncio.sleep(2)
+
+    # ── ۳. کلیک «افزودن» (#btnAddSection) ──────────────────────────────
+    try:
+        added = await page.evaluate('''() => {
+            const btn = document.querySelector('#btnAddSection');
+            if (btn && !btn.disabled) { btn.click(); return true; }
+            const btns = Array.from(document.querySelectorAll('button'));
+            const add = btns.find(b => !b.disabled &&
+                (b.innerText || '').trim().includes('افزودن'));
+            if (add) { add.click(); return true; }
+            return false;
+        }''')
+    except Exception as e:
+        logging.warning(f"[{log_prefix}] readd: خطا در کلیک افزودن: {e}")
+        added = False
+    await asyncio.sleep(2.5)
+
+    # ── ۴. وارد کردن مجدد کدملی/شناسه ملی (سازگار با AngularJS) ────────
+    filled = False
+    if national_id:
+        try:
+            filled = await page.evaluate('''(args) => {
+                const val = args.national_id;
+                const isLegal = args.is_legal;
+                const selectors = isLegal
+                    ? ['#txtLegalNationalityCode', '#txtLegalIrNationalityCode',
+                       'input[ng-model*="LegalNationalityCode"]']
+                    : ['#txtRealIrNationalityCode1', '#txtRealIrNationalityCode',
+                       'input[ng-model*="RealIrNationalityCode"]',
+                       'input[ng-model*="NationalityCode"]'];
+                let inp = null;
+                for (const sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el && !el.disabled && el.offsetParent !== null) { inp = el; break; }
+                }
+                if (!inp) return false;
+                inp.focus();
+                inp.value = val;
+                inp.dispatchEvent(new Event('input', { bubbles: true }));
+                inp.dispatchEvent(new Event('change', { bubbles: true }));
+                try {
+                    if (typeof angular !== 'undefined') {
+                        const scope = angular.element(inp).scope();
+                        if (scope) {
+                            scope.$apply(() => {
+                                const key = inp.getAttribute('ng-model');
+                                if (key) {
+                                    const parts = key.split('.');
+                                    let obj = scope;
+                                    for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
+                                    obj[parts[parts.length - 1]] = val;
+                                }
+                            });
+                        }
+                    }
+                } catch(e) {}
+                return true;
+            }''', {"national_id": str(national_id), "is_legal": is_legal})
+        except Exception as e:
+            logging.warning(f"[{log_prefix}] readd: خطا در پر کردن مجدد شناسه: {e}")
+            filled = False
+        await asyncio.sleep(1.5)
+
+    logging.info(
+        f"[{log_prefix}] readd_person_section انجام شد — "
+        f"close={ok_close} remove={removed} add={added} refill={filled}")
+    return bool(ok_close and removed and added and filled)
+
+
 async def wait_for_angular_idle(page):
     """منتظر ماندن برای پایداری انگولار"""
     try:

@@ -57,6 +57,7 @@ from browser_helpers import (
     goto_url_with_retry, human_delay, safe_click_by_text,
     wait_for_angular_idle, handle_session_expired,
     wait_for_horizontal_loading_bar, detect_concurrent_login_popup,
+    readd_person_section, dismiss_sana_error_popup,
     NavigationResetError)
 
 
@@ -752,7 +753,15 @@ async def _query_sana(page, ng_click: str, bot: Bot, user_id: int,
     - انقضای نشست → تمدید (handle_session_expired) و تلاش مجدد
     - خطای «ثبت نشده/تاریخ تولد اشتباه» → TajdidSanaQueryError
     - موفقیت → فیلد کدملی disabled می‌شود (ExtractedFromSana)
+
+    ⭐ طبق دستور کارفرما (تمام بخش‌های سامانه): بعد از کلیک استعلام، ابتدا
+    لودینگ صفحه چک می‌شود؛ اگر بعد از لودینگ پاپ‌آپی ظاهر شد، یک‌بار پاپ‌آپ
+    بسته شده، سکشن شخص حذف (onRemoveItem) و مجدداً «افزودن» زده می‌شود و
+    شناسه دوباره وارد می‌شود؛ اگر باز هم پاپ‌آپ ظاهر شد، متن خطا برای مدیر
+    و کاربر ارسال می‌شود.
     """
+    # ⭐ روند بازیابی سکشن فقط یک‌بار اجرا می‌شود (طبق دستور کارفرما)
+    readd_done = False
     for attempt in range(max_retries):
         # بررسی session expiry قبل از هر تلاش
         had_expiry = await check_and_handle_expiry(page, bot, user_id)
@@ -811,6 +820,33 @@ async def _query_sana(page, ng_click: str, bot: Bot, user_id: int,
                 await handle_session_expired(bot, user_id, page=page)
                 continue
 
+            # ⭐ محافظ: اگر پاپ‌آپ خطا نبوده و استعلام موفق بوده، سکشن حذف/افزودن نمی‌شود
+            success_now = await page.evaluate('''() => {
+                const disabled = document.querySelector(
+                    'input[ng-disabled*="ExtractedFromSana"][ng-disabled*="1"]');
+                if (disabled) return true;
+                const inp = document.querySelector(
+                    '#txtRealIrNationalityCode, #txtRealIrNationalityCode1, #txtNationalityCode');
+                return inp ? inp.disabled : false;
+            }''')
+            if success_now:
+                logging.info("[TN] پاپ‌آپ خطا نبود — استعلام قبلاً موفق بود")
+                return
+
+            # ⭐ طبق دستور کارفرما: اولین پاپ‌آپ بعد از استعلام → بستن پاپ‌آپ
+            # (بستن) + حذف سکشن (onRemoveItem) + افزودن مجدد (#btnAddSection)
+            # + ورود مجدد شناسه؛ سپس استعلام دوباره کلیک می‌شود.
+            if not readd_done:
+                logging.warning(
+                    f"[TN] پاپ‌آپ استعلام ثنا برای شناسه {current_national_id} — "
+                    f"روند حذف/افزودن مجدد سکشن اجرا می‌شود: {popup_error[:120]}")
+                readd_done = True
+                await readd_person_section(
+                    page, current_national_id, ng_click,
+                    log_prefix=f"TN-{person_role or 'شخص'}")
+                await asyncio.sleep(2)
+                continue
+
             is_not_registered = ("ثبت نشده" in popup_error and "شناسه" in popup_error) or \
                                 ("اطلاعاتی با این شناسه ملی ثبت نشده است" in popup_error)
             is_birthdate_error = "تاریخ تولد" in popup_error and "اشتباه" in popup_error
@@ -828,7 +864,16 @@ async def _query_sana(page, ng_click: str, bot: Bot, user_id: int,
 
             if _popup_kind in ("person_not_in_case", "birthdate", "not_registered"):
                 await _close_popup(page)
-                logging.warning(f"[TN] خطای ثنا ({_popup_kind}) برای شناسه {current_national_id}: {popup_error}")
+                logging.warning(f"[TN] خطای ثنا ({_popup_kind}) برای شناسه {current_national_id} بعد از بازیابی سکشن: {popup_error}")
+                # ⭐ متن خطا برای مدیر هم ارسال می‌شود (طبق دستور کارفرما)
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"⚠️ [TN] خطای استعلام ثنا کاربر {user_id} — شناسه "
+                        f"{current_national_id} ({person_role or 'شخص'}): "
+                        f"«{popup_error[:200]}»")
+                except Exception:
+                    pass
                 raise TajdidSanaQueryError(
                     popup_error,
                     national_id=current_national_id,
@@ -855,6 +900,23 @@ async def _query_sana(page, ng_click: str, bot: Bot, user_id: int,
         await asyncio.sleep(5)
 
     logging.warning(f"[TN] استعلام ({ng_click}) پس از {max_retries} تلاش نتیجه نداد")
+    # ⭐ طبق دستور کارفرما: اگر بعد از بازیابی سکشن هم استعلام پاسخ قطعی
+    # نداد، متن وضعیت برای مدیر و کاربر ارسال می‌شود.
+    if readd_done:
+        _msg = (
+            f"⚠️ استعلام ثنا برای شناسه `{current_national_id or '—'}` پس از "
+            "تلاش مجدد (حذف و افزودن مجدد سکشن) نتیجه نداد.")
+        try:
+            await bot.send_message(user_id, _msg)
+        except Exception:
+            pass
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"⚠️ [TN] استعلام ثنا کاربر {user_id} نتیجه نداد — "
+                f"شناسه {current_national_id} ({person_role or 'شخص'})")
+        except Exception:
+            pass
 # -*- coding: utf-8 -*-
 # ══════════════════════════════════════════════════════════════════════════════
 # مرحله «اطلاعات دادنامه/قرار» — پرکردن، بازیابی (بلی) و فرم پس از بازیابی

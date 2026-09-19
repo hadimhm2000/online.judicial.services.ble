@@ -2750,13 +2750,13 @@ async def _submit_tn_request(message: Message, state: FSMContext, bot: Bot,
 
     # 📥 کپی کامل درخواست برای ادمین — همین لحظه، مستقل از موفقیت/شکست
     # پردازش خودکار بعدی در سنا.
+    # ⭐ طبق دستور کارفرما: کپی درخواست دعاوی اعتراضی باید عین اظهارنامه/
+    # لایحه برای ادمین ارسال شود — حالا با فرمت‌کنندهٔ اختصاصی و خوانا
+    # (تمام فیلدها + اشخاص + مدارک) و نه dump خام کلیدها.
     try:
-        from admin_forward import send_generic_submission_to_admin
+        from admin_forward import send_tn_submission_to_admin
         from config import ADMIN_ID
-        await send_generic_submission_to_admin(
-            bot, ADMIN_ID, user_id, f"دعاوی اعتراضی ({case_type})", job_data,
-            image_keys=["tn_attachments"],
-        )
+        await send_tn_submission_to_admin(bot, ADMIN_ID, user_id, job_data)
     except Exception as e:
         logging.error(f"[TN] خطا در ارسال کپی درخواست به ادمین: {e}", exc_info=True)
 
