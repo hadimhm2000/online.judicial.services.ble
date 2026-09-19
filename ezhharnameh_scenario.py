@@ -37,7 +37,8 @@ from browser_helpers import (
     goto_url_with_retry, human_delay, force_click_by_text,
     safe_click_by_text, safe_type, wait_for_angular_idle,
     handle_session_expired, wait_for_horizontal_loading_bar,
-    detect_concurrent_login_popup)
+    detect_concurrent_login_popup, readd_person_section,
+    dismiss_sana_error_popup)
 
 
 class EzhharFatalError(Exception):
@@ -812,6 +813,14 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
 
         except EzhharSanaQueryError as e:
             logging.error(f"[EZHHAR] خطای استعلام ثنا user={user_id}: {e}")
+            # ⭐ طبق دستور کارفرما: اطلاع متن خطا به مدیر
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"⚠️ [EZHHAR] خطای استعلام ثنا کاربر {user_id} — شناسه "
+                    f"{e.national_id} ({e.person_role or 'شخص'}): «{str(e)[:200]}»")
+            except Exception:
+                pass
             # ذخیره اطلاعات تسک برای ادامه بعدی در صورت ویرایش شناسه ملی
             pending_task_data = dict(data)
             pending_task_data["_sana_error_national_id"] = e.national_id
@@ -1289,7 +1298,15 @@ async def _query_sana(page, ng_click: str, bot: Bot, user_id: int, is_legal: boo
     اگر خطای «اطلاعاتی با این شناسه ملی ثبت نشده است» یا «تاریخ تولد ارسالی
     مربوط به شماره ملی ... اشتباه است» ظاهر شود، EzhharSanaQueryError پرتاب می‌شود.
     اگر session منقضی شود، handle_session_expired صدا زده می‌شود.
+
+    ⭐ طبق دستور کارفرما (تمام بخش‌های سامانه): بعد از کلیک استعلام، ابتدا
+    لودینگ صفحه چک می‌شود؛ اگر بعد از لودینگ پاپ‌آپی ظاهر شد، یک‌بار پاپ‌آپ
+    بسته شده، سکشن شخص حذف (onRemoveItem) و مجدداً «افزودن» زده می‌شود و
+    شناسه دوباره وارد می‌شود؛ اگر باز هم پاپ‌آپ ظاهر شد، متن خطا برای مدیر
+    و کاربر ارسال می‌شود.
     """
+    # ⭐ روند بازیابی سکشن فقط یک‌بار اجرا می‌شود (طبق دستور کارفرما)
+    readd_done = False
     for attempt in range(max_retries):
         # بررسی session expiry قبل از هر تلاش
         had_expiry = await check_and_handle_expiry(page, bot, user_id)
@@ -1352,6 +1369,34 @@ async def _query_sana(page, ng_click: str, bot: Bot, user_id: int, is_legal: boo
                 await handle_session_expired(bot, user_id, page=page)
                 continue
 
+            # ⭐ محافظ: اگر پاپ‌آپ خطا نبوده و استعلام موفق بوده، سکشن حذف/افزودن نمی‌شود
+            success_now = await page.evaluate('''() => {
+                const disabled = document.querySelector(
+                    'input[ng-disabled*="ExtractedFromSana"][ng-disabled*="1"]'
+                );
+                if (disabled) return true;
+                const inp = document.querySelector('#txtRealIrNationalityCode, #txtRealIrNationalityCode1');
+                return inp ? inp.disabled : false;
+            }''')
+            if success_now:
+                logging.info("[EZHHAR] پاپ‌آپ خطا نبود — استعلام قبلاً موفق بود")
+                return
+
+            # ⭐ طبق دستور کارفرما: اولین پاپ‌آپ بعد از استعلام → بستن پاپ‌آپ
+            # (بستن) + حذف سکشن (onRemoveItem) + افزودن مجدد (#btnAddSection)
+            # + ورود مجدد شناسه؛ سپس استعلام دوباره کلیک می‌شود (لودینگ هم در
+            # ابتدای تلاش بعدی مجدداً چک می‌شود).
+            if not readd_done:
+                logging.warning(
+                    f"[EZHHAR] پاپ‌آپ استعلام ثنا برای شناسه {current_national_id} — "
+                    f"روند حذف/افزودن مجدد سکشن اجرا می‌شود: {popup_error[:120]}")
+                readd_done = True
+                await readd_person_section(
+                    page, current_national_id, ng_click,
+                    log_prefix=f"EZHHAR-{person_role or 'شخص'}")
+                await asyncio.sleep(2)
+                continue
+
             is_not_registered = ("اطلاعاتی با این شناسه ملی ثبت نشده است" in popup_error or
                                   "اطلاعاتي با اين شناسه ملي ثبت نشده است" in popup_error)
             is_birthdate_error = ("تاریخ تولد ارسالی مربوط به شماره ملی" in popup_error and "اشتباه است" in popup_error) or \
@@ -1371,7 +1416,16 @@ async def _query_sana(page, ng_click: str, bot: Bot, user_id: int, is_legal: boo
             if _popup_kind in ("person_not_in_case", "birthdate", "not_registered"):
                 # بستن پاپ‌آپ
                 await _close_popup(page)
-                logging.warning(f"[EZHHAR] خطای ثنا ({_popup_kind}) برای شناسه {current_national_id}: {popup_error}")
+                logging.warning(f"[EZHHAR] خطای ثنا ({_popup_kind}) برای شناسه {current_national_id} بعد از بازیابی سکشن: {popup_error}")
+                # ⭐ متن خطا برای مدیر هم ارسال می‌شود (طبق دستور کارفرما)
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"⚠️ [EZHHAR] خطای استعلام ثنا کاربر {user_id} — شناسه "
+                        f"{current_national_id} ({person_role or 'شخص'}): "
+                        f"«{popup_error[:200]}»")
+                except Exception:
+                    pass
                 raise EzhharSanaQueryError(
                     popup_error,
                     national_id=current_national_id,
@@ -1398,6 +1452,23 @@ async def _query_sana(page, ng_click: str, bot: Bot, user_id: int, is_legal: boo
         await asyncio.sleep(5)
 
     logging.warning(f"[EZHHAR] استعلام ({ng_click}) پس از {max_retries} تلاش نتیجه نداد")
+    # ⭐ طبق دستور کارفرما: اگر بعد از بازیابی سکشن هم استعلام پاسخ قطعی
+    # نداد، متن وضعیت برای مدیر و کاربر ارسال می‌شود.
+    if readd_done:
+        _msg = (
+            f"⚠️ استعلام ثنا برای شناسه `{current_national_id or '—'}` پس از "
+            "تلاش مجدد (حذف و افزودن مجدد سکشن) نتیجه نداد.")
+        try:
+            await bot.send_message(user_id, _msg)
+        except Exception:
+            pass
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"⚠️ [EZHHAR] استعلام ثنا کاربر {user_id} نتیجه نداد — "
+                f"شناسه {current_national_id} ({person_role or 'شخص'})")
+        except Exception:
+            pass
 
 
 async def _close_popup(page) -> bool:

@@ -116,7 +116,8 @@ from browser_helpers import (
     goto_url_with_retry, human_delay, force_click_by_text,
     safe_click_by_text, safe_type, wait_for_angular_idle,
     handle_session_expired, wait_for_horizontal_loading_bar,
-    detect_concurrent_login_popup, NavigationResetError)
+    detect_concurrent_login_popup, readd_person_section,
+    dismiss_sana_error_popup, NavigationResetError)
 from upload_helpers import (
     prepare_files_for_upload,
     click_save_doc_with_retry,
@@ -2276,6 +2277,10 @@ async def _query_sana_check(page, ng_click: str, bot: Bot, user_id: int,
     خروجی: 'ok' | 'failed' (پیام‌ها ارسال شده‌اند) | 'no_response'
     """
     error_seen = False
+    # ⭐ طبق دستور کارفرما: اولین پاپ‌آپ بعد از استعلام — بستن پاپ‌آپ + حذف
+    # سکشن + افزودن مجدد + ورود مجدد کدملی؛ اگر باز هم پاپ‌آپ آمد، متن خطا
+    # برای مدیر و کاربر ارسال می‌شود.
+    readd_done = False
     for attempt in range(max_retries):
         try:
             had_expiry = await check_and_handle_expiry(page, bot, user_id)
@@ -2326,42 +2331,63 @@ async def _query_sana_check(page, ng_click: str, bot: Bot, user_id: int,
 
         if popup_text:
             kind = _sana_popup_kind(popup_text)
-            # بستن پاپ‌آپ
-            await page.evaluate('''() => {
-                const btn = document.querySelector('.sweet-alert .confirm, .sweet-alert .cancel');
-                if (btn) btn.click();
-            }''')
+            # بستن پاپ‌آپ — کلیک روی دکمهٔ «بستن» (طبق دستور کارفرما)
+            await dismiss_sana_error_popup(page)
             await asyncio.sleep(1)
 
             if kind == "session":
                 # مدیریت شده توسط check_and_handle_expiry — تمدید و تلاش مجدد
                 continue
 
+            # ⭐ محافظ: اگر پاپ‌آپ بسته‌شده در واقع خطا نبوده و استعلام موفق
+            # انجام شده باشد (فیلد کدملی/ExtractedFromSana غیرفعال شده)،
+            # سکشن حذف/افزودن نمی‌شود — مستقیماً موفق اعلام می‌گردد.
+            success_now = await page.evaluate('''() => {
+                const inp = document.querySelector('#txtRealIrNationalityCode1, #txtRealIrNationalityCode');
+                if (inp && inp.disabled) return true;
+                const disabled = document.querySelector('input[ng-disabled*="ExtractedFromSana"]');
+                return disabled !== null;
+            }''')
+            if success_now:
+                logging.info(f"[CHECK][{role}] پاپ‌آپ خطا نبود — استعلام قبلاً موفق بود (کدملی {national_id})")
+                return "ok"
+
+            # ⭐ طبق دستور کارفرما (تمام بخش‌های سامانه): اولین پاپ‌آپ بعد از
+            # استعلام کدملی/شناسه ملی → پاپ‌آپ بسته شد؛ حالا سکشن شخص حذف
+            # (onRemoveItem) و دوباره «افزودن» (#btnAddSection) زده می‌شود،
+            # کدملی/شناسه مجدد وارد و استعلام تکرار می‌شود. لودینگ هم در
+            # ابتدای تلاش بعدی مجدداً چک می‌شود.
+            if not readd_done:
+                logging.warning(
+                    f"[CHECK][{role}] پاپ‌آپ استعلام ثنا ({kind}) برای کدملی "
+                    f"{national_id} — روند حذف/افزودن مجدد سکشن اجرا می‌شود")
+                readd_done = True
+                await readd_person_section(
+                    page, national_id, ng_click,
+                    log_prefix=f"CHECK-{role or 'شخص'}")
+                await asyncio.sleep(2)
+                continue
+
             # ⭐ اصلاحیهٔ کارفرما: خطای «تاریخ تولد ارسالی مربوط به شماره ملی
             # ... اشتباه است» یا «اطلاعاتی با این شناسه ملی ثبت نشده است» یا
-            # «شخص ... در فهرست اشخاص پرونده نیست» — retry بی‌فایده است؛
-            # بلافاصله CheckSanaDataError پرتاب می‌شود تا پنجرهٔ ۳۰ دقیقه‌ای
-            # ویرایش کدملی برای کاربر باز شود (عین روند لایحه).
+            # «شخص ... در فهرست اشخاص پرونده نیست» — بعد از یک‌بار بازیابی
+            # سکشن باز هم خطا آمد → متن خطا برای کاربر و مدیر ارسال می‌شود
+            # (پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی).
             if kind in ("birthdate", "not_registered", "person_not_in_case"):
                 logging.warning(
-                    f"[CHECK][{role}] خطای داده‌ای ثنا برای کدملی {national_id}: "
-                    f"{popup_text!r}")
+                    f"[CHECK][{role}] خطای داده‌ای ثنا برای کدملی {national_id} "
+                    f"بعد از بازیابی سکشن: {popup_text!r}")
                 raise CheckSanaDataError(
                     popup_text, kind=kind, national_id=national_id, role=role)
 
-            # خطای غیر نشست دیگر: یکبار retry؛ اگر دوباره خطا آمد →
-            # متن خطا برای کاربر و مدیر ارسال می‌شود
+            # خطای غیر نشست دیگر بعد از بازیابی سکشن → قطعی؛ متن خطا برای
+            # کاربر و مدیر ارسال می‌شود
             logging.warning(
                 f"[CHECK][{role}] خطای استعلام ثنا برای کدملی {national_id} "
                 f"(تلاش {attempt+1}): {popup_text!r}")
-            if error_seen:
-                # دفعهٔ دوم → قطعی؛ متن خطا برای کاربر و مدیر ارسال می‌شود
-                await _notify_sana_query_failure(
-                    bot, user_id, national_id, role, popup_text)
-                return "failed"
-            error_seen = True
-            await asyncio.sleep(3)
-            continue
+            await _notify_sana_query_failure(
+                bot, user_id, national_id, role, popup_text)
+            return "failed"
 
         # تشخیص موفقیت: فیلد کدملی ExtractedFromSana → غیرفعال
         success = await page.evaluate('''() => {

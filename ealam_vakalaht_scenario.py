@@ -66,7 +66,8 @@ from browser_helpers import (
     resilient_sleep, check_and_handle_expiry, soft_click_if_exists,
     goto_url_with_retry, human_delay, force_click_by_text,
     safe_click_by_text, safe_type, wait_for_angular_idle,
-    wait_for_horizontal_loading_bar, handle_session_expired)
+    wait_for_horizontal_loading_bar, handle_session_expired,
+    readd_person_section, dismiss_sana_error_popup)
 
 
 class EalamFatalError(Exception):
@@ -803,11 +804,20 @@ async def _add_lawyer_person(page, national_id: str, bot: Bot, user_id: int):
     await asyncio.sleep(1)
 
     # استعلام از سامانه ثنا - کلیک دکمه استعلام
-    await _click_sana_query(page, "actions.getLawyerDataWithSana", bot, user_id)
+    await _click_sana_query(page, "actions.getLawyerDataWithSana", bot, user_id,
+                            national_id=national_id)
 
 
-async def _click_sana_query(page, ng_click: str, bot: Bot, user_id: int, max_retries: int = 5):
-    """کلیک دکمه استعلام و منتظر ماندن برای تکمیل"""
+async def _click_sana_query(page, ng_click: str, bot: Bot, user_id: int,
+                            max_retries: int = 5, national_id: str = ""):
+    """کلیک دکمه استعلام و منتظر ماندن برای تکمیل
+
+    ⭐ طبق دستور کارفرما (تمام بخش‌های سامانه): بعد از کلیک استعلام ابتدا
+    لودینگ چک می‌شود؛ اگر پاپ‌آپی ظاهر شد یک‌بار بسته شده، سکشن حذف
+    (onRemoveItem) و مجدداً «افزودن» زده می‌شود و شناسه دوباره وارد
+    می‌شود؛ اگر باز هم پاپ‌آپ آمد، متن خطا برای مدیر و کاربر ارسال می‌شود.
+    """
+    readd_done = False
     for attempt in range(max_retries):
         # بررسی session expiry قبل از هر تلاش
         had_expiry = await check_and_handle_expiry(page, bot, user_id)
@@ -855,6 +865,58 @@ async def _click_sana_query(page, ng_click: str, bot: Bot, user_id: int, max_ret
         if had_expiry:
             logging.info(f"[EALAM] session renewed after query attempt {attempt+1}")
             continue
+
+        # ⭐ طبق دستور کارفرما: اولین پاپ‌آپ بعد از استعلام → بستن پاپ‌آپ
+        # (بستن) + حذف سکشن (onRemoveItem) + افزودن مجدد (#btnAddSection)
+        # + ورود مجدد شناسه؛ سپس استعلام دوباره کلیک می‌شود.
+        popup_text_ealam = await page.evaluate('''() => {
+            const popup = document.querySelector('.sweet-alert.showSweetAlert');
+            if (!popup) return null;
+            const style = window.getComputedStyle(popup);
+            if (style.display === 'none' || style.visibility === 'hidden') return null;
+            const h2 = popup.querySelector('h2');
+            const p = popup.querySelector('p');
+            return [h2 ? h2.innerText : '', p ? p.innerText : '']
+                .filter(Boolean).join(' ').trim() || null;
+        }''')
+        if popup_text_ealam:
+            # ⭐ محافظ: اگر پاپ‌آپ خطا نبوده و داده‌ها از ثنا دریافت شده، سکشن حذف/افزودن نمی‌شود
+            success_now = await page.evaluate('''() => {
+                const disabled = document.querySelector(
+                    'input[ng-disabled*="ExtractedFromSana"][ng-disabled*="1"], input[disabled]'
+                );
+                return disabled !== null;
+            }''')
+            if success_now:
+                logging.info("[EALAM] پاپ‌آپ خطا نبود — داده‌های ثنا قبلاً دریافت شد")
+                await _close_error_popup(page)
+                return
+            if not readd_done:
+                readd_done = True
+                logging.warning(
+                    f"[EALAM] پاپ‌آپ استعلام ثنا — روند حذف/افزودن مجدد سکشن: "
+                    f"{popup_text_ealam[:120]}")
+                await dismiss_sana_error_popup(page)
+                await readd_person_section(
+                    page, national_id, ng_click, log_prefix="EALAM")
+                await asyncio.sleep(2)
+                continue
+            # پاپ‌آپ دوبار بعد از بازیابی سکشن → متن خطا برای مدیر و کاربر
+            await dismiss_sana_error_popup(page)
+            try:
+                await bot.send_message(
+                    user_id,
+                    f"⚠️ خطای استعلام ثنا:\n\n«{popup_text_ealam[:250]}»")
+            except Exception:
+                pass
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"⚠️ [EALAM] خطای استعلام ثنا کاربر {user_id} — شناسه "
+                    f"{national_id or '—'}: «{popup_text_ealam[:200]}»")
+            except Exception:
+                pass
+            return
 
         await _close_error_popup(page)
 

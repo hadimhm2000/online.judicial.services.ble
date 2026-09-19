@@ -243,3 +243,115 @@ async def send_check_submission_to_admin(bot: Bot, admin_id: int, user_id: int, 
             await bot.send_document(admin_id, docx_file_id, caption=f"📄 فایل ورد ارسالی کاربر {user_id}")
         except Exception as e:
             logger.error(f"[ADMIN-FORWARD] خطا در ارسال فایل ورد به ادمین: {e}", exc_info=True)
+
+
+async def send_tn_submission_to_admin(bot: Bot, admin_id: int, user_id: int, data: dict):
+    """⭐ کپی کامل درخواست «دعاوی اعتراضی» (تمام فیلدها + مدارک + متن) برای ادمین.
+
+    طبق دستور کارفرما: در اظهارنامه/استعلام/لایحه کپی درخواست برای ادمین
+    ارسال می‌شود اما بخش ثبت دادخواست‌ها و دعاوی اعتراضی ارسال نمی‌شد.
+    این فرمت‌کننده اختصاصی (مشابه send_check_submission_to_admin) جای
+    dump خام کلیدهای tn_* را می‌گیرد تا ادمین یک کپی خوانا و کامل داشته باشد.
+    ارسال دقیقاً در لحظهٔ «تایید و شروع ثبت» و مستقل از موفقیت/شکست
+    پردازش خودکار در سنا انجام می‌شود.
+    """
+
+    def _person_line(p, idx):
+        if not isinstance(p, dict):
+            return f"  {idx}. {p}"
+        ptype = p.get("person_type", "") or "شخص حقیقی"
+        name = p.get("name", "") or ""
+        nid = p.get("national_id", "") or ""
+        cid = p.get("company_id", "") or ""
+        parts = [f"  {idx}. {ptype}"]
+        if nid:
+            parts.append(f"کدملی: {nid}")
+        if cid:
+            parts.append(f"شناسه ملی: {cid}")
+        if name:
+            parts.append(f"نام: {name}")
+        reps = p.get("representatives") or []
+        line = " | ".join(parts)
+        if reps:
+            rep_lines = "\n".join(
+                f"      {j}. {r.get('representative_type', '')}: "
+                f"{r.get('national_id', '') or r.get('name', '')}"
+                for j, r in enumerate(reps, start=1) if isinstance(r, dict))
+            if rep_lines:
+                line += f"\n      نمایندگان:\n{rep_lines}"
+        return line
+
+    def _reasons_text(reasons):
+        items = []
+        for i, r in enumerate(reasons or [], start=1):
+            if isinstance(r, dict):
+                items.append(f"  {i}. {r.get('text', '')}")
+            else:
+                items.append(f"  {i}. {r}")
+        return "\n".join(items) or "  -"
+
+    case_type = data.get("case_type", "")
+    labels = data.get("tn_labels", {}) or {}
+    appellant_label = labels.get("appellant", "تجدیدنظرخواه") or "تجدیدنظرخواه"
+    appellee_label = labels.get("appellee", "تجدیدنظرخوانده") or "تجدیدنظرخوانده"
+    witness_label = labels.get("witness_step", "مطلع/گواه") or "مطلع/گواه"
+
+    appellants = data.get("tn_appellants", []) or []
+    appellees = data.get("tn_appellees", []) or []
+    witnesses = data.get("tn_witnesses", []) or []
+
+    appellants_text = "\n".join(
+        _person_line(p, i + 1) for i, p in enumerate(appellants)) or "  -"
+    appellees_text = "\n".join(
+        _person_line(p, i + 1) for i, p in enumerate(appellees)) or "  -"
+    witnesses_text = "\n".join(
+        _person_line(w, i + 1) for i, w in enumerate(witnesses)) or "  -"
+
+    amount = data.get("tn_amount", 0) or 0
+    insolvency_line = "📋 اعسار از هزینه دادرسی: " + (
+        "بله" if data.get("tn_insolvency") else "خیر")
+
+    attachments = data.get("tn_attachments", []) or []
+    total_imgs = sum(len((g or {}).get("images", []) or []) for g in attachments
+                     if isinstance(g, dict))
+    att_lines = []
+    for i, g in enumerate(attachments, start=1):
+        if isinstance(g, dict):
+            att_lines.append(
+                f"  {i}. {g.get('title', 'مستندات')} — "
+                f"{len(g.get('images', []) or [])} تصویر")
+    att_text = "\n".join(att_lines) if att_lines else "  (بدون مدرک)"
+
+    body = (
+        f"🆔 آیدی کاربر: {user_id}\n"
+        f"(برای پاسخ مستقیم به همین کاربر: /send {user_id})\n\n"
+        f"📌 نوع دعوی: {case_type}\n"
+        f"🏛 شماره دادنامه/قرار: {data.get('tn_judge_no', '') or '-'}\n"
+        f"📁 شماره پرونده: {data.get('tn_file_no', '') or '-'}\n"
+        f"📅 تاریخ دادنامه/قرار: {data.get('tn_judge_date', '') or '-'}\n"
+        f"🗺 استان: {data.get('tn_province', '') or '-'}\n"
+        f"📄 نوع سند: {data.get('tn_doc_type', '') or '-'}\n"
+        f"💰 مبلغ: {amount:,} ریال\n"
+        f"{insolvency_line}\n"
+        f"\n👤 {appellant_label}(ها):\n{appellants_text}\n\n"
+        f"👥 {appellee_label}(ها):\n{appellees_text}\n\n"
+        f"👁 {witness_label}(ها):\n{witnesses_text}\n\n"
+        f"📄 شرح متن:\n{data.get('tn_text', '') or '-'}\n\n"
+        f"📝 سایر توضیحات:\n{data.get('tn_extra_text', '') or '-'}\n\n"
+        f"🧾 جهات/دلایل:\n{_reasons_text(data.get('tn_reasons'))}\n\n"
+        f"🖼 مدارک ({total_imgs} تصویر در {len(attachments)} عنوان):\n{att_text}"
+    )
+
+    await send_text_dump_to_admin(
+        bot, admin_id,
+        header=f"📥 کپی کامل درخواست دعاوی اعتراضی — {case_type} (ارسال‌شده توسط کاربر)",
+        body=body,
+    )
+
+    for g in attachments:
+        if not isinstance(g, dict):
+            continue
+        await _send_images_to_admin(
+            bot, admin_id, g.get("images", []) or [],
+            caption_prefix=f"📎 مدرک «{g.get('title', '')}» | دعاوی اعتراضی | کاربر: {user_id}"
+        )
