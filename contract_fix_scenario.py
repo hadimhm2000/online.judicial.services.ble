@@ -461,10 +461,84 @@ async def _register_new_contract(page, contract_number: str, stamp_amount_value:
 # دنبالهٔ ثبت — آماده‌سازی، هزینه، چاپ و ارسال نتیجه (بر اساس سرویس)
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _cost_total(cost_info) -> int:
+    """استخراج مبلغ نهایی از خروجی توابع محاسبه هزینهٔ سناریوها
+    (dict یا عدد مستقیم)."""
+    if isinstance(cost_info, dict):
+        return int(cost_info.get("final_total", 0) or cost_info.get("main_total", 0) or 0)
+    try:
+        return int(cost_info or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 async def _finish_bill_style(page, flow: str, bill_no: str,
-                             bot: Bot, user_id: int) -> dict:
-    """آماده‌سازی + هزینه + چاپ برای سرویس‌های لایحه‌محور (لایحه/اعلام وکالت/
-    اظهارنامه/دعاوی اعتراضی — همان صفحهٔ مشترک سامانه)."""
+                             bot: Bot, user_id: int, task_data: dict = None) -> dict:
+    """آماده‌سازی + هزینه + چاپ — عین مسیر عادی «همان سرویس».
+
+    ⭐ اصلاحیهٔ کارفرما (۱۴۰۵/۰۶/۲۸): قبلاً برای همهٔ سرویس‌های لایحه‌محور
+    توابع لایحه استفاده می‌شد و آماده‌سازی اظهارنامه/دعاوی اعتراضی شکست
+    می‌خورد (#btnPreparation مخصوص لایحه است؛ اظهارنامه/اعتراضی دکمهٔ
+    «تایید اطلاعات» (#btnCalculateCash) دارند). حالا هر سرویس دقیقاً از
+    توابع سناریوی عادی خودش استفاده می‌کند:
+      - ezhharnameh → ezhharnameh_scenario
+      - tn          → tajdid_nazar_scenario (با فرمول هزینهٔ همان نوع دعوی)
+      - lavayeh/ealam → lavayeh_scenario (روال قبلی)
+    """
+    task_data = task_data or {}
+
+    # ── اظهارنامه — عین روند ثبت اظهارنامه معمولی (مراحل ۱۰ تا ۱۲) ──
+    if flow == "ezhharnameh":
+        from ezhharnameh_scenario import (
+            _click_step_box as _ezh_step_box, _click_goto_main as _ezh_goto_main,
+            _click_preparation as _ezh_prep, _calculate_cost as _ezh_cost,
+            _print_ezhharnameh as _ezh_print)
+
+        await _ezh_step_box(page, "آماده سازي جهت دريافت وجه", bot, user_id)
+        await resilient_sleep(page, 5, bot, user_id)
+        if not await _ezh_prep(page, bot, user_id):
+            return {"success": False, "error": "آماده‌سازی اظهارنامه ناموفق"}
+        await _ezh_goto_main(page, bot, user_id)
+        await resilient_sleep(page, 4, bot, user_id)
+
+        await _ezh_step_box(page, "محاسبه و دريافت هزينه", bot, user_id)
+        await resilient_sleep(page, 8, bot, user_id)
+        cost_info = await _ezh_cost(page, bot, user_id)
+        court_total = _cost_total(cost_info)
+
+        await _ezh_goto_main(page, bot, user_id)
+        await resilient_sleep(page, 4, bot, user_id)
+
+        pdf_path = await _ezh_print(page, runtime_state.browser_context, bill_no, bot, user_id)
+        return {"success": True, "cost": court_total, "pdf_path": pdf_path}
+
+    # ── دعاوی اعتراضی — عین روند عادی (مراحل ۱۴ تا ۱۶ + فرمول نوع دعوی) ──
+    if flow == "tn":
+        from tajdid_nazar_scenario import (
+            _click_step_box as _tn_step_box, _click_goto_main as _tn_goto_main,
+            _click_preparation as _tn_prep, _calculate_cost as _tn_cost,
+            _print_tn_pdf as _tn_print)
+
+        await _tn_step_box(page, "آماده سازي جهت دريافت وجه", bot, user_id)
+        await resilient_sleep(page, 5, bot, user_id)
+        if not await _tn_prep(page, bot, user_id):
+            return {"success": False, "error": "آماده‌سازی دعاوی اعتراضی ناموفق"}
+        await _tn_goto_main(page, bot, user_id)
+        await resilient_sleep(page, 4, bot, user_id)
+
+        await _tn_step_box(page, "محاسبه و دريافت هزينه", bot, user_id)
+        await resilient_sleep(page, 8, bot, user_id)
+        cost_info = await _tn_cost(
+            page, bot, user_id, case_type=task_data.get("case_type", ""))
+        court_total = _cost_total(cost_info)
+
+        await _tn_goto_main(page, bot, user_id)
+        await resilient_sleep(page, 4, bot, user_id)
+
+        pdf_path = await _tn_print(page, runtime_state.browser_context, bill_no, bot, user_id)
+        return {"success": True, "cost": court_total, "pdf_path": pdf_path}
+
+    # ── لایحه / اعلام وکالت — روال قبلی (توابع لایحه) ──
     from lavayeh_scenario import (
         _click_step_box as _lav_step_box, _click_goto_main as _lav_goto_main,
         _click_preparation_with_retry as _prep, _calculate_cost_with_retry as _cost,
@@ -483,10 +557,7 @@ async def _finish_bill_style(page, flow: str, bill_no: str,
     await _lav_step_box(page, "محاسبه و دريافت هزينه", bot, user_id)
     await resilient_sleep(page, 8, bot, user_id)
     cost_info = await _cost(page, bot, user_id)
-    if isinstance(cost_info, dict):
-        court_total = int(cost_info.get("final_total", 0) or cost_info.get("main_total", 0) or 0)
-    else:
-        court_total = int(cost_info or 0)
+    court_total = _cost_total(cost_info)
 
     await _lav_goto_main(page, bot, user_id)
     await resilient_sleep(page, 4, bot, user_id)
@@ -702,7 +773,8 @@ async def process_contract_fix_task(data: dict, bot: Bot):
                 branch_code = task_data.get("check_branch_code", "")
                 result = await _finish_check(sana_page, bill_no, branch_code, bot, user_id)
             else:
-                result = await _finish_bill_style(sana_page, flow, bill_no, bot, user_id)
+                result = await _finish_bill_style(
+                    sana_page, flow, bill_no, bot, user_id, task_data=task_data)
 
             if not result.get("success"):
                 await bot.send_message(

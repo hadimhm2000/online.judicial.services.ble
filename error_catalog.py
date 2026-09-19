@@ -241,6 +241,27 @@ def extract_national_id(text) -> str:
     return m.group(0)[:10] if m else ""
 
 
+def classify_sana_popup(text) -> str:
+    """⭐ اصلاحیهٔ کارفرما (۱۴۰۵/۰۶/۲۸) — دسته‌بندی پاپ‌آپ پس از کلیک
+    دکمهٔ «استعلام ثنا» در کلیهٔ فلوها (لایحه/اظهارنامه/دادخواست/اعتراضی):
+      "person_not_in_case" | "birthdate" | "not_registered" | "other"
+
+    انقضای نشست قبل از این تابع و جداگانه مدیریت می‌شود.
+    نرمال‌سازی‌شده — مقاوم به ي/ک عربی و نیم‌فاصله.
+    """
+    if not text or not isinstance(text, str):
+        return "other"
+    if is_person_not_in_case(text):
+        return "person_not_in_case"
+    if is_birthdate_error(text):
+        return "birthdate"
+    norm = normalize(text)
+    if "اطلاعاتی با این شناسه ملی ثبت نشده است" in norm or (
+            "شناسه ملی" in norm and "ثبت نشده" in norm):
+        return "not_registered"
+    return "other"
+
+
 def is_load_error(text) -> bool:
     return classify(text) == LOAD_ERROR
 

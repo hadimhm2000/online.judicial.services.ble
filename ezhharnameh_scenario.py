@@ -46,12 +46,15 @@ class EzhharFatalError(Exception):
 
 
 class EzhharSanaQueryError(Exception):
-    """خطای استعلام ثنا — شناسه ملی ثبت نشده یا تاریخ تولد اشتباه."""
-    def __init__(self, message: str, national_id: str = "", person_role: str = "", person_index: int = 0):
+    """خطای استعلام ثنا — شناسه ملی ثبت نشده، تاریخ تولد اشتباه یا
+    شخص در فهرست اشخاص پرونده نیست (kind برای پیام‌دهی صحیح)."""
+    def __init__(self, message: str, national_id: str = "", person_role: str = "", person_index: int = 0,
+                 kind: str = ""):
         super().__init__(message)
         self.national_id = national_id
         self.person_role = person_role      # "declarant" یا "addressee"
         self.person_index = person_index    # ایندکس شخص در لیست
+        self.kind = kind                    # person_not_in_case | birthdate | not_registered | ""
 
 
 # مقدار value برای نوع نماینده در سامانه
@@ -849,16 +852,26 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
                     ),
                 ],
             ])
-            await bot.send_message(
-                user_id,
-                f"⚠️ *خطای استعلام ثنا*\n\n"
-                f"شناسه ملی `{e.national_id}` ({role_label}) ثبت‌نام ثنا ندارد یا اشتباه است.\n\n"
-                f"لطفاً یکی از گزینه‌های زیر را انتخاب کنید:\n"
-                f"• *ویرایش شناسه ملی:* شناسه صحیح را ارسال کنید تا اظهارنامه با همان اطلاعات قبلی ثبت شود.\n"
-                f"• *حذف درخواست:* درخواست اظهارنامه حذف می‌شود.\n\n"
-                f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این صورت پس از ۳۰ دقیقه، "
-                f"*نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از هزینه کسر می‌گردد.",
-                reply_markup=kb)
+            # ⭐ اصلاحیهٔ کارفرما (۱۴۰۵/۰۶/۲۸): عین روند لایحه — اگر خطای
+            # «شخص ... در فهرست اشخاص پرونده نیست» باشد، پیام به سبک
+            # «خطای ثبت اظهارنامه در سامانه» ارسال می‌شود.
+            if getattr(e, "kind", "") == "person_not_in_case":
+                sana_msg = (
+                    f"⚠️ *خطای ثبت اظهارنامه در سامانه:*\n\n"
+                    f"«{str(e)[:300]}»\n\n"
+                    f"شخص ({role_label}) در فهرست اشخاص پرونده نیست و امکان ثبت اظهارنامه وجود ندارد.\n\n"
+                    f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این صورت پس از ۳۰ دقیقه، "
+                    f"*نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از هزینه کسر می‌گردد.")
+            else:
+                sana_msg = (
+                    f"⚠️ *خطای استعلام ثنا*\n\n"
+                    f"شناسه ملی `{e.national_id}` ({role_label}) ثبت‌نام ثنا ندارد یا اشتباه است.\n\n"
+                    f"لطفاً یکی از گزینه‌های زیر را انتخاب کنید:\n"
+                    f"• *ویرایش شناسه ملی:* شناسه صحیح را ارسال کنید تا اظهارنامه با همان اطلاعات قبلی ثبت شود.\n"
+                    f"• *حذف درخواست:* درخواست اظهارنامه حذف می‌شود.\n\n"
+                    f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این صورت پس از ۳۰ دقیقه، "
+                    f"*نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از هزینه کسر می‌گردد.")
+            await bot.send_message(user_id, sana_msg, reply_markup=kb)
             # ⭐ مهلت ۳۰ دقیقه‌ای/جریمه توسط nid_fix_window.sweep_expired
             # (state_persister) مدیریت می‌شود — تایمر حذف ۱ ساعته قبلی حذف شد.
             return
@@ -1344,15 +1357,27 @@ async def _query_sana(page, ng_click: str, bot: Bot, user_id: int, is_legal: boo
             is_birthdate_error = ("تاریخ تولد ارسالی مربوط به شماره ملی" in popup_error and "اشتباه است" in popup_error) or \
                                  ("تاريخ تولد ارسالي مربوط به شماره ملي" in popup_error and "اشتباه است" in popup_error)
 
-            if is_not_registered or is_birthdate_error:
+            # ⭐ اصلاحیهٔ کارفرما (۱۴۰۵/۰۶/۲۸): خطای «شخص ... در فهرست اشخاص
+            # پرونده نیست» — عین روند لایحه؛ بلافاصله خطای داده‌ای پرتاب
+            # می‌شود تا پیام خطا + پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی باز شود.
+            try:
+                import error_catalog as _ec
+                _popup_kind = _ec.classify_sana_popup(popup_error)
+            except Exception:
+                _popup_kind = "other"
+            if _popup_kind == "other" and (is_not_registered or is_birthdate_error):
+                _popup_kind = "birthdate" if is_birthdate_error else "not_registered"
+
+            if _popup_kind in ("person_not_in_case", "birthdate", "not_registered"):
                 # بستن پاپ‌آپ
                 await _close_popup(page)
-                logging.warning(f"[EZHHAR] خطای ثنا برای شناسه {current_national_id}: {popup_error}")
+                logging.warning(f"[EZHHAR] خطای ثنا ({_popup_kind}) برای شناسه {current_national_id}: {popup_error}")
                 raise EzhharSanaQueryError(
                     popup_error,
                     national_id=current_national_id,
                     person_role=person_role,
-                    person_index=person_index)
+                    person_index=person_index,
+                    kind=_popup_kind)
 
         # بستن هر پاپ‌آپ خطای دیگر
         await _close_popup(page)
