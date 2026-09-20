@@ -38,6 +38,17 @@ regional_value_router = Router()
 
 LAND_USES = ["مسکونی", "تجاری", "اداری"]
 
+# کیبورد مرحلهٔ آدرس: هم تایپ آدرس امکان‌پذیر است، هم دکمهٔ ارسال موقعیت
+# روی نقشه (کاربر با زدن این دکمه، صفحهٔ انتخاب نقطه روی نقشه را می‌بیند
+# و مختصات همان نقطه مستقیماً برای استعلام استفاده می‌شود).
+address_or_location_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="📍 ارسال موقعیت روی نقشه", request_location=True)],
+        [KeyboardButton(text="🔙 بازگشت")],
+    ],
+    resize_keyboard=True,
+)
+
 
 # ══════════════════════════════════════════════════════════════════
 # نقطه ورود — از handlers.py فراخوانی می‌شود
@@ -83,20 +94,21 @@ async def process_province(message: Message, state: FSMContext):
         await message.answer("⚠️ لطفاً یکی از استان‌های لیست را انتخاب کنید.")
         return
 
-    await state.update_data(rv_province=selected)
+    await state.update_data(rv_province=selected, rv_lat=None, rv_lng=None)
     await message.answer(
         f"✅ استان انتخاب‌شده: *{selected}*\n\n"
-        f"📍 لطفاً آدرس دقیق را با ذکر نام شهر اعلام کنید:\n"
+        f"📍 لطفاً آدرس دقیق را با ذکر نام شهر تایپ کنید،\n"
+        f"یا با دکمهٔ زیر، نقطهٔ مورد نظر را روی نقشه انتخاب و ارسال کنید:\n"
         f"(مثال: تهران، خیابان ولیعصر، نرسیده به میدان ونک)",
-        reply_markup=back_only_kb,
+        reply_markup=address_or_location_kb,
     )
     await state.set_state(Form.rv_waiting_address)
 
 
 # ══════════════════════════════════════════════════════════════════
-# مرحله ۲: ورود آدرس
+# مرحله ۲: ورود آدرس (متنی یا موقعیت مکانی روی نقشه)
 # ══════════════════════════════════════════════════════════════════
-@regional_value_router.message(Form.rv_waiting_address)
+@regional_value_router.message(Form.rv_waiting_address, F.content_type == "text")
 async def process_address(message: Message, state: FSMContext):
     if not message.text:
         return
@@ -111,9 +123,36 @@ async def process_address(message: Message, state: FSMContext):
         await message.answer("⚠️ آدرس بسیار کوتاه است. لطفاً آدرس دقیق‌تری وارد کنید.")
         return
 
-    await state.update_data(rv_address=address)
+    await state.update_data(rv_address=address, rv_lat=None, rv_lng=None)
     await message.answer(
         f"✅ آدرس ثبت شد.\n\n"
+        f"📐 لطفاً متراژ دقیق عرصه را به متر مربع وارد کنید:\n"
+        f"(مثال: 250)",
+        reply_markup=back_only_kb,
+    )
+    await state.set_state(Form.rv_waiting_area)
+
+
+@regional_value_router.message(Form.rv_waiting_address, F.content_type == "location")
+async def process_address_location(message: Message, state: FSMContext):
+    """کاربر به‌جای تایپ آدرس، نقطه‌ای را روی نقشه انتخاب و ارسال کرده است."""
+    loc = message.location
+    lat, lng = loc.latitude, loc.longitude
+
+    # آدرس‌خوانی معکوس فقط برای نمایش در گزارش/پیام‌ها — اگر شکست بخورد
+    # مشکلی نیست، چون خودِ استعلام مستقیماً روی مختصات انجام می‌شود.
+    try:
+        from geocode_and_query import reverse_geocode
+        display_address = reverse_geocode(lat, lng)
+    except Exception:
+        display_address = None
+    if not display_address:
+        display_address = f"مختصات انتخاب‌شده روی نقشه ({lat:.6f}, {lng:.6f})"
+
+    await state.update_data(rv_address=display_address, rv_lat=lat, rv_lng=lng)
+    await message.answer(
+        f"✅ موقعیت مکانی دریافت شد.\n"
+        f"📍 {display_address}\n\n"
         f"📐 لطفاً متراژ دقیق عرصه را به متر مربع وارد کنید:\n"
         f"(مثال: 250)",
         reply_markup=back_only_kb,
@@ -132,11 +171,12 @@ async def process_area(message: Message, state: FSMContext):
     if message.text == "🔙 بازگشت":
         data = await state.get_data()
         province = data.get("rv_province", "")
-        await state.update_data(rv_address="")
+        await state.update_data(rv_address="", rv_lat=None, rv_lng=None)
         await message.answer(
-            f"📍 لطفاً آدرس دقیق را با ذکر نام شهر اعلام کنید:\n"
+            f"📍 لطفاً آدرس دقیق را با ذکر نام شهر اعلام کنید،\n"
+            f"یا با دکمهٔ زیر موقعیت را روی نقشه انتخاب کنید:\n"
             f"(مثال: {province}، خیابان اصلی، ...)",
-            reply_markup=back_only_kb,
+            reply_markup=address_or_location_kb,
         )
         await state.set_state(Form.rv_waiting_address)
         return
@@ -320,6 +360,8 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
 
     province = data.get("rv_province", "")
     address = data.get("rv_address", "")
+    rv_lat = data.get("rv_lat")
+    rv_lng = data.get("rv_lng")
     area = data.get("rv_area", 0)
     land_use = data.get("rv_land_use", "مسکونی")
     panel_case_id = data.get("rv_panel_case_id")
@@ -344,6 +386,11 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
         loop = asyncio.get_running_loop()
 
         def _do_query():
+            if rv_lat is not None and rv_lng is not None:
+                # کاربر موقعیت را مستقیماً روی نقشه انتخاب کرده — Geocoding
+                # نشان کاملاً حذف می‌شود و استعلام روی همان مختصات انجام می‌شود.
+                from geocode_and_query import query_by_coordinates
+                return query_by_coordinates(rv_lat, rv_lng, province_hint=province)
             from geocode_and_query import full_pipeline
             return full_pipeline(address=address, province_hint=province)
 
