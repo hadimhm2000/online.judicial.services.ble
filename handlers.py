@@ -65,6 +65,11 @@ TRACKING_CODE_LENGTH = 16
 MAX_INQUIRY_ATTEMPTS = 2  # حداکثر تلاش ناموفق قبل از توقف
 DISRUPTED_RETRY_MINUTES = 45  # فرصت تکرار بدون پرداخت (دقیقه)
 
+# نمایش پیام تایید آیین‌نامه بعد از /start — اگر False باشد، این مرحله
+# کاملاً حذف می‌شود و کاربر مستقیماً وارد انتخاب نوع فلو می‌شود.
+# برای فعال کردن دوباره، فقط این مقدار را True کنید.
+SHOW_RULES_CONFIRMATION = False
+
 # پیام خطایی که سامانه قضایی نمایش می‌دهد وقتی نوع سند اشتباه انتخاب شود
 SAMANEH_WRONG_TYPE_ERROR = "کد دفتر، مبلغ پرونده یا دسترسی تقویم مربوط به این شعبه و قاضی نیست."
 
@@ -1017,6 +1022,12 @@ async def cmd_start(message: types.Message, state: FSMContext):
                     "اگر قبلاً پرداخت کرده‌اید، فرصت تکرار بدون پرداخت به شما داده می‌شود.")
             # حذف از لیست بازیابی تا پیام تکرار نشود
             runtime_state._crash_recovered_users.pop(user_id, None)
+
+    if not SHOW_RULES_CONFIRMATION:
+        # پیام آیین‌نامه غیرفعال است — مستقیم به انتخاب نوع فلو می‌رویم
+        await message.answer("❓ *لطفاً نحوه ثبت درخواست خود را انتخاب فرمایید:*", reply_markup=get_flow_type_kb(message.from_user.id))
+        await state.set_state(Form.waiting_for_flow_type)
+        return
 
     welcome_text = "با درود و احترام\n🟢 لطفاً پیش از هرگونه اقدام، آیین‌نامه را مطالعه فرمایید:\n🔗 https://forms.gle/UeevWfg5YiDkC5F37\n\n👇 آیا قوانین را تایید می‌نمایید؟"
     await message.answer(welcome_text, reply_markup=accept_rules_kb)

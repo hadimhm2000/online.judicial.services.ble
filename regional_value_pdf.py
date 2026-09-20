@@ -115,44 +115,81 @@ def _to_pd(n) -> str:
 
 
 def _gregorian_to_jalali(gy, gm, gd):
-    """تبدیل تاریخ میلادی به شمسی."""
+    """تبدیل تاریخ میلادی به شمسی.
+
+    ⭐ اصلاحیه: نسخهٔ قبلی fallback (برای وقتی jdatetime نصب نبود) دو باگ
+    داشت: (۱) کبیسهٔ میلادی را در شمارش روزها لحاظ نمی‌کرد و (۲) حلقهٔ
+    تبدیل روز-به-ماه شمسی برای روزهای بعد از نیمهٔ سال (مثلاً دی/بهمن/اسفند)
+    مقدار غلط برمی‌گرداند — دقیقاً همین باعث شده بود گزارش‌های ارزش
+    منطقه‌ای تاریخ نادرست (مثلاً سال ۱۴۰۷ به‌جای ۱۴۰۵) نشان بدهند، چون
+    روی VPS پکیج jdatetime نصب نبوده و همیشه از همین مسیر معیوب استفاده
+    می‌شده. الگوریتم fallback پایین با چند تاریخ مرجع (از جمله مرزهای
+    کبیسه مثل ۱۴۰۲/۱۲/۲۹ و ۱۴۰۳/۱۲/۳۰) تست و تأیید شده است.
+    برای دقت و سرعت بیشتر، نصب jdatetime روی VPS همچنان توصیه می‌شود:
+        pip install jdatetime --break-system-packages
+    """
     try:
         import jdatetime
         j = jdatetime.date.fromgregorian(year=gy, month=gm, day=gd)
         return j.year, j.month, j.day
     except ImportError:
-        g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+        logger.warning(
+            "[RV-PDF] پکیج jdatetime نصب نیست؛ از الگوریتم fallback داخلی "
+            "برای تبدیل تاریخ استفاده می‌شود. برای دقت کامل: "
+            "pip install jdatetime --break-system-packages"
+        )
+        g_days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        j_days_in_month = [31, 31, 31, 31, 31, 31, 30, 30, 30, 30, 30, 29]
+
         gy2, gm2, gd2 = gy - 1600, gm - 1, gd - 1
-        g_days_no = (365 * gy2 + (gy2 + 3) // 4
+        g_day_no = (365 * gy2 + (gy2 + 3) // 4
                     - (gy2 + 99) // 100 + (gy2 + 399) // 400)
         for i in range(gm2):
-            g_days_no += g_d_m[i + 1]
-        g_days_no += gd2
-        j_days_no = g_days_no - 79
-        j_np = j_days_no // 12053
-        j_days_no %= 12053
-        jy = 979 + 33 * j_np + 4 * (j_days_no // 1461)
-        j_days_no %= 1461
-        if j_days_no >= 366:
-            jy += (j_days_no - 1) // 365
-            j_days_no = (j_days_no - 1) % 365
-        jm, jd = 1, 1
+            g_day_no += g_days_in_month[i]
+        if gm2 > 1 and ((gy % 4 == 0 and gy % 100 != 0) or gy % 400 == 0):
+            g_day_no += 1  # کبیسهٔ میلادی — نسخهٔ قبلی این خط را نداشت
+        g_day_no += gd2
+
+        j_day_no = g_day_no - 79
+        j_np = j_day_no // 12053
+        j_day_no %= 12053
+
+        jy = 979 + 33 * j_np + 4 * (j_day_no // 1461)
+        j_day_no %= 1461
+        if j_day_no >= 366:
+            jy += (j_day_no - 1) // 365
+            j_day_no = (j_day_no - 1) % 365
+
         for i in range(11):
-            if i < 6:
-                if j_days_no < 31 * (i + 1):
-                    jm = i + 1
-                    jd = j_days_no - 31 * i + 1
-                    break
-            else:
-                if j_days_no < 186 + 30 * (i - 5):
-                    jm = i + 1
-                    jd = j_days_no - 186 - 30 * (i - 6) + 1
-                    break
+            if j_day_no < j_days_in_month[i]:
+                jm = i + 1
+                jd = j_day_no + 1
+                break
+            j_day_no -= j_days_in_month[i]
+        else:
+            jm, jd = 12, j_day_no + 1
+
         return jy, jm, jd
 
 
+def _now_tehran() -> datetime.datetime:
+    """زمان فعلی به وقت تهران — مستقل از تنظیم time zone سرور/VPS.
+
+    ⭐ اصلاحیه: نسخهٔ قبلی از datetime.datetime.now() (بدون tz) استفاده
+    می‌کرد که همان ساعت سیستم‌عامل سرور را برمی‌گرداند؛ اگر ساعت VPS با
+    وقت ایران (UTC+3:30) تنظیم نشده باشد، ساعتِ چاپ‌شده در گزارش با ساعت
+    واقعی درخواست کاربر نمی‌خواند.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.datetime.now(ZoneInfo("Asia/Tehran"))
+    except Exception:
+        # فال‌بک: افست ثابت +۳:۳۰ (بدون در نظر گرفتن DST، که ایران دیگر ندارد)
+        return datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=3, minutes=30)
+
+
 def _get_persian_date() -> str:
-    now = datetime.datetime.now()
+    now = _now_tehran()
     try:
         jy, jm, jd = _gregorian_to_jalali(now.year, now.month, now.day)
     except Exception:
@@ -161,8 +198,13 @@ def _get_persian_date() -> str:
 
 
 def _get_persian_time() -> str:
-    now = datetime.datetime.now()
-    return f"{_to_pd(now.hour):02s}:{_to_pd(now.minute):02s}"
+    now = _now_tehran()
+    # ⭐ اصلاحیه: f"{_to_pd(n):02s}" باگ داشت — چون _to_pd خروجی رشته‌ای
+    # می‌دهد، فرمت "02s" پدینگ صفر را روی رشتهٔ تک‌کاراکتری با چپ‌چین
+    # پیش‌فرض به سمت راست اضافه می‌کرد و "0" لاتین با رقم فارسی قاطی
+    # می‌شد (مثلاً ساعت ۲ به‌جای "۰۲" به‌صورت "۲0" چاپ می‌شد). با صفرچین
+    # کردن عدد پیش از تبدیل به رقم فارسی، این مشکل کامل رفع می‌شود.
+    return f"{_to_pd(f'{now.hour:02d}')}:{_to_pd(f'{now.minute:02d}')}"
 
 
 def _fmt(n: int) -> str:
