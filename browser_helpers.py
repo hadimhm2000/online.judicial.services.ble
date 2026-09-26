@@ -199,57 +199,132 @@ async def dismiss_expiry_popup(page) -> bool:
     return bool(closed)
 
 
-async def handle_session_expired(bot: Bot, user_id: int, page=None, timeout_seconds: float = 120):
+# فاصلهٔ ارسال یادآوری به مدیر وقتی ربات منتظر لاگین مجدد است (ثانیه).
+# انتظار خودش سقف ندارد؛ این فقط برای یادآوری است.
+LOGIN_REMINDER_SECONDS = 600
+
+# آیا یک فرآیند لاگین مجدد هم‌اکنون در جریان است؟ (جلوگیری از باز شدن
+# چند تب لاگین هم‌زمان توسط تسک‌های PRE_CHECK که موازی اجرا می‌شوند)
+_relogin_in_progress = False
+
+
+async def handle_session_expired(bot: Bot, user_id: int, page=None, timeout_seconds: Optional[float] = None):
     """
     مدیریت هوشمند انقضای نشست ثنا:
       ۱) به مدیر اطلاع می‌دهد و یک تب جدید برای لاگین مجدد باز می‌کند
          (تب اصلی/صفحه‌ی در حال کار — که پاپ‌آپ خطا رویش نمایش داده شده —
          دست‌نخورده باقی می‌ماند تا وضعیت/مرحله‌ی فعلی از دست نرود).
-      ۲) منتظر می‌ماند تا مدیر دکمه‌ی تایید لاگین را در ربات بزند
-         (⭐ اصلاحیه: حداکثر `timeout_seconds` ثانیه — این تابع داخل
-         حلقه‌ی اصلی و سراسری browser_worker اجرا می‌شود؛ صف پردازش همه‌ی
-         کاربران تا پایان این انتظار متوقف می‌ماند. قبلاً این انتظار بدون
-         سقف زمانی بود و در صورت تاخیر مدیر در تایید لاگین، کل ربات برای
-         تمام کاربران — حتی آن‌هایی که کارشان ربطی به نشست منقضی‌شده
-         نداشت — بی‌پاسخ می‌ماند).
+      ۲) بدون سقف زمانی منتظر می‌ماند تا مدیر دکمه‌ی تایید لاگین را بزند.
+         ربات در این مدت به پیام‌ها پاسخ می‌دهد و پرونده‌های جدید به ترتیب
+         ثبت در job_queue (FIFO) جمع می‌شوند؛ پس از لاگین، همان تسک متوقف‌شده
+         ادامه می‌یابد و بعد بقیه یکی‌یکی پردازش می‌شوند. (قبلاً پس از ۱۲۰
+         ثانیه انتظار رها می‌شد و تسک‌ها بدون نشست معتبر ناموفق می‌شدند.)
+         هر LOGIN_REMINDER_SECONDS یک یادآوری با تعداد پرونده‌های صف به مدیر
+         ارسال می‌شود. `timeout_seconds` برای سازگاری مانده و در صورت مقداردهی
+         فقط فاصلهٔ یادآوری را تعیین می‌کند.
       ۳) تب لاگین را می‌بندد.
       ۴) روی همان صفحه‌ی اصلی (page)، دکمه‌ی «بستن» پاپ‌آپ خطا را می‌زند
          تا صفحه دقیقاً از همان‌جا که متوقف شده بود قابل ادامه باشد.
     """
+    global _relogin_in_progress
+
+    # ⭐ اگر یک فرآیند لاگین مجدد از قبل در جریان است (مثلاً یک تسک هم‌زمان
+    # PRE_CHECK هم انقضا را دیده)، تب/پیام تکراری باز نمی‌کنیم — فقط منتظر
+    # همان لاگین می‌مانیم.
+    if _relogin_in_progress:
+        logging.info("[SESSION_EXPIRED] لاگین مجدد از قبل در جریان است — منتظر تایید مدیر می‌مانیم.")
+        await runtime_state.login_event.wait()
+        await _restore_main_page_after_login(page)
+        return
+
     # ⭐ اصلاحیهٔ کارفرما: اگر هیچ‌کس هنوز وارد سامانه نشده باشد، پیام
     # «نشست منقضی شده» گمراه‌کننده است — متن پیام حالت «برقرار نبودن نشست»
     # را هم پوشش می‌دهد.
-    if not runtime_state.login_event.is_set():
-        await bot.send_message(ADMIN_ID, "⚠️ *هیچ نشست فعالی با سامانه (ثنا) وجود ندارد (وارد نشده‌اید).*\nدر حال باز کردن تب ورود...")
-    else:
-        await bot.send_message(ADMIN_ID, "⚠️ *اعتبار نشست سامانه (ثنا) به اتمام رسیده است.*\nدر حال باز کردن تب جدید...")
+    was_logged_in = runtime_state.login_event.is_set()
+    # فلگ و clear باید قبل از اولین await ست شوند تا تسک هم‌زمان دیگر
+    # وارد شاخهٔ «انتظار» بالا شود و رویداد را ست‌شده نبیند.
+    _relogin_in_progress = True
+    runtime_state.login_event.clear()
 
-    login_page = await runtime_state.browser_context.new_page()
+    login_page = None
     try:
-        await login_page.goto("https://sakha2.adliran.ir/Offices/Index", timeout=60000)
-        runtime_state.login_event.clear()
-
-        await bot.send_message(ADMIN_ID, "🔑 *لاگین مجدد ثنا:*\nپنجره ورود جدید باز شده است. لطفا لاگین کنید و دکمه زیر را بفشارید 👇", reply_markup=admin_login_kb)
         try:
-            await asyncio.wait_for(runtime_state.login_event.wait(), timeout=timeout_seconds)
-        except asyncio.TimeoutError:
-            logging.warning(
-                f"[SESSION_EXPIRED] پس از {timeout_seconds} ثانیه، مدیر لاگین را تایید نکرد — "
-                "برای جلوگیری از توقف کامل صف پردازش، ادامه می‌دهیم (تسک فعلی به احتمال زیاد ناموفق خواهد شد)."
-            )
+            if not was_logged_in:
+                await bot.send_message(ADMIN_ID, "⚠️ *هیچ نشست فعالی با سامانه (ثنا) وجود ندارد (وارد نشده‌اید).*\nدر حال باز کردن تب ورود...")
+            else:
+                await bot.send_message(ADMIN_ID, "⚠️ *اعتبار نشست سامانه (ثنا) به اتمام رسیده است.*\nدر حال باز کردن تب جدید...")
+        except Exception:
+            pass
+
+        login_page = await runtime_state.browser_context.new_page()
+        try:
+            await login_page.goto("https://sakha2.adliran.ir/Offices/Index", timeout=60000)
+        except Exception as e:
+            # حتی اگر لود اولیه خطا داد، تب باز می‌ماند و مدیر می‌تواند
+            # دستی وارد شود — انتظار را رها نمی‌کنیم.
+            logging.error(f"Error in handle_session_expired page navigation: {e}")
+
+        await bot.send_message(ADMIN_ID, "🔑 *لاگین مجدد ثنا:*\nپنجره ورود جدید باز شده است. لطفا لاگین کنید و دکمه زیر را بفشارید 👇\n\n"
+                               "⏸ تا زمان تایید شما، پرونده‌های جدید به ترتیب ثبت در صف نگه داشته می‌شوند.",
+                               reply_markup=admin_login_kb)
+
+        # به کاربری که تسکش متوقف شده اطلاع بده که پرونده‌اش در صف است
+        if user_id and user_id != ADMIN_ID:
             try:
                 await bot.send_message(
-                    ADMIN_ID,
-                    f"⏱ *زمان انتظار برای تایید لاگین ({int(timeout_seconds)} ثانیه) به پایان رسید.*\n"
-                    "برای اینکه صف پردازش سایر کاربران مسدود نماند، ادامه می‌دهیم. "
-                    "لطفاً هر زمان لاگین کردید، دکمه تایید را بزنید تا کارهای بعدی درست پردازش شوند."
+                    user_id,
+                    "⏳ پرونده شما دریافت شده و در صف پردازش قرار دارد.\n"
+                    "به‌محض برقراری مجدد ارتباط با سامانه، ادامه‌ی ثبت به‌صورت خودکار انجام می‌شود."
                 )
             except Exception:
                 pass
-    except Exception as e:
-        logging.error(f"Error in handle_session_expired page navigation: {e}")
+
+        # ⭐ بدون سقف زمانی منتظر مدیر می‌مانیم. تسک‌های جدید کاربران در این
+        # مدت در job_queue (FIFO) به ترتیب ثبت جمع می‌شوند و پس از لاگین
+        # یکی‌یکی پردازش خواهند شد. فقط هر LOGIN_REMINDER_SECONDS یک یادآوری
+        # به مدیر فرستاده می‌شود.
+        if timeout_seconds:  # پارامتر قدیمی؛ فقط به‌عنوان فاصلهٔ یادآوری
+            reminder_interval = max(float(timeout_seconds), 60.0)
+        else:
+            reminder_interval = LOGIN_REMINDER_SECONDS
+        waited = 0.0
+        while not runtime_state.login_event.is_set():
+            try:
+                await asyncio.wait_for(runtime_state.login_event.wait(), timeout=reminder_interval)
+            except asyncio.TimeoutError:
+                waited += reminder_interval
+                pending = runtime_state.job_queue.qsize() + runtime_state.priority_job_queue.qsize()
+                logging.warning(
+                    f"[SESSION_EXPIRED] هنوز منتظر لاگین مدیر ({int(waited // 60)} دقیقه) — "
+                    f"{pending} تسک در صف."
+                )
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"⏰ *یادآوری:* ربات همچنان منتظر لاگین شما در سامانه ثناست "
+                        f"({int(waited // 60)} دقیقه).\n"
+                        f"📥 تعداد پرونده‌های در صف: *{pending}*\n"
+                        "پس از ورود، دکمه «✅ ورودم تکمیل شد» را بزنید.",
+                        reply_markup=admin_login_kb
+                    )
+                except Exception:
+                    pass
     finally:
-        await login_page.close()
+        _relogin_in_progress = False
+        if login_page is not None:
+            try:
+                await login_page.close()
+            except Exception:
+                pass
+
+    await _restore_main_page_after_login(page)
+
+    await bot.send_message(ADMIN_ID, "✅ *نشست با موفقیت تمدید شد.* ادامه‌ی فرآیند از همان مرحله...")
+    await asyncio.sleep(2)
+
+
+async def _restore_main_page_after_login(page):
+    """پس از لاگین مجدد، صفحه‌ی اصلی را به سامانه برمی‌گرداند یا پاپ‌آپ خطا را می‌بندد."""
 
     # ── بازگرداندن صفحه‌ی اصلی به سامانه ─────────────────────────────────────
     if page is not None:
@@ -267,9 +342,6 @@ async def handle_session_expired(bot: Bot, user_id: int, page=None, timeout_seco
                 await dismiss_expiry_popup(page)
             except Exception as e:
                 logging.warning(f"handle_session_expired: could not dismiss popup on main page: {e}")
-
-    await bot.send_message(ADMIN_ID, "✅ *نشست با موفقیت تمدید شد.* ادامه‌ی فرآیند از همان مرحله...")
-    await asyncio.sleep(2)
 
 async def detect_concurrent_login_popup(page) -> bool:
     """
