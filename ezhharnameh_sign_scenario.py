@@ -40,7 +40,8 @@ from browser_helpers import (
     safe_click_by_text,
     wait_for_angular_idle,
     wait_for_horizontal_loading_bar,
-    click_sana_main_menu)
+    click_sana_main_menu,
+    SanaSystemDownError, SANA_SYSTEM_DOWN_MSG)
 from config import ADMIN_ID
 
 
@@ -506,6 +507,7 @@ async def send_ezhhar_sign_code_for_person(
 
     attempt = 0
     expiry_retries = 0
+    service_delay_count = 0
     while attempt < 3 and expiry_retries < 2:
         clicked = await sana_page.evaluate(f'''(idx) => {{
             const rows = Array.from(document.querySelectorAll(
@@ -536,9 +538,27 @@ async def send_ezhhar_sign_code_for_person(
             return True
 
         elif popup_result == "service_delay":
+            # ⭐ طبق دستور کارفرما: «تاخیر در اجرای سرویس» تا ۲ بار تلاش
+            # مجدد؛ سپس اطلاع به کاربر که سامانه قطع است.
             await _close_any_popup(sana_page)
-            logging.warning(f"[EZHHAR_SIGN] تاخیر در اجرای سرویس برای ردیف {row_idx} (تلاش {attempt+1}) — صبر ۱۵ ثانیه و تکرار")
-            await asyncio.sleep(15)
+            service_delay_count += 1
+            logging.warning(
+                f"[EZHHAR_SIGN] تاخیر در اجرای سرویس برای ردیف {row_idx} — "
+                f"تکرار {service_delay_count}/2")
+            if service_delay_count >= 2:
+                try:
+                    await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
+                except Exception:
+                    pass
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🚨 [EZHHAR_SIGN] ارسال کد امضا کاربر {user_id} بعد از ۲ بار "
+                        "تلاش مجدد هم‌چنان «تاخیر در اجرای سرویس» می‌دهد.")
+                except Exception:
+                    pass
+                raise SanaSystemDownError("ارسال کد امضا اظهارنامه: service_delay persisted")
+            await asyncio.sleep(3)
             attempt += 1
             continue
 
@@ -816,6 +836,7 @@ async def _enter_code_and_sign(
     """
     attempt = 0
     expiry_retries = 0
+    service_delay_count = 0
     last_popup_result = None  # ⭐ برای گزارش محافظه‌کارانه‌تر «max_attempts» پایین نگه داشته می‌شود
     while attempt < 3 and expiry_retries < 2:
         filled = await page.evaluate(f'''(args) => {{
@@ -890,9 +911,27 @@ async def _enter_code_and_sign(
             logging.info(f"[EZHHAR_SIGN] امضا در ثنا ثبت نیست — ردیف {row_idx}")
             return {"success": False, "error": "sana_not_registered"}
         elif popup_result == "service_delay":
+            # ⭐ طبق دستور کارفرما: «تاخیر در اجرای سرویس» تا ۲ بار تلاش
+            # مجدد؛ سپس اطلاع به کاربر که سامانه قطع است.
             await _close_any_popup(page)
-            logging.warning(f"[EZHHAR_SIGN] تاخیر در اجرای سرویس — ردیف {row_idx} (تلاش {attempt+1}) — صبر ۱۵ ثانیه و تکرار")
-            await asyncio.sleep(15)
+            service_delay_count += 1
+            logging.warning(
+                f"[EZHHAR_SIGN] تاخیر در اجرای سرویس — ردیف {row_idx} — "
+                f"تکرار {service_delay_count}/2")
+            if service_delay_count >= 2:
+                try:
+                    await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
+                except Exception:
+                    pass
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🚨 [EZHHAR_SIGN] تایید کد امضا کاربر {user_id} بعد از ۲ بار "
+                        "تلاش مجدد هم‌چنان «تاخیر در اجرای سرویس» می‌دهد.")
+                except Exception:
+                    pass
+                raise SanaSystemDownError("تایید کد امضا اظهارنامه: service_delay persisted")
+            await asyncio.sleep(3)
             attempt += 1
             continue
         elif popup_result == "session_expired_handled":

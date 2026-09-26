@@ -38,7 +38,8 @@ from browser_helpers import (
     safe_click_by_text, safe_type, wait_for_angular_idle,
     handle_session_expired, wait_for_horizontal_loading_bar,
     detect_concurrent_login_popup, readd_person_section,
-    dismiss_sana_error_popup)
+    dismiss_sana_error_popup, detect_sana_service_delay_popup,
+    SanaSystemDownError, SANA_SYSTEM_DOWN_MSG)
 
 
 class EzhharFatalError(Exception):
@@ -1307,6 +1308,7 @@ async def _query_sana(page, ng_click: str, bot: Bot, user_id: int, is_legal: boo
     """
     # ⭐ روند بازیابی سکشن فقط یک‌بار اجرا می‌شود (طبق دستور کارفرما)
     readd_done = False
+    service_delay_count = 0
     for attempt in range(max_retries):
         # بررسی session expiry قبل از هر تلاش
         had_expiry = await check_and_handle_expiry(page, bot, user_id)
@@ -1345,6 +1347,34 @@ async def _query_sana(page, ng_click: str, bot: Bot, user_id: int, is_legal: boo
         had_expiry = await check_and_handle_expiry(page, bot, user_id)
         if had_expiry:
             logging.info(f"[EZHHAR] session renewed after query attempt {attempt+1}")
+            continue
+
+        # ⭐ طبق دستور کارفرما: «ورود همزمان» همین بالا با check_and_handle_expiry
+        # (بدون سقف تلاش، اطلاع فوری به مدیر) مدیریت شد. اینجا فقط «تاخیر در
+        # اجرای سرویس» را جداگانه چک می‌کنیم — تا ۲ بار تلاش مجدد؛ در غیر این
+        # صورت به کاربر اطلاع داده می‌شود که سامانه قطع است.
+        has_service_delay = await detect_sana_service_delay_popup(page)
+        if has_service_delay:
+            service_delay_count += 1
+            logging.warning(
+                f"[EZHHAR] پاپ‌آپ «تاخیر در اجرای سرویس» در استعلام اشخاص — "
+                f"تکرار {service_delay_count}/2")
+            await dismiss_sana_error_popup(page)
+            if service_delay_count >= 2:
+                try:
+                    await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
+                except Exception:
+                    pass
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🚨 [EZHHAR] استعلام اشخاص کاربر {user_id} بعد از ۲ بار "
+                        "تلاش مجدد هم‌چنان «تاخیر در اجرای سرویس» می‌دهد.")
+                except Exception:
+                    pass
+                raise SanaSystemDownError(
+                    "استعلام اشخاص اظهارنامه: service_delay persisted")
+            await asyncio.sleep(3)
             continue
 
         # بررسی پاپ‌آپ خطای ثنا (شناسه ملی ثبت نشده یا تاریخ تولد اشتباه)
@@ -1499,6 +1529,7 @@ async def _raise_fatal_ezhhar_save_error(bot: Bot, user_id: int, error_text: str
 
 
 async def _click_save_temp(page, bot: Bot, user_id: int, max_retries: int = 5):
+    service_delay_count = 0
     for attempt in range(max_retries):
         # بررسی session expiry قبل از هر تلاش
         had_expiry = await check_and_handle_expiry(page, bot, user_id)
@@ -1573,6 +1604,31 @@ async def _click_save_temp(page, bot: Bot, user_id: int, max_retries: int = 5):
                 logging.warning(f"[EZHHAR] session expiry in error text after save")
                 await handle_session_expired(bot, user_id, page=page)
                 continue
+
+            # ⭐ طبق دستور کارفرما: «تاخیر در اجرای سرویس» خطای موقت است —
+            # تا ۲ بار تلاش مجدد؛ سپس اطلاع به کاربر که سامانه قطع است.
+            if ("تاخیر در اجرای سرویس" in error_text or "سرویس با خطا" in error_text or
+                    "خطا در فراخوانی" in error_text):
+                service_delay_count += 1
+                logging.warning(
+                    f"[EZHHAR] پاپ‌آپ «تاخیر در اجرای سرویس» در ثبت موقت — "
+                    f"تکرار {service_delay_count}/2")
+                if service_delay_count >= 2:
+                    try:
+                        await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
+                    except Exception:
+                        pass
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"🚨 [EZHHAR] ثبت موقت کاربر {user_id} بعد از ۲ بار "
+                            "تلاش مجدد هم‌چنان «تاخیر در اجرای سرویس» می‌دهد.")
+                    except Exception:
+                        pass
+                    raise SanaSystemDownError("ثبت موقت اظهارنامه: service_delay persisted")
+                await asyncio.sleep(3)
+                continue
+
             await _raise_fatal_ezhhar_save_error(bot, user_id, error_text)
         await asyncio.sleep(5)
 

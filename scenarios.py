@@ -71,6 +71,8 @@ from browser_helpers import (
     wait_for_horizontal_loading_bar, is_login_redirect_url,
     detect_national_id_error, check_national_id_error_or_continue,
     detect_concurrent_login_popup,
+    detect_sana_service_delay_popup, dismiss_sana_error_popup,
+    SanaSystemDownError, SANA_SYSTEM_DOWN_MSG,
     NATIONAL_ID_ERROR_MSG)
 from sana_profile_report import extract_sana_profile, build_sana_profile_pdf
 
@@ -1365,6 +1367,51 @@ async def process_task(data, bot: Bot):
                 await asyncio.sleep(2)
                 await wait_for_horizontal_loading_bar(sana_page, bot, user_id, timeout=30)
 
+                # ⭐ طبق دستور کارفرما: تشخیص پاپ‌آپ «تاخیر در اجرای سرویس» —
+                # تا ۲ بار تلاش مجدد (کلیک دوبارهٔ جستجو)؛ سپس اطلاع به کاربر
+                # و مدیر که سامانه قطع است.
+                service_delay_count = 0
+                while await detect_sana_service_delay_popup(sana_page):
+                    service_delay_count += 1
+                    logging.warning(
+                        f"[PHONE_SEARCH] پاپ‌آپ «تاخیر در اجرای سرویس» برای {phone_number} — "
+                        f"تکرار {service_delay_count}/2")
+                    await dismiss_sana_error_popup(sana_page)
+                    if service_delay_count >= 2:
+                        try:
+                            await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
+                        except Exception:
+                            pass
+                        try:
+                            await bot.send_message(
+                                ADMIN_ID,
+                                f"🚨 [PHONE_SEARCH] استعلام شماره تماس {phone_number} "
+                                f"(کاربر {user_id}) بعد از ۲ بار تلاش مجدد هم‌چنان "
+                                "«تاخیر در اجرای سرویس» می‌دهد.")
+                        except Exception:
+                            pass
+                        try:
+                            await register_failed_inquiry_to_panel(
+                                user_id=user_id, full_name=data.get('full_name', ''),
+                                tracking_code=phone_number, doc_category="شماره تماس",
+                                fee=data.get('payment_fee', 0),
+                                error_details="تاخیر در اجرای سرویس", error_step="service_delay",
+                            )
+                        except Exception as panel_err:
+                            logger.warning(f"خطا در ثبت استعلام ناموفق موبایل: {panel_err}")
+                        return
+                    await asyncio.sleep(3)
+                    retry_clicked = await sana_page.evaluate('''() => {
+                        const buttons = Array.from(document.querySelectorAll('button'));
+                        const searchBtn = buttons.find(b => b.innerText && b.innerText.trim().includes("جستجوی شماره همراه"));
+                        if (searchBtn) { searchBtn.click(); return true; }
+                        return false;
+                    }''')
+                    if not retry_clicked:
+                        await safe_click_by_text(sana_page, "جستجوی شماره همراه", bot, user_id)
+                    await asyncio.sleep(2)
+                    await wait_for_horizontal_loading_bar(sana_page, bot, user_id, timeout=30)
+
                 # بررسی وجود پیام خطای ثنا (عدم ثبت شماره همراه)
                 await asyncio.sleep(3)
                 alert_message = await sana_page.evaluate('''() => {
@@ -1588,6 +1635,43 @@ async def process_task(data, bot: Bot):
                     return
                 await asyncio.sleep(3)
                 await check_and_handle_expiry(sana_page, bot, user_id)
+
+                # ⭐ طبق دستور کارفرما: «تاخیر در اجرای سرویس» خطای موقت است —
+                # تا ۲ بار تلاش مجدد (ریلود همان صفحه)؛ سپس اطلاع به کاربر و
+                # مدیر که سامانه قطع است.
+                nid_service_delay_count = 0
+                while True:
+                    has_service_delay = await sana_page.evaluate('''() => {
+                        const text = document.body.innerText || "";
+                        return text.includes("تاخیر در اجرای سرویس") ||
+                               text.includes("سرویس با خطا") ||
+                               text.includes("خطا در فراخوانی");
+                    }''')
+                    if not has_service_delay:
+                        break
+                    nid_service_delay_count += 1
+                    logging.warning(
+                        f"[NID_INQUIRY] «تاخیر در اجرای سرویس» برای کدملی {national_id} — "
+                        f"تکرار {nid_service_delay_count}/2")
+                    if nid_service_delay_count >= 2:
+                        try:
+                            await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
+                        except Exception:
+                            pass
+                        try:
+                            await bot.send_message(
+                                ADMIN_ID,
+                                f"🚨 [NID_INQUIRY] استعلام کدملی {national_id} (کاربر {user_id}) "
+                                "بعد از ۲ بار تلاش مجدد هم‌چنان «تاخیر در اجرای سرویس» می‌دهد.")
+                        except Exception:
+                            pass
+                        return
+                    await asyncio.sleep(3)
+                    success_print = await goto_url_with_retry(sana_page, print_url, bot, user_id)
+                    if not success_print:
+                        return
+                    await asyncio.sleep(3)
+                    await check_and_handle_expiry(sana_page, bot, user_id)
 
                 has_error = await sana_page.evaluate('''() => {
                     const text = document.body.innerText || "";
@@ -1824,6 +1908,62 @@ async def process_task(data, bot: Bot):
                         pass
                     await _handle_invalid_tracking_code(bot, user_id, data, tracking_code, doc_name)
                     return
+
+                # ⭐ طبق دستور کارفرما: پاپ‌آپ «تاخیر در اجرای سرویس»
+                # (error_catalog.LOAD_ERROR) خطای موقت است، نه قطعی — تا ۲ بار
+                # تلاش مجدد (کلیک دوبارهٔ جستجو)؛ سپس اطلاع به کاربر و مدیر که
+                # سامانه قطع است.
+                inquiry_service_delay_count = 0
+                while popup_text and popup_category == error_catalog.LOAD_ERROR:
+                    inquiry_service_delay_count += 1
+                    logging.warning(
+                        f"[INQUIRY] پاپ‌آپ «تاخیر در اجرای سرویس» برای کد {tracking_code} — "
+                        f"تکرار {inquiry_service_delay_count}/2")
+                    try:
+                        await sana_page.locator('.sweet-alert.showSweetAlert button.confirm').click(timeout=5000)
+                    except Exception:
+                        pass
+                    if inquiry_service_delay_count >= 2:
+                        try:
+                            await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
+                        except Exception:
+                            pass
+                        try:
+                            await bot.send_message(
+                                ADMIN_ID,
+                                f"🚨 [INQUIRY] استعلام «{doc_name}» کد {tracking_code} "
+                                f"(کاربر {user_id}) بعد از ۲ بار تلاش مجدد هم‌چنان "
+                                "«تاخیر در اجرای سرویس» می‌دهد.")
+                        except Exception:
+                            pass
+                        return
+                    await asyncio.sleep(3)
+                    if category == "لایحه" or (
+                        category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
+                    ):
+                        await sana_page.evaluate('''() => {
+                            const btn = document.querySelector('#btnGetJSSBill');
+                            if (btn) { btn.click(); return; }
+                        }''')
+                    else:
+                        await sana_page.evaluate('''() => {
+                            const exactBtn = document.querySelector('#btnGetJSSPetition');
+                            if (exactBtn) { exactBtn.click(); return; }
+                            const btns = Array.from(document.querySelectorAll('button'));
+                            const searchBtn = btns.find(b => b.innerText && b.innerText.includes("جستجو"));
+                            if (searchBtn) searchBtn.click();
+                        }''')
+                    await asyncio.sleep(3)
+                    await wait_for_horizontal_loading_bar(sana_page, bot, user_id, timeout=60)
+                    popup_text = await sana_page.evaluate('''() => {
+                        const popup = document.querySelector('.sweet-alert.showSweetAlert');
+                        if (!popup) return null;
+                        const h2 = popup.querySelector('h2');
+                        const p = popup.querySelector('p');
+                        const clean = [h2 ? h2.innerText.trim() : '', p ? p.innerText.trim() : ''].filter(Boolean).join(' - ').trim();
+                        return clean || (popup.innerText || '').trim() || null;
+                    }''')
+                    popup_category = error_catalog.classify(popup_text) if popup_text else error_catalog.UNKNOWN
 
                 if (
                     await sana_page.locator('text="لطفا اطلاعات خواسته شده را به درستی وارد نمایید"').is_visible()
