@@ -24,7 +24,9 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 import runtime_state
 import error_catalog
-from browser_helpers import force_click_by_text, is_login_redirect_url
+from browser_helpers import (
+    force_click_by_text, is_login_redirect_url,
+    check_and_handle_expiry, retry_step_on_service_delay, SanaSystemDownError)
 from config import FEES
 
 logger = logging.getLogger(__name__)
@@ -124,6 +126,14 @@ async def fast_pre_check(
             raise
         except InvalidTrackingCodeError:
             raise
+        except SanaSystemDownError as e:
+            # ⭐ طبق دستور کارفرما: کاربر از قبل توسط retry_step_on_service_delay
+            # مطلع شده که سامانه قطع است — به‌عنوان FastCheckError معمولی
+            # ادامه می‌دهیم تا فراخوان‌کننده (handlers.py/bulk_inquiry_excel.py)
+            # طبق مسیر موجودِ «except FastCheckError» بدون تغییر اضافی به صف
+            # مرورگر فال‌بک کند.
+            logger.error(f"[FAST-CHECK] Page failed — سامانه قطع: {e}")
+            raise FastCheckError(str(e))
         except Exception as e:
             logger.error(f"[FAST-CHECK] Page failed: {e}")
             raise FastCheckError(str(e))
@@ -293,38 +303,78 @@ async def _do_page_check(tracking_code, category, subcategory, user_id, bot) -> 
         if not steps:
             raise FastCheckError(f"دسته نامشخص: {category}")
 
-        for i, step in enumerate(steps):
-            if not step:
-                continue
-            await force_click_by_text(page, step)
-            await asyncio.sleep(2 if i < len(steps) - 1 else 5)
+        async def _click_nav_steps():
+            for i, step in enumerate(steps):
+                if not step:
+                    continue
+                await force_click_by_text(page, step)
+                await asyncio.sleep(2 if i < len(steps) - 1 else 5)
+
+        async def _do_navigation():
+            await _click_nav_steps()
+            # ⭐ اصلاحیهٔ کارفرما — «ورود همزمان» تلاش‌مجدد سقف‌دار نمی‌خواهد؛
+            # بلافاصله و بدون شمارش با check_and_handle_expiry (لاگین مجدد
+            # مدیر) مدیریت و مرحله از نو تکرار می‌شود تا نشست معتبر شود.
+            while await check_and_handle_expiry(page, bot, user_id):
+                await _click_nav_steps()
+
+        # ⭐ اصلاحیهٔ کارفرما — ریشهٔ باگ گزارش‌شده: اگر بعد از ناوبری،
+        # پاپ‌آپ «تاخیر در اجرای سرویس» ظاهر شود، قبلاً اصلاً تشخیص داده
+        # نمی‌شد و فقط با پیام گمراه‌کنندهٔ «رادیوباتن یافت نشد» فال‌بک
+        # بی‌سروصدا به صف انجام می‌شد. حالا این پاپ‌آپ بعد از ناوبری چک و
+        # تا ۲ بار با تکرار همان مرحله مدیریت می‌شود (ورود همزمان جداگانه،
+        # بدون سقف، در _do_navigation بالا مدیریت شده است).
+        await retry_step_on_service_delay(
+            page, bot, user_id, _do_navigation,
+            step_name=f"ناوبری به «{category}»", log_prefix="FAST-CHECK")
 
         # لایحه: انتخاب رادیو #rdbGetPetition (value=2) و ورود کد رهگیری
         if category == "لایحه" or (
             category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
         ):
-            # کلیک روی رادیوباتن استعلام لایحه (#rdbGetPetition)
-            # ابتدا منتظر ظاهر شدن رادیوباتن می‌مانیم
-            try:
-                await page.wait_for_selector('#rdbGetPetition', state='visible', timeout=10000)
-            except PlaywrightTimeoutError:
-                raise FastCheckError("رادیوباتن استعلام لایحه (#rdbGetPetition) یافت نشد")
-            # کلیک با Playwright + فعال‌سازی AngularJS digest
-            await page.evaluate('''() => {
-                const radio = document.querySelector('#rdbGetPetition');
-                if (radio) {
-                    radio.checked = true;
-                    radio.click();
-                    // فعال‌سازی digest AngularJS برای به‌روزرسانی ng-model
-                    if (window.angular) {
-                        try {
-                            const scope = angular.element(radio).scope();
-                            if (scope) scope.$apply();
-                        } catch(e) {}
+            async def _select_petition_radio_once():
+                # کلیک روی رادیوباتن استعلام لایحه (#rdbGetPetition)
+                try:
+                    await page.wait_for_selector('#rdbGetPetition', state='visible', timeout=10000)
+                except PlaywrightTimeoutError:
+                    # اگر پاپ‌آپی مانع نمایش رادیوباتن شده، _select_petition_radio
+                    # (ورود همزمان) یا retry_step_on_service_delay (تاخیر سرویس)
+                    # آن را مدیریت می‌کنند؛ در غیر این صورت چک نهایی زیر خطای
+                    # واقعی «یافت نشد» را گزارش می‌کند.
+                    return
+                # کلیک با Playwright + فعال‌سازی AngularJS digest
+                await page.evaluate('''() => {
+                    const radio = document.querySelector('#rdbGetPetition');
+                    if (radio) {
+                        radio.checked = true;
+                        radio.click();
+                        // فعال‌سازی digest AngularJS برای به‌روزرسانی ng-model
+                        if (window.angular) {
+                            try {
+                                const scope = angular.element(radio).scope();
+                                if (scope) scope.$apply();
+                            } catch(e) {}
+                        }
                     }
-                }
+                }''')
+                await asyncio.sleep(4)
+
+            async def _select_petition_radio():
+                await _select_petition_radio_once()
+                # ⭐ ورود همزمان: بدون سقف تلاش، بلافاصله مدیریت می‌شود
+                while await check_and_handle_expiry(page, bot, user_id):
+                    await _select_petition_radio_once()
+
+            await retry_step_on_service_delay(
+                page, bot, user_id, _select_petition_radio,
+                step_name="انتخاب رادیوباتن استعلام لایحه", log_prefix="FAST-CHECK")
+
+            is_checked = await page.evaluate('''() => {
+                const radio = document.querySelector('#rdbGetPetition');
+                return !!(radio && radio.checked);
             }''')
-            await asyncio.sleep(4)
+            if not is_checked:
+                raise FastCheckError("رادیوباتن استعلام لایحه (#rdbGetPetition) یافت نشد")
 
         # ── وارد کردن کد رهگیری ────────────────────────────────
         try:

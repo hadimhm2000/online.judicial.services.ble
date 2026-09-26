@@ -5,6 +5,7 @@
 import asyncio
 import logging
 import random
+from typing import Optional
 
 from aiogram import Bot
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
@@ -307,6 +308,111 @@ async def detect_concurrent_login_popup(page) -> bool:
         return isConcurrent;
     }''')
     return bool(is_concurrent)
+
+
+class SanaSystemDownError(Exception):
+    """⭐ طبق دستور کارفرما — بعد از حداکثر تلاش مجدد مجاز (پیش‌فرض ۲ بار)
+    روی یک مرحله (کلیک روی گزینه‌ای که پاپ‌آپ «تاخیر در اجرای سرویس»
+    نشان داده)، پاپ‌آپ هم‌چنان تکرار شده است. فراخوان‌کننده باید بداند
+    که کاربر از قبل مطلع شده سامانه فعلاً در دسترس نیست و یک ساعت دیگر
+    تلاش کند.
+
+    ⚠️ این خطا فقط برای «تاخیر در اجرای سرویس» است، نه «ورود همزمان» —
+    ورود همزمان نیاز به تلاش مجدد محدود ندارد و همان لحظه با
+    check_and_handle_expiry/handle_session_expired به مدیر اطلاع داده
+    و لاگین مجدد انجام می‌شود (بدون سقف ۲ باره و بدون این پیام)."""
+    pass
+
+
+SANA_SYSTEM_DOWN_MSG = (
+    "⚠️ *سامانه ثنا در حال حاضر قطع می‌باشد.*\n"
+    "لطفاً یک ساعت دیگر مجدداً تلاش کنید."
+)
+
+
+async def detect_sana_service_delay_popup(page) -> bool:
+    """
+    تشخیص پاپ‌آپ «تاخیر در اجرای سرویس» / «سرویس با خطا» / «خطا در
+    فراخوانی» — خطای عمومی/موقت سرویس ثنا که ربطی به انقضای نشست ندارد.
+
+    ⚠️ عمداً «ورود همزمان» را تشخیص نمی‌دهد — آن خطا با
+    detect_concurrent_login_popup (که همه‌جا از قبل فراخوانی می‌شود)
+    و بدون سقف تلاش مجدد مدیریت می‌شود.
+
+    ⭐ طبق دستور کارفرما باید بعد از هر کلیکی که ممکن است این پاپ‌آپ را
+    نشان بدهد فراخوانی شود: استعلام اشخاص، پیوست‌ها، ثبت موقت، امضا،
+    استعلام شماره تماس/کدملی/کدرهگیری و مشابه آن.
+    """
+    try:
+        return bool(await page.evaluate('''() => {
+            const popup = document.querySelector('.sweet-alert.showSweetAlert');
+            if (!popup) return false;
+            const style = window.getComputedStyle(popup);
+            if (style.display === 'none' || style.visibility === 'hidden') return false;
+            const text = popup.innerText || "";
+            return text.includes("تاخیر در اجرای سرویس") ||
+                   text.includes("سرویس با خطا") ||
+                   text.includes("خطا در فراخوانی");
+        }''')) or False
+    except Exception as e:
+        logging.warning(f"detect_sana_service_delay_popup: error: {e}")
+        return False
+
+
+async def retry_step_on_service_delay(page, bot: Bot, user_id: int, step_coro_factory,
+                                       step_name: str, max_retries: int = 2,
+                                       log_prefix: str = "SANA") -> bool:
+    """
+    ⭐ طبق دستور کارفرما — اجرای یک «مرحله» (کلیک روی گزینه‌ی استعلام
+    اشخاص/پیوست‌ها/ثبت موقت/امضا/استعلام شماره تماس/کدملی/کدرهگیری و ...)
+    با تشخیص پاپ‌آپ «تاخیر در اجرای سرویس» بعد از هر بار اجرا.
+
+    ⚠️ فقط برای «تاخیر در اجرای سرویس» — «ورود همزمان» را اینجا چک
+    نمی‌کند (باید قبل از این تابع، جداگانه با check_and_handle_expiry/
+    detect_concurrent_login_popup بررسی و مدیریت شده باشد، بدون سقف
+    تلاش مجدد و با اطلاع فوری به مدیر).
+
+    اگر پاپ‌آپ ظاهر شد: بسته می‌شود و «همان مرحله» (step_coro_factory)
+    دوباره اجرا می‌شود — این چرخه حداکثر max_retries بار (پیش‌فرض ۲)
+    تکرار می‌شود. اگر بعد از آن هم برقرار باشد: به کاربر پیام «سامانه
+    در حال حاضر قطع است، یک ساعت دیگر تلاش کنید» ارسال و
+    SanaSystemDownError raise می‌شود.
+
+    step_coro_factory: تابعی بدون آرگومان که هر بار فراخوانی یک
+    coroutine تازه برمی‌گرداند (خودِ عمل کلیک/تلاشِ مرحله) — باید امن
+    برای تکرار باشد.
+
+    بازگشت: True اگر مرحله بدون خطا انجام شد (چه بار اول چه بعد از retry).
+    """
+    attempt = 0
+    while True:
+        await step_coro_factory()
+        has_delay = await detect_sana_service_delay_popup(page)
+        if not has_delay:
+            return True
+
+        attempt += 1
+        logging.warning(
+            f"[{log_prefix}] پاپ‌آپ «تاخیر در اجرای سرویس» بعد از مرحله "
+            f"«{step_name}» — تلاش مجدد {attempt}/{max_retries}")
+        await dismiss_sana_error_popup(page)
+        await asyncio.sleep(2)
+
+        if attempt >= max_retries:
+            try:
+                await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
+            except Exception:
+                pass
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"🚨 [{log_prefix}] مرحله «{step_name}» بعد از {max_retries} بار "
+                    "تلاش مجدد هم‌چنان «تاخیر در اجرای سرویس» می‌دهد — کاربر "
+                    f"{user_id} مطلع شد که سامانه فعلاً قطع است.")
+            except Exception:
+                pass
+            raise SanaSystemDownError(
+                f"{step_name}: service_delay persisted after {max_retries} retries")
 
 
 async def dismiss_sana_error_popup(page) -> bool:

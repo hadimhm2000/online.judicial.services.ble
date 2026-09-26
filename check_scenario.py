@@ -117,7 +117,8 @@ from browser_helpers import (
     safe_click_by_text, safe_type, wait_for_angular_idle,
     handle_session_expired, wait_for_horizontal_loading_bar,
     detect_concurrent_login_popup, readd_person_section,
-    dismiss_sana_error_popup, NavigationResetError)
+    dismiss_sana_error_popup, SanaSystemDownError, SANA_SYSTEM_DOWN_MSG,
+    NavigationResetError)
 from upload_helpers import (
     prepare_files_for_upload,
     click_save_doc_with_retry,
@@ -1605,6 +1606,7 @@ async def _click_save_temp_check(page, bot: Bot, user_id: int,
     قطع می‌شد.
     """
     last_error = ""
+    service_delay_count = 0
     for attempt in range(max_retries):
         # بررسی انقضای نشست قبل از هر تلاش
         had_expiry = await check_and_handle_expiry(page, bot, user_id)
@@ -1688,8 +1690,34 @@ async def _click_save_temp_check(page, bot: Bot, user_id: int,
             break
 
         if popup and popup.get("text"):
+            _popup_text = str(popup.get("text"))
+            # ⭐ طبق دستور کارفرما: «تاخیر در اجرای سرویس» خطای موقت است —
+            # تا ۲ بار تلاش مجدد؛ سپس اطلاع به کاربر که سامانه قطع است.
+            if ("تاخیر در اجرای سرویس" in _popup_text or "سرویس با خطا" in _popup_text or
+                    "خطا در فراخوانی" in _popup_text):
+                service_delay_count += 1
+                logging.warning(
+                    f"[CHECK] پاپ‌آپ «تاخیر در اجرای سرویس» در ثبت موقت — "
+                    f"تکرار {service_delay_count}/2")
+                await _close_sweet_popup(page)
+                if service_delay_count >= 2:
+                    try:
+                        await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
+                    except Exception:
+                        pass
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"🚨 [CHECK] ثبت موقت کاربر {user_id} بعد از ۲ بار "
+                            "تلاش مجدد هم‌چنان «تاخیر در اجرای سرویس» می‌دهد.")
+                    except Exception:
+                        pass
+                    raise SanaSystemDownError("ثبت موقت دادخواست چک: service_delay persisted")
+                await asyncio.sleep(3)
+                continue
+
             # ⭐ خطا → بستن و تلاش مجدد؛ اگر دوباره خطا آمد → اطلاع
-            last_error = str(popup.get("text"))
+            last_error = _popup_text
             logging.warning(
                 f"[CHECK] پاپ‌آپ خطای ثبت موقت (تلاش {attempt + 1}): {last_error[:200]}")
             await _close_sweet_popup(page)
@@ -2241,6 +2269,9 @@ def _sana_popup_kind(popup_text: str) -> str:
             "رایانه ای دیگر" in popup_text or "رایانه اي ديگر" in popup_text or
             "اعتبار ورود" in popup_text or "ورود قبلی" in popup_text or "ورود قبلي" in popup_text):
         return "session"
+    if ("تاخیر در اجرای سرویس" in popup_text or "سرویس با خطا" in popup_text or
+            "خطا در فراخوانی" in popup_text):
+        return "service_delay"
     # ⭐ اصلاحیهٔ کارفرما (۱۴۰۵/۰۶/۲۸): تشخیص «شخص ... در فهرست اشخاص
     # پرونده نیست» با کاتالوگ نرمال‌سازی‌شده (مقاوم به ي/ک عربی)
     try:
@@ -2281,6 +2312,7 @@ async def _query_sana_check(page, ng_click: str, bot: Bot, user_id: int,
     # سکشن + افزودن مجدد + ورود مجدد کدملی؛ اگر باز هم پاپ‌آپ آمد، متن خطا
     # برای مدیر و کاربر ارسال می‌شود.
     readd_done = False
+    service_delay_count = 0
     for attempt in range(max_retries):
         try:
             had_expiry = await check_and_handle_expiry(page, bot, user_id)
@@ -2337,6 +2369,31 @@ async def _query_sana_check(page, ng_click: str, bot: Bot, user_id: int,
 
             if kind == "session":
                 # مدیریت شده توسط check_and_handle_expiry — تمدید و تلاش مجدد
+                continue
+
+            if kind == "service_delay":
+                # ⭐ طبق دستور کارفرما: تا ۲ بار تلاش مجدد؛ در غیر این
+                # صورت به کاربر اطلاع داده می‌شود که سامانه قطع است.
+                service_delay_count += 1
+                logging.warning(
+                    f"[CHECK][{role}] پاپ‌آپ «تاخیر در اجرای سرویس» — "
+                    f"تکرار {service_delay_count}/2")
+                if service_delay_count >= 2:
+                    try:
+                        await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
+                    except Exception:
+                        pass
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"🚨 [CHECK] استعلام {role or 'شخص'} کاربر {user_id} "
+                            "بعد از ۲ بار تلاش مجدد هم‌چنان «تاخیر در اجرای "
+                            "سرویس» می‌دهد.")
+                    except Exception:
+                        pass
+                    raise SanaSystemDownError(
+                        f"استعلام {role or 'شخص'} چک: service_delay persisted")
+                await asyncio.sleep(3)
                 continue
 
             # ⭐ محافظ: اگر پاپ‌آپ بسته‌شده در واقع خطا نبوده و استعلام موفق

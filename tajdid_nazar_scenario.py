@@ -58,6 +58,7 @@ from browser_helpers import (
     wait_for_angular_idle, handle_session_expired,
     wait_for_horizontal_loading_bar, detect_concurrent_login_popup,
     readd_person_section, dismiss_sana_error_popup,
+    detect_sana_service_delay_popup, SanaSystemDownError, SANA_SYSTEM_DOWN_MSG,
     NavigationResetError)
 
 
@@ -762,6 +763,7 @@ async def _query_sana(page, ng_click: str, bot: Bot, user_id: int,
     """
     # ⭐ روند بازیابی سکشن فقط یک‌بار اجرا می‌شود (طبق دستور کارفرما)
     readd_done = False
+    service_delay_count = 0
     for attempt in range(max_retries):
         # بررسی session expiry قبل از هر تلاش
         had_expiry = await check_and_handle_expiry(page, bot, user_id)
@@ -801,6 +803,34 @@ async def _query_sana(page, ng_click: str, bot: Bot, user_id: int,
         had_expiry = await check_and_handle_expiry(page, bot, user_id)
         if had_expiry:
             logging.info(f"[TN] session renewed after query attempt {attempt + 1}")
+            continue
+
+        # ⭐ طبق دستور کارفرما: «ورود همزمان» همین بالا با check_and_handle_expiry
+        # (بدون سقف تلاش، اطلاع فوری به مدیر) مدیریت شد. اینجا فقط «تاخیر در
+        # اجرای سرویس» را جداگانه چک می‌کنیم — تا ۲ بار تلاش مجدد؛ در غیر این
+        # صورت به کاربر اطلاع داده می‌شود که سامانه قطع است.
+        has_service_delay = await detect_sana_service_delay_popup(page)
+        if has_service_delay:
+            service_delay_count += 1
+            logging.warning(
+                f"[TN] پاپ‌آپ «تاخیر در اجرای سرویس» در استعلام اشخاص — "
+                f"تکرار {service_delay_count}/2")
+            await dismiss_sana_error_popup(page)
+            if service_delay_count >= 2:
+                try:
+                    await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
+                except Exception:
+                    pass
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🚨 [TN] استعلام اشخاص کاربر {user_id} بعد از ۲ بار "
+                        "تلاش مجدد هم‌چنان «تاخیر در اجرای سرویس» می‌دهد.")
+                except Exception:
+                    pass
+                raise SanaSystemDownError(
+                    "استعلام اشخاص دعاوی اعتراضی: service_delay persisted")
+            await asyncio.sleep(3)
             continue
 
         # بررسی پاپ‌آپ خطای ثنا
@@ -1977,6 +2007,35 @@ async def _click_save_temp(page, bot: Bot, user_id: int, max_retries: int = 5):
     # دکمهٔ «ثبت موقت» دوباره زده می‌شود؛ این عمل تا ۳ بار تکرار و فقط پس از آن
     # خطا به‌صورت قطعی اعلام می‌شود.
     tracking_code_error_retries = 0
+    service_delay_count = 0
+
+    async def _is_service_delay_and_handle(text: str) -> bool:
+        """⭐ طبق دستور کارفرما: «تاخیر در اجرای سرویس» خطای موقت است — تا ۲
+        بار تلاش مجدد؛ در غیر این صورت به کاربر اطلاع داده می‌شود که سامانه
+        قطع است. خروجی True یعنی «شناسایی و مدیریت شد، حلقهٔ بیرونی continue کند»."""
+        nonlocal service_delay_count
+        if not ("تاخیر در اجرای سرویس" in text or "سرویس با خطا" in text or
+                "خطا در فراخوانی" in text):
+            return False
+        service_delay_count += 1
+        logging.warning(
+            f"[TN] پاپ‌آپ «تاخیر در اجرای سرویس» در ثبت موقت — "
+            f"تکرار {service_delay_count}/2")
+        if service_delay_count >= 2:
+            try:
+                await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
+            except Exception:
+                pass
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"🚨 [TN] ثبت موقت کاربر {user_id} بعد از ۲ بار تلاش مجدد "
+                    "هم‌چنان «تاخیر در اجرای سرویس» می‌دهد.")
+            except Exception:
+                pass
+            raise SanaSystemDownError("ثبت موقت دعاوی اعتراضی: service_delay persisted")
+        await asyncio.sleep(3)
+        return True
 
     for attempt in range(max_retries):
         # بررسی session expiry قبل از هر تلاش
@@ -2008,6 +2067,8 @@ async def _click_save_temp(page, bot: Bot, user_id: int, max_retries: int = 5):
                     f"[TN] خطای «تخصیص کد رهگیری» (بار {tracking_code_error_retries}/3) — "
                     f"کلیک مجدد «ثبت موقت»...")
                 await asyncio.sleep(3)
+                continue
+            if await _is_service_delay_and_handle(str(loading_result)):
                 continue
             await _raise_fatal_tn_save_error(bot, user_id, loading_result)
 
@@ -2060,6 +2121,9 @@ async def _click_save_temp(page, bot: Bot, user_id: int, max_retries: int = 5):
                     f"(بار {tracking_code_error_retries}/3) — کلیک مجدد «ثبت موقت»...")
                 await _close_popup(page)
                 await asyncio.sleep(3)
+                continue
+            if await _is_service_delay_and_handle(error_text):
+                await _close_popup(page)
                 continue
             await _raise_fatal_tn_save_error(bot, user_id, error_text)
 

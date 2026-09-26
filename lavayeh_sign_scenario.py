@@ -33,7 +33,8 @@ from browser_helpers import (
     safe_click_by_text,
     wait_for_angular_idle,
     wait_for_horizontal_loading_bar,
-    click_sana_main_menu)
+    click_sana_main_menu,
+    SanaSystemDownError, SANA_SYSTEM_DOWN_MSG)
 from config import ADMIN_ID
 
 
@@ -508,6 +509,7 @@ async def send_sign_code_for_person(
             logging.error(f"[SIGN] ناوبری مجدد قبل از ارسال کد ناموفق — کاربر {user_id}")
             return False
 
+    service_delay_count = 0
     for attempt in range(3):
         clicked = await sana_page.evaluate(f'''(idx) => {{
             const rows = Array.from(document.querySelectorAll(
@@ -541,6 +543,30 @@ async def send_sign_code_for_person(
             logging.info(f"[SIGN] نشست پس از انقضا تمدید شد — تلاش مجدد ارسال کد ردیف {row_idx}")
             continue
 
+        elif popup_result == "service_delay":
+            # ⭐ طبق دستور کارفرما: «تاخیر در اجرای سرویس» خطای موقت است —
+            # تا ۲ بار تلاش مجدد؛ سپس اطلاع به کاربر که سامانه قطع است.
+            await _close_any_popup(sana_page)
+            service_delay_count += 1
+            logging.warning(
+                f"[SIGN] پاپ‌آپ «تاخیر در اجرای سرویس» در ارسال کد ردیف {row_idx} — "
+                f"تکرار {service_delay_count}/2")
+            if service_delay_count >= 2:
+                try:
+                    await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
+                except Exception:
+                    pass
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🚨 [SIGN] ارسال کد امضا کاربر {user_id} بعد از ۲ بار "
+                        "تلاش مجدد هم‌چنان «تاخیر در اجرای سرویس» می‌دهد.")
+                except Exception:
+                    pass
+                raise SanaSystemDownError("ارسال کد امضا: service_delay persisted")
+            await asyncio.sleep(3)
+            continue
+
         else:
             await _close_any_popup(sana_page)
             logging.warning(f"[SIGN] خطا در ارسال کد ردیف {row_idx} (تلاش {attempt+1})")
@@ -567,6 +593,7 @@ async def submit_sign_code_for_person(
     if sana_page is None:
         return {"success": False, "error": "sana_page is None"}
 
+    service_delay_count = 0
     for attempt in range(3):
         # وارد کردن کد
         filled = await sana_page.evaluate(f'''(args) => {{
@@ -643,6 +670,29 @@ async def submit_sign_code_for_person(
             return {"success": False, "error": "sana_not_registered"}
         elif popup_result == "session_expired_handled":
             logging.info(f"[SIGN] نشست پس از انقضا تمدید شد — تلاش مجدد تایید کد ردیف {row_idx}")
+            continue
+        elif popup_result == "service_delay":
+            # ⭐ طبق دستور کارفرما: «تاخیر در اجرای سرویس» خطای موقت است —
+            # تا ۲ بار تلاش مجدد؛ سپس اطلاع به کاربر که سامانه قطع است.
+            await _close_any_popup(sana_page)
+            service_delay_count += 1
+            logging.warning(
+                f"[SIGN] پاپ‌آپ «تاخیر در اجرای سرویس» در تایید کد ردیف {row_idx} — "
+                f"تکرار {service_delay_count}/2")
+            if service_delay_count >= 2:
+                try:
+                    await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
+                except Exception:
+                    pass
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🚨 [SIGN] تایید امضا کاربر {user_id} بعد از ۲ بار "
+                        "تلاش مجدد هم‌چنان «تاخیر در اجرای سرویس» می‌دهد.")
+                except Exception:
+                    pass
+                raise SanaSystemDownError("تایید کد امضا: service_delay persisted")
+            await asyncio.sleep(3)
             continue
         else:
             await _close_any_popup(sana_page)
@@ -766,6 +816,10 @@ async def _wait_for_popup_result(page, bot: Bot = None, user_id: int = None, tim
                 if (text.includes("10 دقیقه") || text.includes("۱۰ دقیقه")) {
                     return "already_sent";
                 }
+                if (text.includes("تاخیر در اجرای سرویس") || text.includes("سرویس با خطا") ||
+                    text.includes("خطا در فراخوانی")) {
+                    return "service_delay";
+                }
                 return "error";
             }
             return null;
@@ -833,6 +887,10 @@ async def _wait_for_sign_popup(page, bot: Bot = None, user_id: int = None, timeo
                 }
                 if (text.includes("رمز موقت نادرست") || text.includes("نادرست")) {
                     return "wrong_code";
+                }
+                if (text.includes("تاخیر در اجرای سرویس") || text.includes("سرویس با خطا") ||
+                    text.includes("خطا در فراخوانی")) {
+                    return "service_delay";
                 }
                 return "error";
             }
