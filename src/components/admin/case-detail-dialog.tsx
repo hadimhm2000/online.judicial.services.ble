@@ -451,9 +451,6 @@ export default function CaseDetailDialog({
                       />
                     );
                   })()}
-                      valueClassName="text-emerald-600 font-bold"
-                    />
-                  )}
                 </div>
               </div>
             </div>
