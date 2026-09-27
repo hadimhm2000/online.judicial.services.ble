@@ -240,6 +240,74 @@ def _discard_bg_task(task: asyncio.Task):
         logger.warning(f"[PANEL_SYNC] خطا در تسک پس‌زمینه پنل: {exc!r}")
 
 
+# ── ⭐ v1.7 — پیش‌پرداخت مصرف‌شده → فیلد prepayAmount پرونده در پنل ─────
+# prepay_registration.pop_prepaid هنگام مصرف پیش‌پرداخت (کسر از هزینهٔ کل)
+# رکورد را در runtime_state.consumed_prepay_for_panel نگه می‌دارد. اولین
+# ثبت/آپدیت پروندهٔ غیراستعلامیِ همان کاربر پس از آن، مبلغ پیش‌پرداخت را
+# روی پرونده ثبت می‌کند تا پنل بتواند سود را طبق قاعدهٔ کارفرما حساب کند:
+#   سود = پیش‌پرداخت + (مابقی پرداخت‌شده − هزینهٔ سامانه)
+_PREPAY_EXCLUDED_SERVICES = {"INQUIRY", "REGIONAL_VALUE", "STAMP_CALC", "ADMIN_SEND"}
+_PREPAY_STASH_TTL = datetime.timedelta(hours=24)
+
+
+def _aware_iso(dt) -> str | None:
+    """datetime → رشتهٔ ISO-8601 همراه با offset (Prisma بدون offset را رد می‌کند)."""
+    if isinstance(dt, str):
+        try:
+            dt = datetime.datetime.fromisoformat(dt)
+        except ValueError:
+            return None
+    if not isinstance(dt, datetime.datetime):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.astimezone()  # زمان محلی سرور → aware
+    return dt.isoformat()
+
+
+def _now_iso() -> str:
+    return datetime.datetime.now().astimezone().isoformat()
+
+
+def _take_consumed_prepay(bale_user_id, service_type) -> dict | None:
+    """برداشتن (یک‌بار مصرف) پیش‌پرداخت مصرف‌شدهٔ کاربر برای ارسال به پنل."""
+    if service_type in _PREPAY_EXCLUDED_SERVICES:
+        return None
+    try:
+        import runtime_state
+    except Exception:
+        return None
+    stash = getattr(runtime_state, "consumed_prepay_for_panel", None)
+    if not isinstance(stash, dict):
+        return None
+    try:
+        uid = int(bale_user_id)
+    except (TypeError, ValueError):
+        uid = bale_user_id
+    rec = stash.pop(uid, None)
+    if not rec:
+        return None
+    consumed_at = rec.get("consumed_at")
+    if isinstance(consumed_at, datetime.datetime) and \
+            datetime.datetime.now() - consumed_at > _PREPAY_STASH_TTL:
+        return None
+    amount_toman = int(rec.get("amount_toman") or 0)
+    if amount_toman <= 0:
+        return None
+    fields = {"prepayAmount": amount_toman}
+    paid_at = _aware_iso(rec.get("paid_at"))
+    if paid_at:
+        fields["prepaidAt"] = paid_at
+    return fields
+
+
+def _is_placeholder_name(full_name, bale_user_id) -> bool:
+    """نام «ساختگی» (همان شناسه بله / فقط عدد) — نباید نام واقعی را بازنویسی کند."""
+    if not full_name:
+        return True
+    name = str(full_name).strip()
+    return name == str(bale_user_id) or name.isdigit()
+
+
 # ── پیاده‌سازی داخلی (impl) ────────────────────────────────────────────
 async def _register_case_impl(
     bale_user_id, full_name, service_type, status="COMPLETED",
@@ -267,6 +335,11 @@ async def _register_case_impl(
         "errorDetails": error_details,
         "errorStep": error_step,
     }
+    # ⭐ v1.7 — پیش‌پرداخت مصرف‌شده (در صورت وجود) روی پرونده ثبت شود
+    prepay_fields = _take_consumed_prepay(bale_user_id, service_type)
+    if prepay_fields:
+        payload.update(prepay_fields)
+
     # حذف فیلدهای None
     payload = {k: v for k, v in payload.items() if v is not None}
 
@@ -281,6 +354,9 @@ async def _register_case_impl(
             f"[PANEL_SYNC] Case تکراری شناسایی شد: type={service_type} "
             f"user={bale_user_id} tracking={tracking_code}"
         )
+        # پروندهٔ تکراری آپدیت نمی‌شود؛ پیش‌پرداخت را جداگانه روی آن ثبت کن
+        if prepay_fields and data.get("id"):
+            await _update_case_impl(data["id"], **prepay_fields)
         return data
     logger.info(
         f"[PANEL_SYNC] Case ثبت شد: id={data.get('id', '?')} "
@@ -386,7 +462,8 @@ async def _upsert_case_impl(
 
     if existing:
         update_fields = {
-            "fullName": full_name,
+            # ⭐ v1.7: نام واقعی ثبت‌شده با شناسهٔ عددی بازنویسی نشود
+            "fullName": None if _is_placeholder_name(full_name, bale_user_id) else full_name,
             "status": status,
             "documentCategory": document_category,
             "subCategory": sub_category,
@@ -403,6 +480,10 @@ async def _upsert_case_impl(
         # fee_status هم در حال آپدیت است؛ تا رکورد قبلیِ با مبلغ اشتباه صفر شود.
         if fee or fee_status is not None:
             update_fields["fee"] = fee
+        # ⭐ v1.7 — پیش‌پرداخت مصرف‌شده (در صورت وجود)
+        prepay_fields = _take_consumed_prepay(bale_user_id, service_type)
+        if prepay_fields:
+            update_fields.update(prepay_fields)
         return await _update_case_impl(existing["id"], **update_fields)
 
     return await _register_case_impl(
@@ -449,7 +530,10 @@ async def _mark_signed_impl(case_id: str):
     payload = {
         "id": case_id,
         "hasSignature": True,
-        "signedAt": datetime.datetime.now().isoformat(),
+        # ⭐ v1.7 — رفع باگ «همیشه بدون امضا»: isoformat() بدون offset
+        # توسط Prisma رد می‌شد (Expected ISO-8601 DateTime) و PUT با 500
+        # شکست می‌خورد؛ حالا زمان همراه با offset ارسال می‌شود.
+        "signedAt": _now_iso(),
     }
     data, err = await _panel_request("PUT", f"{ADMIN_API_BASE}/admin/cases", json=payload)
     if data is None:
@@ -490,6 +574,42 @@ async def _mark_signed_by_tracking_impl(bale_user_id, service_type, tracking_cod
         )
         return None
     return await _mark_signed_impl(case["id"])
+
+
+# ── ⭐ v1.7 — دفتر «مبالغ قابل بازگشت / قابل کسر» ────────────────────
+async def _register_credit_impl(bale_user_id, amount_toman: int, reason: str,
+                                kind: str = "REFUND", full_name=None,
+                                tracking_code=None, case_id=None):
+    payload = {
+        "baleUserId": str(bale_user_id),
+        "amount": int(amount_toman),
+        "reason": reason,
+        "kind": kind,
+        "source": "BOT",
+        "fullName": None if _is_placeholder_name(full_name, bale_user_id) else full_name,
+        "trackingCode": tracking_code,
+        "caseId": case_id,
+    }
+    payload = {k: v for k, v in payload.items() if v is not None}
+    data, err = await _panel_request("POST", f"{ADMIN_API_BASE}/admin/credits", json=payload)
+    if data is None:
+        if err != "circuit_open":
+            logger.warning(f"[PANEL_SYNC] خطا در ثبت مبلغ بازگشت/کسر برای {bale_user_id}: {err}")
+        return None
+    logger.info(f"[PANEL_SYNC] مبلغ {kind} ثبت شد: user={bale_user_id} amount={amount_toman}")
+    return data
+
+
+async def register_user_credit(bale_user_id, amount_toman: int, reason: str,
+                               kind: str = "REFUND", full_name=None,
+                               tracking_code=None, case_id=None):
+    """ثبت مبلغی که باید به کاربر بازگردد (REFUND) یا در موارد بعدی کسر شود
+    (DEDUCT_LATER) در دفتر پنل — غیرمسدودکننده (پس‌زمینه). مبلغ به تومان."""
+    if not bale_user_id or not amount_toman or int(amount_toman) <= 0:
+        return None
+    _schedule_panel_job(_register_credit_impl(
+        bale_user_id, amount_toman, reason, kind, full_name, tracking_code, case_id))
+    return None
 
 
 # ── API عمومی — پیش‌فرض: غیرمسدودکننده (پس‌زمینه) ──────────────────────

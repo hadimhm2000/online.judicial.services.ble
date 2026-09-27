@@ -1,110 +1,13 @@
 import { db } from '@/lib/db';
 import { NextResponse } from 'next/server';
+import { computeCaseProfit, NO_SYSTEM_COST_SERVICES, PAID_FEE_STATUSES } from '@/lib/profit';
 
-// ⭐ v1.3 — محاسبهٔ سود
-// ⭐ v1.5 — رفع باگ سود صفر برای اعلام وکالت + فرمول اختصاصی اظهارنامه
+// ⭐ v1.7 — محاسبهٔ سود با پیش‌پرداخت (منطق در src/lib/profit.ts)
+//   سود پرونده = پیش‌پرداخت + (مابقی پرداخت شده؟ مابقی − هزینهٔ سامانه : ۰)
 //
-// قاعدهٔ کارفرما:
-//   ۱) استعلام‌ها (INQUIRY / REGIONAL_VALUE) و خدمات بدون هزینهٔ سامانه
-//      (ADMIN_SEND): کل مبلغ پرداختی مستقیماً سود است.
-//   ۲) سایر خدمات: سود = مبلغ اعلام‌شده به کاربر (fee) − هزینهٔ سامانه (systemCost).
-//      - systemCost برای پرونده‌های جدید دقیقاً از ربات (payment_id_capture) ثبت می‌شود.
-//      - برای پرونده‌های قدیمی، از فرمول‌های قیمت‌گذاری ربات برمی‌گردیم:
-//        * CHECK / TAJDID_NAZAR: کاربر دقیقاً هزینهٔ سامانه را می‌پردازد
-//          (skip_fee_calc، بدون فرمول مارکاپ) → هزینهٔ سامانه = fee → سود ۰.
-//        * LAVAYEH: fee = 2×roundUp1000(هزینهٔ سامانه) − کسرِ پلکانی
-//          (۱۰۰ / ۲۸۰ / ۴۰۰ هزار ریال) → با وارون‌سازی فرمول، هزینهٔ سامانه
-//          بازسازی می‌شود (خطای حداکثر <۱۰۰۰ ریال).
-//        * EZHHARNAMEH: فرمول متفاوتی دارد (net = mainTotal − ۳ ردیف
-//          کسرشونده؛ rounded = roundUp10k(net)؛ final = roundUp10k(rounded
-//          + ۴۵۰,۰۰۰ + mainTotal)) — استفاده از فرمول لایحه برای این سرویس
-//          نادرست است، بنابراین وارون‌سازی جداگانه‌ای دارد.
-//        * EALAM_VAKALAHT: از v1.5 دیگر pass-through نیست — ربات از همان
-//          فرمول کسرِ پلکانی لایحه (روی مبلغ خامِ سامانه) برای محاسبهٔ مبلغ
-//          نهایی استفاده می‌کند، پس وارون‌سازی مشابه لایحه به‌کار می‌رود.
-//
-// شرایط شمارش: مثل «درآمد» فقط پرونده‌های PAID / MANUAL_APPROVED.
+// درآمد (totalRevenue) = پیش‌پرداخت‌های دریافتی + مبالغ پرداخت‌شدهٔ fee.
 
-const PAID_CONDITION = { feeStatus: { in: ['PAID', 'MANUAL_APPROVED'] } };
-
-// سرویس‌هایی که هزینهٔ سامانه ندارند — کل مبلغ، سود است
-const NO_SYSTEM_COST_SERVICES = new Set([
-  'INQUIRY',
-  'REGIONAL_VALUE',
-  'ADMIN_SEND',
-  'STAMP_CALC',
-  'UNKNOWN',
-]);
-
-// سرویس‌هایی که کاربر دقیقاً هزینهٔ سامانه را می‌پردازد — سود ۰
-// ⭐ v1.5: EALAM_VAKALAHT از این لیست حذف شد — ربات از v1.5 مارکاپ واقعی
-// روی این سرویس اعمال می‌کند (رجوع کنید به ealam_vakalaht_scenario.py)،
-// بنابراین دیگر pass-through نیست.
-const PASS_THROUGH_SERVICES = new Set([
-  'CHECK',
-  'TAJDID_NAZAR',
-]);
-
-// وارون‌سازی فرمول کسرِ پلکانی لایحه/اعلام وکالت (روی مبلغ به تومان):
-//   fee_toman = 2×rounded_toman − ded_toman
-//   کسرهای پلکانی: ۱۰,۰۰۰ / ۲۸,۰۰۰ / ۴۰,۰۰۰ تومان (۱۰۰/۲۸۰/۴۰۰ هزار ریال)
-function invertLavayehStyleFormula(fee: number): number {
-  const r1 = (fee + 10_000) / 2;
-  if (r1 > 0 && r1 <= 200_000 && r1 % 100 === 0) return r1;
-  const r2 = (fee + 28_000) / 2;
-  if (r2 > 200_000 && r2 <= 300_000 && r2 % 100 === 0) return r2;
-  const r3 = (fee + 40_000) / 2;
-  if (r3 > 300_000 && r3 % 100 === 0) return r3;
-  // حالت‌های خاص (معاف/دستی): تقریب نصف مبلغ
-  return Math.round(fee / 2);
-}
-
-function estimateSystemCost(serviceType: string, fee: number, recordedCost: number | null): number {
-  // ⭐ fee و systemCost از v1.4 به بعد هر دو به «تومان» هستند (مثل استعلام‌ها).
-  //   - ربات همهٔ feeها را قبل از ارسال به پنل به تومان تبدیل می‌کند
-  //     (court_total/final_fee ریال → fee = مبلغ // 10 تومان).
-  //   - systemCost هم توسط payment_id_capture به تومان ثبت می‌شود.
-  //   - پرونده‌های قدیمی (ریال) باید با اسکریپت migrate_fees_to_toman.js
-  //     یکبار migrate شوند.
-
-  // هزینهٔ سامانهٔ دقیق ثبت‌شده توسط ربات
-  if (recordedCost !== null && recordedCost !== undefined) return recordedCost;
-
-  // پروندهٔ بدون مبلغ (معاف / دستی): هزینهٔ سامانه‌ای وجود ندارد
-  if (!fee || fee <= 0) return 0;
-
-  if (NO_SYSTEM_COST_SERVICES.has(serviceType)) return 0;
-
-  if (PASS_THROUGH_SERVICES.has(serviceType)) {
-    // کاربر دقیقاً هزینهٔ سامانه را پرداخت کرده — سودی ندارد
-    return fee;
-  }
-
-  // LAVAYEH و EALAM_VAKALAHT هر دو دقیقاً از فرمول کسرِ پلکانی
-  // calculate_lavayeh_fee استفاده می‌کنند (رجوع کنید به config.py و
-  // ealam_vakalaht_scenario.py::_calculate_cost_with_retry).
-  if (serviceType === 'LAVAYEH' || serviceType === 'EALAM_VAKALAHT') {
-    return invertLavayehStyleFormula(fee);
-  }
-
-  if (serviceType === 'EZHHARNAMEH') {
-    // ⭐ فرمول اظهارنامه با لایحه فرق دارد.
-    // رجوع کنید به ezhharnameh_scenario.py::_calculate_cost():
-    //   net = mainTotal − excluded_sum (۳ ردیف کسرشونده)
-    //   rounded = roundUp10k(net)
-    //   final = roundUp10k(rounded + ۴۵۰,۰۰۰ + mainTotal)
-    // چون excluded_sum برای پرونده‌های قدیمی در دسترس نیست، این یک
-    // برآورد تقریبی است (با فرض excluded_sum ≈ ۰ و صرف‌نظر از رندها):
-    //   final ≈ ۲×mainTotal + ۴۵۰,۰۰۰  (ریال)  ⟹  mainTotal ≈ (final − ۴۵۰,۰۰۰) / ۲
-    // به تومان: mainTotal_toman ≈ (fee_toman − ۴۵,۰۰۰) / ۲
-    // خطای این برآورد می‌تواند از وارون‌سازی لایحه بیشتر باشد — برای
-    // پرونده‌های جدید systemCost همیشه دقیق از ربات ثبت می‌شود.
-    const approx = (fee - 45_000) / 2;
-    return approx > 0 ? Math.round(approx) : 0;
-  }
-
-  return 0;
-}
+const PAID_CONDITION = { feeStatus: { in: PAID_FEE_STATUSES } };
 
 export async function GET() {
   try {
@@ -146,45 +49,64 @@ export async function GET() {
       }),
     ]);
 
-    // ─── ⭐ v1.3: محاسبهٔ سود ───
-    const paidCases = await db.case.findMany({
-      where: PAID_CONDITION,
-      select: { serviceType: true, fee: true, systemCost: true },
+    // ─── ⭐ v1.7: محاسبهٔ سود (پیش‌پرداخت + مابقی − هزینهٔ سامانه) ───
+    // پرونده‌هایی که یا مابقی را پرداخت کرده‌اند یا پیش‌پرداخت داشته‌اند
+    const profitCases = await db.case.findMany({
+      where: { OR: [PAID_CONDITION, { prepayAmount: { gt: 0 } }] },
+      select: { serviceType: true, fee: true, feeStatus: true, systemCost: true, prepayAmount: true },
     });
 
     let totalProfit = 0;
     let inquiryProfit = 0; // سود استعلام‌ها و خدمات بدون هزینهٔ سامانه
     let serviceProfit = 0; // سود خدمات ثبت‌شده (لایحه/چک/...)
-    let systemCostTotal = 0; // مجموع هزینهٔ سامانه (ریال)
-    let estimatedCount = 0; // چند پرونده بدون systemCost دقیق محاسبه شد
+    let prepayProfit = 0; // سود حاصل از پیش‌پرداخت‌ها
+    let remainingProfit = 0; // سود مرحلهٔ دوم (مابقی − هزینهٔ سامانه)
+    let prepayTotal = 0;
+    let systemCostTotal = 0;
+    let estimatedCount = 0;
     let exactCount = 0;
 
-    const profitByService: Record<string, { profit: number; revenue: number; systemCost: number; count: number }> = {};
+    const profitByService: Record<string, { profit: number; revenue: number; systemCost: number; prepay: number; count: number }> = {};
 
-    for (const c of paidCases) {
-      const fee = c.fee ?? 0;
-      const hasExact = c.systemCost !== null && c.systemCost !== undefined;
-      const systemCost = estimateSystemCost(c.serviceType, fee, c.systemCost ?? null);
-      const profit = Math.max(0, fee) - systemCost;
+    for (const c of profitCases) {
+      const p = computeCaseProfit(c);
 
-      totalProfit += profit;
-      systemCostTotal += systemCost;
-      if (hasExact) exactCount += 1;
-      else estimatedCount += 1;
-
-      if (NO_SYSTEM_COST_SERVICES.has(c.serviceType)) {
-        inquiryProfit += profit;
-      } else {
-        serviceProfit += profit;
+      totalProfit += p.profit;
+      prepayProfit += p.prepayProfit;
+      remainingProfit += p.remainingProfit;
+      prepayTotal += p.prepayProfit;
+      systemCostTotal += p.systemCost;
+      if (p.remainingPaid) {
+        if (p.exactSystemCost) exactCount += 1;
+        else estimatedCount += 1;
       }
 
-      const bucket = profitByService[c.serviceType] || { profit: 0, revenue: 0, systemCost: 0, count: 0 };
-      bucket.profit += profit;
-      bucket.revenue += fee;
-      bucket.systemCost += systemCost;
+      if (NO_SYSTEM_COST_SERVICES.has(c.serviceType)) inquiryProfit += p.profit;
+      else serviceProfit += p.profit;
+
+      const bucket = profitByService[c.serviceType] || { profit: 0, revenue: 0, systemCost: 0, prepay: 0, count: 0 };
+      bucket.profit += p.profit;
+      bucket.revenue += p.revenue;
+      bucket.systemCost += p.systemCost;
+      bucket.prepay += p.prepayProfit;
       bucket.count += 1;
       profitByService[c.serviceType] = bucket;
     }
+
+    // ─── ⭐ v1.7: خلاصهٔ دفتر مبالغ قابل بازگشت/کسر ───
+    let openCredits: Array<{ kind: string; _sum: { amount: number | null }; _count: { id: number } }> = [];
+    try {
+      openCredits = await db.userCredit.groupBy({
+        by: ['kind'],
+        where: { status: 'OPEN' },
+        _sum: { amount: true },
+        _count: { id: true },
+      });
+    } catch {
+      // جدول UserCredit هنوز ساخته نشده (prisma db push اجرا نشده)
+    }
+    const creditSum = (kind: string) => openCredits.find((r) => r.kind === kind)?._sum.amount ?? 0;
+    const creditCount = openCredits.reduce((n, r) => n + r._count.id, 0);
 
     const serviceBreakdown = await db.case.groupBy({
       by: ['serviceType'],
@@ -208,10 +130,15 @@ export async function GET() {
       cancelled,
       processing,
       todayCases,
-      totalRevenue: totalRevenue._sum.fee || 0,
+      // ⭐ v1.7: درآمد = مبالغ پرداخت‌شدهٔ fee + پیش‌پرداخت‌های دریافتی
+      totalRevenue: (totalRevenue._sum.fee || 0) + prepayTotal,
+      paidFeeRevenue: totalRevenue._sum.fee || 0,
+      prepayRevenue: prepayTotal,
       unpaidRevenue: unpaidRevenue._sum.fee || 0,
-      // ⭐ v1.3 — سود
+      // ⭐ v1.7 — سود
       totalProfit: Math.round(totalProfit),
+      prepayProfit: Math.round(prepayProfit),
+      remainingProfit: Math.round(remainingProfit),
       inquiryProfit: Math.round(inquiryProfit),
       serviceProfit: Math.round(serviceProfit),
       systemCostTotal: Math.round(systemCostTotal),
@@ -223,6 +150,10 @@ export async function GET() {
         profit: Math.round(v.profit),
         systemCost: Math.round(v.systemCost),
       })),
+      // ⭐ v1.7 — مبالغ باز در دفتر بازگشت/کسر
+      openRefundTotal: creditSum('REFUND'),
+      openDeductTotal: creditSum('DEDUCT_LATER'),
+      openCreditCount: creditCount,
       serviceBreakdown,
       createdAt: new Date().toISOString(),
     });

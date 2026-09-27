@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import {
   Shield, Bell, RefreshCw, Play, Pause, Volume2, VolumeX, MessageSquare,
   FileSpreadsheet, Moon, Sun, Maximize2, Minimize2, Printer, Keyboard,
-  Wifi, WifiOff, Clock, Users, Trash2,
+  Wifi, WifiOff, Clock, Users, Trash2, Wallet,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -23,6 +23,9 @@ export interface AdminHeaderProps {
   onOpenSheetsPanel: () => void;
   onOpenWorkingHours: () => void;
   onOpenExemptUsers: () => void;
+  /** ⭐ v1.7 — دفتر مبالغ قابل بازگشت/کسر */
+  onOpenCredits?: () => void;
+  openCreditCount?: number;
   onOpenResetData: () => void;
   isOnline: boolean;
   isFullscreen: boolean;
@@ -59,7 +62,7 @@ function PersianClock() {
 export default function AdminHeader({
   refreshing, onRefresh, autoRefresh, onToggleAutoRefresh,
   isMuted, onToggleMuted, activityCount, onOpenActivity,
-  onOpenBotSender, onOpenSheetsPanel, onOpenWorkingHours, onOpenExemptUsers, onOpenResetData,
+  onOpenBotSender, onOpenSheetsPanel, onOpenWorkingHours, onOpenExemptUsers, onOpenCredits, openCreditCount = 0, onOpenResetData,
   isOnline, isFullscreen, onToggleFullscreen, onPrint,
   showShortcuts, onSetShowShortcuts, theme, onToggleTheme,
 }: AdminHeaderProps) {
@@ -175,6 +178,23 @@ export default function AdminHeader({
               >
                 <Users className="h-4 w-4" />
               </Button>
+
+              {onOpenCredits && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-9 w-9 p-0 relative text-amber-600 hover:text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-900/20"
+                  onClick={onOpenCredits}
+                  title="مبالغ قابل بازگشت / کسر"
+                >
+                  <Wallet className="h-4 w-4" />
+                  {openCreditCount > 0 && (
+                    <span className="counter-badge">
+                      {new Intl.NumberFormat('fa-IR').format(openCreditCount)}
+                    </span>
+                  )}
+                </Button>
+              )}
 
               <Button
                 variant="ghost"
