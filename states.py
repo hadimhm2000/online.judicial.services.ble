@@ -393,6 +393,12 @@ class Form(StatesGroup):
     rv_waiting_area = State()
     rv_waiting_land_use = State()
     rv_waiting_land_other = State()        # زیرگزینهٔ «سایر» کاربری عرصه (ضریب تعدیل)
+    rv_waiting_has_building = State()      # ملک اعیانی دارد؟
+    rv_waiting_share_type = State()        # سهم مالکانه: نوع (ششدانگ/دانگ/سهم از سهم/درصد)
+    rv_waiting_share_amount = State()      # سهم مالکانه: مقدار (دانگ/درصد/صورت سهم)
+    rv_waiting_share_den = State()         # سهم مالکانه: تعداد کل سهام (مخرج)
+    rv_waiting_share_scope = State()       # سهم مالکانه: از کل ششدانگ است یا از بخشی از آن؟
+    rv_waiting_share_same = State()        # سهم اعیانی همان سهم عرصه است؟
     rv_waiting_bld_use = State()           # کاربری اعیانی
     rv_waiting_bld_use_other = State()     # زیرگزینهٔ «سایر» کاربری اعیانی
     rv_waiting_bld_structure = State()     # نوع سازه (بتنی/فلزی/سوله — سایر)
