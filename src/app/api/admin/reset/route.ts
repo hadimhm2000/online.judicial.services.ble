@@ -2,7 +2,7 @@ import { db } from '@/lib/db';
 import { NextRequest, NextResponse } from 'next/server';
 
 // ⭐ ریست کامل داده‌ها — فقط پرونده‌ها (Case) و رکوردهای وابسته به آن‌ها
-// (ActivityLog, AdminAction, CaseNote) پاک می‌شوند. WorkingHour, BotMessage
+// (ActivityLog, AdminAction, CaseNote) و سوابق کارت‌به‌کارت (CardPayment) پاک می‌شوند. WorkingHour, BotMessage
 // و ExemptUser دست‌نخورده باقی می‌مانند (طبق تصمیم صریح مالک پروژه).
 //
 // عملیات غیرقابل‌بازگشت است — برای جلوگیری از فراخوانی تصادفی، باید در
@@ -19,7 +19,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const [deletedActivityLogs, deletedAdminActions, deletedCaseNotes, deletedCases] =
+    const [deletedActivityLogs, deletedAdminActions, deletedCaseNotes, deletedCases, deletedCardPayments] =
       await db.$transaction([
         // ActivityLog با onDelete: SetNull به Case متصل است — با حذف Case
         // خودکار پاک نمی‌شود، پس باید صریحاً حذف شود.
@@ -30,6 +30,8 @@ export async function POST(request: NextRequest) {
         db.adminAction.deleteMany(),
         db.caseNote.deleteMany(),
         db.case.deleteMany(),
+        // ⭐ v1.8 — سوابق کارت‌به‌کارت (درآمد/سود کارت‌به‌کارت) هم جزو آمار پاک می‌شوند
+        db.cardPayment.deleteMany(),
       ]);
 
     return NextResponse.json({
@@ -39,6 +41,7 @@ export async function POST(request: NextRequest) {
         activityLogs: deletedActivityLogs.count,
         adminActions: deletedAdminActions.count,
         caseNotes: deletedCaseNotes.count,
+        cardPayments: deletedCardPayments.count,
       },
     });
   } catch (error) {
