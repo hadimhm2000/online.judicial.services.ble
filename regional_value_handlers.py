@@ -357,7 +357,17 @@ async def process_area(message: Message, state: FSMContext):
     if area is None:
         await message.answer("⚠️ متراژ نامعتبر است. لطفاً یک عدد مثبت (متر مربع) وارد کنید.")
         return
-    await state.update_data(rv_area=area)
+    d = await state.get_data()
+    bld_area = d.get("rv_bld_area")
+    if bld_area is not None and bld_area > area:
+        # (در حالت ویرایش) عرصهٔ جدید از اعیانیِ قبلی کوچک‌تر است → اعیانی دوباره پرسیده می‌شود
+        await message.answer(
+            f"ℹ️ متراژ اعیانی قبلی ({bld_area:,.0f} متر مربع) از عرصهٔ جدید بیشتر است؛ "
+            f"لطفاً متراژ اعیانی را دوباره وارد کنید."
+        )
+        await state.update_data(rv_area=area, rv_bld_area=None)
+    else:
+        await state.update_data(rv_area=area)
     await _advance(message, state)
 
 
@@ -522,7 +532,8 @@ async def process_bld_structure(message: Message, state: FSMContext):
 
 async def _ask_bld_area(message: Message, state: FSMContext):
     await message.answer(
-        "📐 لطفاً متراژ اعیانی (زیربنا) را به متر مربع وارد کنید:\n(مثال: 120)",
+        "📐 لطفاً متراژ اعیانی (زیربنا) را به متر مربع وارد کنید:\n"
+        "(حداکثر برابر متراژ عرصه — مثال: 120)",
         reply_markup=back_only_kb,
     )
     await state.set_state(Form.rv_waiting_bld_area)
@@ -538,6 +549,13 @@ async def process_bld_area(message: Message, state: FSMContext):
     area = _parse_number(message.text, min_value=0.01, max_value=1_000_000)
     if area is None:
         await message.answer("⚠️ متراژ نامعتبر است. لطفاً یک عدد مثبت (متر مربع) وارد کنید.")
+        return
+    land_area = (await state.get_data()).get("rv_area")
+    if land_area is not None and area > land_area:
+        await message.answer(
+            f"⚠️ متراژ اعیانی نمی‌تواند از متراژ عرصه ({land_area:,.0f} متر مربع) بیشتر باشد.\n"
+            f"لطفاً متراژ اعیانی را دوباره وارد کنید."
+        )
         return
     await state.update_data(rv_bld_area=area)
     await _advance(message, state)
