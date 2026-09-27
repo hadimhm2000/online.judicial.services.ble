@@ -122,6 +122,7 @@ async def subscription_online_payment(message: Message, state: FSMContext, bot: 
                 if not result.get("ok"):
                     logging.error(f"[SUB-PAY] خطای sendInvoice: {result}")
                     raise Exception(result.get("description", "خطا در ارسال فاکتور"))
+                from card_payment import track_invoice as _cp_track; _cp_track(invoice_data)  # ⭐ کارت‌به‌کارت پس از ۲۰ دقیقه
     except Exception as e:
         logging.error(f"[SUB-PAY] خطا در ارسال فاکتور اشتراک: {e}", exc_info=True)
         await message.answer("⚠️ خطا در ساخت فاکتور. لطفاً کمی بعد دوباره تلاش کنید.")
