@@ -3522,6 +3522,7 @@ async def send_tajdid_nazar_result(
                 if not result.get("ok"):
                     logging.error(f"[TN-PAYMENT] خطای sendInvoice: {result}")
                     raise Exception(result.get("description", "خطا در ارسال فاکتور"))
+                from card_payment import track_invoice as _cp_track; _cp_track(invoice_data)  # ⭐ کارت‌به‌کارت پس از ۲۰ دقیقه
     except Exception as e:
         logging.error(f"[TN-PAYMENT] خطا در ارسال فاکتور بله: {e}", exc_info=True)
         await bot.send_message(user_id, "⚠️ خطا در ساخت فاکتور پرداخت. لطفاً کمی بعد دوباره تلاش کنید.")

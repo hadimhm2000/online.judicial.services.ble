@@ -66,8 +66,28 @@ ADMIN_PANEL_URL = os.environ.get("ADMIN_PANEL_URL", "http://localhost:3000")
 ADMIN_API_BASE = os.environ.get("ADMIN_API_BASE", "http://localhost:3000/api")
 
 # ================= تنظیمات مالی ربات =================
-CARD_NUMBER = "6219861936929354"
-ACCOUNT_NAME = "هادی منتظران"
+CARD_NUMBER = os.environ.get("CARD_NUMBER", "6219861936929354")
+ACCOUNT_NAME = os.environ.get("ACCOUNT_NAME", "هادی منتظران")
+
+# ================= پرداخت جایگزین کارت‌به‌کارت (card_payment.py) =================
+# اگر کاربر تا CARD_PAY_DELAY_MINUTES دقیقه فاکتور بله را پرداخت نکند، تصویر
+# کارت + دکمه‌های کپی برایش ارسال می‌شود؛ رسید پس از تایید مدیر اعمال می‌شود.
+CARD_PAY_ENABLED = os.environ.get("CARD_PAY_ENABLED", "1").strip() not in ("0", "false", "no", "")
+CARD_PAY_DELAY_MINUTES = int(os.environ.get("CARD_PAY_DELAY_MINUTES", "20"))
+CARD_PAY_EXPIRE_HOURS = int(os.environ.get("CARD_PAY_EXPIRE_HOURS", "48"))
+CARD_PAY_NUMBER = "".join(ch for ch in os.environ.get("CARD_PAY_NUMBER", CARD_NUMBER) if ch.isdigit())
+CARD_PAY_HOLDER = os.environ.get("CARD_PAY_HOLDER", ACCOUNT_NAME)
+# خالی = تشخیص خودکار بانک از روی ۶ رقم اول کارت
+CARD_PAY_BANK = os.environ.get("CARD_PAY_BANK", "")
+if not CARD_PAY_BANK:
+    try:
+        from card_payment_image import detect_bank as _detect_bank
+        CARD_PAY_BANK = _detect_bank(CARD_PAY_NUMBER)
+    except Exception:
+        CARD_PAY_BANK = ""
+CARD_PAY_BRAND = os.environ.get("CARD_PAY_BRAND", "خدمات قضایی آنلاین")
+# callback (پیش‌فرض، پایدار) | copy_text (دکمهٔ کپی مستقیم؛ اگر بله رد کند خودکار به callback برمی‌گردد)
+CARD_PAY_COPY_MODE = os.environ.get("CARD_PAY_COPY_MODE", "callback").strip().lower()
 
 # ================= تنظیمات ارزش منطقه‌ای =================
 # کلید API نشان برای جستجوی مکان (نوشته شود در .env)

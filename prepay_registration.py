@@ -126,6 +126,7 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
                 if not result.get("ok"):
                     logging.error(f"[REG-PREPAY] خطای sendInvoice: {result}")
                     raise Exception(result.get("description", "خطا در ارسال فاکتور"))
+                from card_payment import track_invoice as _cp_track; _cp_track(invoice_data)  # ⭐ کارت‌به‌کارت پس از ۲۰ دقیقه
     except Exception as e:
         logging.error(f"[REG-PREPAY] خطا در ارسال فاکتور پیش‌پرداخت: {e}",
                       exc_info=True)

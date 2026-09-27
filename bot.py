@@ -33,6 +33,10 @@ from persistence import (
     mark_crash_and_save)
 
 dp = Dispatcher(storage=MemoryStorage())
+# ⭐ پرداخت کارت‌به‌کارت — روتر رسید/تایید مدیر باید *قبل از* روتر اصلی ثبت شود
+# (فقط عکس‌هایی را می‌گیرد که رسید یک فاکتور کارت‌به‌کارت فعال باشند).
+import card_payment
+card_payment.setup_card_payment(dp)
 dp.include_router(router)
 dp.include_router(admin_relay_router)
 # ⭐ اصلاحیه: fallback_router باید همیشه *آخرین* روتر ثبت‌شده باشد تا فقط
@@ -439,6 +443,8 @@ async def main():
     # (در حالت dev پنل، اولین درخواست هر مسیر باعث کامپایل ۱۰-۳۰ ثانیه‌ای می‌شود)
     from panel_sync import warmup_panel
     asyncio.create_task(warmup_panel())
+    # ⭐ یادآور کارت‌به‌کارت: ۲۰ دقیقه پس از فاکتور پرداخت‌نشده
+    asyncio.create_task(card_payment.card_payment_loop(bot))
 
     # ── تسک ذخیره‌سازی دوره‌ی ──
     persister_task = asyncio.create_task(state_persister(bot))

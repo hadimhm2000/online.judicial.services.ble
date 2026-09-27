@@ -108,6 +108,20 @@ export async function GET() {
     const creditSum = (kind: string) => openCredits.find((r) => r.kind === kind)?._sum.amount ?? 0;
     const creditCount = openCredits.reduce((n, r) => n + r._count.id, 0);
 
+    // ─── ⭐ v1.8: پرداخت‌های کارت‌به‌کارت ───
+    let pendingCardPaymentCount = 0;
+    let cardPaymentRevenue = 0;
+    try {
+      const [pendingCp, approvedCp] = await Promise.all([
+        db.cardPayment.count({ where: { status: 'PENDING_REVIEW' } }),
+        db.cardPayment.aggregate({ _sum: { amount: true }, where: { status: 'APPROVED' } }),
+      ]);
+      pendingCardPaymentCount = pendingCp;
+      cardPaymentRevenue = approvedCp._sum.amount ?? 0;
+    } catch {
+      // جدول CardPayment هنوز ساخته نشده (prisma db push اجرا نشده)
+    }
+
     const serviceBreakdown = await db.case.groupBy({
       by: ['serviceType'],
       _count: { id: true },
@@ -154,6 +168,9 @@ export async function GET() {
       openRefundTotal: creditSum('REFUND'),
       openDeductTotal: creditSum('DEDUCT_LATER'),
       openCreditCount: creditCount,
+      // ⭐ v1.8 — کارت‌به‌کارت (زیرمجموعهٔ درآمد کل؛ درآمد/سود پرونده‌ها از مسیر پرداخت معمول ثبت می‌شود)
+      pendingCardPaymentCount,
+      cardPaymentRevenue,
       serviceBreakdown,
       createdAt: new Date().toISOString(),
     });
