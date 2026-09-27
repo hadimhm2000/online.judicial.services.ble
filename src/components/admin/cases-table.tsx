@@ -71,6 +71,9 @@ export interface CaseItem {
   // ⭐ v1.3 — شناسه پرداخت سامانه قضایی + هزینه سامانه
   paymentId: string | null;
   systemCost: number | null;
+  // ⭐ v1.7 — پیش‌پرداخت (تومان)
+  prepayAmount?: number;
+  prepaidAt?: string | null;
   documentCategory: string | null;
   branchName: string | null;
   branchCode: string | null;

@@ -14,6 +14,7 @@ const GoogleSheetsPanel = React.lazy(() => import('@/components/admin/google-she
 const WorkingHoursDialog = React.lazy(() => import('@/components/admin/working-hours-dialog'));
 const ExemptUsersDialog = React.lazy(() => import('@/components/admin/exempt-users-dialog'));
 const ResetDataDialog = React.lazy(() => import('@/components/admin/reset-data-dialog'));
+const CreditsDialog = React.lazy(() => import('@/components/admin/credits-dialog'));
 
 function LoadingFallback() {
   return <div className="animate-pulse h-8 w-48 rounded-lg bg-muted" />;
@@ -27,6 +28,7 @@ interface LazyPanelsProps {
   onManualIntervention: (c: CaseItem) => void;
   onConfirmSend: (c: CaseItem) => void;
   onDeleteCase: (c: CaseItem) => void;
+  onAddCredit?: (c: CaseItem) => void;
   adminActions: AdminAction[];
   // Manual intervention
   interventionCase: CaseItem | null;
@@ -65,6 +67,11 @@ interface LazyPanelsProps {
   // Exempt users
   exemptUsersOpen: boolean;
   onExemptUsersClose: () => void;
+  // ⭐ v1.7 — Credits ledger
+  creditsOpen?: boolean;
+  onCreditsClose?: () => void;
+  creditsPrefill?: { baleUserId?: string; fullName?: string; caseId?: string; trackingCode?: string | null } | null;
+  onCreditsChanged?: () => void;
   // Reset data
   resetDataOpen: boolean;
   onResetDataClose: () => void;
@@ -72,7 +79,7 @@ interface LazyPanelsProps {
 }
 
 export default function LazyPanels({
-  detailCase, detailOpen, onDetailClose, onManualIntervention, onConfirmSend, onDeleteCase, adminActions,
+  detailCase, detailOpen, onDetailClose, onManualIntervention, onConfirmSend, onDeleteCase, onAddCredit, adminActions,
   interventionCase, interventionOpen, onInterventionClose, onInterventionSubmit,
   batchOpen, onBatchClose, selectedIds, onBatchDone,
   activityOpen, onActivityClose,
@@ -81,6 +88,7 @@ export default function LazyPanels({
   sheetsPanelOpen, onSheetsPanelClose,
   workingHoursOpen, onWorkingHoursClose,
   exemptUsersOpen, onExemptUsersClose,
+  creditsOpen = false, onCreditsClose, creditsPrefill, onCreditsChanged,
   resetDataOpen, onResetDataClose, onResetDataDone,
 }: LazyPanelsProps) {
   return (
@@ -91,6 +99,7 @@ export default function LazyPanels({
           open={detailOpen}
           onClose={onDetailClose}
           onManualIntervention={onManualIntervention}
+          onAddCredit={onAddCredit}
           onConfirmSend={onConfirmSend}
           onDeleteCase={onDeleteCase}
           adminActions={adminActions}
@@ -157,6 +166,15 @@ export default function LazyPanels({
         <ExemptUsersDialog
           open={exemptUsersOpen}
           onOpenChange={(open) => { if (!open) onExemptUsersClose(); }}
+        />
+      </Suspense>
+
+      <Suspense fallback={<LoadingFallback />}>
+        <CreditsDialog
+          open={creditsOpen}
+          onOpenChange={(open) => { if (!open) onCreditsClose?.(); }}
+          prefill={creditsPrefill}
+          onChanged={onCreditsChanged}
         />
       </Suspense>
 

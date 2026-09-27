@@ -64,6 +64,13 @@ model Case {
   // ⭐ v1.3 — شناسه پرداخت سامانه قضایی (استخراج از بخش هزینه توسط ربات)
   paymentId       String?  // شناسه پرداخت ۱۸رقمی سامانه (مثل 140520260315135806)
   systemCost      Int?     // هزینه سامانه قضایی (ریال) — مبنای محاسبه سود
+
+  // ⭐ v1.7 — پیش‌پرداخت (تومان). مبلغی که کاربر قبل از شروع ثبت پرداخت کرده.
+  //   طبق قاعدهٔ کارفرما کل این مبلغ مستقیماً «سود» است.
+  //   وقتی prepayAmount > 0 باشد، فیلد fee «مابقی» است (کل − پیش‌پرداخت)
+  //   و سودِ مرحلهٔ دوم = fee − systemCost (فقط اگر مابقی پرداخت شده باشد).
+  prepayAmount    Int      @default(0)
+  prepaidAt       DateTime?
   
   // Timestamps
   createdAt       DateTime @default(now())
@@ -152,4 +159,27 @@ model ExemptUser {
   fullName   String?
   reason     String?
   createdAt  DateTime @default(now())
+}
+
+// ⭐ v1.7 — دفتر «مبالغ قابل بازگشت / قابل کسر» کاربران
+// مبالغی از پیش‌پرداخت (یا هر پرداخت دیگر) که باید به کاربر برگردد
+// یا در پرونده‌های بعدی کاربر کسر شود، با شناسه بله و دلیل ثبت می‌شوند.
+model UserCredit {
+  id           String    @id @default(cuid())
+  baleUserId   String
+  fullName     String?
+  amount       Int       // مبلغ (تومان)
+  kind         String    @default("REFUND") // REFUND (بازگشت به کاربر) | DEDUCT_LATER (کسر در موارد بعدی)
+  reason       String    // دلیل ثبت این مبلغ
+  status       String    @default("OPEN")   // OPEN (باز) | SETTLED (تسویه‌شده) | CANCELLED (لغو)
+  caseId       String?   // پروندهٔ مرتبط (اختیاری)
+  trackingCode String?   // کد رهگیری مرتبط (اختیاری)
+  source       String    @default("ADMIN")  // ADMIN (ثبت دستی) | BOT (ثبت خودکار ربات)
+  settledAt    DateTime?
+  settleNote   String?   // توضیح تسویه (مثلاً «در پروندهٔ X کسر شد»)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([baleUserId])
+  @@index([status])
 }

@@ -28,9 +28,11 @@ import {
   Pin,
   PinOff,
   PenLine,
+  Wallet,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { CaseItem } from './cases-table';
+import { computeCaseProfit } from '@/lib/profit';
 
 export interface AdminAction {
   id: string;
@@ -55,6 +57,8 @@ interface CaseDetailDialogProps {
   open: boolean;
   onClose: () => void;
   onManualIntervention?: (c: CaseItem) => void;
+  /** ⭐ v1.7 — ثبت مبلغ قابل بازگشت/کسر برای کاربر این پرونده */
+  onAddCredit?: (c: CaseItem) => void;
   onConfirmSend?: (c: CaseItem) => void;
   onDeleteCase?: (c: CaseItem) => void;
   adminActions?: AdminAction[];
@@ -156,6 +160,7 @@ export default function CaseDetailDialog({
   open,
   onClose,
   onManualIntervention,
+  onAddCredit,
   onConfirmSend,
   onDeleteCase,
   adminActions = [],
@@ -381,8 +386,15 @@ export default function CaseDetailDialog({
               </h4>
               <div className="glass-v2 rounded-xl p-4">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {(caseItem.prepayAmount ?? 0) > 0 && (
+                    <InfoCard
+                      label="پیش‌پرداخت (سود مستقیم)"
+                      value={formatToman(caseItem.prepayAmount ?? 0)}
+                      valueClassName="text-emerald-600"
+                    />
+                  )}
                   <InfoCard
-                    label="هزینه"
+                    label={(caseItem.prepayAmount ?? 0) > 0 ? 'مابقی' : 'هزینه'}
                     value={
                       caseItem.feeStatus === 'ADMIN_MANUAL'
                         ? 'صرفاً توسط مدیر ثبت شده'
@@ -426,11 +438,19 @@ export default function CaseDetailDialog({
                       valueClassName="text-amber-600"
                     />
                   )}
+                  {/* ⭐ v1.7 — سود = پیش‌پرداخت + (مابقی پرداخت‌شده − هزینهٔ سامانه) */}
                   {caseItem.feeStatus !== 'ADMIN_MANUAL' &&
-                    caseItem.systemCost !== null && caseItem.systemCost !== undefined && (
-                    <InfoCard
-                      label="سود این پرونده"
-                      value={formatToman(Math.max(0, caseItem.fee) - caseItem.systemCost)}
+                    ((caseItem.prepayAmount ?? 0) > 0 ||
+                      (caseItem.systemCost !== null && caseItem.systemCost !== undefined)) && (() => {
+                    const p = computeCaseProfit(caseItem);
+                    return (
+                      <InfoCard
+                        label={p.remainingPaid ? 'سود این پرونده' : 'سود این پرونده (فعلاً فقط پیش‌پرداخت)'}
+                        value={formatToman(p.profit)}
+                        valueClassName={cn('font-bold', p.profit < 0 ? 'text-red-600' : 'text-emerald-600')}
+                      />
+                    );
+                  })()}
                       valueClassName="text-emerald-600 font-bold"
                     />
                   )}
@@ -546,6 +566,20 @@ export default function CaseDetailDialog({
                     ))}
                   </div>
                 </div>
+              </>
+            )}
+
+            {onAddCredit && caseItem.serviceType !== 'INQUIRY' && (
+              <>
+                <div className="divider-gradient" />
+                <Button
+                  onClick={() => onAddCredit(caseItem)}
+                  variant="outline"
+                  className="w-full text-amber-700 border-amber-200 hover:bg-amber-50 dark:border-amber-900 dark:hover:bg-amber-900/20"
+                >
+                  <Wallet className="h-4 w-4 ml-2" />
+                  {"ثبت مبلغ قابل بازگشت / کسر برای این کاربر"}
+                </Button>
               </>
             )}
 
