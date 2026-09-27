@@ -217,7 +217,7 @@ def num_to_words(n: int) -> str:
 # ══════════════════════════════════════════════════════════════════
 # جمع‌آوری محتوا (مشترک بین همهٔ طرح‌ها)
 # ══════════════════════════════════════════════════════════════════
-def _collect(province, county, address, tax_result, result, date_text, time_text) -> dict:
+def _collect(province, county, address, tax_result, result, date_text, time_text, plak=None) -> dict:
     import ownership_share as osh
     land, b = result["land"], result.get("building")
     land_share = osh.frac_from_str(result.get("land_share") or "1")
@@ -233,6 +233,10 @@ def _collect(province, county, address, tax_result, result, date_text, time_text
     prop = [
         ("استان", province), ("شهرستان", county),
         ("آدرس", address or "—", True),
+    ]
+    if plak:
+        prop.append(("پلاک ثبتی", plak, True))
+    prop += [
         ("شماره بلوک", tax_field("شماره بلوک بر اساس دفترچه ارزش معاملاتی ملک")),
         ("شماره ردیف", tax_field("شماره ردیف بر اساس دفترچه ارزش معاملاتی ملک")),
         ("اداره کل امور مالیاتی", tax_field("اداره کل امور مالیاتی"), True),
@@ -874,7 +878,7 @@ DESIGNS = {"classic": _render_classic, "cards": _render_cards, "minimal": _rende
 
 def build_ayani_pdf(output_path: str, *, province: str, county: str, address: str,
                     tax_result: dict, result: dict, date_text: str = None, time_text: str = None,
-                    design: str = None) -> bool:
+                    design: str = None, plak: str = None) -> bool:
     """
     result: خروجی ayani_calc.compute_all
     tax_result: خروجی سامانهٔ مالیاتی (برای شماره بلوک/ردیف و اداره)
@@ -889,7 +893,7 @@ def build_ayani_pdf(output_path: str, *, province: str, county: str, address: st
         date_text = date_text or ""
         time_text = time_text or ""
 
-    ctx = _collect(province, county, address, tax_result, result, date_text, time_text)
+    ctx = _collect(province, county, address, tax_result, result, date_text, time_text, plak=plak)
     design = design if design in DESIGNS else DEFAULT_DESIGN
     try:
         if design == "sidebar":
