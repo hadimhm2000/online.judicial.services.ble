@@ -276,7 +276,22 @@ def _collect(province, county, address, tax_result, result, date_text, time_text
         ]
     rules.append("ارزش منطقه‌ای کل = ارزش عرصه + ارزش اعیانی.")
 
+    # «اطلاعات مکان انتخابی» و «ارزش معاملاتی» همان‌طور که سامانهٔ مالیاتی برگردانده
+    try:
+        from regional_value_pdf import SYSTEM_FIELDS, VALUE_FIELDS, _get_field_value
+    except Exception:
+        SYSTEM_FIELDS, VALUE_FIELDS = [], []
+        _get_field_value = lambda tr, f: "—"
+
+    def _clean(v):
+        v = str(v or "").replace("ي", "ی").replace("ك", "ک").strip()
+        return v if v and v != "-" else "—"
+
+    location = [(f, _clean(_get_field_value(tax_result or {}, f))) for f in SYSTEM_FIELDS]
+    tax_values = [(f, _clean(_get_field_value(tax_result or {}, f))) for f in VALUE_FIELDS]
+
     return {
+        "location": location, "tax_values": tax_values,
         "province": province, "county": county, "year": year,
         "date": date_text, "time": time_text,
         "report_no": _report_no(),
@@ -308,7 +323,7 @@ def _to_en_digits(s: str) -> str:
 # ══════════════════════════════════════════════════════════════════
 # اجزای مشترک (پالت‌پذیر)
 # ══════════════════════════════════════════════════════════════════
-def _kv(pairs, P, width=CONTENT_W, cols=2, style="zebra", lab_size=8.3, val_size=9.5, pad=1.7):
+def _kv(pairs, P, width=CONTENT_W, cols=2, style="zebra", lab_size=8.3, val_size=9.5, pad=1.7, lab_ratio=0.34):
     """
     جدول برچسب/مقدار راست‌به‌چپ. pairs: [(label, value, full?)]
     style: zebra (نوار یک‌درمیان) | grid (کادر کامل) | lines (فقط خط زیر) | plain
@@ -319,7 +334,7 @@ def _kv(pairs, P, width=CONTENT_W, cols=2, style="zebra", lab_size=8.3, val_size
         ("TOPPADDING", (0, 0), (-1, -1), pad * mm), ("BOTTOMPADDING", (0, 0), (-1, -1), pad * mm),
     ]
     ncol = cols * 2
-    lab_w = width * (0.34 / cols)
+    lab_w = width * (lab_ratio / cols)
     val_w = width / cols - lab_w
     buf = []
 
@@ -373,7 +388,7 @@ def _kv(pairs, P, width=CONTENT_W, cols=2, style="zebra", lab_size=8.3, val_size
 
 
 def _steps(steps, P, width=CONTENT_W, header_fill=None, header_text=None, zebra=False, total_fill=None,
-           total_text=None):
+           total_text=None, pad=2.1):
     ht = header_text or P["muted"]
     head = [_p("مبلغ (ریال)", 8.3, ht, "bold", "left"), _p("محاسبه", 8.3, ht, "bold"),
             _p("شرح", 8.3, ht, "bold"), _p("#", 8.3, ht, "bold", "center")]
@@ -392,7 +407,7 @@ def _steps(steps, P, width=CONTENT_W, header_fill=None, header_text=None, zebra=
     t = Table(rows, colWidths=[width * 0.22, width * 0.46, width * 0.26, width * 0.06], repeatRows=1)
     cmds = [
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 2.1 * mm), ("BOTTOMPADDING", (0, 0), (-1, -1), 2.1 * mm),
+        ("TOPPADDING", (0, 0), (-1, -1), pad * mm), ("BOTTOMPADDING", (0, 0), (-1, -1), pad * mm),
         ("LEFTPADDING", (0, 0), (-1, -1), 2 * mm), ("RIGHTPADDING", (0, 0), (-1, -1), 2 * mm),
         ("LINEBELOW", (0, 1), (-1, -2), 0.35, P["line"]),
     ]
@@ -470,10 +485,12 @@ PAL_CLASSIC = dict(ink=colors.HexColor("#1B2430"), muted=colors.HexColor("#5B657
 def _render_classic(ctx):
     P = PAL_CLASSIC
     band_h = 30 * mm
+    band2_h = 20 * mm   # صفحهٔ دوم: نوار باریک‌تر تا محتوا در یک صفحه جا شود
     W = CONTENT_W - 4 * mm
 
     def page(c, doc):
         c.saveState()
+        bh = band_h if doc.page == 1 else band2_h
         # قاب دوخطی
         c.setStrokeColor(P["accent"]); c.setLineWidth(1.3)
         c.rect(8 * mm, 8 * mm, PAGE_W - 16 * mm, PAGE_H - 16 * mm)
@@ -482,19 +499,25 @@ def _render_classic(ctx):
         # نوار سرتیتر
         top = PAGE_H - 9.6 * mm
         c.setFillColor(P["accent"])
-        c.rect(9.6 * mm, top - band_h, PAGE_W - 19.2 * mm, band_h, stroke=0, fill=1)
+        c.rect(9.6 * mm, top - bh, PAGE_W - 19.2 * mm, bh, stroke=0, fill=1)
         c.setFillColor(P["gold"])
-        c.rect(9.6 * mm, top - band_h - 1.1 * mm, PAGE_W - 19.2 * mm, 1.1 * mm, stroke=0, fill=1)
+        c.rect(9.6 * mm, top - bh - 1.1 * mm, PAGE_W - 19.2 * mm, 1.1 * mm, stroke=0, fill=1)
         rx = PAGE_W - MARGIN - 2 * mm
-        title = "گزارش ارزش منطقه‌ای ملک" if doc.page == 1 else "نحوهٔ محاسبه و ضوابط"
-        _draw_rtl(c, rx, top - 13 * mm, title, _FONTS["bold"], 18, colors.white)
-        _draw_rtl(c, rx, top - 21 * mm, f"عرصه و اعیانی — سال {ctx['year']}", _FONTS["regular"], 9.5,
-                  colors.HexColor("#C8D3E6"))
         lx = MARGIN + 2 * mm
-        _draw_ltr(c, lx, top - 11 * mm, f"تاریخ: {ctx['date']}", _FONTS["regular"], 8.5, colors.white)
-        _draw_ltr(c, lx, top - 17 * mm, f"ساعت: {ctx['time']}", _FONTS["regular"], 8.5, colors.white)
-        _draw_ltr(c, lx, top - 23 * mm, f"شماره: {ctx['report_no']}", _FONTS["regular"], 8.5,
-                  colors.HexColor("#E3C77E"))
+        if doc.page == 1:
+            _draw_rtl(c, rx, top - 13 * mm, "گزارش ارزش منطقه‌ای ملک", _FONTS["bold"], 18, colors.white)
+            _draw_rtl(c, rx, top - 21 * mm, f"عرصه و اعیانی — سال {ctx['year']}", _FONTS["regular"], 9.5,
+                      colors.HexColor("#C8D3E6"))
+            _draw_ltr(c, lx, top - 11 * mm, f"تاریخ: {ctx['date']}", _FONTS["regular"], 8.5, colors.white)
+            _draw_ltr(c, lx, top - 17 * mm, f"ساعت: {ctx['time']}", _FONTS["regular"], 8.5, colors.white)
+            _draw_ltr(c, lx, top - 23 * mm, f"شماره: {ctx['report_no']}", _FONTS["regular"], 8.5,
+                      colors.HexColor("#E3C77E"))
+        else:
+            _draw_rtl(c, rx, top - 12.5 * mm, "نحوهٔ محاسبه و اطلاعات مکان", _FONTS["bold"], 15, colors.white)
+            _draw_ltr(c, lx, top - 9 * mm, f"{ctx['province']} — {ctx['county']}", _FONTS["regular"], 8.5,
+                      colors.white)
+            _draw_ltr(c, lx, top - 15 * mm, f"شماره: {ctx['report_no']}", _FONTS["regular"], 8.5,
+                      colors.HexColor("#E3C77E"))
         _footer_line(c, doc, P, left=MARGIN, right=PAGE_W - MARGIN, y=13 * mm, text=ctx["disclaimer"])
         c.restoreState()
 
@@ -502,8 +525,8 @@ def _render_classic(ctx):
         t = Table([[_p(f"■  {title}", 10.5, P["accent"], "bold")]], colWidths=[W])
         t.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.8, P["gold"]),
                                ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                               ("BOTTOMPADDING", (0, 0), (-1, -1), 1.2 * mm)]))
-        return [t, Spacer(1, 2 * mm)]
+                               ("BOTTOMPADDING", (0, 0), (-1, -1), 1.0 * mm)]))
+        return [t, Spacer(1, 1.6 * mm)]
 
     el = [Spacer(1, band_h - 2 * mm)]
     el += section("مشخصات ملک")
@@ -540,13 +563,21 @@ def _render_classic(ctx):
     el.append(_p(f"به حروف: {ctx['words']} ریال", 8.6, P["muted"]))
 
     el.append(PageBreak())
-    el.append(Spacer(1, band_h - 2 * mm))
+    el.append(Spacer(1, band2_h - 3 * mm))
+    if ctx["location"]:
+        el += section("اطلاعات مکان انتخابی")
+        el.append(_kv(ctx["location"], P, W, cols=1, style="grid", pad=0.9, lab_size=7.8, val_size=8.6,
+                      lab_ratio=0.42))
+        el.append(Spacer(1, 1.5 * mm))
+        el.append(_kv(ctx["tax_values"], P, W, cols=3, style="grid", pad=0.9, lab_size=7.4, val_size=8.6,
+                      lab_ratio=0.56))
+        el.append(Spacer(1, 4 * mm))
     el += section("محاسبهٔ گام‌به‌گام")
     el.append(_steps(ctx["steps"], P, W, header_fill=P["accent"], header_text=colors.white, zebra=True,
-                     total_fill=P["accent_soft"]))
-    el.append(Spacer(1, 7 * mm))
+                     total_fill=P["accent_soft"], pad=1.5))
+    el.append(Spacer(1, 4 * mm))
     el += section("ضوابط اعمال‌شده")
-    el += _bullets(ctx["rules"], P)
+    el += _bullets(ctx["rules"], P, size=7.9)
     return el, page, dict(leftMargin=MARGIN + 2 * mm, rightMargin=MARGIN + 2 * mm,
                           topMargin=12 * mm, bottomMargin=22 * mm)
 
@@ -808,7 +839,7 @@ def _render_sidebar(ctx):
 # ══════════════════════════════════════════════════════════════════
 # ساخت PDF
 # ══════════════════════════════════════════════════════════════════
-DEFAULT_DESIGN = "classic"
+DEFAULT_DESIGN = "classic"   # طرح انتخابی کارفرما
 DESIGNS = {"classic": _render_classic, "cards": _render_cards, "minimal": _render_minimal,
            "sidebar": _render_sidebar}
 
