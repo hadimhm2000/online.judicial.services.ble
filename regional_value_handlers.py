@@ -58,220 +58,29 @@ address_or_location_kb = ReplyKeyboardMarkup(
 
 
 # ══════════════════════════════════════════════════════════════════
-# نقطه ورود — از handlers.py فراخوانی می‌شود
-# ══════════════════════════════════════════════════════════════════
-async def regional_value_entry(message: Message, state: FSMContext):
-    """شروع فرآیند استعلام ارزش منطقه‌ای."""
-    provinces = get_province_list()
-    # ساخت کیبورد استان‌ها (هر ردیف ۳ استان)
-    rows = []
-    for i in range(0, len(provinces), 3):
-        row = [KeyboardButton(text=p) for p in provinces[i:i+3]]
-        rows.append(row)
-    rows.append([KeyboardButton(text="🔙 بازگشت")])
-    kb = ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
-
-    await message.answer(
-        "🗺️ *استعلام ارزش منطقه‌ای ملک*\n\n"
-        "لطفاً استان مربوطه را انتخاب کنید:",
-        reply_markup=kb,
-    )
-    await state.set_state(Form.rv_waiting_province)
-
-
-# ══════════════════════════════════════════════════════════════════
-# مرحله ۱: انتخاب استان
-# ══════════════════════════════════════════════════════════════════
-@regional_value_router.message(Form.rv_waiting_province)
-async def process_province(message: Message, state: FSMContext):
-    if not message.text:
-        return
-
-    if message.text == "🔙 بازگشت":
-        await message.answer(
-            "لطفاً نحوه ثبت درخواست خود را انتخاب فرمایید:",
-            reply_markup=get_main_menu_kb(message.from_user.id),
-        )
-        await state.set_state(Form.waiting_for_flow_type)
-        return
-
-    provinces = get_province_list()
-    selected = message.text.strip()
-    if selected not in provinces:
-        await message.answer("⚠️ لطفاً یکی از استان‌های لیست را انتخاب کنید.")
-        return
-
-    await state.update_data(rv_province=selected, rv_lat=None, rv_lng=None)
-    await message.answer(
-        f"✅ استان انتخاب‌شده: *{selected}*\n\n"
-        f"📍 لطفاً آدرس دقیق را با ذکر نام شهر تایپ کنید،\n"
-        f"یا با دکمهٔ زیر، نقطهٔ مورد نظر را روی نقشه انتخاب و ارسال کنید:\n"
-        f"(مثال: تهران، خیابان ولیعصر، نرسیده به میدان ونک)",
-        reply_markup=address_or_location_kb,
-    )
-    await state.set_state(Form.rv_waiting_address)
-
-
-# ══════════════════════════════════════════════════════════════════
-# مرحله ۲: ورود آدرس (متنی یا موقعیت مکانی روی نقشه)
-# ══════════════════════════════════════════════════════════════════
-@regional_value_router.message(Form.rv_waiting_address, F.content_type == "text")
-async def process_address(message: Message, state: FSMContext):
-    if not message.text:
-        return
-
-    if message.text == "🔙 بازگشت":
-        from regional_value_handlers import regional_value_entry
-        await regional_value_entry(message, state)
-        return
-
-    address = message.text.strip()
-    if len(address) < 5:
-        await message.answer("⚠️ آدرس بسیار کوتاه است. لطفاً آدرس دقیق‌تری وارد کنید.")
-        return
-
-    await state.update_data(rv_address=address, rv_lat=None, rv_lng=None)
-    await message.answer(
-        f"✅ آدرس ثبت شد.\n\n"
-        f"📐 لطفاً متراژ دقیق عرصه را به متر مربع وارد کنید:\n"
-        f"(مثال: 250)",
-        reply_markup=back_only_kb,
-    )
-    await state.set_state(Form.rv_waiting_area)
-
-
-@regional_value_router.message(Form.rv_waiting_address, F.content_type == "location")
-async def process_address_location(message: Message, state: FSMContext):
-    """کاربر به‌جای تایپ آدرس، نقطه‌ای را روی نقشه انتخاب و ارسال کرده است."""
-    loc = message.location
-    lat, lng = loc.latitude, loc.longitude
-
-    # آدرس‌خوانی معکوس فقط برای نمایش در گزارش/پیام‌ها — اگر شکست بخورد
-    # مشکلی نیست، چون خودِ استعلام مستقیماً روی مختصات انجام می‌شود.
-    try:
-        from geocode_and_query import reverse_geocode
-        display_address = reverse_geocode(lat, lng)
-    except Exception:
-        display_address = None
-    if not display_address:
-        display_address = f"مختصات انتخاب‌شده روی نقشه ({lat:.6f}, {lng:.6f})"
-
-    await state.update_data(rv_address=display_address, rv_lat=lat, rv_lng=lng)
-    await message.answer(
-        f"✅ موقعیت مکانی دریافت شد.\n"
-        f"📍 {display_address}\n\n"
-        f"📐 لطفاً متراژ دقیق عرصه را به متر مربع وارد کنید:\n"
-        f"(مثال: 250)",
-        reply_markup=back_only_kb,
-    )
-    await state.set_state(Form.rv_waiting_area)
-
-
-# ══════════════════════════════════════════════════════════════════
-# مرحله ۳: ورود متراژ
-# ══════════════════════════════════════════════════════════════════
-@regional_value_router.message(Form.rv_waiting_area)
-async def process_area(message: Message, state: FSMContext):
-    if not message.text:
-        return
-
-    if message.text == "🔙 بازگشت":
-        data = await state.get_data()
-        province = data.get("rv_province", "")
-        await state.update_data(rv_address="", rv_lat=None, rv_lng=None)
-        await message.answer(
-            f"📍 لطفاً آدرس دقیق را با ذکر نام شهر اعلام کنید،\n"
-            f"یا با دکمهٔ زیر موقعیت را روی نقشه انتخاب کنید:\n"
-            f"(مثال: {province}، خیابان اصلی، ...)",
-            reply_markup=address_or_location_kb,
-        )
-        await state.set_state(Form.rv_waiting_address)
-        return
-
-    # نرمال‌سازی اعداد فارسی به انگلیسی
-    area_text = message.text.strip()
-    area_text = area_text.translate(
-        str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
-    )
-    area_text = area_text.replace(",", "").replace(" ", "")
-
-    try:
-        area = float(area_text)
-        if area <= 0 or area > 1000000:
-            raise ValueError
-    except (ValueError, TypeError):
-        await message.answer(
-            "⚠️ متراژ نامعتبر است. لطفاً یک عدد مثبت (متر مربع) وارد کنید."
-        )
-        return
-
-    await state.update_data(rv_area=area)
-    await _ask_land_use(message, state, prefix=f"✅ متراژ: *{area:,.0f} متر مربع*\n\n")
-
-
-async def _ask_land_use(message: Message, state: FSMContext, prefix: str = ""):
-    """کیبورد انتخاب کاربری زمین (عرصه) — با گزینهٔ «سایر»."""
-    rows = [
-        [KeyboardButton(text="۱. مسکونی"), KeyboardButton(text="۲. تجاری")],
-        [KeyboardButton(text="۳. اداری"), KeyboardButton(text="۴. سایر")],
-        [KeyboardButton(text="🔙 بازگشت")],
-    ]
-    kb = ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
-
-    await message.answer(
-        f"{prefix}🏢 لطفاً کاربری زمین را انتخاب کنید:",
-        reply_markup=kb,
-    )
-    await state.set_state(Form.rv_waiting_land_use)
-
-
-# ══════════════════════════════════════════════════════════════════
-# مرحله ۴: انتخاب کاربری
-# ══════════════════════════════════════════════════════════════════
-LAND_USE_KEY_MAP = {
-    "۱. مسکونی": "مسکونی",
-    "مسکونی": "مسکونی",
-    "۲. تجاری": "تجاری",
-    "تجاری": "تجاری",
-    "۳. اداری": "اداری",
-    "اداری": "اداری",
-    "۴. سایر": "سایر",
-    "سایر": "سایر",
-}
-
-
-@regional_value_router.message(Form.rv_waiting_land_use)
-async def process_land_use(message: Message, state: FSMContext, bot: Bot):
-    if not message.text:
-        return
-
-    if message.text == "🔙 بازگشت":
-        await message.answer(
-            "📐 لطفاً متراژ دقیق عرصه را به متر مربع وارد کنید:",
-            reply_markup=back_only_kb,
-        )
-        await state.set_state(Form.rv_waiting_area)
-        return
-
-    land_use = LAND_USE_KEY_MAP.get(message.text.strip())
-    if not land_use:
-        await message.answer("⚠️ لطفاً یکی از گزینه‌های کاربری را انتخاب کنید.")
-        return
-
-    await state.update_data(rv_land_use=land_use, rv_land_other_idx=None)
-
-    if land_use == "سایر":
-        await _ask_land_other(message, state)
-        return
-
-    await _ask_bld_use(message, state)
-
-
-# ══════════════════════════════════════════════════════════════════
-# مرحله ۴-الف: زیرگزینه‌های «سایر» عرصه (ضریب تعدیل)
+# موتور مراحل سناریو (جدول‌محور)
+#
+#  - هر مرحله: نام، کلیدهای داده، شرط لازم‌بودن، تابع پرسش.
+#  - _advance: اولین مرحلهٔ لازمِ بی‌پاسخ را می‌پرسد؛ اگر همه پر بودند
+#    پیش‌نمایش نمایش داده می‌شود.
+#  - بازگشت: دادهٔ مرحلهٔ قبلی (و همهٔ مراحل بعد از آن) پاک و همان مرحله
+#    دوباره پرسیده می‌شود.
+#  - ویرایش از پیش‌نمایش: از داده‌ها عکس (snapshot) گرفته می‌شود، فیلد
+#    انتخابی (و وابسته‌هایش) پاک و دوباره پرسیده می‌شود؛ بعد از پاسخ،
+#    اگر مرحلهٔ تازه‌ای لازم شده باشد پرسیده و سپس به پیش‌نمایش برمی‌گردد.
+#    «بازگشت» در حالت ویرایش = انصراف از ویرایش و برگشت به پیش‌نمایش.
 # ══════════════════════════════════════════════════════════════════
 _BACK = "🔙 بازگشت"
 _YES, _NO = "✅ بله", "❌ خیر"
+_CONFIRM, _EDIT = "✅ تایید و پرداخت", "✏️ ویرایش"
+
+
+def _to_fa(n) -> str:
+    return str(n).translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
+
+
+def _to_en(text: str) -> str:
+    return (text or "").translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
 
 
 def _num_kb(count: int, per_row: int = 5) -> ReplyKeyboardMarkup:
@@ -287,13 +96,10 @@ _yes_no_kb = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
-
-def _to_fa(n) -> str:
-    return str(n).translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
-
-
-def _to_en(text: str) -> str:
-    return (text or "").translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
+_preview_kb = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text=_CONFIRM), KeyboardButton(text=_EDIT)], [KeyboardButton(text=_BACK)]],
+    resize_keyboard=True,
+)
 
 
 def _parse_choice(text: str, count: int):
@@ -313,7 +119,10 @@ def _parse_choice(text: str, count: int):
 
 def _parse_number(text: str, *, integer=False, allow_negative=False, min_value=None, max_value=None):
     t = _to_en(text).strip().replace(",", "").replace("٬", "").replace("٫", ".").replace(" ", "")
-    t = t.replace("−", "-").replace("–", "-")
+    t = t.replace("−", "-").replace("–", "-").replace("‎", "").replace("‏", "")
+    # «۱-» (منفی نوشته‌شده در سمت راست) هم پذیرفته می‌شود
+    if t.endswith("-") and t.count("-") == 1:
+        t = "-" + t[:-1]
     try:
         v = int(t) if integer else float(t)
     except (ValueError, TypeError):
@@ -331,6 +140,266 @@ def _numbered(options: list) -> str:
     return "\n".join(f"{_to_fa(i)}. {o}" for i, o in enumerate(options, 1))
 
 
+def _floor_applies(d: dict) -> bool:
+    """سؤال طبقه فقط برای مسکونی/تجاری/اداریِ تکمیل‌شده (نه صنعتی/کشاورزی)."""
+    return d.get("rv_bld_complete") is True and d.get("rv_bld_use") in ayani_calc.BUILDING_MAIN_KEYS
+
+
+# (نام مرحله، کلیدهای داده، شرط لازم‌بودن) — ترتیب = ترتیب پرسش
+_STEPS = [
+    ("province", ["rv_province"], lambda d: True),
+    ("address", ["rv_address", "rv_lat", "rv_lng"], lambda d: True),
+    ("area", ["rv_area"], lambda d: True),
+    ("land_use", ["rv_land_use"], lambda d: True),
+    ("land_other", ["rv_land_other_idx"], lambda d: d.get("rv_land_use") == "سایر"),
+    ("bld_use", ["rv_bld_use", "rv_bld_use_other_pending"], lambda d: True),
+    ("bld_structure", ["rv_bld_structure"], lambda d: True),
+    ("bld_area", ["rv_bld_area"], lambda d: True),
+    ("bld_complete", ["rv_bld_complete"], lambda d: True),
+    ("bld_stage", ["rv_bld_stage"], lambda d: d.get("rv_bld_complete") is False),
+    ("bld_parking", ["rv_bld_has_parking"], lambda d: d.get("rv_bld_complete") is True),
+    ("bld_parking_area", ["rv_bld_parking_area"], lambda d: d.get("rv_bld_has_parking") is True),
+    ("bld_floor", ["rv_bld_floor"], _floor_applies),
+    ("bld_age", ["rv_bld_age"], lambda d: d.get("rv_bld_complete") is True),
+]
+_STEP_INDEX = {name: i for i, (name, _, _) in enumerate(_STEPS)}
+_ALL_KEYS = [k for _, keys, _ in _STEPS for k in keys]
+
+# فیلدهای قابل ویرایش در پیش‌نمایش: (عنوان، مراحلی که پاک و دوباره پرسیده می‌شوند، شرط نمایش)
+_EDIT_FIELDS = [
+    ("استان", ["province", "address"], lambda d: True),
+    ("آدرس / موقعیت روی نقشه", ["address"], lambda d: True),
+    ("متراژ عرصه", ["area"], lambda d: True),
+    ("کاربری زمین", ["land_use", "land_other"], lambda d: True),
+    ("کاربری اعیانی", ["bld_use"], lambda d: True),
+    ("نوع سازه", ["bld_structure"], lambda d: True),
+    ("متراژ اعیانی", ["bld_area"], lambda d: True),
+    ("وضعیت تکمیل ساختمان", ["bld_complete", "bld_stage", "bld_parking", "bld_parking_area",
+                              "bld_floor", "bld_age"], lambda d: True),
+    ("مرحلهٔ ساخت", ["bld_stage"], lambda d: d.get("rv_bld_complete") is False),
+    ("پارکینگ و انباری", ["bld_parking", "bld_parking_area"], lambda d: d.get("rv_bld_complete") is True),
+    ("طبقه", ["bld_floor"], _floor_applies),
+    ("قدمت ساختمان", ["bld_age"], lambda d: d.get("rv_bld_complete") is True),
+]
+
+
+def _step_keys(names) -> dict:
+    out = {}
+    for n in names:
+        for k in _STEPS[_STEP_INDEX[n]][1]:
+            out[k] = None
+    return out
+
+
+def _first_missing(d: dict):
+    for name, keys, required in _STEPS:
+        if required(d) and d.get(keys[0]) is None:
+            return name
+    return None
+
+
+async def _advance(message: Message, state: FSMContext):
+    """اولین مرحلهٔ لازمِ بی‌پاسخ را بپرس؛ اگر همه کامل است → پیش‌نمایش."""
+    d = await state.get_data()
+    step = _first_missing(d)
+    if step is None:
+        await state.update_data(rv_edit_snapshot=None)
+        await _show_preview(message, state)
+        return
+    await _ASK[step](message, state)
+
+
+async def _go_back(message: Message, state: FSMContext, current: str):
+    """
+    بازگشت از مرحلهٔ فعلی به مرحلهٔ لازمِ قبلی؛ دادهٔ آن مرحله و همهٔ
+    مراحل بعد از آن پاک می‌شود. در حالت ویرایش = انصراف و برگشت به پیش‌نمایش.
+    """
+    d = await state.get_data()
+    snapshot = d.get("rv_edit_snapshot")
+    if snapshot:
+        await state.update_data(**snapshot, rv_edit_snapshot=None)
+        await _show_preview(message, state)
+        return
+
+    idx = _STEP_INDEX[current]
+    prev = None
+    for i in range(idx - 1, -1, -1):
+        name, _, required = _STEPS[i]
+        if required(d):
+            prev = i
+            break
+    if prev is None:
+        await state.update_data(**{k: None for k in _ALL_KEYS})
+        await message.answer(
+            "لطفاً نحوه ثبت درخواست خود را انتخاب فرمایید:",
+            reply_markup=get_main_menu_kb(message.from_user.id),
+        )
+        await state.set_state(Form.waiting_for_flow_type)
+        return
+    await state.update_data(**_step_keys([n for n, _, _ in _STEPS[prev:]]))
+    await _advance(message, state)
+
+
+# ══════════════════════════════════════════════════════════════════
+# نقطه ورود — از handlers.py فراخوانی می‌شود
+# ══════════════════════════════════════════════════════════════════
+async def regional_value_entry(message: Message, state: FSMContext):
+    """شروع فرآیند استعلام ارزش منطقه‌ای (همهٔ داده‌های قبلی این بخش پاک می‌شود)."""
+    await state.update_data(**{k: None for k in _ALL_KEYS}, rv_edit_snapshot=None,
+                            rv_panel_case_id=None)
+    await _advance(message, state)
+
+
+# ══════════════════════════════════════════════════════════════════
+# مرحله ۱: انتخاب استان
+# ══════════════════════════════════════════════════════════════════
+async def _ask_province(message: Message, state: FSMContext):
+    provinces = get_province_list()
+    rows = []
+    for i in range(0, len(provinces), 3):
+        rows.append([KeyboardButton(text=p) for p in provinces[i:i + 3]])
+    rows.append([KeyboardButton(text=_BACK)])
+    kb = ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+    await message.answer(
+        "🗺️ *استعلام ارزش منطقه‌ای ملک*\n\n"
+        "لطفاً استان مربوطه را انتخاب کنید:",
+        reply_markup=kb,
+    )
+    await state.set_state(Form.rv_waiting_province)
+
+
+@regional_value_router.message(Form.rv_waiting_province)
+async def process_province(message: Message, state: FSMContext):
+    if not message.text:
+        return
+    if message.text == _BACK:
+        await _go_back(message, state, "province")
+        return
+    selected = message.text.strip()
+    if selected not in get_province_list():
+        await message.answer("⚠️ لطفاً یکی از استان‌های لیست را انتخاب کنید.")
+        return
+    await state.update_data(rv_province=selected)
+    await _advance(message, state)
+
+
+# ══════════════════════════════════════════════════════════════════
+# مرحله ۲: ورود آدرس (متنی یا موقعیت مکانی روی نقشه)
+# ══════════════════════════════════════════════════════════════════
+async def _ask_address(message: Message, state: FSMContext):
+    d = await state.get_data()
+    await message.answer(
+        f"✅ استان: *{d.get('rv_province', '')}*\n\n"
+        f"📍 لطفاً آدرس دقیق را با ذکر نام شهر تایپ کنید،\n"
+        f"یا با دکمهٔ زیر، نقطهٔ مورد نظر را روی نقشه انتخاب و ارسال کنید:\n"
+        f"(مثال: تهران، خیابان ولیعصر، نرسیده به میدان ونک)",
+        reply_markup=address_or_location_kb,
+    )
+    await state.set_state(Form.rv_waiting_address)
+
+
+@regional_value_router.message(Form.rv_waiting_address, F.content_type == "text")
+async def process_address(message: Message, state: FSMContext):
+    if not message.text:
+        return
+    if message.text == _BACK:
+        await _go_back(message, state, "address")
+        return
+    address = message.text.strip()
+    if len(address) < 5:
+        await message.answer("⚠️ آدرس بسیار کوتاه است. لطفاً آدرس دقیق‌تری وارد کنید.")
+        return
+    await state.update_data(rv_address=address, rv_lat=None, rv_lng=None)
+    await message.answer("✅ آدرس ثبت شد.")
+    await _advance(message, state)
+
+
+@regional_value_router.message(Form.rv_waiting_address, F.content_type == "location")
+async def process_address_location(message: Message, state: FSMContext):
+    """کاربر به‌جای تایپ آدرس، نقطه‌ای را روی نقشه انتخاب و ارسال کرده است."""
+    loc = message.location
+    lat, lng = loc.latitude, loc.longitude
+
+    # آدرس‌خوانی معکوس فقط برای نمایش در گزارش/پیام‌ها — اگر شکست بخورد
+    # مشکلی نیست، چون خودِ استعلام مستقیماً روی مختصات انجام می‌شود.
+    try:
+        from geocode_and_query import reverse_geocode
+        display_address = reverse_geocode(lat, lng)
+    except Exception:
+        display_address = None
+    if not display_address:
+        display_address = f"مختصات انتخاب‌شده روی نقشه ({lat:.6f}, {lng:.6f})"
+
+    await state.update_data(rv_address=display_address, rv_lat=lat, rv_lng=lng)
+    await message.answer(f"✅ موقعیت مکانی دریافت شد.\n📍 {display_address}")
+    await _advance(message, state)
+
+
+# ══════════════════════════════════════════════════════════════════
+# مرحله ۳: متراژ عرصه
+# ══════════════════════════════════════════════════════════════════
+async def _ask_area(message: Message, state: FSMContext):
+    await message.answer(
+        "📐 لطفاً متراژ دقیق عرصه را به متر مربع وارد کنید:\n(مثال: 250)",
+        reply_markup=back_only_kb,
+    )
+    await state.set_state(Form.rv_waiting_area)
+
+
+@regional_value_router.message(Form.rv_waiting_area)
+async def process_area(message: Message, state: FSMContext):
+    if not message.text:
+        return
+    if message.text == _BACK:
+        await _go_back(message, state, "area")
+        return
+    area = _parse_number(message.text, min_value=0.01, max_value=1_000_000)
+    if area is None:
+        await message.answer("⚠️ متراژ نامعتبر است. لطفاً یک عدد مثبت (متر مربع) وارد کنید.")
+        return
+    await state.update_data(rv_area=area)
+    await _advance(message, state)
+
+
+# ══════════════════════════════════════════════════════════════════
+# مرحله ۴: کاربری زمین (عرصه) + زیرگزینه‌های «سایر» (ضریب تعدیل)
+# ══════════════════════════════════════════════════════════════════
+LAND_USE_KEY_MAP = {
+    "۱. مسکونی": "مسکونی", "مسکونی": "مسکونی",
+    "۲. تجاری": "تجاری", "تجاری": "تجاری",
+    "۳. اداری": "اداری", "اداری": "اداری",
+    "۴. سایر": "سایر", "سایر": "سایر",
+}
+
+
+async def _ask_land_use(message: Message, state: FSMContext):
+    kb = ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="۱. مسکونی"), KeyboardButton(text="۲. تجاری")],
+        [KeyboardButton(text="۳. اداری"), KeyboardButton(text="۴. سایر")],
+        [KeyboardButton(text=_BACK)],
+    ], resize_keyboard=True)
+    await message.answer("🏢 لطفاً کاربری زمین را انتخاب کنید:", reply_markup=kb)
+    await state.set_state(Form.rv_waiting_land_use)
+
+
+@regional_value_router.message(Form.rv_waiting_land_use)
+async def process_land_use(message: Message, state: FSMContext):
+    if not message.text:
+        return
+    if message.text == _BACK:
+        await _go_back(message, state, "land_use")
+        return
+    land_use = LAND_USE_KEY_MAP.get(message.text.strip())
+    if not land_use:
+        idx = _parse_choice(message.text, 4)
+        land_use = ["مسکونی", "تجاری", "اداری", "سایر"][idx] if idx is not None else None
+    if not land_use:
+        await message.answer("⚠️ لطفاً یکی از گزینه‌های کاربری را انتخاب کنید.")
+        return
+    await state.update_data(rv_land_use=land_use, rv_land_other_idx=None)
+    await _advance(message, state)
+
+
 async def _ask_land_other(message: Message, state: FSMContext):
     await message.answer(
         "📋 نوع کاربری زمین را انتخاب کنید:\n\n"
@@ -346,14 +415,14 @@ async def process_land_other(message: Message, state: FSMContext):
     if not message.text:
         return
     if message.text == _BACK:
-        await _ask_land_use(message, state)
+        await _go_back(message, state, "land_other")
         return
     idx = _parse_choice(message.text, len(ayani_calc.LAND_OTHER_OPTIONS))
     if idx is None:
         await message.answer("⚠️ لطفاً فقط یکی از شماره‌های ۱ تا ۵ را انتخاب کنید.")
         return
     await state.update_data(rv_land_other_idx=idx)
-    await _ask_bld_use(message, state)
+    await _advance(message, state)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -364,6 +433,17 @@ _BLD_MAIN = [("۱. مسکونی", "residential"), ("۲. تجاری", "commercial
 
 
 async def _ask_bld_use(message: Message, state: FSMContext):
+    d = await state.get_data()
+    if d.get("rv_bld_use_other_pending"):
+        titles = [ayani_calc.BUILDING_USES[k] for k in ayani_calc.BUILDING_OTHER_KEYS]
+        await message.answer(
+            "📋 کاربری ساختمان را انتخاب کنید:\n\n"
+            f"{_numbered(titles)}\n\n"
+            "👇 شمارهٔ گزینهٔ مورد نظر را از دکمه‌های زیر انتخاب کنید:",
+            reply_markup=_num_kb(len(titles)),
+        )
+        await state.set_state(Form.rv_waiting_bld_use_other)
+        return
     kb = ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text=_BLD_MAIN[0][0]), KeyboardButton(text=_BLD_MAIN[1][0])],
         [KeyboardButton(text=_BLD_MAIN[2][0]), KeyboardButton(text=_BLD_MAIN[3][0])],
@@ -378,11 +458,7 @@ async def process_bld_use(message: Message, state: FSMContext):
     if not message.text:
         return
     if message.text == _BACK:
-        data = await state.get_data()
-        if data.get("rv_land_use") == "سایر":
-            await _ask_land_other(message, state)
-        else:
-            await _ask_land_use(message, state)
+        await _go_back(message, state, "bld_use")
         return
     idx = _parse_choice(message.text, len(_BLD_MAIN))
     if idx is None:
@@ -393,21 +469,10 @@ async def process_bld_use(message: Message, state: FSMContext):
         return
     use_key = _BLD_MAIN[idx][1]
     if use_key is None:
-        await _ask_bld_use_other(message, state)
-        return
-    await state.update_data(rv_bld_use=use_key)
-    await _ask_structure(message, state)
-
-
-async def _ask_bld_use_other(message: Message, state: FSMContext):
-    titles = [ayani_calc.BUILDING_USES[k] for k in ayani_calc.BUILDING_OTHER_KEYS]
-    await message.answer(
-        "📋 کاربری ساختمان را انتخاب کنید:\n\n"
-        f"{_numbered(titles)}\n\n"
-        "👇 شمارهٔ گزینهٔ مورد نظر را از دکمه‌های زیر انتخاب کنید:",
-        reply_markup=_num_kb(len(titles)),
-    )
-    await state.set_state(Form.rv_waiting_bld_use_other)
+        await state.update_data(rv_bld_use=None, rv_bld_use_other_pending=True)
+    else:
+        await state.update_data(rv_bld_use=use_key, rv_bld_use_other_pending=None)
+    await _advance(message, state)
 
 
 @regional_value_router.message(Form.rv_waiting_bld_use_other)
@@ -415,14 +480,20 @@ async def process_bld_use_other(message: Message, state: FSMContext):
     if not message.text:
         return
     if message.text == _BACK:
-        await _ask_bld_use(message, state)
+        d = await state.get_data()
+        if d.get("rv_edit_snapshot"):
+            await _go_back(message, state, "bld_use")
+            return
+        # بازگشت به منوی اصلی کاربری اعیانی (انتخاب «سایر» پاک می‌شود)
+        await state.update_data(rv_bld_use=None, rv_bld_use_other_pending=None)
+        await _advance(message, state)
         return
     idx = _parse_choice(message.text, len(ayani_calc.BUILDING_OTHER_KEYS))
     if idx is None:
         await message.answer("⚠️ لطفاً فقط شمارهٔ ۱ یا ۲ را انتخاب کنید.")
         return
-    await state.update_data(rv_bld_use=ayani_calc.BUILDING_OTHER_KEYS[idx])
-    await _ask_structure(message, state)
+    await state.update_data(rv_bld_use=ayani_calc.BUILDING_OTHER_KEYS[idx], rv_bld_use_other_pending=None)
+    await _advance(message, state)
 
 
 async def _ask_structure(message: Message, state: FSMContext):
@@ -439,18 +510,14 @@ async def process_bld_structure(message: Message, state: FSMContext):
     if not message.text:
         return
     if message.text == _BACK:
-        data = await state.get_data()
-        if data.get("rv_bld_use") in ayani_calc.BUILDING_OTHER_KEYS:
-            await _ask_bld_use_other(message, state)
-        else:
-            await _ask_bld_use(message, state)
+        await _go_back(message, state, "bld_structure")
         return
     idx = _parse_choice(message.text, 2)
     if idx is None:
         await message.answer("⚠️ لطفاً فقط شمارهٔ ۱ یا ۲ را انتخاب کنید.")
         return
     await state.update_data(rv_bld_structure=["concrete", "other"][idx])
-    await _ask_bld_area(message, state)
+    await _advance(message, state)
 
 
 async def _ask_bld_area(message: Message, state: FSMContext):
@@ -466,14 +533,14 @@ async def process_bld_area(message: Message, state: FSMContext):
     if not message.text:
         return
     if message.text == _BACK:
-        await _ask_structure(message, state)
+        await _go_back(message, state, "bld_area")
         return
     area = _parse_number(message.text, min_value=0.01, max_value=1_000_000)
     if area is None:
         await message.answer("⚠️ متراژ نامعتبر است. لطفاً یک عدد مثبت (متر مربع) وارد کنید.")
         return
     await state.update_data(rv_bld_area=area)
-    await _ask_complete(message, state)
+    await _advance(message, state)
 
 
 async def _ask_complete(message: Message, state: FSMContext):
@@ -482,21 +549,21 @@ async def _ask_complete(message: Message, state: FSMContext):
 
 
 @regional_value_router.message(Form.rv_waiting_bld_complete)
-async def process_bld_complete(message: Message, state: FSMContext, bot: Bot):
+async def process_bld_complete(message: Message, state: FSMContext):
     if not message.text:
         return
     if message.text == _BACK:
-        await _ask_bld_area(message, state)
+        await _go_back(message, state, "bld_complete")
         return
     if message.text in (_YES, "بله"):
         await state.update_data(rv_bld_complete=True, rv_bld_stage=None)
-        await _ask_parking(message, state)
     elif message.text in (_NO, "خیر"):
-        await state.update_data(rv_bld_complete=False, rv_bld_parking_area=0,
-                                rv_bld_floor=None, rv_bld_age=0)
-        await _ask_stage(message, state)
+        await state.update_data(rv_bld_complete=False, rv_bld_has_parking=None,
+                                rv_bld_parking_area=None, rv_bld_floor=None, rv_bld_age=None)
     else:
         await message.answer("⚠️ لطفاً «بله» یا «خیر» را انتخاب کنید.")
+        return
+    await _advance(message, state)
 
 
 async def _ask_stage(message: Message, state: FSMContext):
@@ -510,18 +577,18 @@ async def _ask_stage(message: Message, state: FSMContext):
 
 
 @regional_value_router.message(Form.rv_waiting_bld_stage)
-async def process_bld_stage(message: Message, state: FSMContext, bot: Bot):
+async def process_bld_stage(message: Message, state: FSMContext):
     if not message.text:
         return
     if message.text == _BACK:
-        await _ask_complete(message, state)
+        await _go_back(message, state, "bld_stage")
         return
     idx = _parse_choice(message.text, len(ayani_calc.CONSTRUCTION_STAGES))
     if idx is None:
         await message.answer("⚠️ لطفاً فقط یکی از شماره‌های ۱ تا ۴ را انتخاب کنید.")
         return
     await state.update_data(rv_bld_stage=ayani_calc.CONSTRUCTION_STAGES[idx]["key"])
-    await _rv_start_payment(message, state, bot)
+    await _advance(message, state)
 
 
 async def _ask_parking(message: Message, state: FSMContext):
@@ -537,19 +604,24 @@ async def process_bld_parking(message: Message, state: FSMContext):
     if not message.text:
         return
     if message.text == _BACK:
-        await _ask_complete(message, state)
+        await _go_back(message, state, "bld_parking")
         return
     if message.text in (_YES, "بله"):
-        await message.answer(
-            "📐 متراژ پارکینگ و انباری را به متر مربع وارد کنید:\n(مجموع هر دو — مثال: 18)",
-            reply_markup=back_only_kb,
-        )
-        await state.set_state(Form.rv_waiting_bld_parking_area)
+        await state.update_data(rv_bld_has_parking=True, rv_bld_parking_area=None)
     elif message.text in (_NO, "خیر"):
-        await state.update_data(rv_bld_parking_area=0)
-        await _ask_floor(message, state)
+        await state.update_data(rv_bld_has_parking=False, rv_bld_parking_area=None)
     else:
         await message.answer("⚠️ لطفاً «بله» یا «خیر» را انتخاب کنید.")
+        return
+    await _advance(message, state)
+
+
+async def _ask_parking_area(message: Message, state: FSMContext):
+    await message.answer(
+        "📐 متراژ پارکینگ و انباری را به متر مربع وارد کنید:\n(مجموع هر دو — مثال: 18)",
+        reply_markup=back_only_kb,
+    )
+    await state.set_state(Form.rv_waiting_bld_parking_area)
 
 
 @regional_value_router.message(Form.rv_waiting_bld_parking_area)
@@ -557,20 +629,21 @@ async def process_bld_parking_area(message: Message, state: FSMContext):
     if not message.text:
         return
     if message.text == _BACK:
-        await _ask_parking(message, state)
+        await _go_back(message, state, "bld_parking_area")
         return
     p_area = _parse_number(message.text, min_value=0.01, max_value=1_000_000)
     if p_area is None:
         await message.answer("⚠️ متراژ نامعتبر است. لطفاً یک عدد مثبت (متر مربع) وارد کنید.")
         return
     await state.update_data(rv_bld_parking_area=p_area)
-    await _ask_floor(message, state)
+    await _advance(message, state)
 
 
 async def _ask_floor(message: Message, state: FSMContext):
     await message.answer(
-        "🏢 طبقهٔ واحد را وارد کنید (فقط عدد):\n"
-        "همکف = ۰ — زیرزمین با علامت منفی (مثلاً ‎-1)\n"
+        "🏢 طبقهٔ واحد را وارد کنید (فقط عدد):\n\n"
+        "• همکف = ۰\n"
+        "• اگر طبقه زیر همکف می‌باشد، نماد منفی (-) را کنار عدد قرار دهید؛ مثلاً ‎-1\n"
         "(طبقات بدون احتساب زیرزمین و پیلوت شمرده می‌شوند)",
         reply_markup=back_only_kb,
     )
@@ -582,67 +655,151 @@ async def process_bld_floor(message: Message, state: FSMContext):
     if not message.text:
         return
     if message.text == _BACK:
-        await _ask_parking(message, state)
+        await _go_back(message, state, "bld_floor")
         return
     floor = _parse_number(message.text, integer=True, allow_negative=True, min_value=-10, max_value=200)
     if floor is None:
-        await message.answer("⚠️ لطفاً فقط یک عدد صحیح وارد کنید (مثلاً ۳ یا ۰).")
+        await message.answer("⚠️ لطفاً فقط یک عدد صحیح وارد کنید (مثلاً ۳، ۰ یا ‎-1).")
         return
     await state.update_data(rv_bld_floor=floor)
+    await _advance(message, state)
+
+
+async def _ask_age(message: Message, state: FSMContext):
     await message.answer("📅 قدمت ساختمان چند سال است؟ (فقط عدد — مثلاً ۵)", reply_markup=back_only_kb)
     await state.set_state(Form.rv_waiting_bld_age)
 
 
 @regional_value_router.message(Form.rv_waiting_bld_age)
-async def process_bld_age(message: Message, state: FSMContext, bot: Bot):
+async def process_bld_age(message: Message, state: FSMContext):
     if not message.text:
         return
     if message.text == _BACK:
-        await _ask_floor(message, state)
+        await _go_back(message, state, "bld_age")
         return
     age = _parse_number(message.text, integer=True, min_value=0, max_value=300)
     if age is None:
         await message.answer("⚠️ لطفاً فقط یک عدد صحیح وارد کنید (مثلاً ۰ برای نوساز).")
         return
     await state.update_data(rv_bld_age=age)
-    await _rv_start_payment(message, state, bot)
+    await _advance(message, state)
+
+
+_ASK = {
+    "province": _ask_province, "address": _ask_address, "area": _ask_area,
+    "land_use": _ask_land_use, "land_other": _ask_land_other,
+    "bld_use": _ask_bld_use, "bld_structure": _ask_structure, "bld_area": _ask_bld_area,
+    "bld_complete": _ask_complete, "bld_stage": _ask_stage, "bld_parking": _ask_parking,
+    "bld_parking_area": _ask_parking_area, "bld_floor": _ask_floor, "bld_age": _ask_age,
+}
+
+
+# ══════════════════════════════════════════════════════════════════
+# مرحله ۶: پیش‌نمایش (تایید / ویرایش)
+# ══════════════════════════════════════════════════════════════════
+def _floor_text(f) -> str:
+    if f is None:
+        return "-"
+    return "همکف" if f == 0 else (f"زیرزمین {abs(f)} (‎{f})" if f < 0 else str(f))
 
 
 def _inputs_summary(data: dict) -> str:
-    """خلاصهٔ ورودی‌های کاربر برای پیام پیش از پرداخت/پیام ادمین."""
-    land_use = data.get("rv_land_use", "")
+    """خلاصهٔ ورودی‌های کاربر (پیش‌نمایش و پیام ادمین)."""
+    land_use = data.get("rv_land_use") or "-"
     if land_use == "سایر" and data.get("rv_land_other_idx") is not None:
         land_use = f"سایر — {ayani_calc.LAND_OTHER_OPTIONS[data['rv_land_other_idx']]['title']}"
     use_key = data.get("rv_bld_use")
     lines = [
-        f"📍 استان: {data.get('rv_province', '')}",
-        f"📐 متراژ عرصه: {data.get('rv_area', 0):,.0f} متر مربع",
-        f"🏢 کاربری عرصه: {land_use}",
+        f"📍 استان: {data.get('rv_province') or '-'}",
+        f"🗺 آدرس: {data.get('rv_address') or '-'}",
+        f"📐 متراژ عرصه: {(data.get('rv_area') or 0):,.0f} متر مربع",
+        f"🏢 کاربری زمین: {land_use}",
         f"🏗 کاربری اعیانی: {ayani_calc.BUILDING_USES.get(use_key, '-')}",
         f"🧱 نوع سازه: {ayani_calc.STRUCTURES.get(data.get('rv_bld_structure'), '-')}",
-        f"📐 متراژ اعیانی: {data.get('rv_bld_area', 0):,.0f} متر مربع",
+        f"📐 متراژ اعیانی: {(data.get('rv_bld_area') or 0):,.0f} متر مربع",
     ]
     if data.get("rv_bld_complete"):
         p = data.get("rv_bld_parking_area") or 0
-        lines += [
-            "✅ ساختمان: تکمیل‌شده",
-            f"🚗 پارکینگ و انباری: {p:,.0f} متر مربع" if p else "🚗 پارکینگ و انباری: ندارد",
-            f"🏢 طبقه: {data.get('rv_bld_floor')}",
-            f"📅 قدمت: {data.get('rv_bld_age', 0)} سال",
-        ]
+        lines.append("✅ وضعیت ساختمان: تکمیل‌شده")
+        lines.append(f"🚗 پارکینگ و انباری: {p:,.0f} متر مربع" if p else "🚗 پارکینگ و انباری: ندارد")
+        if _floor_applies(data):
+            lines.append(f"🏢 طبقه: {_floor_text(data.get('rv_bld_floor'))}")
+        lines.append(f"📅 قدمت: {data.get('rv_bld_age') or 0} سال")
     else:
         stage = next((s["title"] for s in ayani_calc.CONSTRUCTION_STAGES
                       if s["key"] == data.get("rv_bld_stage")), "-")
-        lines.append(f"🚧 ساختمان: ناتمام — مرحلهٔ {stage}")
+        lines.append(f"🚧 وضعیت ساختمان: ناتمام — مرحلهٔ {stage}")
     return "\n".join(lines)
 
 
+async def _show_preview(message: Message, state: FSMContext):
+    d = await state.get_data()
+    await message.answer(
+        "📝 *پیش‌نمایش اطلاعات ملک*\n\n"
+        f"{_inputs_summary(d)}\n\n"
+        "در صورت صحت اطلاعات «تایید و پرداخت» و در غیر این صورت «ویرایش» را بزنید.",
+        reply_markup=_preview_kb,
+    )
+    await state.set_state(Form.rv_waiting_preview)
+
+
+@regional_value_router.message(Form.rv_waiting_preview)
+async def process_preview(message: Message, state: FSMContext, bot: Bot):
+    if not message.text:
+        return
+    if message.text == _BACK:
+        # بازگشت از پیش‌نمایش = بازگشت به آخرین مرحله (دادهٔ آن پاک می‌شود)
+        d = await state.get_data()
+        last = [n for n, keys, req in _STEPS if req(d)][-1]
+        await state.update_data(**_step_keys([last]))
+        await _advance(message, state)
+        return
+    if message.text == _CONFIRM:
+        await _rv_start_payment(message, state, bot)
+        return
+    if message.text == _EDIT:
+        await _ask_edit_choice(message, state)
+        return
+    await message.answer("⚠️ لطفاً یکی از گزینه‌های «تایید و پرداخت» یا «ویرایش» را انتخاب کنید.")
+
+
+def _edit_options(d: dict) -> list:
+    return [(title, steps) for title, steps, cond in _EDIT_FIELDS if cond(d)]
+
+
+async def _ask_edit_choice(message: Message, state: FSMContext):
+    d = await state.get_data()
+    opts = _edit_options(d)
+    await message.answer(
+        "✏️ کدام مورد را می‌خواهید ویرایش کنید؟\n\n"
+        f"{_numbered([t for t, _ in opts])}",
+        reply_markup=_num_kb(len(opts), per_row=4),
+    )
+    await state.set_state(Form.rv_waiting_edit_choice)
+
+
+@regional_value_router.message(Form.rv_waiting_edit_choice)
+async def process_edit_choice(message: Message, state: FSMContext):
+    if not message.text:
+        return
+    if message.text == _BACK:
+        await _show_preview(message, state)
+        return
+    d = await state.get_data()
+    opts = _edit_options(d)
+    idx = _parse_choice(message.text, len(opts))
+    if idx is None:
+        await message.answer("⚠️ لطفاً شمارهٔ یکی از موارد را انتخاب کنید.")
+        return
+    snapshot = {k: d.get(k) for k in _ALL_KEYS}
+    await state.update_data(**_step_keys(opts[idx][1]), rv_edit_snapshot=snapshot)
+    await _advance(message, state)
+
+
 # ══════════════════════════════════════════════════════════════════
-# مرحله ۶: ثبت پرونده + فاکتور پرداخت (پس از تکمیل همهٔ ورودی‌ها)
+# مرحله ۷: ثبت پرونده + فاکتور پرداخت (پس از تایید پیش‌نمایش)
 # ══════════════════════════════════════════════════════════════════
 async def _rv_start_payment(message: Message, state: FSMContext, bot: Bot):
-    data_now = await state.get_data()
-    await message.answer(f"📝 *خلاصهٔ اطلاعات ملک*\n\n{_inputs_summary(data_now)}")
 
     # ── ثبت پرونده در پنل ادمین (از همون ابتدا، قبل از پرداخت) ──
     # wait=True: به case_id برگشتی برای آپدیت‌های بعدی نیاز داریم —
@@ -969,7 +1126,6 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
                 ADMIN_ID,
                 f"{title}:\n"
                 f"👤 کاربر: {message.from_user.full_name} ({user_id})\n"
-                f"🗺 آدرس: {address}\n"
                 f"🏙 شهرستان مبنای اعیانی: {county_info['county']} ({county_info['method']})\n"
                 f"{_inputs_summary(data)}\n"
                 f"💰 عرصه: {land_value:,} | اعیانی: {building_value:,} | کل: {total_value:,} ریال\n"

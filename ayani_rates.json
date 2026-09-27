@@ -1046,33 +1046,6 @@
     }
    },
    {
-    "county": "نوک‌آباد",
-    "lat": null,
-    "lng": null,
-    "rates": {
-     "residential": {
-      "concrete": 2178000,
-      "other": 605000
-     },
-     "commercial": {
-      "concrete": 2662000,
-      "other": 770000
-     },
-     "administrative": {
-      "concrete": 2178000,
-      "other": 605000
-     },
-     "agricultural": {
-      "concrete": 1150000,
-      "other": 330000
-     },
-     "industrial": {
-      "concrete": 1634000,
-      "other": 495000
-     }
-    }
-   },
-   {
     "county": "چهاربرج",
     "lat": 37.12,
     "lng": 45.98,
@@ -6852,63 +6825,9 @@
     }
    },
    {
-    "county": "گرگان",
-    "lat": null,
-    "lng": null,
-    "rates": {
-     "residential": {
-      "concrete": 780000,
-      "other": 520000
-     },
-     "commercial": {
-      "concrete": 1560000,
-      "other": 780000
-     },
-     "administrative": {
-      "concrete": 780000,
-      "other": 520000
-     },
-     "agricultural": {
-      "concrete": 195000,
-      "other": 97500
-     },
-     "industrial": {
-      "concrete": 585000,
-      "other": 390000
-     }
-    }
-   },
-   {
     "county": "لاشار",
     "lat": 26.84,
     "lng": 60.17,
-    "rates": {
-     "residential": {
-      "concrete": 780000,
-      "other": 520000
-     },
-     "commercial": {
-      "concrete": 1560000,
-      "other": 780000
-     },
-     "administrative": {
-      "concrete": 780000,
-      "other": 520000
-     },
-     "agricultural": {
-      "concrete": 195000,
-      "other": 97500
-     },
-     "industrial": {
-      "concrete": 585000,
-      "other": 390000
-     }
-    }
-   },
-   {
-    "county": "مارگون",
-    "lat": null,
-    "lng": null,
     "rates": {
      "residential": {
       "concrete": 780000,
@@ -10158,33 +10077,6 @@
      "industrial": {
       "concrete": 2000000,
       "other": 1300000
-     }
-    }
-   },
-   {
-    "county": "رشتخوار",
-    "lat": null,
-    "lng": null,
-    "rates": {
-     "residential": {
-      "concrete": 5000000,
-      "other": 2000000
-     },
-     "commercial": {
-      "concrete": 12000000,
-      "other": 5000000
-     },
-     "administrative": {
-      "concrete": 5000000,
-      "other": 2000000
-     },
-     "agricultural": {
-      "concrete": 700000,
-      "other": 400000
-     },
-     "industrial": {
-      "concrete": 2000000,
-      "other": 1500000
      }
     }
    },
