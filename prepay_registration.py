@@ -184,8 +184,29 @@ def register_prepaid(user_id: int, amount_toman: int, service_key: str,
 
 
 def pop_prepaid(user_id: int):
-    """برداشتن رکورد پیش‌پرداخت (یک‌بار مصرف) — None اگر وجود نداشت."""
-    return runtime_state.prepaid_registrations.pop(user_id, None)
+    """برداشتن رکورد پیش‌پرداخت (یک‌بار مصرف) — None اگر وجود نداشت.
+
+    ⭐ v1.7 — رکورد مصرف‌شده در runtime_state.consumed_prepay_for_panel هم
+    نگه داشته می‌شود تا panel_sync در اولین ثبت/آپدیت پروندهٔ همین کاربر،
+    مبلغ پیش‌پرداخت را روی پرونده (prepayAmount) ثبت کند — مبنای سود پنل.
+    """
+    prepay = runtime_state.prepaid_registrations.pop(user_id, None)
+    if prepay:
+        try:
+            stash = getattr(runtime_state, "consumed_prepay_for_panel", None)
+            if not isinstance(stash, dict):
+                stash = {}
+                runtime_state.consumed_prepay_for_panel = stash
+            amount_rial = int(prepay.get("amount_rial", 0) or 0)
+            stash[user_id] = {
+                "amount_toman": amount_rial // 10,
+                "paid_at": prepay.get("paid_at"),
+                "service": prepay.get("service"),
+                "consumed_at": datetime.datetime.now(),
+            }
+        except Exception as ex:
+            logging.warning(f"[REG-PREPAY] ذخیرهٔ پیش‌پرداخت برای پنل ناموفق: {ex}")
+    return prepay
 
 
 def adjust_final_fee_with_prepay(user_id: int, final_fee_rial: int):

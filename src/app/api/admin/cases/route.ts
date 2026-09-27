@@ -1,6 +1,17 @@
 import { db } from '@/lib/db';
 import { NextRequest, NextResponse } from 'next/server';
 import { appendNewCase } from '@/lib/google-sheets';
+import { sanitizeCaseData } from '@/lib/case-fields';
+import { normalizeSearchText, searchTokens, matchesAllTokens, flattenJsonForSearch } from '@/lib/search-normalize';
+import { buildKnownNameMap, applyKnownNames } from '@/lib/user-names';
+
+// ⭐ v1.7 — فیلدهایی که جستجو روی آن‌ها انجام می‌شود
+const SEARCH_SELECT = {
+  id: true, baleUserId: true, fullName: true, trackingCode: true,
+  branchName: true, branchCode: true, title: true, province: true,
+  documentCategory: true, subCategory: true, paymentId: true,
+  archiveNumber: true, rowNumber: true, persons: true,
+} as const;
 
 export async function GET(request: NextRequest) {
   try {
@@ -46,21 +57,41 @@ export async function GET(request: NextRequest) {
       if (dateTo) (where.createdAt as Record<string, unknown>).lte = new Date(dateTo + 'T23:59:59.999Z');
     }
 
-    if (search) {
-      where.OR = [
-        { fullName: { contains: search } },
-        { trackingCode: { contains: search } },
-        { baleUserId: { contains: search } },
-        { branchName: { contains: search } },
-        { title: { contains: search } },
-        { province: { contains: search } },
-      ];
-    }
-
     const orderBy: Record<string, string> = {};
     orderBy[sortBy] = sortOrder;
 
-    const shouldDedup = !search && !status && serviceType !== 'INQUIRY';
+    // ─── ⭐ v1.7: جستجوی نرمال‌شده (ارقام فارسی/لاتین، ی/ي، ک/ك، نیم‌فاصله) ───
+    // جستجو دیگر با LIKE خام SQLite انجام نمی‌شود؛ کاندیداها (با سایر فیلترها)
+    // خوانده و در حافظه با متن نرمال‌شده تطبیق داده می‌شوند. نام واقعی کاربر
+    // (از پرونده‌های دیگرش) و اشخاص پرونده (کد ملی/نام) هم جستجو می‌شوند.
+    const tokens = search ? searchTokens(search) : [];
+    if (tokens.length > 0) {
+      const [candidates, nameMap] = await Promise.all([
+        db.case.findMany({ where, orderBy, select: SEARCH_SELECT }),
+        buildKnownNameMap(),
+      ]);
+      const matchedIds: string[] = [];
+      for (const c of candidates) {
+        const hay = normalizeSearchText([
+          c.fullName, nameMap.get(c.baleUserId), c.baleUserId, c.trackingCode,
+          c.branchName, c.branchCode, c.title, c.province, c.documentCategory,
+          c.subCategory, c.paymentId, c.archiveNumber, c.rowNumber, flattenJsonForSearch(c.persons), c.id,
+        ].filter(Boolean).join(' | '));
+        if (matchesAllTokens(hay, tokens)) matchedIds.push(c.id);
+      }
+      const pageIds = matchedIds.slice((page - 1) * limit, page * limit);
+      const pageRows = pageIds.length
+        ? await db.case.findMany({ where: { id: { in: pageIds } } })
+        : [];
+      const byId = new Map(pageRows.map((r) => [r.id, r]));
+      const ordered = pageIds.map((id) => byId.get(id)).filter((r): r is NonNullable<typeof r> => !!r);
+      return NextResponse.json({
+        cases: applyKnownNames(ordered, nameMap),
+        pagination: { page, limit, total: matchedIds.length, totalPages: Math.ceil(matchedIds.length / limit) },
+      });
+    }
+
+    const shouldDedup = !status && serviceType !== 'INQUIRY';
 
     const [rawCases, total] = await Promise.all([
       db.case.findMany({
@@ -73,6 +104,7 @@ export async function GET(request: NextRequest) {
     ]);
 
     let cases = rawCases;
+    let pagination = { page, limit, total, totalPages: Math.ceil(total / limit) };
     if (shouldDedup) {
       const seen = new Map<string, typeof rawCases[0]>();
       for (const c of rawCases) {
@@ -86,16 +118,11 @@ export async function GET(request: NextRequest) {
       cases = Array.from(seen.values());
       const dedupTotal = cases.length;
       cases = cases.slice((page - 1) * limit, page * limit);
-      return NextResponse.json({
-        cases,
-        pagination: { page, limit, total: dedupTotal, totalPages: Math.ceil(dedupTotal / limit) },
-      });
+      pagination = { page, limit, total: dedupTotal, totalPages: Math.ceil(dedupTotal / limit) };
     }
 
-    return NextResponse.json({
-      cases,
-      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
-    });
+    const nameMap = await buildKnownNameMap([...new Set(cases.map((c) => c.baleUserId))]);
+    return NextResponse.json({ cases: applyKnownNames(cases, nameMap), pagination });
   } catch (error) {
     console.error('Cases list error:', error);
     return NextResponse.json({ error: 'Failed to fetch cases' }, { status: 500 });
@@ -105,16 +132,26 @@ export async function GET(request: NextRequest) {
 export async function PUT(request: NextRequest) {
   try {
     const body = await request.json();
-    const { id, ...updateData } = body;
+    const { id, ...rawUpdate } = body;
 
     if (!id) {
       return NextResponse.json({ error: 'Case ID is required' }, { status: 400 });
     }
 
+    // ⭐ v1.7 — تبدیل تاریخ‌ها (مثل signedAt بدون offset) و حذف فیلدهای ناشناخته
+    const { data: updateData, dropped } = sanitizeCaseData(rawUpdate);
+    if (dropped.length) console.warn(`[cases PUT] فیلدهای نامعتبر نادیده گرفته شد: ${dropped.join(', ')}`);
+
     const updatedCase = await db.case.update({
       where: { id },
       data: { ...updateData, updatedAt: new Date() },
     });
+
+    if (updateData.hasSignature === true) {
+      await db.activityLog.create({
+        data: { caseId: id, action: 'SIGNED', details: 'امضای الکترونیک با موفقیت درج شد' },
+      }).catch(() => {});
+    }
 
     if (updateData.status) {
       await db.activityLog.create({
@@ -162,9 +199,10 @@ export async function POST(request: NextRequest) {
       }, { status: 200 });
     }
 
+    const { data: createData } = sanitizeCaseData(body);
     const newCase = await db.case.create({
       data: {
-        ...body,
+        ...(createData as { baleUserId: string; fullName: string; serviceType: string }),
         status: body.status || 'PENDING_PAYMENT',
         feeStatus: body.feeStatus || 'UNPAID',
       },

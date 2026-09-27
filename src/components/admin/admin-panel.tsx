@@ -16,7 +16,7 @@ import {
   Search, Download, Filter,
   LayoutDashboard, FileCheck2, FileWarning, CreditCard, Send, AlertTriangle, ListChecks, XCircle, Activity,
   ChevronDown, ChevronLeft, CalendarDays, ArrowUp, Zap, ClipboardCheck, Check, Paperclip,
-  Settings, Users, FileSpreadsheet, Printer, Keyboard, Sun, Moon, MessageSquare, Trash2, Clock,
+  Settings, Users, FileSpreadsheet, Printer, Keyboard, Sun, Moon, MessageSquare, Trash2, Clock, Wallet,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
@@ -65,6 +65,7 @@ interface Stats {
   totalRevenue: number;
   unpaidRevenue: number;
   serviceBreakdown: { _count: { id: number }; serviceType: string }[];
+  openCreditCount?: number;
   createdAt?: string;
 }
 
@@ -145,6 +146,9 @@ export default function AdminPanel() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('all');
   const [search, setSearch] = useState('');
+  // ⭐ v1.7 — عبارت جستجوی debounce‌شده (فقط این مقدار به API فرستاده می‌شود)
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const fetchSeqRef = useRef(0);
   const [serviceFilter, setServiceFilter] = useState('all');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
@@ -167,7 +171,6 @@ export default function AdminPanel() {
   const [confirmSendOpen, setConfirmSendOpen] = useState(false);
   const [deleteCase, setDeleteCase] = useState<CaseItem | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [searchTimer, setSearchTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
   const [activityCount, setActivityCount] = useState(0);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [searchFocused, setSearchFocused] = useState(false);
@@ -197,6 +200,8 @@ export default function AdminPanel() {
   const [batchConfirmDone, setBatchConfirmDone] = useState(false);
   const [workingHoursOpen, setWorkingHoursOpen] = useState(false);
   const [exemptUsersOpen, setExemptUsersOpen] = useState(false);
+  const [creditsOpen, setCreditsOpen] = useState(false);
+  const [creditsPrefill, setCreditsPrefill] = useState<{ baleUserId?: string; fullName?: string; caseId?: string; trackingCode?: string | null } | null>(null);
   const [resetDataOpen, setResetDataOpen] = useState(false);
 
   useNotificationListener(
@@ -240,6 +245,8 @@ export default function AdminPanel() {
   }, []);
 
   const fetchCases = useCallback(async () => {
+    // ⭐ v1.7 — فقط پاسخ آخرین درخواست اعمال شود (پاسخ‌های قدیمی/کندتر نادیده)
+    const seq = ++fetchSeqRef.current;
     setLoading(true);
     try {
       const tab = TABS.find((t) => t.key === activeTab);
@@ -248,7 +255,7 @@ export default function AdminPanel() {
       if (activeTab === 'ready') params.set('readyToSend', 'true');
       if (tab?.isServiceType) params.set('serviceType', tab.isServiceType);
       if (tab?.excludeInquiry) params.set('excludeInquiry', 'true');
-      if (search) params.set('search', search);
+      if (debouncedSearch) params.set('search', debouncedSearch);
       if (serviceFilter !== 'all' && activeTab !== 'inquiry') params.set('serviceType', serviceFilter);
       if (dateFrom) params.set('dateFrom', dateFrom);
       if (dateTo) params.set('dateTo', dateTo);
@@ -262,8 +269,10 @@ export default function AdminPanel() {
       params.set('limit', String(pageSize));
 
       const res = await fetch(`/api/admin/cases?${params}`);
+      if (seq !== fetchSeqRef.current) return;
       if (res.ok) {
         const data = await res.json();
+        if (seq !== fetchSeqRef.current) return;
         setCases(data.cases);
         setPagination(data.pagination);
       }
@@ -271,9 +280,9 @@ export default function AdminPanel() {
       console.error(e);
       toast.error('خطا در دریافت اطلاعات');
     } finally {
-      setLoading(false);
+      if (seq === fetchSeqRef.current) setLoading(false);
     }
-  }, [activeTab, search, serviceFilter, dateFrom, dateTo, sortBy, sortOrder, page, pageSize, branchFilter, provinceFilter, errorFilter]);
+  }, [activeTab, debouncedSearch, serviceFilter, dateFrom, dateTo, sortBy, sortOrder, page, pageSize, branchFilter, provinceFilter, errorFilter]);
 
   const refreshAll = useCallback(async () => {
     setRefreshing(true);
@@ -325,13 +334,19 @@ export default function AdminPanel() {
     }
   }, []);
 
+  // ⭐ v1.7 — رفع باگ جستجو: قبلاً هر کلید یک درخواست فوری با صفحهٔ فعلی
+  // می‌فرستاد و پاسخ‌ها خارج از ترتیب روی هم می‌نشستند؛ حالا جستجو
+  // debounce می‌شود و هم‌زمان به صفحهٔ ۱ برمی‌گردد.
   const handleSearchChange = useCallback((value: string) => {
     setSearch(value);
-    if (searchTimer) clearTimeout(searchTimer);
-    setSearchTimer(setTimeout(() => {
-      setPage(1);
-    }, 400));
-  }, [searchTimer]);
+  }, []);
+
+  useEffect(() => {
+    const q = search.trim();
+    if (!q) { setDebouncedSearch(''); setPage(1); return; }
+    const t = setTimeout(() => { setDebouncedSearch(q); setPage(1); }, 350);
+    return () => clearTimeout(t);
+  }, [search]);
 
   const getDatePreset = (preset: string) => {
     const now = new Date();
@@ -547,6 +562,8 @@ export default function AdminPanel() {
         onOpenSheetsPanel={() => setSheetsPanelOpen(true)}
         onOpenWorkingHours={() => setWorkingHoursOpen(true)}
         onOpenExemptUsers={() => setExemptUsersOpen(true)}
+        onOpenCredits={() => { setCreditsPrefill(null); setCreditsOpen(true); }}
+        openCreditCount={stats?.openCreditCount ?? 0}
         onOpenResetData={() => setResetDataOpen(true)}
         isOnline={isOnline}
         isFullscreen={isFullscreen}
@@ -898,6 +915,15 @@ export default function AdminPanel() {
         sheetsPanelOpen={sheetsPanelOpen} onSheetsPanelClose={() => setSheetsPanelOpen(false)}
         workingHoursOpen={workingHoursOpen} onWorkingHoursClose={() => setWorkingHoursOpen(false)}
         exemptUsersOpen={exemptUsersOpen} onExemptUsersClose={() => setExemptUsersOpen(false)}
+        onAddCredit={(c) => {
+          setCreditsPrefill({ baleUserId: c.baleUserId, fullName: c.fullName, caseId: c.id, trackingCode: c.trackingCode });
+          setDetailOpen(false);
+          setCreditsOpen(true);
+        }}
+        creditsOpen={creditsOpen}
+        onCreditsClose={() => { setCreditsOpen(false); setCreditsPrefill(null); }}
+        creditsPrefill={creditsPrefill}
+        onCreditsChanged={fetchStats}
         resetDataOpen={resetDataOpen} onResetDataClose={() => setResetDataOpen(false)}
         onResetDataDone={() => { fetchStats(); fetchCases(); setSelectedIds(new Set()); }}
       />
@@ -936,6 +962,7 @@ export default function AdminPanel() {
         { id: 'google-sheets', label: 'همگام‌سازی گوگل شیت', icon: FileSpreadsheet, group: 'تنظیمات', onSelect: () => setSheetsPanelOpen(true) },
         { id: 'working-hours', label: 'ساعات کاری', icon: Clock, group: 'تنظیمات', onSelect: () => setWorkingHoursOpen(true) },
         { id: 'exempt-users', label: 'کاربران معاف', icon: Users, group: 'تنظیمات', onSelect: () => setExemptUsersOpen(true) },
+        { id: 'credits', label: 'مبالغ قابل بازگشت / کسر', icon: Wallet, group: 'تنظیمات', onSelect: () => { setCreditsPrefill(null); setCreditsOpen(true); } },
         { id: 'reset-data', label: 'ریست کامل داده‌ها', icon: Trash2, group: 'تنظیمات', onSelect: () => setResetDataOpen(true) },
       ] as CommandAction[]} />
 

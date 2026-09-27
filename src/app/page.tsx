@@ -11,7 +11,7 @@ import {
 } from '@/components/ui/select';
 import {
   Search, RefreshCw, Download, Shield, Bell, Filter,
-  LayoutDashboard, FileCheck2, FileWarning, CreditCard, Send, AlertTriangle, ListChecks, XCircle, Activity, Moon, Sun, Play, Pause, Zap, ChevronDown, ChevronLeft, CalendarDays, Maximize2, Minimize2, Trash2, Clock, ArrowUp, Printer, Keyboard, Wifi, WifiOff, FileSpreadsheet, Volume2, VolumeX, MessageSquare, ClipboardCheck, Paperclip, Check,
+  LayoutDashboard, FileCheck2, FileWarning, CreditCard, Send, AlertTriangle, ListChecks, XCircle, Activity, Moon, Sun, Play, Pause, Zap, ChevronDown, ChevronLeft, CalendarDays, Maximize2, Minimize2, Trash2, Clock, ArrowUp, Printer, Keyboard, Wifi, WifiOff, FileSpreadsheet, Volume2, VolumeX, MessageSquare, ClipboardCheck, Paperclip, Check, Wallet,
 } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
@@ -34,6 +34,8 @@ const ActivityPanel = React.lazy(() => import('@/components/admin/activity-panel
 const UserHistoryDialog = React.lazy(() => import('@/components/admin/user-history-dialog').then(m => ({ default: m.default })));
 const BotMessageSender = React.lazy(() => import('@/components/admin/bot-message-sender').then(m => ({ default: m.default })));
 const GoogleSheetsPanel = React.lazy(() => import('@/components/admin/google-sheets-panel').then(m => ({ default: m.default })));
+// ⭐ v1.7 — دفتر مبالغ قابل بازگشت/کسر
+const CreditsDialog = React.lazy(() => import('@/components/admin/credits-dialog').then(m => ({ default: m.default })));
 
 import { ServicePieChart, StatusOverviewChart, RevenueChart } from '@/components/admin/charts';
 import TrendLineChart from '@/components/admin/trend-line-chart';
@@ -68,6 +70,7 @@ interface Stats {
   totalRevenue: number;
   unpaidRevenue: number;
   serviceBreakdown: { _count: { id: number }; serviceType: string }[];
+  openCreditCount?: number;
   createdAt?: string;
 }
 
@@ -173,6 +176,9 @@ export default function AdminPanel() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('all');
   const [search, setSearch] = useState('');
+  // ⭐ v1.7 — عبارت جستجوی debounce‌شده (فقط این مقدار به API فرستاده می‌شود)
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const fetchSeqRef = useRef(0);
   const [serviceFilter, setServiceFilter] = useState('all');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
@@ -195,7 +201,6 @@ export default function AdminPanel() {
   const [confirmSendOpen, setConfirmSendOpen] = useState(false);
   const [deleteCase, setDeleteCase] = useState<CaseItem | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [searchTimer, setSearchTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
   const [activityCount, setActivityCount] = useState(0);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [searchFocused, setSearchFocused] = useState(false);
@@ -221,6 +226,8 @@ export default function AdminPanel() {
   const [isMuted, setMuted] = useNotificationMuted();
   const [botSenderOpen, setBotSenderOpen] = useState(false);
   const [sheetsPanelOpen, setSheetsPanelOpen] = useState(false);
+  const [creditsOpen, setCreditsOpen] = useState(false);
+  const [creditsPrefill, setCreditsPrefill] = useState<{ baleUserId?: string; fullName?: string; caseId?: string; trackingCode?: string | null } | null>(null);
   const [batchConfirmSending, setBatchConfirmSending] = useState(false);
   const [batchConfirmDone, setBatchConfirmDone] = useState(false);
 
@@ -265,13 +272,15 @@ export default function AdminPanel() {
   }, []);
 
   const fetchCases = useCallback(async () => {
+    // ⭐ v1.7 — فقط پاسخ آخرین درخواست اعمال شود (پاسخ‌های قدیمی/کندتر نادیده)
+    const seq = ++fetchSeqRef.current;
     setLoading(true);
     try {
       const tab = TABS.find((t) => t.key === activeTab);
       const params = new URLSearchParams();
       if (tab?.apiParam) params.set('status', tab.apiParam);
       if (activeTab === 'ready') params.set('readyToSend', 'true');
-      if (search) params.set('search', search);
+      if (debouncedSearch) params.set('search', debouncedSearch);
       if (serviceFilter !== 'all') params.set('serviceType', serviceFilter);
       if (dateFrom) params.set('dateFrom', dateFrom);
       if (dateTo) params.set('dateTo', dateTo);
@@ -285,8 +294,10 @@ export default function AdminPanel() {
       params.set('limit', String(pageSize));
 
       const res = await fetch(`/api/admin/cases?${params}`);
+      if (seq !== fetchSeqRef.current) return;
       if (res.ok) {
         const data = await res.json();
+        if (seq !== fetchSeqRef.current) return;
         setCases(data.cases);
         setPagination(data.pagination);
       }
@@ -294,9 +305,9 @@ export default function AdminPanel() {
       console.error(e);
       toast.error('خطا در دریافت اطلاعات');
     } finally {
-      setLoading(false);
+      if (seq === fetchSeqRef.current) setLoading(false);
     }
-  }, [activeTab, search, serviceFilter, dateFrom, dateTo, sortBy, sortOrder, page, pageSize, branchFilter, provinceFilter, errorFilter]);
+  }, [activeTab, debouncedSearch, serviceFilter, dateFrom, dateTo, sortBy, sortOrder, page, pageSize, branchFilter, provinceFilter, errorFilter]);
 
   const refreshAll = useCallback(async () => {
     setRefreshing(true);
@@ -348,13 +359,19 @@ export default function AdminPanel() {
     }
   }, []);
 
+  // ⭐ v1.7 — رفع باگ جستجو: قبلاً هر کلید یک درخواست فوری با صفحهٔ فعلی
+  // می‌فرستاد و پاسخ‌ها خارج از ترتیب روی هم می‌نشستند؛ حالا جستجو
+  // debounce می‌شود و هم‌زمان به صفحهٔ ۱ برمی‌گردد.
   const handleSearchChange = useCallback((value: string) => {
     setSearch(value);
-    if (searchTimer) clearTimeout(searchTimer);
-    setSearchTimer(setTimeout(() => {
-      setPage(1);
-    }, 400));
-  }, [searchTimer]);
+  }, []);
+
+  useEffect(() => {
+    const q = search.trim();
+    if (!q) { setDebouncedSearch(''); setPage(1); return; }
+    const t = setTimeout(() => { setDebouncedSearch(q); setPage(1); }, 350);
+    return () => clearTimeout(t);
+  }, [search]);
 
   const getDatePreset = (preset: string) => {
     const now = new Date();
@@ -745,6 +762,21 @@ export default function AdminPanel() {
               <Button
                 variant="ghost"
                 size="sm"
+                className="h-9 w-9 p-0 relative text-amber-600 hover:text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-900/20"
+                onClick={() => { setCreditsPrefill(null); setCreditsOpen(true); }}
+                title="مبالغ قابل بازگشت / کسر"
+              >
+                <Wallet className="h-4 w-4" />
+                {(stats?.openCreditCount ?? 0) > 0 && (
+                  <span className="counter-badge">
+                    {new Intl.NumberFormat('fa-IR').format(stats?.openCreditCount ?? 0)}
+                  </span>
+                )}
+              </Button>
+
+              <Button
+                variant="ghost"
+                size="sm"
                 className="h-9 w-9 p-0"
                 onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
                 title="تغییر تم"
@@ -971,7 +1003,7 @@ export default function AdminPanel() {
               <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
                 ref={searchRef}
-                placeholder="جستجو (نام، کد رهگیری، شناسه بله...)  /"
+                placeholder="جستجو (نام، کد رهگیری، شناسه بله، کد ملی، شناسه پرداخت...)  /"
                 value={search}
                 onChange={(e) => handleSearchChange(e.target.value)}
                 onFocus={() => setSearchFocused(true)}
@@ -1421,6 +1453,11 @@ export default function AdminPanel() {
         open={detailOpen}
         onClose={() => setDetailOpen(false)}
         onManualIntervention={handleIntervention}
+        onAddCredit={(c) => {
+          setCreditsPrefill({ baleUserId: c.baleUserId, fullName: c.fullName, caseId: c.id, trackingCode: c.trackingCode });
+          setDetailOpen(false);
+          setCreditsOpen(true);
+        }}
         onConfirmSend={requestConfirmSend}
         onDeleteCase={(c) => { setDeleteCase(c); setDeleteOpen(true); setDetailOpen(false); }}
         adminActions={adminActions}
@@ -1470,6 +1507,15 @@ export default function AdminPanel() {
       <GoogleSheetsPanel
         open={sheetsPanelOpen}
         onClose={() => setSheetsPanelOpen(false)}
+      />
+      </Suspense>
+
+      <Suspense fallback={<div className="animate-pulse h-8 w-48 rounded-lg bg-muted" />}>
+      <CreditsDialog
+        open={creditsOpen}
+        onOpenChange={(o) => { setCreditsOpen(o); if (!o) setCreditsPrefill(null); }}
+        prefill={creditsPrefill}
+        onChanged={fetchStats}
       />
       </Suspense>
 
@@ -1599,6 +1645,7 @@ export default function AdminPanel() {
         { id: 'shortcuts', label: 'میانبر کلیدی', icon: Keyboard, group: 'تنظیمات', onSelect: () => setShowShortcuts(true) },
         { id: 'bot-sender', label: 'ارسال پیام به کاربر', icon: MessageSquare, group: 'تنظیمات', onSelect: () => setBotSenderOpen(true) },
         { id: 'google-sheets', label: 'همگام‌سازی گوگل شیت', icon: FileSpreadsheet, group: 'تنظیمات', onSelect: () => setSheetsPanelOpen(true) },
+        { id: 'credits', label: 'مبالغ قابل بازگشت / کسر', icon: Wallet, group: 'تنظیمات', onSelect: () => { setCreditsPrefill(null); setCreditsOpen(true); } },
       ] as CommandAction[]} />
 
       {/* 6. Back to Top - back-to-top-btn, gradient background */}
