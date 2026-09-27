@@ -1,0 +1,3369 @@
+[
+ {
+  "province": "آذربایجان شرقی",
+  "county": "آذرشهر",
+  "lat": 37.7589,
+  "lng": 45.9783,
+  "source": "jafaripur"
+ },
+ {
+  "province": "آذربایجان شرقی",
+  "county": "اسکو",
+  "lat": 38.0432,
+  "lng": 46.1376,
+  "source": "agree"
+ },
+ {
+  "province": "آذربایجان شرقی",
+  "county": "اهر",
+  "lat": 38.4521,
+  "lng": 47.0576,
+  "source": "agree"
+ },
+ {
+  "province": "آذربایجان شرقی",
+  "county": "بستان‌آباد",
+  "lat": 37.85,
+  "lng": 46.8333,
+  "source": "jafaripur"
+ },
+ {
+  "province": "آذربایجان شرقی",
+  "county": "بناب",
+  "lat": 37.3403,
+  "lng": 46.0561,
+  "source": "jafaripur"
+ },
+ {
+  "province": "آذربایجان شرقی",
+  "county": "تبریز",
+  "lat": 38.0814,
+  "lng": 46.2869,
+  "source": "agree"
+ },
+ {
+  "province": "آذربایجان شرقی",
+  "county": "ترکمانچای",
+  "lat": 37.6,
+  "lng": 47.39,
+  "source": "manual"
+ },
+ {
+  "province": "آذربایجان شرقی",
+  "county": "جلفا",
+  "lat": 38.9403,
+  "lng": 45.6308,
+  "source": "jafaripur"
+ },
+ {
+  "province": "آذربایجان شرقی",
+  "county": "چاراویماق",
+  "lat": 37.1299,
+  "lng": 47.0246,
+  "source": "jafaripur"
+ },
+ {
+  "province": "آذربایجان شرقی",
+  "county": "خداآفرین",
+  "lat": 39.15,
+  "lng": 46.95,
+  "source": "manual"
+ },
+ {
+  "province": "آذربایجان شرقی",
+  "county": "سراب",
+  "lat": 37.9408,
+  "lng": 47.5367,
+  "source": "jafaripur"
+ },
+ {
+  "province": "آذربایجان شرقی",
+  "county": "شبستر",
+  "lat": 38.1803,
+  "lng": 45.7028,
+  "source": "jafaripur"
+ },
+ {
+  "province": "آذربایجان شرقی",
+  "county": "عجب‌شیر",
+  "lat": 37.4775,
+  "lng": 45.8942,
+  "source": "jafaripur"
+ },
+ {
+  "province": "آذربایجان شرقی",
+  "county": "کلیبر",
+  "lat": 38.8694,
+  "lng": 47.0356,
+  "source": "jafaripur"
+ },
+ {
+  "province": "آذربایجان شرقی",
+  "county": "مراغه",
+  "lat": 37.3717,
+  "lng": 46.1362,
+  "source": "agree"
+ },
+ {
+  "province": "آذربایجان شرقی",
+  "county": "مرند",
+  "lat": 38.4251,
+  "lng": 45.7696,
+  "source": "jafaripur"
+ },
+ {
+  "province": "آذربایجان شرقی",
+  "county": "ملکان",
+  "lat": 37.1456,
+  "lng": 46.1685,
+  "source": "jafaripur"
+ },
+ {
+  "province": "آذربایجان شرقی",
+  "county": "میانه",
+  "lat": 37.4211,
+  "lng": 47.715,
+  "source": "jafaripur"
+ },
+ {
+  "province": "آذربایجان شرقی",
+  "county": "هریس",
+  "lat": 38.25,
+  "lng": 47.12,
+  "source": "manual"
+ },
+ {
+  "province": "آذربایجان شرقی",
+  "county": "هشترود",
+  "lat": 37.4778,
+  "lng": 47.0508,
+  "source": "jafaripur"
+ },
+ {
+  "province": "آذربایجان شرقی",
+  "county": "ورزقان",
+  "lat": 38.5097,
+  "lng": 46.6544,
+  "source": "jafaripur"
+ },
+ {
+  "province": "آذربایجان غربی",
+  "county": "ارومیه",
+  "lat": 37.5608,
+  "lng": 45.0215,
+  "source": "agree"
+ },
+ {
+  "province": "آذربایجان غربی",
+  "county": "اشنویه",
+  "lat": 37.0397,
+  "lng": 45.0983,
+  "source": "jafaripur"
+ },
+ {
+  "province": "آذربایجان غربی",
+  "county": "بوکان",
+  "lat": 36.5211,
+  "lng": 46.2089,
+  "source": "jafaripur"
+ },
+ {
+  "province": "آذربایجان غربی",
+  "county": "پلدشت",
+  "lat": 39.35,
+  "lng": 45.07,
+  "source": "manual"
+ },
+ {
+  "province": "آذربایجان غربی",
+  "county": "پیرانشهر",
+  "lat": 36.6944,
+  "lng": 45.1417,
+  "source": "jafaripur"
+ },
+ {
+  "province": "آذربایجان غربی",
+  "county": "تکاب",
+  "lat": 36.4456,
+  "lng": 47.1178,
+  "source": "agree"
+ },
+ {
+  "province": "آذربایجان غربی",
+  "county": "چایپاره",
+  "lat": 38.89,
+  "lng": 45.03,
+  "source": "manual"
+ },
+ {
+  "province": "آذربایجان غربی",
+  "county": "چالدران",
+  "lat": 39.065,
+  "lng": 44.3845,
+  "source": "jafaripur"
+ },
+ {
+  "province": "آذربایجان غربی",
+  "county": "خوی",
+  "lat": 38.5479,
+  "lng": 44.9298,
+  "source": "agree"
+ },
+ {
+  "province": "آذربایجان غربی",
+  "county": "سردشت",
+  "lat": 36.1553,
+  "lng": 45.4789,
+  "source": "jafaripur"
+ },
+ {
+  "province": "آذربایجان غربی",
+  "county": "سلماس",
+  "lat": 38.2322,
+  "lng": 44.6837,
+  "source": "agree"
+ },
+ {
+  "province": "آذربایجان غربی",
+  "county": "شاهین‌دژ",
+  "lat": 36.6792,
+  "lng": 46.5669,
+  "source": "jafaripur"
+ },
+ {
+  "province": "آذربایجان غربی",
+  "county": "شوط",
+  "lat": 39.22,
+  "lng": 44.77,
+  "source": "manual"
+ },
+ {
+  "province": "آذربایجان غربی",
+  "county": "ماکو",
+  "lat": 39.2413,
+  "lng": 44.6246,
+  "source": "agree"
+ },
+ {
+  "province": "آذربایجان غربی",
+  "county": "مهاباد",
+  "lat": 36.7554,
+  "lng": 45.7304,
+  "source": "agree"
+ },
+ {
+  "province": "آذربایجان غربی",
+  "county": "میاندوآب",
+  "lat": 36.9638,
+  "lng": 46.0837,
+  "source": "agree"
+ },
+ {
+  "province": "آذربایجان غربی",
+  "county": "نقده",
+  "lat": 36.9553,
+  "lng": 45.3881,
+  "source": "jafaripur"
+ },
+ {
+  "province": "آذربایجان غربی",
+  "county": "نوک‌آباد",
+  "lat": null,
+  "lng": null,
+  "source": "unknown"
+ },
+ {
+  "province": "آذربایجان غربی",
+  "county": "چهاربرج",
+  "lat": 37.12,
+  "lng": 45.98,
+  "source": "manual"
+ },
+ {
+  "province": "اردبیل",
+  "county": "اردبیل",
+  "lat": 38.4853,
+  "lng": 47.8911,
+  "source": "jafaripur"
+ },
+ {
+  "province": "اردبیل",
+  "county": "اصلاندوز",
+  "lat": 39.44,
+  "lng": 47.41,
+  "source": "manual"
+ },
+ {
+  "province": "اردبیل",
+  "county": "بیله‌سوار",
+  "lat": 39.3568,
+  "lng": 47.9491,
+  "source": "jafaripur"
+ },
+ {
+  "province": "اردبیل",
+  "county": "پارس‌آباد",
+  "lat": 39.6483,
+  "lng": 47.9175,
+  "source": "jafaripur"
+ },
+ {
+  "province": "اردبیل",
+  "county": "خلخال",
+  "lat": 37.6189,
+  "lng": 48.5258,
+  "source": "jafaripur"
+ },
+ {
+  "province": "اردبیل",
+  "county": "کوثر",
+  "lat": 37.68,
+  "lng": 48.34,
+  "source": "manual"
+ },
+ {
+  "province": "اردبیل",
+  "county": "گرمی",
+  "lat": 39.0372,
+  "lng": 47.9277,
+  "source": "jafaripur"
+ },
+ {
+  "province": "اردبیل",
+  "county": "مشگین‌شهر",
+  "lat": 38.4,
+  "lng": 47.68,
+  "source": "manual"
+ },
+ {
+  "province": "اردبیل",
+  "county": "نیر",
+  "lat": 38.0347,
+  "lng": 47.9986,
+  "source": "jafaripur"
+ },
+ {
+  "province": "اردبیل",
+  "county": "نمین",
+  "lat": 38.4327,
+  "lng": 48.4119,
+  "source": "agree"
+ },
+ {
+  "province": "اردبیل",
+  "county": "سرعین",
+  "lat": 38.14,
+  "lng": 48.07,
+  "source": "manual"
+ },
+ {
+  "province": "اردبیل",
+  "county": "انگوت",
+  "lat": 39.03,
+  "lng": 47.64,
+  "source": "manual"
+ },
+ {
+  "province": "اصفهان",
+  "county": "آران و بیدگل",
+  "lat": 34.0578,
+  "lng": 51.4842,
+  "source": "jafaripur"
+ },
+ {
+  "province": "اصفهان",
+  "county": "اردستان",
+  "lat": 33.3761,
+  "lng": 52.3694,
+  "source": "jafaripur"
+ },
+ {
+  "province": "اصفهان",
+  "county": "اصفهان",
+  "lat": 32.6545,
+  "lng": 51.668,
+  "source": "agree"
+ },
+ {
+  "province": "اصفهان",
+  "county": "برخوار",
+  "lat": 32.8,
+  "lng": 51.7,
+  "source": "manual"
+ },
+ {
+  "province": "اصفهان",
+  "county": "بوئین و میاندشت",
+  "lat": 33.07,
+  "lng": 50.16,
+  "source": "manual"
+ },
+ {
+  "province": "اصفهان",
+  "county": "تیران و کرون",
+  "lat": 32.7,
+  "lng": 51.15,
+  "source": "manual"
+ },
+ {
+  "province": "اصفهان",
+  "county": "چادگان",
+  "lat": 32.7683,
+  "lng": 50.6286,
+  "source": "jafaripur"
+ },
+ {
+  "province": "اصفهان",
+  "county": "خمینی‌شهر",
+  "lat": 32.7003,
+  "lng": 51.5211,
+  "source": "jafaripur"
+ },
+ {
+  "province": "اصفهان",
+  "county": "خوانسار",
+  "lat": 33.3176,
+  "lng": 50.2561,
+  "source": "agree"
+ },
+ {
+  "province": "اصفهان",
+  "county": "خور و بیابانک",
+  "lat": 33.78,
+  "lng": 55.08,
+  "source": "manual"
+ },
+ {
+  "province": "اصفهان",
+  "county": "دهاقان",
+  "lat": 31.94,
+  "lng": 51.6478,
+  "source": "jafaripur"
+ },
+ {
+  "province": "اصفهان",
+  "county": "سمیرم",
+  "lat": 31.4415,
+  "lng": 51.6505,
+  "source": "agree"
+ },
+ {
+  "province": "اصفهان",
+  "county": "شاهین‌شهر و میمه",
+  "lat": 33.1272,
+  "lng": 51.515,
+  "source": "jafaripur"
+ },
+ {
+  "province": "اصفهان",
+  "county": "شهرضا",
+  "lat": 32.01,
+  "lng": 51.87,
+  "source": "manual"
+ },
+ {
+  "province": "اصفهان",
+  "county": "فریدن",
+  "lat": 33.0215,
+  "lng": 50.3069,
+  "source": "jafaripur"
+ },
+ {
+  "province": "اصفهان",
+  "county": "فریدون‌شهر",
+  "lat": 32.9411,
+  "lng": 50.1211,
+  "source": "jafaripur"
+ },
+ {
+  "province": "اصفهان",
+  "county": "فلاورجان",
+  "lat": 32.6187,
+  "lng": 51.6364,
+  "source": "agree"
+ },
+ {
+  "province": "اصفهان",
+  "county": "کاشان",
+  "lat": 33.9864,
+  "lng": 51.4315,
+  "source": "agree"
+ },
+ {
+  "province": "اصفهان",
+  "county": "گلپایگان",
+  "lat": 33.4536,
+  "lng": 50.2883,
+  "source": "jafaripur"
+ },
+ {
+  "province": "اصفهان",
+  "county": "لنجان",
+  "lat": 32.475,
+  "lng": 51.3051,
+  "source": "jafaripur"
+ },
+ {
+  "province": "اصفهان",
+  "county": "مبارکه",
+  "lat": 32.3464,
+  "lng": 51.5044,
+  "source": "jafaripur"
+ },
+ {
+  "province": "اصفهان",
+  "county": "نائین",
+  "lat": 32.8599,
+  "lng": 53.0878,
+  "source": "jafaripur"
+ },
+ {
+  "province": "اصفهان",
+  "county": "نجف‌آباد",
+  "lat": 32.6324,
+  "lng": 51.368,
+  "source": "jafaripur"
+ },
+ {
+  "province": "اصفهان",
+  "county": "نطنز",
+  "lat": 33.5133,
+  "lng": 51.9164,
+  "source": "jafaripur"
+ },
+ {
+  "province": "اصفهان",
+  "county": "هرند",
+  "lat": 32.56,
+  "lng": 52.44,
+  "source": "manual"
+ },
+ {
+  "province": "اصفهان",
+  "county": "ورزنه",
+  "lat": 32.42,
+  "lng": 52.65,
+  "source": "manual"
+ },
+ {
+  "province": "اصفهان",
+  "county": "کوهپایه",
+  "lat": 32.71,
+  "lng": 52.44,
+  "source": "manual"
+ },
+ {
+  "province": "اصفهان",
+  "county": "جرقویه",
+  "lat": 32.3,
+  "lng": 52.2,
+  "source": "manual"
+ },
+ {
+  "province": "البرز",
+  "county": "کرج",
+  "lat": 35.8388,
+  "lng": 50.9635,
+  "source": "agree"
+ },
+ {
+  "province": "البرز",
+  "county": "اشتهارد",
+  "lat": 35.72,
+  "lng": 50.37,
+  "source": "manual"
+ },
+ {
+  "province": "البرز",
+  "county": "طالقان",
+  "lat": 33.2729,
+  "lng": 52.1985,
+  "source": "jafaripur"
+ },
+ {
+  "province": "البرز",
+  "county": "فردیس",
+  "lat": 35.73,
+  "lng": 50.98,
+  "source": "manual"
+ },
+ {
+  "province": "البرز",
+  "county": "ساوجبلاغ",
+  "lat": 35.96,
+  "lng": 50.68,
+  "source": "manual"
+ },
+ {
+  "province": "البرز",
+  "county": "نظرآباد",
+  "lat": 35.9675,
+  "lng": 50.6242,
+  "source": "agree"
+ },
+ {
+  "province": "البرز",
+  "county": "چهارباغ",
+  "lat": 35.84,
+  "lng": 50.85,
+  "source": "manual"
+ },
+ {
+  "province": "ایلام",
+  "county": "ایلام",
+  "lat": 33.2958,
+  "lng": 46.6705,
+  "source": "jafaripur"
+ },
+ {
+  "province": "ایلام",
+  "county": "آبدانان",
+  "lat": 32.9925,
+  "lng": 47.4197,
+  "source": "jafaripur"
+ },
+ {
+  "province": "ایلام",
+  "county": "ایوان",
+  "lat": 33.8272,
+  "lng": 46.3097,
+  "source": "jafaripur"
+ },
+ {
+  "province": "ایلام",
+  "county": "بدره",
+  "lat": 33.3,
+  "lng": 47.04,
+  "source": "manual"
+ },
+ {
+  "province": "ایلام",
+  "county": "چرداول",
+  "lat": 33.77,
+  "lng": 46.56,
+  "source": "manual"
+ },
+ {
+  "province": "ایلام",
+  "county": "دهلران",
+  "lat": 32.6942,
+  "lng": 47.2678,
+  "source": "jafaripur"
+ },
+ {
+  "province": "ایلام",
+  "county": "دره‌شهر",
+  "lat": 33.1397,
+  "lng": 47.3761,
+  "source": "jafaripur"
+ },
+ {
+  "province": "ایلام",
+  "county": "سیروان",
+  "lat": 33.57,
+  "lng": 46.82,
+  "source": "manual"
+ },
+ {
+  "province": "ایلام",
+  "county": "ملکشاهی",
+  "lat": 33.38,
+  "lng": 46.6,
+  "source": "manual"
+ },
+ {
+  "province": "ایلام",
+  "county": "مهران",
+  "lat": 33.1222,
+  "lng": 46.1647,
+  "source": "jafaripur"
+ },
+ {
+  "province": "ایلام",
+  "county": "هلیلان",
+  "lat": 33.75,
+  "lng": 46.95,
+  "source": "manual"
+ },
+ {
+  "province": "ایلام",
+  "county": "چوار",
+  "lat": 33.69,
+  "lng": 46.3,
+  "source": "manual"
+ },
+ {
+  "province": "بوشهر",
+  "county": "بوشهر",
+  "lat": 28.9574,
+  "lng": 50.8234,
+  "source": "agree"
+ },
+ {
+  "province": "بوشهر",
+  "county": "تنگستان",
+  "lat": 28.9838,
+  "lng": 50.8331,
+  "source": "jafaripur"
+ },
+ {
+  "province": "بوشهر",
+  "county": "جم",
+  "lat": 27.8278,
+  "lng": 52.3269,
+  "source": "jafaripur"
+ },
+ {
+  "province": "بوشهر",
+  "county": "دشتستان",
+  "lat": 29.2667,
+  "lng": 51.2167,
+  "source": "jafaripur"
+ },
+ {
+  "province": "بوشهر",
+  "county": "دشتی",
+  "lat": 28.65,
+  "lng": 51.38,
+  "source": "manual"
+ },
+ {
+  "province": "بوشهر",
+  "county": "دیر",
+  "lat": 27.84,
+  "lng": 51.9378,
+  "source": "jafaripur"
+ },
+ {
+  "province": "بوشهر",
+  "county": "دیلم",
+  "lat": 30.1183,
+  "lng": 50.2261,
+  "source": "jafaripur"
+ },
+ {
+  "province": "بوشهر",
+  "county": "عسلویه",
+  "lat": 27.47,
+  "lng": 52.61,
+  "source": "manual"
+ },
+ {
+  "province": "بوشهر",
+  "county": "گناوه",
+  "lat": 29.5792,
+  "lng": 50.5169,
+  "source": "jafaripur"
+ },
+ {
+  "province": "بوشهر",
+  "county": "کنگان",
+  "lat": 27.837,
+  "lng": 52.0645,
+  "source": "jafaripur"
+ },
+ {
+  "province": "تهران",
+  "county": "تهران",
+  "lat": 35.6927,
+  "lng": 51.406,
+  "source": "agree"
+ },
+ {
+  "province": "تهران",
+  "county": "اسلامشهر",
+  "lat": 35.6014,
+  "lng": 51.3121,
+  "source": "agree"
+ },
+ {
+  "province": "تهران",
+  "county": "بهارستان",
+  "lat": 35.56,
+  "lng": 51.16,
+  "source": "manual"
+ },
+ {
+  "province": "تهران",
+  "county": "پاکدشت",
+  "lat": 35.5128,
+  "lng": 51.7244,
+  "source": "agree"
+ },
+ {
+  "province": "تهران",
+  "county": "پردیس",
+  "lat": 35.74,
+  "lng": 51.78,
+  "source": "manual"
+ },
+ {
+  "province": "تهران",
+  "county": "پیشوا",
+  "lat": 35.31,
+  "lng": 51.73,
+  "source": "manual"
+ },
+ {
+  "province": "تهران",
+  "county": "دماوند",
+  "lat": 35.9467,
+  "lng": 52.1275,
+  "source": "jafaripur"
+ },
+ {
+  "province": "تهران",
+  "county": "رباط‌کریم",
+  "lat": 35.5474,
+  "lng": 51.1116,
+  "source": "agree"
+ },
+ {
+  "province": "تهران",
+  "county": "ری",
+  "lat": 35.59,
+  "lng": 51.435,
+  "source": "manual"
+ },
+ {
+  "province": "تهران",
+  "county": "شمیرانات",
+  "lat": 35.804,
+  "lng": 51.432,
+  "source": "manual"
+ },
+ {
+  "province": "تهران",
+  "county": "شهریار",
+  "lat": 35.6546,
+  "lng": 51.0523,
+  "source": "agree"
+ },
+ {
+  "province": "تهران",
+  "county": "فیروزکوه",
+  "lat": 35.76,
+  "lng": 52.77,
+  "source": "manual"
+ },
+ {
+  "province": "تهران",
+  "county": "قدس",
+  "lat": 35.72,
+  "lng": 51.11,
+  "source": "manual"
+ },
+ {
+  "province": "تهران",
+  "county": "قرچک",
+  "lat": 35.43,
+  "lng": 51.57,
+  "source": "manual"
+ },
+ {
+  "province": "تهران",
+  "county": "ملارد",
+  "lat": 35.67,
+  "lng": 50.98,
+  "source": "manual"
+ },
+ {
+  "province": "تهران",
+  "county": "ورامین",
+  "lat": 35.4247,
+  "lng": 51.6652,
+  "source": "agree"
+ },
+ {
+  "province": "چهارمحال و بختیاری",
+  "county": "شهرکرد",
+  "lat": 32.3228,
+  "lng": 50.8615,
+  "source": "agree"
+ },
+ {
+  "province": "چهارمحال و بختیاری",
+  "county": "اردل",
+  "lat": 31.9501,
+  "lng": 50.5775,
+  "source": "agree"
+ },
+ {
+  "province": "چهارمحال و بختیاری",
+  "county": "بن",
+  "lat": 32.54,
+  "lng": 50.75,
+  "source": "manual"
+ },
+ {
+  "province": "چهارمحال و بختیاری",
+  "county": "بروجن",
+  "lat": 31.9653,
+  "lng": 51.2872,
+  "source": "jafaripur"
+ },
+ {
+  "province": "چهارمحال و بختیاری",
+  "county": "فارسان",
+  "lat": 32.2664,
+  "lng": 50.6713,
+  "source": "agree"
+ },
+ {
+  "province": "چهارمحال و بختیاری",
+  "county": "کوهرنگ",
+  "lat": 32.5558,
+  "lng": 51.6787,
+  "source": "jafaripur"
+ },
+ {
+  "province": "چهارمحال و بختیاری",
+  "county": "کیار",
+  "lat": 32.05,
+  "lng": 50.82,
+  "source": "manual"
+ },
+ {
+  "province": "چهارمحال و بختیاری",
+  "county": "لردگان",
+  "lat": 31.5103,
+  "lng": 50.8294,
+  "source": "jafaripur"
+ },
+ {
+  "province": "چهارمحال و بختیاری",
+  "county": "سامان",
+  "lat": 32.45,
+  "lng": 50.91,
+  "source": "manual"
+ },
+ {
+  "province": "چهارمحال و بختیاری",
+  "county": "فلارد",
+  "lat": 31.29,
+  "lng": 51.26,
+  "source": "manual"
+ },
+ {
+  "province": "چهارمحال و بختیاری",
+  "county": "خانمیرزا",
+  "lat": 31.55,
+  "lng": 51.05,
+  "source": "manual"
+ },
+ {
+  "province": "خراسان جنوبی",
+  "county": "بیرجند",
+  "lat": 32.8661,
+  "lng": 59.2221,
+  "source": "agree"
+ },
+ {
+  "province": "خراسان جنوبی",
+  "county": "بشرویه",
+  "lat": 33.87,
+  "lng": 57.43,
+  "source": "manual"
+ },
+ {
+  "province": "خراسان جنوبی",
+  "county": "خوسف",
+  "lat": 32.78,
+  "lng": 58.89,
+  "source": "manual"
+ },
+ {
+  "province": "خراسان جنوبی",
+  "county": "درمیان",
+  "lat": 33.0339,
+  "lng": 60.1185,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان جنوبی",
+  "county": "زیرکوه",
+  "lat": 33.6,
+  "lng": 60.0,
+  "source": "manual"
+ },
+ {
+  "province": "خراسان جنوبی",
+  "county": "سرایان",
+  "lat": 33.8603,
+  "lng": 58.5217,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان جنوبی",
+  "county": "سربیشه",
+  "lat": 32.6797,
+  "lng": 59.7549,
+  "source": "agree"
+ },
+ {
+  "province": "خراسان جنوبی",
+  "county": "طبس",
+  "lat": 33.6,
+  "lng": 56.92,
+  "source": "manual"
+ },
+ {
+  "province": "خراسان جنوبی",
+  "county": "فردوس",
+  "lat": 34.0186,
+  "lng": 58.1722,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان جنوبی",
+  "county": "قائنات",
+  "lat": 33.726,
+  "lng": 59.184,
+  "source": "manual"
+ },
+ {
+  "province": "خراسان جنوبی",
+  "county": "نهبندان",
+  "lat": 31.5419,
+  "lng": 60.0364,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "مشهد",
+  "lat": 36.2757,
+  "lng": 59.6114,
+  "source": "agree"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "باخرز",
+  "lat": 34.99,
+  "lng": 60.31,
+  "source": "manual"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "بجستان",
+  "lat": 34.5164,
+  "lng": 58.1844,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "بردسکن",
+  "lat": 35.2608,
+  "lng": 57.9697,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "بینالود",
+  "lat": 36.4,
+  "lng": 59.3,
+  "source": "manual"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "تایباد",
+  "lat": 34.74,
+  "lng": 60.7756,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "تربت جام",
+  "lat": 35.2439,
+  "lng": 60.6225,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "تربت حیدریه",
+  "lat": 35.2562,
+  "lng": 59.2175,
+  "source": "agree"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "جغتای",
+  "lat": 36.5789,
+  "lng": 57.2512,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "جوین",
+  "lat": 36.6362,
+  "lng": 57.508,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "چناران",
+  "lat": 36.6456,
+  "lng": 59.1211,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "خوشاب",
+  "lat": 36.4,
+  "lng": 58.03,
+  "source": "manual"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "خواف",
+  "lat": 34.5764,
+  "lng": 60.1408,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "خلیل‌آباد",
+  "lat": 35.2558,
+  "lng": 58.2864,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "داورزن",
+  "lat": 36.35,
+  "lng": 56.88,
+  "source": "manual"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "درگز",
+  "lat": 37.4444,
+  "lng": 59.1081,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "رشتخوار",
+  "lat": 34.9747,
+  "lng": 59.6236,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "زاوه",
+  "lat": 35.2747,
+  "lng": 59.4678,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "زبرخان",
+  "lat": 36.1,
+  "lng": 59.06,
+  "source": "manual"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "سبزوار",
+  "lat": 36.2113,
+  "lng": 57.632,
+  "source": "agree"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "سرخس",
+  "lat": 36.545,
+  "lng": 61.1578,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "فریمان",
+  "lat": 35.7069,
+  "lng": 59.85,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "فیروزه",
+  "lat": 36.28,
+  "lng": 58.59,
+  "source": "manual"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "قوچان",
+  "lat": 37.0961,
+  "lng": 58.5277,
+  "source": "agree"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "کاشمر",
+  "lat": 35.2388,
+  "lng": 58.4675,
+  "source": "agree"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "کلات",
+  "lat": 34.1983,
+  "lng": 58.5444,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "گناباد",
+  "lat": 34.3528,
+  "lng": 58.6836,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "کوهسرخ",
+  "lat": 35.47,
+  "lng": 58.47,
+  "source": "manual"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "گلبهار",
+  "lat": 36.52,
+  "lng": 59.21,
+  "source": "manual"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "مه‌ولات",
+  "lat": 35.0211,
+  "lng": 58.7818,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "نیشابور",
+  "lat": 36.2082,
+  "lng": 58.8219,
+  "source": "agree"
+ },
+ {
+  "province": "خراسان رضوی",
+  "county": "صالح‌آباد",
+  "lat": 35.69,
+  "lng": 61.09,
+  "source": "manual"
+ },
+ {
+  "province": "خراسان شمالی",
+  "county": "بجنورد",
+  "lat": 37.474,
+  "lng": 57.3317,
+  "source": "agree"
+ },
+ {
+  "province": "خراسان شمالی",
+  "county": "اسفراین",
+  "lat": 37.0764,
+  "lng": 57.51,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان شمالی",
+  "county": "بام و صفی‌آباد",
+  "lat": 36.7,
+  "lng": 57.92,
+  "source": "manual"
+ },
+ {
+  "province": "خراسان شمالی",
+  "county": "جاجرم",
+  "lat": 36.95,
+  "lng": 56.38,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان شمالی",
+  "county": "راز و جرگلان",
+  "lat": 37.93,
+  "lng": 57.1,
+  "source": "manual"
+ },
+ {
+  "province": "خراسان شمالی",
+  "county": "شیروان",
+  "lat": 37.4092,
+  "lng": 57.9276,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان شمالی",
+  "county": "فاروج",
+  "lat": 37.2311,
+  "lng": 58.2189,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خراسان شمالی",
+  "county": "گرمه",
+  "lat": 36.99,
+  "lng": 56.29,
+  "source": "manual"
+ },
+ {
+  "province": "خراسان شمالی",
+  "county": "مانه",
+  "lat": 37.66,
+  "lng": 57.0,
+  "source": "manual"
+ },
+ {
+  "province": "خراسان شمالی",
+  "county": "سملقان",
+  "lat": 37.56,
+  "lng": 56.92,
+  "source": "manual"
+ },
+ {
+  "province": "خوزستان",
+  "county": "اهواز",
+  "lat": 31.3192,
+  "lng": 48.6803,
+  "source": "agree"
+ },
+ {
+  "province": "خوزستان",
+  "county": "آبادان",
+  "lat": 30.3736,
+  "lng": 48.2267,
+  "source": "agree"
+ },
+ {
+  "province": "خوزستان",
+  "county": "آغاجاری",
+  "lat": 30.7,
+  "lng": 49.83,
+  "source": "manual"
+ },
+ {
+  "province": "خوزستان",
+  "county": "اندیکا",
+  "lat": 32.2,
+  "lng": 49.4,
+  "source": "manual"
+ },
+ {
+  "province": "خوزستان",
+  "county": "اندیمشک",
+  "lat": 32.41,
+  "lng": 48.3336,
+  "source": "agree"
+ },
+ {
+  "province": "خوزستان",
+  "county": "امیدیه",
+  "lat": 30.7458,
+  "lng": 49.7086,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خوزستان",
+  "county": "ایذه",
+  "lat": 31.8342,
+  "lng": 49.8672,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خوزستان",
+  "county": "باغ‌ملک",
+  "lat": 32.3947,
+  "lng": 51.5965,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خوزستان",
+  "county": "باوی",
+  "lat": 31.58,
+  "lng": 48.89,
+  "source": "manual"
+ },
+ {
+  "province": "خوزستان",
+  "county": "بندر ماهشهر",
+  "lat": 30.5724,
+  "lng": 49.2115,
+  "source": "agree"
+ },
+ {
+  "province": "خوزستان",
+  "county": "بهبهان",
+  "lat": 30.5769,
+  "lng": 50.2273,
+  "source": "agree"
+ },
+ {
+  "province": "خوزستان",
+  "county": "دزپارت",
+  "lat": 31.71,
+  "lng": 50.29,
+  "source": "manual"
+ },
+ {
+  "province": "خوزستان",
+  "county": "دزفول",
+  "lat": 32.3865,
+  "lng": 48.5068,
+  "source": "agree"
+ },
+ {
+  "province": "خوزستان",
+  "county": "دشت آزادگان",
+  "lat": 31.5581,
+  "lng": 48.1808,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خوزستان",
+  "county": "رامشیر",
+  "lat": 30.8957,
+  "lng": 49.4095,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خوزستان",
+  "county": "رامهرمز",
+  "lat": 31.28,
+  "lng": 49.6036,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خوزستان",
+  "county": "شادگان",
+  "lat": 30.6497,
+  "lng": 48.6647,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خوزستان",
+  "county": "شاوور",
+  "lat": 32.05,
+  "lng": 48.3,
+  "source": "manual"
+ },
+ {
+  "province": "خوزستان",
+  "county": "شوش",
+  "lat": 32.1796,
+  "lng": 48.2438,
+  "source": "agree"
+ },
+ {
+  "province": "خوزستان",
+  "county": "شوشتر",
+  "lat": 32.0393,
+  "lng": 48.8533,
+  "source": "agree"
+ },
+ {
+  "province": "خوزستان",
+  "county": "صیدون",
+  "lat": 31.37,
+  "lng": 50.08,
+  "source": "manual"
+ },
+ {
+  "province": "خوزستان",
+  "county": "کارون",
+  "lat": 31.235,
+  "lng": 48.664,
+  "source": "manual"
+ },
+ {
+  "province": "خوزستان",
+  "county": "کرخه",
+  "lat": 31.6,
+  "lng": 48.55,
+  "source": "manual"
+ },
+ {
+  "province": "خوزستان",
+  "county": "گتوند",
+  "lat": 32.2357,
+  "lng": 48.8881,
+  "source": "agree"
+ },
+ {
+  "province": "خوزستان",
+  "county": "لالی",
+  "lat": 32.3289,
+  "lng": 49.0936,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خوزستان",
+  "county": "مسجدسلیمان",
+  "lat": 31.9364,
+  "lng": 49.3039,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خوزستان",
+  "county": "هفتکل",
+  "lat": 31.45,
+  "lng": 49.53,
+  "source": "manual"
+ },
+ {
+  "province": "خوزستان",
+  "county": "هندیجان",
+  "lat": 30.2364,
+  "lng": 49.7119,
+  "source": "jafaripur"
+ },
+ {
+  "province": "خوزستان",
+  "county": "هویزه",
+  "lat": 31.46,
+  "lng": 48.07,
+  "source": "manual"
+ },
+ {
+  "province": "خوزستان",
+  "county": "حمیدیه",
+  "lat": 31.48,
+  "lng": 48.43,
+  "source": "manual"
+ },
+ {
+  "province": "زنجان",
+  "county": "زنجان",
+  "lat": 36.5859,
+  "lng": 48.4381,
+  "source": "agree"
+ },
+ {
+  "province": "زنجان",
+  "county": "ابهر",
+  "lat": 36.1467,
+  "lng": 49.2181,
+  "source": "jafaripur"
+ },
+ {
+  "province": "زنجان",
+  "county": "ایجرود",
+  "lat": 36.3155,
+  "lng": 48.285,
+  "source": "agree"
+ },
+ {
+  "province": "زنجان",
+  "county": "خدابنده",
+  "lat": 36.1147,
+  "lng": 48.5911,
+  "source": "jafaripur"
+ },
+ {
+  "province": "زنجان",
+  "county": "خرمدره",
+  "lat": 36.2031,
+  "lng": 49.1869,
+  "source": "jafaripur"
+ },
+ {
+  "province": "زنجان",
+  "county": "طارم",
+  "lat": 36.92,
+  "lng": 48.96,
+  "source": "manual"
+ },
+ {
+  "province": "زنجان",
+  "county": "ماه‌نشان",
+  "lat": 36.7444,
+  "lng": 47.6725,
+  "source": "jafaripur"
+ },
+ {
+  "province": "زنجان",
+  "county": "سلطانیه",
+  "lat": 36.43,
+  "lng": 48.8,
+  "source": "manual"
+ },
+ {
+  "province": "سمنان",
+  "county": "سمنان",
+  "lat": 35.2256,
+  "lng": 54.4342,
+  "source": "jafaripur"
+ },
+ {
+  "province": "سمنان",
+  "county": "آرادان",
+  "lat": 35.25,
+  "lng": 52.49,
+  "source": "manual"
+ },
+ {
+  "province": "سمنان",
+  "county": "دامغان",
+  "lat": 36.1683,
+  "lng": 54.3481,
+  "source": "jafaripur"
+ },
+ {
+  "province": "سمنان",
+  "county": "گرمسار",
+  "lat": 35.2183,
+  "lng": 52.3408,
+  "source": "jafaripur"
+ },
+ {
+  "province": "سمنان",
+  "county": "مهدی‌شهر",
+  "lat": 35.6555,
+  "lng": 53.418,
+  "source": "agree"
+ },
+ {
+  "province": "سمنان",
+  "county": "میامی",
+  "lat": 36.41,
+  "lng": 55.65,
+  "source": "manual"
+ },
+ {
+  "province": "سمنان",
+  "county": "شاهرود",
+  "lat": 36.4415,
+  "lng": 54.9642,
+  "source": "agree"
+ },
+ {
+  "province": "سمنان",
+  "county": "سرخه",
+  "lat": 35.46,
+  "lng": 53.21,
+  "source": "manual"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "زاهدان",
+  "lat": 29.4962,
+  "lng": 60.8674,
+  "source": "agree"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "ایرانشهر",
+  "lat": 27.2037,
+  "lng": 60.6944,
+  "source": "agree"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "بمپور",
+  "lat": 27.19,
+  "lng": 60.46,
+  "source": "manual"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "تفتان",
+  "lat": 28.7,
+  "lng": 60.85,
+  "source": "manual"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "چابهار",
+  "lat": 25.2915,
+  "lng": 60.6445,
+  "source": "agree"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "خاش",
+  "lat": 28.2167,
+  "lng": 61.2,
+  "source": "jafaripur"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "دلگان",
+  "lat": 27.6077,
+  "lng": 59.4721,
+  "source": "jafaripur"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "راسک",
+  "lat": 26.24,
+  "lng": 61.4,
+  "source": "manual"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "زابل",
+  "lat": 31.03,
+  "lng": 61.5,
+  "source": "manual"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "زهک",
+  "lat": 30.89,
+  "lng": 61.68,
+  "source": "manual"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "سراوان",
+  "lat": 27.3708,
+  "lng": 62.3342,
+  "source": "jafaripur"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "سرباز",
+  "lat": 26.6308,
+  "lng": 61.2564,
+  "source": "jafaripur"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "سیب و سوران",
+  "lat": 27.29,
+  "lng": 61.99,
+  "source": "manual"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "فنوج",
+  "lat": 26.58,
+  "lng": 59.64,
+  "source": "manual"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "قصرقند",
+  "lat": 26.23,
+  "lng": 60.74,
+  "source": "manual"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "کنارک",
+  "lat": 25.3603,
+  "lng": 60.3994,
+  "source": "jafaripur"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "گلشن",
+  "lat": 27.6,
+  "lng": 62.7,
+  "source": "manual"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "گرگان",
+  "lat": null,
+  "lng": null,
+  "source": "unknown"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "لاشار",
+  "lat": 26.84,
+  "lng": 60.17,
+  "source": "manual"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "مارگون",
+  "lat": null,
+  "lng": null,
+  "source": "unknown"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "مهرستان",
+  "lat": 27.13,
+  "lng": 61.67,
+  "source": "manual"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "میرجاوه",
+  "lat": 29.02,
+  "lng": 61.45,
+  "source": "manual"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "نیمروز",
+  "lat": 31.1,
+  "lng": 61.42,
+  "source": "manual"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "نیک‌شهر",
+  "lat": 26.4185,
+  "lng": 60.2111,
+  "source": "jafaripur"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "هامون",
+  "lat": 31.15,
+  "lng": 61.63,
+  "source": "manual"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "هیرمند",
+  "lat": 31.14,
+  "lng": 61.79,
+  "source": "manual"
+ },
+ {
+  "province": "سیستان و بلوچستان",
+  "county": "زرآباد",
+  "lat": 25.58,
+  "lng": 59.4,
+  "source": "manual"
+ },
+ {
+  "province": "فارس",
+  "county": "شیراز",
+  "lat": 29.5915,
+  "lng": 52.5837,
+  "source": "agree"
+ },
+ {
+  "province": "فارس",
+  "county": "آباده",
+  "lat": 31.1608,
+  "lng": 52.6506,
+  "source": "jafaripur"
+ },
+ {
+  "province": "فارس",
+  "county": "ارسنجان",
+  "lat": 29.9125,
+  "lng": 53.3086,
+  "source": "jafaripur"
+ },
+ {
+  "province": "فارس",
+  "county": "استهبان",
+  "lat": 29.1267,
+  "lng": 54.0422,
+  "source": "jafaripur"
+ },
+ {
+  "province": "فارس",
+  "county": "اقلید",
+  "lat": 30.8989,
+  "lng": 52.6867,
+  "source": "jafaripur"
+ },
+ {
+  "province": "فارس",
+  "county": "اوز",
+  "lat": 27.76,
+  "lng": 54.0,
+  "source": "manual"
+ },
+ {
+  "province": "فارس",
+  "county": "بختگان",
+  "lat": 29.8,
+  "lng": 53.73,
+  "source": "manual"
+ },
+ {
+  "province": "فارس",
+  "county": "بوانات",
+  "lat": 30.4856,
+  "lng": 53.5933,
+  "source": "jafaripur"
+ },
+ {
+  "province": "فارس",
+  "county": "بیضا",
+  "lat": 30.07,
+  "lng": 52.4,
+  "source": "manual"
+ },
+ {
+  "province": "فارس",
+  "county": "پاسارگاد",
+  "lat": 30.2033,
+  "lng": 53.179,
+  "source": "jafaripur"
+ },
+ {
+  "province": "فارس",
+  "county": "جهرم",
+  "lat": 28.6125,
+  "lng": 53.5438,
+  "source": "agree"
+ },
+ {
+  "province": "فارس",
+  "county": "جویم",
+  "lat": 28.25,
+  "lng": 53.98,
+  "source": "manual"
+ },
+ {
+  "province": "فارس",
+  "county": "خرامه",
+  "lat": 29.5,
+  "lng": 53.31,
+  "source": "manual"
+ },
+ {
+  "province": "فارس",
+  "county": "خرم‌بید",
+  "lat": 30.61,
+  "lng": 53.19,
+  "source": "manual"
+ },
+ {
+  "province": "فارس",
+  "county": "خنج",
+  "lat": 27.8914,
+  "lng": 53.4344,
+  "source": "jafaripur"
+ },
+ {
+  "province": "فارس",
+  "county": "خفر",
+  "lat": 28.97,
+  "lng": 53.21,
+  "source": "manual"
+ },
+ {
+  "province": "فارس",
+  "county": "داراب",
+  "lat": 28.7519,
+  "lng": 54.5444,
+  "source": "jafaripur"
+ },
+ {
+  "province": "فارس",
+  "county": "رستم",
+  "lat": 30.24,
+  "lng": 51.52,
+  "source": "manual"
+ },
+ {
+  "province": "فارس",
+  "county": "زرقان",
+  "lat": 29.77,
+  "lng": 52.72,
+  "source": "manual"
+ },
+ {
+  "province": "فارس",
+  "county": "زرین‌دشت",
+  "lat": 28.3545,
+  "lng": 54.4178,
+  "source": "jafaripur"
+ },
+ {
+  "province": "فارس",
+  "county": "سپیدان",
+  "lat": 30.2425,
+  "lng": 51.9924,
+  "source": "jafaripur"
+ },
+ {
+  "province": "فارس",
+  "county": "سرچهان",
+  "lat": 30.2,
+  "lng": 53.2,
+  "source": "manual"
+ },
+ {
+  "province": "فارس",
+  "county": "سروستان",
+  "lat": 29.27,
+  "lng": 53.22,
+  "source": "manual"
+ },
+ {
+  "province": "فارس",
+  "county": "سعادت‌شهر",
+  "lat": 30.08,
+  "lng": 53.14,
+  "source": "manual"
+ },
+ {
+  "province": "فارس",
+  "county": "شیبکوه",
+  "lat": 27.35,
+  "lng": 53.2,
+  "source": "manual"
+ },
+ {
+  "province": "فارس",
+  "county": "فراشبند",
+  "lat": 28.8714,
+  "lng": 52.0917,
+  "source": "jafaripur"
+ },
+ {
+  "province": "فارس",
+  "county": "فسا",
+  "lat": 28.8832,
+  "lng": 53.5662,
+  "source": "agree"
+ },
+ {
+  "province": "فارس",
+  "county": "فیروزآباد",
+  "lat": 28.8439,
+  "lng": 52.5708,
+  "source": "jafaripur"
+ },
+ {
+  "province": "فارس",
+  "county": "قیر و کارزین",
+  "lat": 28.43,
+  "lng": 53.0952,
+  "source": "jafaripur"
+ },
+ {
+  "province": "فارس",
+  "county": "کازرون",
+  "lat": 29.6237,
+  "lng": 51.6586,
+  "source": "agree"
+ },
+ {
+  "province": "فارس",
+  "county": "کوار",
+  "lat": 29.21,
+  "lng": 52.69,
+  "source": "manual"
+ },
+ {
+  "province": "فارس",
+  "county": "گراش",
+  "lat": 27.67,
+  "lng": 54.14,
+  "source": "manual"
+ },
+ {
+  "province": "فارس",
+  "county": "لارستان",
+  "lat": 27.6811,
+  "lng": 54.3403,
+  "source": "jafaripur"
+ },
+ {
+  "province": "فارس",
+  "county": "لامرد",
+  "lat": 27.3424,
+  "lng": 53.1804,
+  "source": "jafaripur"
+ },
+ {
+  "province": "فارس",
+  "county": "مرودشت",
+  "lat": 29.8742,
+  "lng": 52.8025,
+  "source": "jafaripur"
+ },
+ {
+  "province": "فارس",
+  "county": "ممسنی",
+  "lat": 30.11,
+  "lng": 51.52,
+  "source": "manual"
+ },
+ {
+  "province": "فارس",
+  "county": "مهر",
+  "lat": 27.556,
+  "lng": 52.8847,
+  "source": "jafaripur"
+ },
+ {
+  "province": "فارس",
+  "county": "نی‌ریز",
+  "lat": 29.1719,
+  "lng": 54.2889,
+  "source": "agree"
+ },
+ {
+  "province": "قزوین",
+  "county": "قزوین",
+  "lat": 36.0881,
+  "lng": 49.8547,
+  "source": "jafaripur"
+ },
+ {
+  "province": "قزوین",
+  "county": "آبیک",
+  "lat": 36.0675,
+  "lng": 50.5046,
+  "source": "agree"
+ },
+ {
+  "province": "قزوین",
+  "county": "البرز",
+  "lat": 35.996,
+  "lng": 50.9289,
+  "source": "jafaripur"
+ },
+ {
+  "province": "قزوین",
+  "county": "آوج",
+  "lat": 35.58,
+  "lng": 49.22,
+  "source": "manual"
+ },
+ {
+  "province": "قزوین",
+  "county": "بوئین‌زهرا",
+  "lat": 35.7669,
+  "lng": 50.0578,
+  "source": "jafaripur"
+ },
+ {
+  "province": "قزوین",
+  "county": "تاکستان",
+  "lat": 36.0697,
+  "lng": 49.6958,
+  "source": "jafaripur"
+ },
+ {
+  "province": "قم",
+  "county": "قم",
+  "lat": 34.6395,
+  "lng": 50.875,
+  "source": "agree"
+ },
+ {
+  "province": "قم",
+  "county": "جعفرآباد",
+  "lat": 34.78,
+  "lng": 50.53,
+  "source": "manual"
+ },
+ {
+  "province": "قم",
+  "county": "کهک",
+  "lat": 34.39,
+  "lng": 50.86,
+  "source": "manual"
+ },
+ {
+  "province": "کردستان",
+  "county": "سنندج",
+  "lat": 35.3174,
+  "lng": 46.9891,
+  "source": "agree"
+ },
+ {
+  "province": "کردستان",
+  "county": "بانه",
+  "lat": 35.9733,
+  "lng": 45.8587,
+  "source": "agree"
+ },
+ {
+  "province": "کردستان",
+  "county": "بیجار",
+  "lat": 35.87,
+  "lng": 47.6,
+  "source": "manual"
+ },
+ {
+  "province": "کردستان",
+  "county": "دهگلان",
+  "lat": 35.28,
+  "lng": 47.42,
+  "source": "manual"
+ },
+ {
+  "province": "کردستان",
+  "county": "دیواندره",
+  "lat": 35.7799,
+  "lng": 47.0344,
+  "source": "agree"
+ },
+ {
+  "province": "کردستان",
+  "county": "سروآباد",
+  "lat": 35.3125,
+  "lng": 46.3669,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کردستان",
+  "county": "سقز",
+  "lat": 36.2464,
+  "lng": 46.2664,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کردستان",
+  "county": "قروه",
+  "lat": 35.1679,
+  "lng": 47.8038,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کردستان",
+  "county": "کامیاران",
+  "lat": 34.7956,
+  "lng": 46.9356,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کردستان",
+  "county": "مریوان",
+  "lat": 35.5475,
+  "lng": 46.2867,
+  "source": "agree"
+ },
+ {
+  "province": "کرمان",
+  "county": "کرمان",
+  "lat": 29.485,
+  "lng": 57.6439,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کرمان",
+  "county": "انار",
+  "lat": 30.87,
+  "lng": 55.27,
+  "source": "manual"
+ },
+ {
+  "province": "کرمان",
+  "county": "بافت",
+  "lat": 29.2331,
+  "lng": 56.6022,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کرمان",
+  "county": "بردسیر",
+  "lat": 29.9275,
+  "lng": 56.5722,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کرمان",
+  "county": "بم",
+  "lat": 29.0801,
+  "lng": 58.3585,
+  "source": "agree"
+ },
+ {
+  "province": "کرمان",
+  "county": "جیرفت",
+  "lat": 28.7511,
+  "lng": 57.7266,
+  "source": "agree"
+ },
+ {
+  "province": "کرمان",
+  "county": "رابر",
+  "lat": 29.59,
+  "lng": 56.92,
+  "source": "manual"
+ },
+ {
+  "province": "کرمان",
+  "county": "راور",
+  "lat": 31.2656,
+  "lng": 56.8056,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کرمان",
+  "county": "رفسنجان",
+  "lat": 30.3958,
+  "lng": 55.9619,
+  "source": "agree"
+ },
+ {
+  "province": "کرمان",
+  "county": "رودبار جنوب",
+  "lat": 27.99,
+  "lng": 57.98,
+  "source": "manual"
+ },
+ {
+  "province": "کرمان",
+  "county": "ریگان",
+  "lat": 28.63,
+  "lng": 59.02,
+  "source": "manual"
+ },
+ {
+  "province": "کرمان",
+  "county": "زرند",
+  "lat": 30.8128,
+  "lng": 56.5639,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کرمان",
+  "county": "سیرجان",
+  "lat": 29.4578,
+  "lng": 55.6687,
+  "source": "agree"
+ },
+ {
+  "province": "کرمان",
+  "county": "شهربابک",
+  "lat": 30.1164,
+  "lng": 55.1186,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کرمان",
+  "county": "عنبرآباد",
+  "lat": 28.4783,
+  "lng": 57.8414,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کرمان",
+  "county": "فاریاب",
+  "lat": 28.1,
+  "lng": 57.23,
+  "source": "manual"
+ },
+ {
+  "province": "کرمان",
+  "county": "فهرج",
+  "lat": 28.95,
+  "lng": 58.88,
+  "source": "manual"
+ },
+ {
+  "province": "کرمان",
+  "county": "قلعه‌گنج",
+  "lat": 27.5236,
+  "lng": 57.8811,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کرمان",
+  "county": "کوهبنان",
+  "lat": 31.4103,
+  "lng": 56.2825,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کرمان",
+  "county": "کهنوج",
+  "lat": 27.9468,
+  "lng": 57.7063,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کرمان",
+  "county": "گنبکی",
+  "lat": 28.52,
+  "lng": 58.89,
+  "source": "manual"
+ },
+ {
+  "province": "کرمان",
+  "county": "منوجان",
+  "lat": 27.4,
+  "lng": 57.5,
+  "source": "manual"
+ },
+ {
+  "province": "کرمان",
+  "county": "نرماشیر",
+  "lat": 28.95,
+  "lng": 58.7,
+  "source": "manual"
+ },
+ {
+  "province": "کرمان",
+  "county": "جازموریان",
+  "lat": 27.45,
+  "lng": 58.4,
+  "source": "manual"
+ },
+ {
+  "province": "کرمانشاه",
+  "county": "کرمانشاه",
+  "lat": 34.4576,
+  "lng": 46.6705,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کرمانشاه",
+  "county": "اسلام‌آباد غرب",
+  "lat": 34.11,
+  "lng": 46.53,
+  "source": "manual"
+ },
+ {
+  "province": "کرمانشاه",
+  "county": "دالاهو",
+  "lat": 34.2842,
+  "lng": 46.2422,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کرمانشاه",
+  "county": "جوانرود",
+  "lat": 34.7925,
+  "lng": 46.4847,
+  "source": "agree"
+ },
+ {
+  "province": "کرمانشاه",
+  "county": "ثلاث باباجانی",
+  "lat": 34.7179,
+  "lng": 46.2556,
+  "source": "agree"
+ },
+ {
+  "province": "کرمانشاه",
+  "county": "پاوه",
+  "lat": 35.0874,
+  "lng": 46.4449,
+  "source": "agree"
+ },
+ {
+  "province": "کرمانشاه",
+  "county": "روانسر",
+  "lat": 34.7121,
+  "lng": 46.6513,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کرمانشاه",
+  "county": "سرپل ذهاب",
+  "lat": 34.3971,
+  "lng": 45.8686,
+  "source": "agree"
+ },
+ {
+  "province": "کرمانشاه",
+  "county": "سنقر",
+  "lat": 34.7836,
+  "lng": 47.6003,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کرمانشاه",
+  "county": "صحنه",
+  "lat": 34.4814,
+  "lng": 47.6908,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کرمانشاه",
+  "county": "قصرشیرین",
+  "lat": 34.5159,
+  "lng": 45.5777,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کرمانشاه",
+  "county": "گیلانغرب",
+  "lat": 34.1422,
+  "lng": 45.9203,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کرمانشاه",
+  "county": "کنگاور",
+  "lat": 34.5042,
+  "lng": 47.9653,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کرمانشاه",
+  "county": "هرسین",
+  "lat": 34.2719,
+  "lng": 47.6046,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کهگیلویه و بویراحمد",
+  "county": "یاسوج",
+  "lat": 30.67,
+  "lng": 51.59,
+  "source": "manual"
+ },
+ {
+  "province": "کهگیلویه و بویراحمد",
+  "county": "باشت",
+  "lat": 30.36,
+  "lng": 51.16,
+  "source": "manual"
+ },
+ {
+  "province": "کهگیلویه و بویراحمد",
+  "county": "بهمئی",
+  "lat": 30.89,
+  "lng": 50.09,
+  "source": "manual"
+ },
+ {
+  "province": "کهگیلویه و بویراحمد",
+  "county": "بویراحمد",
+  "lat": 30.7246,
+  "lng": 50.8456,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کهگیلویه و بویراحمد",
+  "county": "چرام",
+  "lat": 30.75,
+  "lng": 50.74,
+  "source": "manual"
+ },
+ {
+  "province": "کهگیلویه و بویراحمد",
+  "county": "دنا",
+  "lat": 30.9517,
+  "lng": 51.4375,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کهگیلویه و بویراحمد",
+  "county": "کهگیلویه",
+  "lat": 30.79,
+  "lng": 50.56,
+  "source": "manual"
+ },
+ {
+  "province": "کهگیلویه و بویراحمد",
+  "county": "گچساران",
+  "lat": 30.35,
+  "lng": 50.8,
+  "source": "jafaripur"
+ },
+ {
+  "province": "کهگیلویه و بویراحمد",
+  "county": "لنده",
+  "lat": 30.98,
+  "lng": 50.42,
+  "source": "manual"
+ },
+ {
+  "province": "کهگیلویه و بویراحمد",
+  "county": "مارگون",
+  "lat": 30.99,
+  "lng": 51.08,
+  "source": "manual"
+ },
+ {
+  "province": "گلستان",
+  "county": "گرگان",
+  "lat": 36.922,
+  "lng": 54.4197,
+  "source": "agree"
+ },
+ {
+  "province": "گلستان",
+  "county": "آزادشهر",
+  "lat": 37.1855,
+  "lng": 55.1143,
+  "source": "agree"
+ },
+ {
+  "province": "گلستان",
+  "county": "آق‌قلا",
+  "lat": 37.0139,
+  "lng": 54.455,
+  "source": "jafaripur"
+ },
+ {
+  "province": "گلستان",
+  "county": "علی‌آباد کتول",
+  "lat": 36.91,
+  "lng": 54.87,
+  "source": "manual"
+ },
+ {
+  "province": "گلستان",
+  "county": "بندر گز",
+  "lat": 36.775,
+  "lng": 53.9462,
+  "source": "jafaripur"
+ },
+ {
+  "province": "گلستان",
+  "county": "ترکمن",
+  "lat": 36.9017,
+  "lng": 54.0708,
+  "source": "jafaripur"
+ },
+ {
+  "province": "گلستان",
+  "county": "رامیان",
+  "lat": 37.1438,
+  "lng": 55.1362,
+  "source": "agree"
+ },
+ {
+  "province": "گلستان",
+  "county": "رشتخوار",
+  "lat": null,
+  "lng": null,
+  "source": "unknown"
+ },
+ {
+  "province": "گلستان",
+  "county": "گالیکش",
+  "lat": 37.27,
+  "lng": 55.43,
+  "source": "manual"
+ },
+ {
+  "province": "گلستان",
+  "county": "گمیشان",
+  "lat": 37.07,
+  "lng": 54.08,
+  "source": "manual"
+ },
+ {
+  "province": "گلستان",
+  "county": "گنبد کاووس",
+  "lat": 37.1562,
+  "lng": 55.1711,
+  "source": "agree"
+ },
+ {
+  "province": "گلستان",
+  "county": "کلاله",
+  "lat": 37.324,
+  "lng": 55.4447,
+  "source": "agree"
+ },
+ {
+  "province": "گلستان",
+  "county": "کردکوی",
+  "lat": 36.7941,
+  "lng": 54.1103,
+  "source": "jafaripur"
+ },
+ {
+  "province": "گلستان",
+  "county": "مراوه‌تپه",
+  "lat": 37.9,
+  "lng": 55.96,
+  "source": "manual"
+ },
+ {
+  "province": "گلستان",
+  "county": "مینودشت",
+  "lat": 37.2437,
+  "lng": 55.227,
+  "source": "agree"
+ },
+ {
+  "province": "گیلان",
+  "county": "رشت",
+  "lat": 37.2817,
+  "lng": 49.5877,
+  "source": "agree"
+ },
+ {
+  "province": "گیلان",
+  "county": "آستارا",
+  "lat": 38.4207,
+  "lng": 48.8756,
+  "source": "agree"
+ },
+ {
+  "province": "گیلان",
+  "county": "آستانه اشرفیه",
+  "lat": 37.2598,
+  "lng": 49.9437,
+  "source": "jafaripur"
+ },
+ {
+  "province": "گیلان",
+  "county": "املش",
+  "lat": 37.1125,
+  "lng": 50.1398,
+  "source": "agree"
+ },
+ {
+  "province": "گیلان",
+  "county": "بندر انزلی",
+  "lat": 37.4825,
+  "lng": 49.3296,
+  "source": "agree"
+ },
+ {
+  "province": "گیلان",
+  "county": "تالش",
+  "lat": 37.8,
+  "lng": 48.91,
+  "source": "manual"
+ },
+ {
+  "province": "گیلان",
+  "county": "رودبار",
+  "lat": 36.8241,
+  "lng": 49.4237,
+  "source": "jafaripur"
+ },
+ {
+  "province": "گیلان",
+  "county": "رودسر",
+  "lat": 37.1378,
+  "lng": 50.2836,
+  "source": "jafaripur"
+ },
+ {
+  "province": "گیلان",
+  "county": "رضوانشهر",
+  "lat": 37.5507,
+  "lng": 49.141,
+  "source": "jafaripur"
+ },
+ {
+  "province": "گیلان",
+  "county": "سیاهکل",
+  "lat": 37.1528,
+  "lng": 49.8708,
+  "source": "jafaripur"
+ },
+ {
+  "province": "گیلان",
+  "county": "شفت",
+  "lat": 37.17,
+  "lng": 49.4,
+  "source": "manual"
+ },
+ {
+  "province": "گیلان",
+  "county": "صومعه‌سرا",
+  "lat": 37.2233,
+  "lng": 49.2986,
+  "source": "agree"
+ },
+ {
+  "province": "گیلان",
+  "county": "فومن",
+  "lat": 37.2469,
+  "lng": 49.2135,
+  "source": "agree"
+ },
+ {
+  "province": "گیلان",
+  "county": "لاهیجان",
+  "lat": 37.182,
+  "lng": 49.8989,
+  "source": "agree"
+ },
+ {
+  "province": "گیلان",
+  "county": "لنگرود",
+  "lat": 37.206,
+  "lng": 50.1788,
+  "source": "agree"
+ },
+ {
+  "province": "گیلان",
+  "county": "ماسال",
+  "lat": 37.3626,
+  "lng": 49.1312,
+  "source": "agree"
+ },
+ {
+  "province": "گیلان",
+  "county": "خمام",
+  "lat": 37.39,
+  "lng": 49.66,
+  "source": "manual"
+ },
+ {
+  "province": "لرستان",
+  "county": "خرم‌آباد",
+  "lat": 33.491,
+  "lng": 48.3577,
+  "source": "agree"
+ },
+ {
+  "province": "لرستان",
+  "county": "ازنا",
+  "lat": 33.5221,
+  "lng": 49.4076,
+  "source": "agree"
+ },
+ {
+  "province": "لرستان",
+  "county": "الیگودرز",
+  "lat": 33.4935,
+  "lng": 49.6138,
+  "source": "agree"
+ },
+ {
+  "province": "لرستان",
+  "county": "بروجرد",
+  "lat": 33.8942,
+  "lng": 48.767,
+  "source": "jafaripur"
+ },
+ {
+  "province": "لرستان",
+  "county": "پلدختر",
+  "lat": 33.1536,
+  "lng": 47.7136,
+  "source": "jafaripur"
+ },
+ {
+  "province": "لرستان",
+  "county": "چگنی",
+  "lat": 33.56,
+  "lng": 48.02,
+  "source": "manual"
+ },
+ {
+  "province": "لرستان",
+  "county": "دلفان",
+  "lat": 33.5034,
+  "lng": 48.3576,
+  "source": "jafaripur"
+ },
+ {
+  "province": "لرستان",
+  "county": "دورود",
+  "lat": 33.4918,
+  "lng": 49.0572,
+  "source": "agree"
+ },
+ {
+  "province": "لرستان",
+  "county": "دوره",
+  "lat": 33.45,
+  "lng": 48.05,
+  "source": "manual"
+ },
+ {
+  "province": "لرستان",
+  "county": "رومشکان",
+  "lat": 33.33,
+  "lng": 47.62,
+  "source": "manual"
+ },
+ {
+  "province": "لرستان",
+  "county": "سلسله",
+  "lat": 33.86,
+  "lng": 48.26,
+  "source": "manual"
+ },
+ {
+  "province": "لرستان",
+  "county": "کوهدشت",
+  "lat": 33.525,
+  "lng": 47.6481,
+  "source": "agree"
+ },
+ {
+  "province": "لرستان",
+  "county": "معمولان",
+  "lat": 33.39,
+  "lng": 47.97,
+  "source": "manual"
+ },
+ {
+  "province": "مازندران",
+  "county": "ساری",
+  "lat": 36.5632,
+  "lng": 53.06,
+  "source": "agree"
+ },
+ {
+  "province": "مازندران",
+  "county": "آمل",
+  "lat": 36.4674,
+  "lng": 52.3504,
+  "source": "agree"
+ },
+ {
+  "province": "مازندران",
+  "county": "بابل",
+  "lat": 36.54,
+  "lng": 52.68,
+  "source": "manual"
+ },
+ {
+  "province": "مازندران",
+  "county": "بابلسر",
+  "lat": 36.7267,
+  "lng": 52.6818,
+  "source": "agree"
+ },
+ {
+  "province": "مازندران",
+  "county": "بهشهر",
+  "lat": 36.6922,
+  "lng": 53.5525,
+  "source": "jafaripur"
+ },
+ {
+  "province": "مازندران",
+  "county": "تنکابن",
+  "lat": 36.8164,
+  "lng": 50.8739,
+  "source": "jafaripur"
+ },
+ {
+  "province": "مازندران",
+  "county": "جویبار",
+  "lat": 36.6051,
+  "lng": 52.7673,
+  "source": "agree"
+ },
+ {
+  "province": "مازندران",
+  "county": "چالوس",
+  "lat": 36.6459,
+  "lng": 51.407,
+  "source": "jafaripur"
+ },
+ {
+  "province": "مازندران",
+  "county": "رامسر",
+  "lat": 36.917,
+  "lng": 50.6482,
+  "source": "agree"
+ },
+ {
+  "province": "مازندران",
+  "county": "سوادکوه",
+  "lat": 36.304,
+  "lng": 52.8852,
+  "source": "jafaripur"
+ },
+ {
+  "province": "مازندران",
+  "county": "سوادکوه شمالی",
+  "lat": 36.3,
+  "lng": 52.89,
+  "source": "manual"
+ },
+ {
+  "province": "مازندران",
+  "county": "سیمرغ",
+  "lat": 36.58,
+  "lng": 52.81,
+  "source": "manual"
+ },
+ {
+  "province": "مازندران",
+  "county": "عباس‌آباد",
+  "lat": 36.72,
+  "lng": 51.11,
+  "source": "manual"
+ },
+ {
+  "province": "مازندران",
+  "county": "فریدونکنار",
+  "lat": 36.6497,
+  "lng": 52.5027,
+  "source": "agree"
+ },
+ {
+  "province": "مازندران",
+  "county": "قائم‌شهر",
+  "lat": 36.4645,
+  "lng": 52.86,
+  "source": "agree"
+ },
+ {
+  "province": "مازندران",
+  "county": "کلاردشت",
+  "lat": 36.5,
+  "lng": 51.14,
+  "source": "manual"
+ },
+ {
+  "province": "مازندران",
+  "county": "گلوگاه",
+  "lat": 36.7272,
+  "lng": 53.8089,
+  "source": "jafaripur"
+ },
+ {
+  "province": "مازندران",
+  "county": "محمودآباد",
+  "lat": 36.6319,
+  "lng": 52.2628,
+  "source": "jafaripur"
+ },
+ {
+  "province": "مازندران",
+  "county": "میاندرود",
+  "lat": 36.6,
+  "lng": 53.2,
+  "source": "manual"
+ },
+ {
+  "province": "مازندران",
+  "county": "نکا",
+  "lat": 36.6609,
+  "lng": 53.1906,
+  "source": "agree"
+ },
+ {
+  "province": "مازندران",
+  "county": "نور",
+  "lat": 36.57,
+  "lng": 52.01,
+  "source": "manual"
+ },
+ {
+  "province": "مازندران",
+  "county": "نوشهر",
+  "lat": 36.6509,
+  "lng": 51.4051,
+  "source": "agree"
+ },
+ {
+  "province": "مرکزی",
+  "county": "اراک",
+  "lat": 34.0928,
+  "lng": 49.6886,
+  "source": "agree"
+ },
+ {
+  "province": "مرکزی",
+  "county": "آشتیان",
+  "lat": 34.5219,
+  "lng": 50.0061,
+  "source": "jafaripur"
+ },
+ {
+  "province": "مرکزی",
+  "county": "تفرش",
+  "lat": 34.6919,
+  "lng": 50.0131,
+  "source": "jafaripur"
+ },
+ {
+  "province": "مرکزی",
+  "county": "خمین",
+  "lat": 33.6406,
+  "lng": 50.0771,
+  "source": "jafaripur"
+ },
+ {
+  "province": "مرکزی",
+  "county": "خنداب",
+  "lat": 34.39,
+  "lng": 49.18,
+  "source": "manual"
+ },
+ {
+  "province": "مرکزی",
+  "county": "دلیجان",
+  "lat": 33.9906,
+  "lng": 50.6839,
+  "source": "jafaripur"
+ },
+ {
+  "province": "مرکزی",
+  "county": "زرندیه",
+  "lat": 35.307,
+  "lng": 50.4912,
+  "source": "jafaripur"
+ },
+ {
+  "province": "مرکزی",
+  "county": "ساوه",
+  "lat": 35.0214,
+  "lng": 50.3567,
+  "source": "jafaripur"
+ },
+ {
+  "province": "مرکزی",
+  "county": "شازند",
+  "lat": 33.9275,
+  "lng": 49.4117,
+  "source": "jafaripur"
+ },
+ {
+  "province": "مرکزی",
+  "county": "فراهان",
+  "lat": 34.5,
+  "lng": 49.68,
+  "source": "manual"
+ },
+ {
+  "province": "مرکزی",
+  "county": "کمیجان",
+  "lat": 34.7192,
+  "lng": 49.3267,
+  "source": "jafaripur"
+ },
+ {
+  "province": "مرکزی",
+  "county": "محلات",
+  "lat": 33.9086,
+  "lng": 50.4553,
+  "source": "jafaripur"
+ },
+ {
+  "province": "هرمزگان",
+  "county": "بندرعباس",
+  "lat": 27.1876,
+  "lng": 56.2938,
+  "source": "agree"
+ },
+ {
+  "province": "هرمزگان",
+  "county": "ابوموسی",
+  "lat": 25.8797,
+  "lng": 55.0328,
+  "source": "jafaripur"
+ },
+ {
+  "province": "هرمزگان",
+  "county": "بشاگرد",
+  "lat": 26.1,
+  "lng": 58.37,
+  "source": "manual"
+ },
+ {
+  "province": "هرمزگان",
+  "county": "بستک",
+  "lat": 27.1992,
+  "lng": 54.3667,
+  "source": "jafaripur"
+ },
+ {
+  "province": "هرمزگان",
+  "county": "بندرلنگه",
+  "lat": 26.543,
+  "lng": 54.8733,
+  "source": "agree"
+ },
+ {
+  "province": "هرمزگان",
+  "county": "پارسیان",
+  "lat": 27.2,
+  "lng": 53.03,
+  "source": "manual"
+ },
+ {
+  "province": "هرمزگان",
+  "county": "حاجی‌آباد",
+  "lat": 28.3092,
+  "lng": 55.9017,
+  "source": "jafaripur"
+ },
+ {
+  "province": "هرمزگان",
+  "county": "خمیر",
+  "lat": 26.9522,
+  "lng": 55.585,
+  "source": "jafaripur"
+ },
+ {
+  "province": "هرمزگان",
+  "county": "رودان",
+  "lat": 27.44,
+  "lng": 57.2,
+  "source": "manual"
+ },
+ {
+  "province": "هرمزگان",
+  "county": "سیریک",
+  "lat": 26.52,
+  "lng": 57.1,
+  "source": "manual"
+ },
+ {
+  "province": "هرمزگان",
+  "county": "قشم",
+  "lat": 26.8119,
+  "lng": 55.8913,
+  "source": "jafaripur"
+ },
+ {
+  "province": "هرمزگان",
+  "county": "جاسک",
+  "lat": 25.6304,
+  "lng": 57.7362,
+  "source": "agree"
+ },
+ {
+  "province": "هرمزگان",
+  "county": "میناب",
+  "lat": 27.1467,
+  "lng": 57.08,
+  "source": "jafaripur"
+ },
+ {
+  "province": "همدان",
+  "county": "همدان",
+  "lat": 34.7789,
+  "lng": 48.4564,
+  "source": "agree"
+ },
+ {
+  "province": "همدان",
+  "county": "اسدآباد",
+  "lat": 34.6953,
+  "lng": 48.2068,
+  "source": "agree"
+ },
+ {
+  "province": "همدان",
+  "county": "بهار",
+  "lat": 34.7952,
+  "lng": 48.4401,
+  "source": "agree"
+ },
+ {
+  "province": "همدان",
+  "county": "تویسرکان",
+  "lat": 34.6225,
+  "lng": 48.38,
+  "source": "agree"
+ },
+ {
+  "province": "همدان",
+  "county": "رزن",
+  "lat": 35.3867,
+  "lng": 49.0339,
+  "source": "jafaripur"
+ },
+ {
+  "province": "همدان",
+  "county": "فامنین",
+  "lat": 35.11,
+  "lng": 48.97,
+  "source": "manual"
+ },
+ {
+  "province": "همدان",
+  "county": "کبودرآهنگ",
+  "lat": 35.2083,
+  "lng": 48.7239,
+  "source": "jafaripur"
+ },
+ {
+  "province": "همدان",
+  "county": "ملایر",
+  "lat": 34.3325,
+  "lng": 48.7723,
+  "source": "agree"
+ },
+ {
+  "province": "همدان",
+  "county": "نهاوند",
+  "lat": 34.1803,
+  "lng": 48.3935,
+  "source": "agree"
+ },
+ {
+  "province": "همدان",
+  "county": "درگزین",
+  "lat": 35.35,
+  "lng": 49.06,
+  "source": "manual"
+ },
+ {
+  "province": "یزد",
+  "county": "یزد",
+  "lat": 31.9988,
+  "lng": 54.4001,
+  "source": "agree"
+ },
+ {
+  "province": "یزد",
+  "county": "ابرکوه",
+  "lat": 31.1304,
+  "lng": 53.2504,
+  "source": "jafaripur"
+ },
+ {
+  "province": "یزد",
+  "county": "اردکان",
+  "lat": 32.413,
+  "lng": 54.0132,
+  "source": "agree"
+ },
+ {
+  "province": "یزد",
+  "county": "اشکذر",
+  "lat": 31.99,
+  "lng": 54.2,
+  "source": "manual"
+ },
+ {
+  "province": "یزد",
+  "county": "بافق",
+  "lat": 31.6128,
+  "lng": 55.4106,
+  "source": "jafaripur"
+ },
+ {
+  "province": "یزد",
+  "county": "بهاباد",
+  "lat": 31.87,
+  "lng": 56.02,
+  "source": "manual"
+ },
+ {
+  "province": "یزد",
+  "county": "تفت",
+  "lat": 31.74,
+  "lng": 54.21,
+  "source": "manual"
+ },
+ {
+  "province": "یزد",
+  "county": "خاتم",
+  "lat": 30.05,
+  "lng": 54.37,
+  "source": "manual"
+ },
+ {
+  "province": "یزد",
+  "county": "زارچ",
+  "lat": 31.98,
+  "lng": 54.24,
+  "source": "manual"
+ },
+ {
+  "province": "یزد",
+  "county": "مهریز",
+  "lat": 31.5917,
+  "lng": 54.4317,
+  "source": "jafaripur"
+ },
+ {
+  "province": "یزد",
+  "county": "میبد",
+  "lat": 32.1894,
+  "lng": 54.0525,
+  "source": "agree"
+ },
+ {
+  "province": "یزد",
+  "county": "مروست",
+  "lat": 30.46,
+  "lng": 54.21,
+  "source": "manual"
+ }
+]

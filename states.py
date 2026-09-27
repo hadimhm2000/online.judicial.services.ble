@@ -392,4 +392,17 @@ class Form(StatesGroup):
     rv_waiting_address = State()
     rv_waiting_area = State()
     rv_waiting_land_use = State()
+    rv_waiting_land_other = State()        # زیرگزینهٔ «سایر» کاربری عرصه (ضریب تعدیل)
+    rv_waiting_bld_use = State()           # کاربری اعیانی
+    rv_waiting_bld_use_other = State()     # زیرگزینهٔ «سایر» کاربری اعیانی
+    rv_waiting_bld_structure = State()     # نوع سازه (بتنی/فلزی/سوله — سایر)
+    rv_waiting_bld_area = State()          # متراژ اعیانی
+    rv_waiting_bld_complete = State()      # ساختمان تکمیل شده؟
+    rv_waiting_bld_stage = State()         # مرحلهٔ ساخت (ناتمام)
+    rv_waiting_bld_parking = State()       # پارکینگ و انباری دارد؟
+    rv_waiting_bld_parking_area = State()  # متراژ پارکینگ و انباری
+    rv_waiting_bld_floor = State()         # طبقه
+    rv_waiting_bld_age = State()           # قدمت
+    rv_waiting_preview = State()           # پیش‌نمایش (تایید / ویرایش)
+    rv_waiting_edit_choice = State()       # انتخاب مورد ویرایش
     rv_waiting_payment = State()
