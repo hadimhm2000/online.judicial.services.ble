@@ -36,6 +36,9 @@ const BotMessageSender = React.lazy(() => import('@/components/admin/bot-message
 const GoogleSheetsPanel = React.lazy(() => import('@/components/admin/google-sheets-panel').then(m => ({ default: m.default })));
 // ⭐ v1.7 — دفتر مبالغ قابل بازگشت/کسر
 const CreditsDialog = React.lazy(() => import('@/components/admin/credits-dialog').then(m => ({ default: m.default })));
+// ⭐ v1.8 — پرداخت‌های کارت‌به‌کارت + ریست داده‌ها
+const CardPaymentsDialog = React.lazy(() => import('@/components/admin/card-payments-dialog').then(m => ({ default: m.default })));
+const ResetDataDialog = React.lazy(() => import('@/components/admin/reset-data-dialog').then(m => ({ default: m.default })));
 
 import { ServicePieChart, StatusOverviewChart, RevenueChart } from '@/components/admin/charts';
 import TrendLineChart from '@/components/admin/trend-line-chart';
@@ -71,6 +74,8 @@ interface Stats {
   unpaidRevenue: number;
   serviceBreakdown: { _count: { id: number }; serviceType: string }[];
   openCreditCount?: number;
+  pendingCardPaymentCount?: number;
+  cardPaymentRevenue?: number;
   createdAt?: string;
 }
 
@@ -228,6 +233,8 @@ export default function AdminPanel() {
   const [sheetsPanelOpen, setSheetsPanelOpen] = useState(false);
   const [creditsOpen, setCreditsOpen] = useState(false);
   const [creditsPrefill, setCreditsPrefill] = useState<{ baleUserId?: string; fullName?: string; caseId?: string; trackingCode?: string | null } | null>(null);
+  const [cardPaymentsOpen, setCardPaymentsOpen] = useState(false);
+  const [resetDataOpen, setResetDataOpen] = useState(false);
   const [batchConfirmSending, setBatchConfirmSending] = useState(false);
   const [batchConfirmDone, setBatchConfirmDone] = useState(false);
 
@@ -772,6 +779,31 @@ export default function AdminPanel() {
                     {new Intl.NumberFormat('fa-IR').format(stats?.openCreditCount ?? 0)}
                   </span>
                 )}
+              </Button>
+
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-9 w-9 p-0 relative text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 dark:hover:bg-indigo-900/20"
+                onClick={() => setCardPaymentsOpen(true)}
+                title="پرداخت‌های کارت به کارت"
+              >
+                <CreditCard className="h-4 w-4" />
+                {(stats?.pendingCardPaymentCount ?? 0) > 0 && (
+                  <span className="counter-badge">
+                    {new Intl.NumberFormat('fa-IR').format(stats?.pendingCardPaymentCount ?? 0)}
+                  </span>
+                )}
+              </Button>
+
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-9 w-9 p-0 text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/20"
+                onClick={() => setResetDataOpen(true)}
+                title="ریست داده‌ها (پاک کردن پرونده‌ها و آمار)"
+              >
+                <Trash2 className="h-4 w-4" />
               </Button>
 
               <Button
@@ -1519,6 +1551,21 @@ export default function AdminPanel() {
       />
       </Suspense>
 
+      <Suspense fallback={<div className="animate-pulse h-8 w-48 rounded-lg bg-muted" />}>
+      <CardPaymentsDialog
+        open={cardPaymentsOpen}
+        onOpenChange={(o) => { setCardPaymentsOpen(o); if (!o) fetchStats(); }}
+      />
+      </Suspense>
+
+      <Suspense fallback={<div className="animate-pulse h-8 w-48 rounded-lg bg-muted" />}>
+      <ResetDataDialog
+        open={resetDataOpen}
+        onOpenChange={setResetDataOpen}
+        onDone={() => { fetchStats(); fetchCases(); setSelectedIds(new Set()); }}
+      />
+      </Suspense>
+
       {/* 14. Confirm Send Dialog - dialog-premium, animate-float icon, gradient preview */}
       <Dialog open={confirmSendOpen} onOpenChange={setConfirmSendOpen}>
         <DialogContent className="max-w-sm p-0 dialog-premium" dir="rtl">
@@ -1646,6 +1693,8 @@ export default function AdminPanel() {
         { id: 'bot-sender', label: 'ارسال پیام به کاربر', icon: MessageSquare, group: 'تنظیمات', onSelect: () => setBotSenderOpen(true) },
         { id: 'google-sheets', label: 'همگام‌سازی گوگل شیت', icon: FileSpreadsheet, group: 'تنظیمات', onSelect: () => setSheetsPanelOpen(true) },
         { id: 'credits', label: 'مبالغ قابل بازگشت / کسر', icon: Wallet, group: 'تنظیمات', onSelect: () => { setCreditsPrefill(null); setCreditsOpen(true); } },
+        { id: 'card-payments', label: 'پرداخت‌های کارت به کارت', icon: CreditCard, group: 'تنظیمات', onSelect: () => setCardPaymentsOpen(true) },
+        { id: 'reset-data', label: 'ریست داده‌ها (پاک کردن پرونده‌ها و آمار)', icon: Trash2, group: 'تنظیمات', onSelect: () => setResetDataOpen(true) },
       ] as CommandAction[]} />
 
       {/* 6. Back to Top - back-to-top-btn, gradient background */}
