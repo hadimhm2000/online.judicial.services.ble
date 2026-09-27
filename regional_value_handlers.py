@@ -883,6 +883,7 @@ async def _rv_start_payment(message: Message, state: FSMContext, bot: Bot):
                 if not result.get("ok"):
                     logging.error(f"[RV-PAY] خطای sendInvoice: {result}")
                     raise Exception(result.get("description", "خطا در ارسال فاکتور"))
+                from card_payment import track_invoice as _cp_track; _cp_track(invoice_data)  # ⭐ کارت‌به‌کارت پس از ۲۰ دقیقه
     except Exception as e:
         logging.error(f"[RV-PAY] خطا در ارسال فاکتور: {e}", exc_info=True)
         await message.answer("⚠️ خطا در ساخت فاکتور. لطفاً کمی بعد دوباره تلاش کنید.")

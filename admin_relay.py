@@ -381,6 +381,7 @@ async def _finalize_send_fee_invoice(message: Message, state: FSMContext):
                         f"(مطمئن شوید کاربر ربات را استارت کرده باشد)")
                     await state.clear()
                     return
+                from card_payment import track_invoice as _cp_track; _cp_track(invoice_data)  # ⭐ کارت‌به‌کارت پس از ۲۰ دقیقه
     except Exception as e:
         logger.error(f"[ADMIN-SEND-FEE] خطا در ارسال فاکتور: {e}", exc_info=True)
         await message.answer(f"❌ خطا در ارسال فاکتور:\n{e}")
@@ -903,6 +904,7 @@ async def _finalize_admin_fee_invoice(message: Message, state: FSMContext):
                         f"(مطمئن شوید کاربر ربات را استارت کرده باشد)")
                     await state.clear()
                     return
+                from card_payment import track_invoice as _cp_track; _cp_track(invoice_data)  # ⭐ کارت‌به‌کارت پس از ۲۰ دقیقه
     except Exception as e:
         logger.error(f"[ADMIN-FEE] خطا در ارسال فاکتور: {e}", exc_info=True)
         await message.answer(f"❌ خطا در ارسال فاکتور:\n{e}")

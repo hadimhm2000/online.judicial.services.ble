@@ -66,6 +66,8 @@ interface Stats {
   unpaidRevenue: number;
   serviceBreakdown: { _count: { id: number }; serviceType: string }[];
   openCreditCount?: number;
+  pendingCardPaymentCount?: number;
+  cardPaymentRevenue?: number;
   createdAt?: string;
 }
 
@@ -203,6 +205,7 @@ export default function AdminPanel() {
   const [creditsOpen, setCreditsOpen] = useState(false);
   const [creditsPrefill, setCreditsPrefill] = useState<{ baleUserId?: string; fullName?: string; caseId?: string; trackingCode?: string | null } | null>(null);
   const [resetDataOpen, setResetDataOpen] = useState(false);
+  const [cardPaymentsOpen, setCardPaymentsOpen] = useState(false);
 
   useNotificationListener(
     stats?.failed || 0,
@@ -564,6 +567,8 @@ export default function AdminPanel() {
         onOpenExemptUsers={() => setExemptUsersOpen(true)}
         onOpenCredits={() => { setCreditsPrefill(null); setCreditsOpen(true); }}
         openCreditCount={stats?.openCreditCount ?? 0}
+        onOpenCardPayments={() => setCardPaymentsOpen(true)}
+        pendingCardPaymentCount={stats?.pendingCardPaymentCount ?? 0}
         onOpenResetData={() => setResetDataOpen(true)}
         isOnline={isOnline}
         isFullscreen={isFullscreen}
@@ -924,6 +929,8 @@ export default function AdminPanel() {
         onCreditsClose={() => { setCreditsOpen(false); setCreditsPrefill(null); }}
         creditsPrefill={creditsPrefill}
         onCreditsChanged={fetchStats}
+        cardPaymentsOpen={cardPaymentsOpen}
+        onCardPaymentsClose={() => { setCardPaymentsOpen(false); fetchStats(); }}
         resetDataOpen={resetDataOpen} onResetDataClose={() => setResetDataOpen(false)}
         onResetDataDone={() => { fetchStats(); fetchCases(); setSelectedIds(new Set()); }}
       />
@@ -963,6 +970,7 @@ export default function AdminPanel() {
         { id: 'working-hours', label: 'ساعات کاری', icon: Clock, group: 'تنظیمات', onSelect: () => setWorkingHoursOpen(true) },
         { id: 'exempt-users', label: 'کاربران معاف', icon: Users, group: 'تنظیمات', onSelect: () => setExemptUsersOpen(true) },
         { id: 'credits', label: 'مبالغ قابل بازگشت / کسر', icon: Wallet, group: 'تنظیمات', onSelect: () => { setCreditsPrefill(null); setCreditsOpen(true); } },
+        { id: 'card-payments', label: 'پرداخت‌های کارت به کارت', icon: CreditCard, group: 'تنظیمات', onSelect: () => setCardPaymentsOpen(true) },
         { id: 'reset-data', label: 'ریست کامل داده‌ها', icon: Trash2, group: 'تنظیمات', onSelect: () => setResetDataOpen(true) },
       ] as CommandAction[]} />
 

@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import {
   Shield, Bell, RefreshCw, Play, Pause, Volume2, VolumeX, MessageSquare,
   FileSpreadsheet, Moon, Sun, Maximize2, Minimize2, Printer, Keyboard,
-  Wifi, WifiOff, Clock, Users, Trash2, Wallet,
+  Wifi, WifiOff, Clock, Users, Trash2, Wallet, CreditCard,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -26,6 +26,9 @@ export interface AdminHeaderProps {
   /** ⭐ v1.7 — دفتر مبالغ قابل بازگشت/کسر */
   onOpenCredits?: () => void;
   openCreditCount?: number;
+  /** ⭐ v1.8 — پرداخت‌های کارت‌به‌کارت */
+  onOpenCardPayments?: () => void;
+  pendingCardPaymentCount?: number;
   onOpenResetData: () => void;
   isOnline: boolean;
   isFullscreen: boolean;
@@ -62,7 +65,7 @@ function PersianClock() {
 export default function AdminHeader({
   refreshing, onRefresh, autoRefresh, onToggleAutoRefresh,
   isMuted, onToggleMuted, activityCount, onOpenActivity,
-  onOpenBotSender, onOpenSheetsPanel, onOpenWorkingHours, onOpenExemptUsers, onOpenCredits, openCreditCount = 0, onOpenResetData,
+  onOpenBotSender, onOpenSheetsPanel, onOpenWorkingHours, onOpenExemptUsers, onOpenCredits, openCreditCount = 0, onOpenCardPayments, pendingCardPaymentCount = 0, onOpenResetData,
   isOnline, isFullscreen, onToggleFullscreen, onPrint,
   showShortcuts, onSetShowShortcuts, theme, onToggleTheme,
 }: AdminHeaderProps) {
@@ -191,6 +194,23 @@ export default function AdminHeader({
                   {openCreditCount > 0 && (
                     <span className="counter-badge">
                       {new Intl.NumberFormat('fa-IR').format(openCreditCount)}
+                    </span>
+                  )}
+                </Button>
+              )}
+
+              {onOpenCardPayments && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-9 w-9 p-0 relative text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 dark:hover:bg-indigo-900/20"
+                  onClick={onOpenCardPayments}
+                  title="پرداخت‌های کارت به کارت"
+                >
+                  <CreditCard className="h-4 w-4" />
+                  {pendingCardPaymentCount > 0 && (
+                    <span className="counter-badge">
+                      {new Intl.NumberFormat('fa-IR').format(pendingCardPaymentCount)}
                     </span>
                   )}
                 </Button>

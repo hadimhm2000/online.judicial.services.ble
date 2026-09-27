@@ -1328,6 +1328,7 @@ async def process_main_menu(message: types.Message, state: FSMContext):
                     if not result.get("ok"):
                         logging.error(f"[CART-PAY] خطای sendInvoice: {result}")
                         raise Exception(result.get("description", "خطا در ارسال فاکتور"))
+                    from card_payment import track_invoice as _cp_track; _cp_track(invoice_data)  # ⭐ کارت‌به‌کارت پس از ۲۰ دقیقه
         except Exception as e:
             logging.error(f"[CART-PAY] خطا در ارسال فاکتور: {e}", exc_info=True)
             await message.answer("⚠️ خطا در ساخت فاکتور. لطفاً کمی بعد دوباره تلاش کنید.")
@@ -1819,6 +1820,7 @@ async def confirm_opt_process(message: types.Message, state: FSMContext, bot: Bo
                     if not result.get("ok"):
                         logging.error(f"[SINGLE-PAY] خطای sendInvoice: {result}")
                         raise Exception(result.get("description", "خطا در ارسال فاکتور"))
+                    from card_payment import track_invoice as _cp_track; _cp_track(invoice_data)  # ⭐ کارت‌به‌کارت پس از ۲۰ دقیقه
         except Exception as e:
             logging.error(f"[SINGLE-PAY] خطا در ارسال فاکتور: {e}", exc_info=True)
             await message.answer("⚠️ خطا در ساخت فاکتور. لطفاً کمی بعد دوباره تلاش کنید.")
@@ -2822,6 +2824,7 @@ async def bulk_inquiry_confirm_handler(message: types.Message, state: FSMContext
                 result = await resp.json()
                 if not result.get("ok"):
                     raise Exception(result.get("description", "خطا در ارسال فاکتور"))
+                from card_payment import track_invoice as _cp_track; _cp_track(invoice_data)  # ⭐ کارت‌به‌کارت پس از ۲۰ دقیقه
     except Exception as e:
         logging.error(f"[BULK-INQ-PAY] خطا: {e}", exc_info=True)
         await message.answer("⚠️ خطا در ساخت فاکتور. لطفاً کمی بعد دوباره تلاش کنید.", reply_markup=cart_kb)
