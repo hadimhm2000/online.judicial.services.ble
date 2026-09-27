@@ -117,3 +117,34 @@ export function computeCaseProfit(c: ProfitInput): ProfitBreakdown {
     exactSystemCost: exact,
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// ⭐ v1.8 — سود یک پرداخت کارت‌به‌کارت (CardPayment)
+//   PREPAY  → کل مبلغ سود است (قاعدهٔ پیش‌پرداخت)
+//   DIRECT  → سرویس بدون هزینهٔ سامانه — کل مبلغ سود است
+//   FINAL   → مبلغ − هزینهٔ سامانهٔ پروندهٔ مرتبط (در نبود پرونده، برآورد)
+// همهٔ مبالغ به تومان.
+// ─────────────────────────────────────────────────────────────────────
+export interface CardPaymentProfitInput {
+  amount: number;
+  paymentKind: string;
+  serviceType: string;
+}
+
+export function computeCardPaymentProfit(
+  cp: CardPaymentProfitInput,
+  linkedCase?: { serviceType: string; fee: number | null; prepayAmount?: number | null; systemCost: number | null } | null,
+): { profit: number; systemCost: number; exact: boolean } {
+  const amount = Math.max(0, cp.amount || 0);
+  if (cp.paymentKind !== 'FINAL') {
+    return { profit: amount, systemCost: 0, exact: true };
+  }
+  const est = linkedCase
+    ? estimateSystemCost(
+        linkedCase.serviceType,
+        (linkedCase.fee ?? 0) + (linkedCase.prepayAmount ?? 0),
+        linkedCase.systemCost,
+      )
+    : estimateSystemCost(cp.serviceType, amount, null);
+  return { profit: amount - est.cost, systemCost: est.cost, exact: est.exact && !!linkedCase };
+}

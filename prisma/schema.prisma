@@ -71,6 +71,9 @@ model Case {
   //   و سودِ مرحلهٔ دوم = fee − systemCost (فقط اگر مابقی پرداخت شده باشد).
   prepayAmount    Int      @default(0)
   prepaidAt       DateTime?
+
+  // ⭐ v1.8 — روش پرداخت: null/WALLET (درگاه کیف پول بله) | CARD (کارت‌به‌کارت تاییدشده توسط مدیر)
+  paymentMethod   String?
   
   // Timestamps
   createdAt       DateTime @default(now())
@@ -177,6 +180,34 @@ model UserCredit {
   source       String    @default("ADMIN")  // ADMIN (ثبت دستی) | BOT (ثبت خودکار ربات)
   settledAt    DateTime?
   settleNote   String?   // توضیح تسویه (مثلاً «در پروندهٔ X کسر شد»)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([baleUserId])
+  @@index([status])
+}
+
+// ⭐ v1.8 — پرداخت‌های کارت‌به‌کارت (card_payment.py)
+// اگر کاربر ۲۰ دقیقه پس از فاکتور بله پرداخت نکند، شماره کارت برایش ارسال
+// می‌شود؛ رسید او پس از تایید مدیر (در ربات) همان فلوی پرداخت کیف پول را
+// اجرا می‌کند و پرونده (درآمد/سود) مثل پرداخت درگاه به‌روز می‌شود.
+// این جدول سابقهٔ رسیدها و وضعیت بررسی را نگه می‌دارد.
+model CardPayment {
+  id           String    @id @default(cuid())
+  externalId   String    @unique            // کد پیگیری کارت‌به‌کارت در ربات
+  baleUserId   String
+  fullName     String?
+  serviceType  String                       // LAVAYEH, CHECK, INQUIRY, ...
+  serviceLabel String?                      // نام فارسی نوع درخواست
+  invoiceTitle String?
+  trackingCode String?
+  amount       Int                          // مبلغ فاکتور (تومان)
+  paymentKind  String    @default("DIRECT") // PREPAY (پیش‌پرداخت = کل سود) | FINAL (مابقی − هزینهٔ سامانه) | DIRECT (بدون هزینهٔ سامانه)
+  status       String    @default("PENDING_REVIEW") // PENDING_REVIEW | APPROVED | REJECTED | PAID_VIA_GATEWAY | EXPIRED
+  receiptUrl   String?                      // /uploads/... تصویر رسید
+  rejectReason String?
+  caseId       String?                      // پروندهٔ مرتبط (پس از تایید، خودکار پیدا می‌شود)
+  approvedAt   DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
