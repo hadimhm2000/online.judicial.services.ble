@@ -1150,6 +1150,7 @@ async def bulk_confirm_handler(message: Message, state: FSMContext):
                     if not result.get("ok"):
                         logging.error(f"[BULK-PREPAY] خطای sendInvoice: {result}")
                         raise Exception(result.get("description", "خطا در ارسال فاکتور"))
+                    from card_payment import track_invoice as _cp_track; _cp_track(invoice_data)  # ⭐ کارت‌به‌کارت پس از ۲۰ دقیقه
         except Exception as e:
             logging.error(f"[BULK-PREPAY] خطا در صدور فاکتور پیش‌پرداخت: {e}", exc_info=True)
             await message.answer("⚠️ خطا در ساخت فاکتور پیش‌پرداخت. لطفاً کمی بعد دوباره تلاش کنید.")
@@ -3614,6 +3615,7 @@ async def send_lavayeh_result(
                 if not result.get("ok"):
                     logging.error(f"[LAVAYEH] خطای sendInvoice: {result}")
                     raise Exception(result.get("description", "خطا در ارسال فاکتور"))
+                from card_payment import track_invoice as _cp_track; _cp_track(invoice_data)  # ⭐ کارت‌به‌کارت پس از ۲۰ دقیقه
     except Exception as e:
         logging.error(f"[LAVAYEH] خطا در ارسال فاکتور بله: {e}", exc_info=True)
         await bot.send_message(user_id, "⚠️ خطا در ساخت فاکتور پرداخت. لطفاً کمی بعد دوباره تلاش کنید.")
@@ -3715,6 +3717,7 @@ async def _send_lavayeh_invoice(bot: Bot, user_id: int, amount: int, service_lab
                 if not result.get("ok"):
                     logging.error(f"[LAVAYEH] خطای sendInvoice (یادآوری/کنسلی): {result}")
                     return False
+                from card_payment import track_invoice as _cp_track; _cp_track(invoice_data)  # ⭐ کارت‌به‌کارت پس از ۲۰ دقیقه
         return True
     except Exception as e:
         logging.error(f"[LAVAYEH] خطا در ارسال فاکتور بله (یادآوری/کنسلی): {e}", exc_info=True)

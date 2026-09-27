@@ -1111,6 +1111,7 @@ async def finalize_bulk_batch(bot, user_id: int, tracking_code: str):
                         if not result.get("ok"):
                             logger.error(f"[BULK-SETTLE] خطای sendInvoice: {result}")
                             raise Exception(result.get("description", "خطا در ارسال فاکتور"))
+                        from card_payment import track_invoice as _cp_track; _cp_track(invoice_data)  # ⭐ کارت‌به‌کارت پس از ۲۰ دقیقه
 
                 from aiogram.types import ReplyKeyboardRemove
                 await bot.send_message(user_id,
