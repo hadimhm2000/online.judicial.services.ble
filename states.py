@@ -403,4 +403,6 @@ class Form(StatesGroup):
     rv_waiting_bld_parking_area = State()  # متراژ پارکینگ و انباری
     rv_waiting_bld_floor = State()         # طبقه
     rv_waiting_bld_age = State()           # قدمت
+    rv_waiting_preview = State()           # پیش‌نمایش (تایید / ویرایش)
+    rv_waiting_edit_choice = State()       # انتخاب مورد ویرایش
     rv_waiting_payment = State()
