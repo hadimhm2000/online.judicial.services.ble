@@ -15,6 +15,7 @@ const WorkingHoursDialog = React.lazy(() => import('@/components/admin/working-h
 const ExemptUsersDialog = React.lazy(() => import('@/components/admin/exempt-users-dialog'));
 const ResetDataDialog = React.lazy(() => import('@/components/admin/reset-data-dialog'));
 const CreditsDialog = React.lazy(() => import('@/components/admin/credits-dialog'));
+const CardPaymentsDialog = React.lazy(() => import('@/components/admin/card-payments-dialog'));
 
 function LoadingFallback() {
   return <div className="animate-pulse h-8 w-48 rounded-lg bg-muted" />;
@@ -72,6 +73,9 @@ interface LazyPanelsProps {
   onCreditsClose?: () => void;
   creditsPrefill?: { baleUserId?: string; fullName?: string; caseId?: string; trackingCode?: string | null } | null;
   onCreditsChanged?: () => void;
+  // ⭐ v1.8 — Card-to-card payments
+  cardPaymentsOpen?: boolean;
+  onCardPaymentsClose?: () => void;
   // Reset data
   resetDataOpen: boolean;
   onResetDataClose: () => void;
@@ -89,6 +93,7 @@ export default function LazyPanels({
   workingHoursOpen, onWorkingHoursClose,
   exemptUsersOpen, onExemptUsersClose,
   creditsOpen = false, onCreditsClose, creditsPrefill, onCreditsChanged,
+  cardPaymentsOpen = false, onCardPaymentsClose,
   resetDataOpen, onResetDataClose, onResetDataDone,
 }: LazyPanelsProps) {
   return (
@@ -175,6 +180,13 @@ export default function LazyPanels({
           onOpenChange={(open) => { if (!open) onCreditsClose?.(); }}
           prefill={creditsPrefill}
           onChanged={onCreditsChanged}
+        />
+      </Suspense>
+
+      <Suspense fallback={<LoadingFallback />}>
+        <CardPaymentsDialog
+          open={cardPaymentsOpen}
+          onOpenChange={(open) => { if (!open) onCardPaymentsClose?.(); }}
         />
       </Suspense>
 
