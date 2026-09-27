@@ -43,7 +43,7 @@ export default function FilterBar({
         <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
         <Input
           ref={searchRef}
-          placeholder="جستجو (نام، کد رهگیری، شناسه بله...)  /"
+          placeholder="جستجو (نام، کد رهگیری، شناسه بله، کد ملی، شناسه پرداخت...)  /"
           value={search}
           onChange={(e) => onSearchChange(e.target.value)}
           onFocus={onSearchFocus}

@@ -25,6 +25,13 @@ interface StatsCardsProps {
     serviceProfit?: number;
     systemCostTotal?: number;
     profitEstimatedCount?: number;
+    // ⭐ v1.7 — پیش‌پرداخت و دفتر بازگشت/کسر
+    prepayProfit?: number;
+    remainingProfit?: number;
+    prepayRevenue?: number;
+    openRefundTotal?: number;
+    openDeductTotal?: number;
+    openCreditCount?: number;
     createdAt?: string;
   };
 }
@@ -393,7 +400,10 @@ const StatsCardsMemo = React.memo(function StatsCards({ stats }: StatsCardsProps
     {
       title: 'درآمد کل',
       value: formatToman(stats.totalRevenue),
-      subtitle: 'پرداخت شده',
+      subtitle:
+        stats.prepayRevenue
+          ? `شامل پیش‌پرداخت: ${formatNumber(stats.prepayRevenue)}`
+          : 'پرداخت شده',
       icon: Wallet,
       gradient: 'from-teal-50 to-emerald-50 dark:from-teal-950/30 dark:to-emerald-950/20',
       iconBg: 'bg-gradient-to-br from-teal-600/90 to-emerald-700/90',
@@ -406,9 +416,11 @@ const StatsCardsMemo = React.memo(function StatsCards({ stats }: StatsCardsProps
       title: 'سود',
       value: formatToman(stats.totalProfit ?? 0),
       subtitle:
-        stats.systemCostTotal !== undefined
-          ? `هزینه سامانه: ${formatNumber(stats.systemCostTotal ?? 0)}`
-          : 'درآمد منهای هزینه سامانه',
+        stats.prepayProfit !== undefined
+          ? `پیش‌پرداخت: ${formatNumber(stats.prepayProfit ?? 0)} | مابقی−سامانه: ${formatNumber(stats.remainingProfit ?? 0)}`
+          : stats.systemCostTotal !== undefined
+            ? `هزینه سامانه: ${formatNumber(stats.systemCostTotal ?? 0)}`
+            : 'درآمد منهای هزینه سامانه',
       icon: PiggyBank,
       gradient: 'from-emerald-50 to-green-50 dark:from-emerald-950/30 dark:to-green-950/20',
       iconBg: 'bg-gradient-to-br from-emerald-600/90 to-green-700/90',
