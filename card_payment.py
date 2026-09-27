@@ -58,6 +58,7 @@ from typing import Any
 
 import aiohttp
 from aiogram import Bot, F, Router
+from aiogram.filters import Filter
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
@@ -594,7 +595,7 @@ def _is_receipt_media(message: Message) -> bool:
     return False
 
 
-class _HasCardReceiptTarget:
+class _HasCardReceiptTarget(Filter):
     """فیلتر روتر — فقط وقتی پیام را می‌گیرد که رسید کارت‌به‌کارت منتظر باشد."""
 
     async def __call__(self, message: Message, state: FSMContext) -> bool | dict:
