@@ -390,6 +390,9 @@ class Form(StatesGroup):
     # =========================================================
     rv_waiting_province = State()
     rv_waiting_address = State()
+    rv_waiting_address_text = State()      # تایپ آدرس دقیق (با نام شهر در ابتدا)
+    rv_waiting_address_confirm = State()   # «آیا این لوکیشن با آدرس شما یکی است؟»
+    rv_waiting_address_location = State()  # انتخاب دستی لوکیشن روی نقشه
     rv_waiting_area = State()
     rv_waiting_land_use = State()
     rv_waiting_land_other = State()        # زیرگزینهٔ «سایر» کاربری عرصه (ضریب تعدیل)
