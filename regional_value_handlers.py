@@ -180,6 +180,8 @@ _STEPS = [
     ("bld_parking_area", ["rv_bld_parking_area"], lambda d: d.get("rv_bld_has_parking") is True),
     ("bld_floor", ["rv_bld_floor"], _floor_applies),
     ("bld_age", ["rv_bld_age"], lambda d: d.get("rv_bld_complete") is True),
+    # آخرین مرحله: مشخصات پلاک ثبتی (اختیاری — «رد شدن» = رشتهٔ خالی)
+    ("plak", ["rv_plak_text"], lambda d: True),
 ]
 _STEP_INDEX = {name: i for i, (name, _, _) in enumerate(_STEPS)}
 _ALL_KEYS = list(dict.fromkeys(k for _, keys, _ in _STEPS for k in keys))
@@ -204,6 +206,7 @@ _EDIT_FIELDS = [
     ("پارکینگ و انباری", ["bld_parking", "bld_parking_area"], lambda d: d.get("rv_bld_complete") is True),
     ("طبقه", ["bld_floor"], _floor_applies),
     ("قدمت ساختمان", ["bld_age"], lambda d: d.get("rv_bld_complete") is True),
+    ("پلاک ثبتی", ["plak"], lambda d: True),
 ]
 
 
@@ -1034,6 +1037,64 @@ async def process_bld_age(message: Message, state: FSMContext):
     await _advance(message, state)
 
 
+# ══════════════════════════════════════════════════════════════════
+# مرحلهٔ آخر: مشخصات پلاک ثبتی (اختیاری)
+# ══════════════════════════════════════════════════════════════════
+_SKIP = "⏭ رد شدن"
+PLAK_TEMPLATE = (
+    "پلاک [عدد فرعی] فرعی از [عدد اصلی] اصلی، مفروز و مجزی‌شده از پلاک [فرعی مبدأ] فرعی از اصلی مذکور،\n"
+    "واقع در بخش [شماره بخش] ثبتی [نام شهرستان/استان]"
+)
+PLAK_MAX_LEN = 600
+_plak_kb = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text=_SKIP)], [KeyboardButton(text=_BACK)]],
+    resize_keyboard=True,
+)
+
+
+async def _ask_plak(message: Message, state: FSMContext):
+    await message.answer(
+        "🧾 *مشخصات پلاک ثبتی ملک*\n\n"
+        "لطفاً متن زیر را طبق سند مالکیت تکمیل کنید (موارد داخل [ ] را با اطلاعات سند جایگزین کنید) "
+        "و ارسال نمایید:\n\n"
+        f"{PLAK_TEMPLATE}\n\n"
+        "مثال:\n"
+        "پلاک ۱۲۳۴ فرعی از ۵۶ اصلی، مفروز و مجزی‌شده از پلاک ۱۲۰ فرعی از اصلی مذکور، "
+        "واقع در بخش ۱۱ ثبتی تهران\n\n"
+        f"در صورت تمایل نداشتن، دکمهٔ «{_SKIP}» را بزنید.",
+        reply_markup=_plak_kb,
+    )
+    await state.set_state(Form.rv_waiting_plak)
+
+
+@regional_value_router.message(Form.rv_waiting_plak)
+async def process_plak(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer(f"⚠️ لطفاً مشخصات پلاک را به‌صورت متن ارسال کنید یا «{_SKIP}» را بزنید.")
+        return
+    text = message.text.strip()
+    if text == _BACK:
+        await _go_back(message, state, "plak")
+        return
+    if text in (_SKIP, "رد شدن", "رد"):
+        await state.update_data(rv_plak_text="")          # رشتهٔ خالی = رد شده (مرحله پاسخ داده شده)
+        await _advance(message, state)
+        return
+    if "[" in text or "]" in text:
+        await message.answer("⚠️ به نظر می‌رسد بخش‌های داخل [ ] هنوز تکمیل نشده‌اند. "
+                             "لطفاً آن‌ها را با اطلاعات سند جایگزین کنید.")
+        return
+    if len(text) < 5 or not any(ch.isdigit() for ch in text):
+        await message.answer("⚠️ متن واردشده کامل نیست؛ لطفاً شمارهٔ پلاک فرعی/اصلی و بخش ثبتی را "
+                             f"طبق نمونه وارد کنید یا «{_SKIP}» را بزنید.")
+        return
+    if len(text) > PLAK_MAX_LEN:
+        await message.answer(f"⚠️ متن بیش از حد طولانی است (حداکثر {_to_fa(PLAK_MAX_LEN)} نویسه).")
+        return
+    await state.update_data(rv_plak_text=text)
+    await _advance(message, state)
+
+
 _ASK = {
     "province": _ask_province, "address": _ask_address, "area": _ask_area,
     "land_use": _ask_land_use, "land_other": _ask_land_other,
@@ -1044,6 +1105,7 @@ _ASK = {
     "bld_use": _ask_bld_use, "bld_structure": _ask_structure, "bld_area": _ask_bld_area,
     "bld_complete": _ask_complete, "bld_stage": _ask_stage, "bld_parking": _ask_parking,
     "bld_parking_area": _ask_parking_area, "bld_floor": _ask_floor, "bld_age": _ask_age,
+    "plak": _ask_plak,
 }
 
 
@@ -1054,6 +1116,13 @@ def _floor_text(f) -> str:
     if f is None:
         return "-"
     return "همکف" if f == 0 else (f"زیرزمین {abs(f)} (‎{f})" if f < 0 else str(f))
+
+
+def _plak_summary_lines(data: dict) -> list:
+    plak = data.get("rv_plak_text")
+    if plak is None:            # پرونده‌های قدیمی
+        return []
+    return [f"🧾 پلاک ثبتی: {plak or 'وارد نشده'}"]
 
 
 def _area_text(v) -> str:
@@ -1077,6 +1146,7 @@ def _inputs_summary(data: dict) -> str:
     if data.get("rv_has_building") is False:
         lines.append("🏗 اعیانی: ندارد")
         lines += _share_summary_lines(data)
+        lines += _plak_summary_lines(data)
         return "\n".join(lines)
     lines += _share_summary_lines(data)
     lines += [
@@ -1095,6 +1165,7 @@ def _inputs_summary(data: dict) -> str:
         stage = next((s["title"] for s in ayani_calc.CONSTRUCTION_STAGES
                       if s["key"] == data.get("rv_bld_stage")), "-")
         lines.append(f"🚧 وضعیت ساختمان: ناتمام — مرحلهٔ {stage}")
+    lines += _plak_summary_lines(data)
     return "\n".join(lines)
 
 
@@ -1488,7 +1559,7 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
             pdf_path = temp_path(f"regional_value_{user_id}_{message.message_id}.pdf")
             ok = build_ayani_pdf(
                 pdf_path, province=province, county=county_label, address=address,
-                tax_result=tax_result, result=calc,
+                tax_result=tax_result, result=calc, plak=data.get("rv_plak_text") or None,
             )
             return pdf_path, ok
 
