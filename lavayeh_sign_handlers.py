@@ -326,10 +326,14 @@ async def on_lavayeh_sign_submit_success(bot: Bot, user_id: int, row_idx: int, s
     sign_info["persons_awaiting_sign"] = persons_awaiting
     runtime_state.pending_lavayeh_sign[user_id] = sign_info
 
+    # ⭐ پایان روند امضا (همه امضا کردند) → در انتهای پیام قبلی، اعلام ارسال
+    # چاپ نهایی در روز آینده (final_print.py — ارسال خودکار ساعت ۱۵:۴۵ فردا)
+    from final_print import FINAL_PRINT_NOTICE
     await bot.send_message(
         user_id,
         "✅ *امضای الکترونیک با موفقیت درج شد و مورد شما ارسال گردید.*\n\n"
-        "باتشکر از همراهی شما 🙏")
+        "باتشکر از همراهی شما 🙏"
+        + ("" if persons_awaiting else f"\n\n{FINAL_PRINT_NOTICE}"))
 
     if not persons_awaiting:
         # همه امضا کردند
@@ -898,10 +902,13 @@ async def on_ezhhar_sign_submit_success(bot: Bot, user_id: int, row_idx: int, st
 
     if not persons_awaiting:
         runtime_state.pending_ezhhar_sign.pop(user_id, None)
+        # ⭐ پایان روند امضا → اعلام ارسال چاپ نهایی در روز آینده
+        from final_print import FINAL_PRINT_NOTICE
         await bot.send_message(
             user_id,
             "✅ *امضای الکترونیک با موفقیت درج شد و مورد شما ارسال گردید.*\n\n"
-            "باتشکر از همراهی شما 🙏",
+            "باتشکر از همراهی شما 🙏\n\n"
+            f"{FINAL_PRINT_NOTICE}",
             reply_markup=restart_kb)
         await bot.send_message(ADMIN_ID, f"✅ [EZHHAR_SIGN] امضای اظهارنامه کاربر {user_id} کامل شد.")
         try:

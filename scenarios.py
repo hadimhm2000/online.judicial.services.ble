@@ -12,6 +12,7 @@ import runtime_state
 from browser_helpers import SANA_SERVICE_DELAY_MAX_RETRIES
 import error_catalog
 from sign_tab import SIGN_TASK_TYPES, run_sign_task
+from final_print import mark_sent as _fp_mark_sent, mark_failed as _fp_mark_failed
 from bale_file_sender import send_document_direct
 from config import ADMIN_ID, DEBUG_LOG_REQUESTS, FEES, get_fee, temp_path
 from sheets import log_event
@@ -1168,6 +1169,9 @@ async def process_task(data, bot: Bot):
     subcategory = data.get('doc_subcategory')
     need_attachments = data.get('need_attachments', False)
     task_type = data.get('task_type', 'PRINT')
+    # ⭐ تسک «چاپ نهایی» روز بعد (final_print.py) — همان مسیر استعلام کد رهگیری
+    # ولی فقط ارسال چاپ؛ بدون پیام‌ها/ثبت‌های مخصوص استعلام پولی
+    is_final_print = bool(data.get('final_print'))
 
     # ── سناریوی لایحه ثبت ─────────────────────────────────────────────────
     if task_type == "LAVAYEH_SUBMIT":
@@ -1893,6 +1897,9 @@ async def process_task(data, bot: Bot):
                         )
                     except Exception:
                         pass
+                    if is_final_print:
+                        _fp_mark_failed(user_id, tracking_code, f"کد متعلق به فرم دیگر: {popup_text}")
+                        return
                     await _handle_wrong_form_tracking_code(bot, user_id, data, tracking_code, doc_name, popup_text)
                     return
                 if popup_text and popup_category == error_catalog.VALIDATION:
@@ -1908,6 +1915,9 @@ async def process_task(data, bot: Bot):
                         )
                     except Exception:
                         pass
+                    if is_final_print:
+                        _fp_mark_failed(user_id, tracking_code, "کدرهگیری نامعتبر")
+                        return
                     await _handle_invalid_tracking_code(bot, user_id, data, tracking_code, doc_name)
                     return
 
@@ -1926,10 +1936,14 @@ async def process_task(data, bot: Bot):
                     except Exception:
                         pass
                     if inquiry_service_delay_count >= SANA_SERVICE_DELAY_MAX_RETRIES:
-                        try:
-                            await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
-                        except Exception:
-                            pass
+                        if is_final_print:
+                            # چاپ نهایی: به کاربر پیامی نمی‌رود؛ فردا دوباره تلاش می‌شود
+                            _fp_mark_failed(user_id, tracking_code, "تاخیر در اجرای سرویس")
+                        else:
+                            try:
+                                await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
+                            except Exception:
+                                pass
                         try:
                             await bot.send_message(
                                 ADMIN_ID,
@@ -1997,6 +2011,16 @@ async def process_task(data, bot: Bot):
                     await sana_page.locator(".alert-danger").is_visible()
                     or await sana_page.locator('text="اطلاعاتی یافت نشد"').is_visible()
                 ):
+                    if is_final_print:
+                        _fp_mark_failed(user_id, tracking_code, "پرونده یافت نشد")
+                        try:
+                            await bot.send_message(
+                                ADMIN_ID,
+                                f"⚠️ [FINAL_PRINT] پرونده با کد `{tracking_code}` ({doc_name}) "
+                                f"برای کاربر {user_id} یافت نشد — فردا دوباره تلاش می‌شود.")
+                        except Exception:
+                            pass
+                        return
                     await bot.send_message(user_id, f"❌ پرونده‌ای با کد `{tracking_code}` یافت نگردید.")
                     await _bulk_progress_note_result(bot, user_id, tracking_code, doc_name, is_invalid=False)
                     return
@@ -2046,6 +2070,15 @@ async def process_task(data, bot: Bot):
                             await print_page.close()
                             break
 
+                        if is_final_print:
+                            # ⭐ چاپ نهایی روز بعد — فقط ارسال چاپ؛ بدون ثبت استعلام در پنل
+                            await send_document_direct(
+                                user_id, pdf_path,
+                                caption=f"📄 *چاپ نهایی* — کد رهگیری: `{tracking_code}`\n{doc_name}")
+                            os.remove(pdf_path)
+                            _fp_mark_sent(user_id, tracking_code)
+                            logging.info(f"[FINAL_PRINT] چاپ نهایی کد {tracking_code} برای کاربر {user_id} ارسال شد")
+                            return
                         if need_attachments:
                             saved_attachments.append((pdf_path, f"📄 استعلام کد پیگیری: `{tracking_code}`"))
                         else:
@@ -2068,7 +2101,8 @@ async def process_task(data, bot: Bot):
 
                     except Exception as print_err:
                         logging.error(f"خطا در چاپ: {print_err}")
-                        await bot.send_message(user_id, "⚠️ چاپ پرونده با خطا مواجه شد.")
+                        if not is_final_print:
+                            await bot.send_message(user_id, "⚠️ چاپ پرونده با خطا مواجه شد.")
 
                         try:
                             await register_failed_inquiry_to_panel(
@@ -2348,6 +2382,20 @@ async def process_task(data, bot: Bot):
                 await asyncio.sleep(5)
             else:
                 doc_name = f"{category} - {subcategory}" if subcategory else category
+
+                # ⭐ چاپ نهایی خودکار: بدون پیام «اختلال/تکرار رایگان» به کاربر —
+                # مورد در صف final_print می‌ماند و فردا ساعت ۱۵:۴۵ دوباره تلاش می‌شود
+                if is_final_print:
+                    _fp_mark_failed(user_id, tracking_code, str(task_err))
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"⚠️ [FINAL_PRINT] ارسال چاپ نهایی کد `{tracking_code}` ({doc_name}) "
+                            f"برای کاربر {user_id} ناموفق بود — فردا دوباره تلاش می‌شود.\n"
+                            f"خطا: `{str(task_err)[:200]}`")
+                    except Exception:
+                        pass
+                    return
 
                 # ── ذخیره در disrupted_users (فرصت تکرار بدون پرداخت) ──
                 import datetime
