@@ -3405,6 +3405,14 @@ async def send_tajdid_nazar_result(
 
     doc_title = f"{case_type} — پرونده {file_no}" if file_no else case_type
 
+    # ⭐ ثبت برای «چاپ نهایی» روز بعد ساعت ۱۵:۴۵ — final_print.py
+    try:
+        from final_print import record_registration as _fp_record
+        _fp_record(user_id, tracking_code, service_type="TAJDID_NAZAR",
+                   case_type=case_type, title=doc_title)
+    except Exception as _fp_err:
+        logging.warning(f"[FINAL_PRINT] ثبت مورد ناموفق: {_fp_err}")
+
     if pdf_path and os.path.exists(pdf_path):
         await send_document_direct(
             user_id, pdf_path,
@@ -3896,10 +3904,13 @@ async def on_tn_sign_submit_success(bot: Bot, user_id: int, row_idx: int, state:
     sign_info["persons_awaiting_sign"] = persons_awaiting
     runtime_state.pending_tn_sign[user_id] = sign_info
 
+    # ⭐ پایان روند امضا (همه امضا کردند) → اعلام ارسال چاپ نهایی در روز آینده
+    from final_print import FINAL_PRINT_NOTICE
     await bot.send_message(
         user_id,
         "✅ *امضای الکترونیک با موفقیت درج شد و مورد شما ارسال گردید.*\n\n"
-        "باتشکر از همراهی شما 🙏")
+        "باتشکر از همراهی شما 🙏"
+        + ("" if persons_awaiting else f"\n\n{FINAL_PRINT_NOTICE}"))
 
     if not persons_awaiting:
         runtime_state.pending_tn_sign.pop(user_id, None)

@@ -446,6 +446,12 @@ async def main():
     # ⭐ یادآور کارت‌به‌کارت: ۲۰ دقیقه پس از فاکتور پرداخت‌نشده
     asyncio.create_task(card_payment.card_payment_loop(bot))
 
+    # ⭐ چاپ نهایی: هر روز ساعت ۱۵:۴۵ (تهران) موارد ثبت‌شدهٔ روزهای قبل (به‌جز
+    # استعلامات) استعلام و چاپ برای کاربر ارسال می‌شود؛ فهرست روی دیسک
+    # (final_print_queue.json) می‌ماند و اجرای ازدست‌رفته پس از راه‌اندازی جبران می‌شود.
+    from final_print import final_print_scheduler
+    asyncio.create_task(final_print_scheduler(bot))
+
     # ── تسک ذخیره‌سازی دوره‌ی ──
     persister_task = asyncio.create_task(state_persister(bot))
 

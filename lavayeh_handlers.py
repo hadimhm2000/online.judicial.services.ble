@@ -3285,6 +3285,15 @@ async def send_bulk_item_result(
     if service_type is None:
         service_type = "EZHHARNAMEH" if is_ezhharnameh else "LAVAYEH"
 
+    # ⭐ ثبت برای «چاپ نهایی» روز بعد ساعت ۱۵:۴۵ (به‌جز استعلامات) — final_print.py
+    try:
+        from final_print import record_registration as _fp_record
+        _fp_record(user_id, tracking_code, service_type=service_type,
+                   sign_menu_path=sign_menu_path, is_ezhharnameh=is_ezhharnameh,
+                   title=lavayeh_title)
+    except Exception as _fp_err:
+        logging.warning(f"[FINAL_PRINT] ثبت مورد ناموفق: {_fp_err}")
+
     _SERVICE_LABELS = {"LAVAYEH": "لایحه", "EZHHARNAMEH": "اظهارنامه", "CHECK": "چک", "TAJDID_NAZAR": "تجدیدنظر"}
     service_label = _SERVICE_LABELS.get(service_type, "اظهارنامه" if is_ezhharnameh else "لایحه")
 
@@ -3401,6 +3410,15 @@ async def send_lavayeh_result(
         lavayeh_persons = []
     if service_type is None:
         service_type = "EZHHARNAMEH" if is_ezhharnameh else "LAVAYEH"
+
+    # ⭐ ثبت برای «چاپ نهایی» روز بعد ساعت ۱۵:۴۵ (به‌جز استعلامات) — final_print.py
+    try:
+        from final_print import record_registration as _fp_record
+        _fp_record(user_id, tracking_code, service_type=service_type,
+                   sign_menu_path=sign_menu_path, is_ezhharnameh=is_ezhharnameh,
+                   title=lavayeh_title)
+    except Exception as _fp_err:
+        logging.warning(f"[FINAL_PRINT] ثبت مورد ناموفق: {_fp_err}")
 
     if not hasattr(runtime_state, "active_lavayeh_users"):
         runtime_state.active_lavayeh_users = set()
