@@ -12,7 +12,7 @@ import runtime_state
 from browser_helpers import SANA_SERVICE_DELAY_MAX_RETRIES
 import error_catalog
 from sign_tab import SIGN_TASK_TYPES, run_sign_task
-from final_print import mark_sent as _fp_mark_sent, mark_failed as _fp_mark_failed
+from final_print import mark_sent as _fp_mark_sent, report_failure as _fp_report_failure
 from bale_file_sender import send_document_direct
 from config import ADMIN_ID, DEBUG_LOG_REQUESTS, FEES, get_fee, temp_path
 from sheets import log_event
@@ -1898,7 +1898,7 @@ async def process_task(data, bot: Bot):
                     except Exception:
                         pass
                     if is_final_print:
-                        _fp_mark_failed(user_id, tracking_code, f"کد متعلق به فرم دیگر: {popup_text}")
+                        await _fp_report_failure(bot, user_id, tracking_code, doc_name, f"کد رهگیری متعلق به فرم دیگر: {popup_text}")
                         return
                     await _handle_wrong_form_tracking_code(bot, user_id, data, tracking_code, doc_name, popup_text)
                     return
@@ -1916,7 +1916,7 @@ async def process_task(data, bot: Bot):
                     except Exception:
                         pass
                     if is_final_print:
-                        _fp_mark_failed(user_id, tracking_code, "کدرهگیری نامعتبر")
+                        await _fp_report_failure(bot, user_id, tracking_code, doc_name, "کد رهگیری نامعتبر است")
                         return
                     await _handle_invalid_tracking_code(bot, user_id, data, tracking_code, doc_name)
                     return
@@ -1938,7 +1938,7 @@ async def process_task(data, bot: Bot):
                     if inquiry_service_delay_count >= SANA_SERVICE_DELAY_MAX_RETRIES:
                         if is_final_print:
                             # چاپ نهایی: به کاربر پیامی نمی‌رود؛ فردا دوباره تلاش می‌شود
-                            _fp_mark_failed(user_id, tracking_code, "تاخیر در اجرای سرویس")
+                            await _fp_report_failure(bot, user_id, tracking_code, doc_name, "سامانه: تاخیر در اجرای سرویس (پس از چند بار تلاش)")
                         else:
                             try:
                                 await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
@@ -2012,14 +2012,7 @@ async def process_task(data, bot: Bot):
                     or await sana_page.locator('text="اطلاعاتی یافت نشد"').is_visible()
                 ):
                     if is_final_print:
-                        _fp_mark_failed(user_id, tracking_code, "پرونده یافت نشد")
-                        try:
-                            await bot.send_message(
-                                ADMIN_ID,
-                                f"⚠️ [FINAL_PRINT] پرونده با کد `{tracking_code}` ({doc_name}) "
-                                f"برای کاربر {user_id} یافت نشد — فردا دوباره تلاش می‌شود.")
-                        except Exception:
-                            pass
+                        await _fp_report_failure(bot, user_id, tracking_code, doc_name, "پرونده‌ای با این کد در سامانه یافت نشد")
                         return
                     await bot.send_message(user_id, f"❌ پرونده‌ای با کد `{tracking_code}` یافت نگردید.")
                     await _bulk_progress_note_result(bot, user_id, tracking_code, doc_name, is_invalid=False)
@@ -2386,15 +2379,9 @@ async def process_task(data, bot: Bot):
                 # ⭐ چاپ نهایی خودکار: بدون پیام «اختلال/تکرار رایگان» به کاربر —
                 # مورد در صف final_print می‌ماند و فردا ساعت ۱۵:۴۵ دوباره تلاش می‌شود
                 if is_final_print:
-                    _fp_mark_failed(user_id, tracking_code, str(task_err))
-                    try:
-                        await bot.send_message(
-                            ADMIN_ID,
-                            f"⚠️ [FINAL_PRINT] ارسال چاپ نهایی کد `{tracking_code}` ({doc_name}) "
-                            f"برای کاربر {user_id} ناموفق بود — فردا دوباره تلاش می‌شود.\n"
-                            f"خطا: `{str(task_err)[:200]}`")
-                    except Exception:
-                        pass
+                    await _fp_report_failure(
+                        bot, user_id, tracking_code, doc_name,
+                        f"خطا پس از {max_task_attempts} تلاش: {str(task_err)[:200]}")
                     return
 
                 # ── ذخیره در disrupted_users (فرصت تکرار بدون پرداخت) ──
