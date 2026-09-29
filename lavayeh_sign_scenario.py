@@ -24,6 +24,8 @@ import logging
 from aiogram import Bot
 
 import runtime_state
+# ⭐ صفحهٔ عملیات امضا: داخل تسک امضا تب اختصاصی کاربر (sign_tab)، وگرنه sana_page
+from sign_tab import active_page as active_sign_page
 from browser_helpers import (
     check_and_handle_expiry,
     goto_url_with_retry,
@@ -71,7 +73,7 @@ async def navigate_to_sign_page(
 
     # جریان لاگین مجدد مدیر (باز کردن تب لاگین + انتظار برای تایید)
     try:
-        await handle_session_expired(bot, user_id, page=runtime_state.sana_page)
+        await handle_session_expired(bot, user_id, page=active_sign_page())
     except Exception as e:
         logging.warning(f"[SIGN] جریان لاگین مجدد مدیر با خطا مواجه شد: {e}")
 
@@ -115,7 +117,7 @@ async def _navigate_to_sign_page_once(
 
     Returns True اگر صفحه جدول امضا ظاهر شد.
     """
-    sana_page = runtime_state.sana_page
+    sana_page = active_sign_page()
     if sana_page is None:
         logging.error("[SIGN] sana_page is None")
         return False
@@ -392,7 +394,7 @@ async def get_signable_persons(
     Returns:
         list of dicts: [{idx, name, person_type, canSend, divVisible}]
     """
-    sana_page = runtime_state.sana_page
+    sana_page = active_sign_page()
     if sana_page is None:
         return []
 
@@ -482,9 +484,14 @@ async def send_sign_code_for_person(
     user_id: int,
     row_idx: int,
     person_name: str,
-    tracking_code: str = "") -> bool:
+    tracking_code: str = "",
+    menu_path: list | None = None) -> bool:
     """
     ارسال کد موقت برای یک ردیف مشخص از جدول امضا.
+
+    ⭐ menu_path: مسیر منوی سامانه برای ناوبری مجدد (چک/اعسار: بدوی یا صلح،
+    دعاوی اعتراضی: زیرمنوی مربوط). قبلاً ناوبری مجدد بدون این پارامتر انجام
+    می‌شد و همیشه به «ارایه و پیگیری لایحه» می‌رفت — باگ امضای دعاوی اعسار.
     حداکثر ۳ بار تلاش می‌کند.
 
     نکته مهم: چون یک صفحه مرورگر مشترک بین همه کاربران است، ممکن است بین
@@ -494,7 +501,7 @@ async def send_sign_code_for_person(
 
     Returns True اگر کد ارسال شد (یا قبلاً ارسال شده بود).
     """
-    sana_page = runtime_state.sana_page
+    sana_page = active_sign_page()
     if sana_page is None:
         return False
 
@@ -504,7 +511,7 @@ async def send_sign_code_for_person(
         logging.warning(
             f"[SIGN] صفحه قبل از ارسال کد، به‌روز نیست — ناوبری مجدد برای کاربر {user_id}"
         )
-        nav_ok = await navigate_to_sign_page(bot, user_id, tracking_code)
+        nav_ok = await navigate_to_sign_page(bot, user_id, tracking_code, menu_path=menu_path)
         if not nav_ok:
             logging.error(f"[SIGN] ناوبری مجدد قبل از ارسال کد ناموفق — کاربر {user_id}")
             return False
@@ -589,7 +596,7 @@ async def submit_sign_code_for_person(
         dict: {"success": bool, "error": str}
         error values: "wrong_code", "timeout", "error"
     """
-    sana_page = runtime_state.sana_page
+    sana_page = active_sign_page()
     if sana_page is None:
         return {"success": False, "error": "sana_page is None"}
 

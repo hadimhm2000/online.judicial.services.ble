@@ -3979,6 +3979,9 @@ async def admin_approve_lavayeh_receipt(callback: CallbackQuery, bot: Bot):
             "row_number": pending.get("lavayeh_row_number", 1),
             "persons": pending.get("lavayeh_persons", []),
             "service_type": svc_type,
+            # ⭐ مسیر منوی امضا (چک/اعسار: بدوی یا صلح) — قبلاً در تایید دستی
+            # رسید جا افتاده بود و امضا به مسیر پیش‌فرض «لایحه» می‌رفت
+            "sign_menu_path": pending.get("sign_menu_path"),
             "sign_persons": [],
             "persons_awaiting_sign": [],
             "current_person_idx": None,

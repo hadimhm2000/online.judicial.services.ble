@@ -10,6 +10,7 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 
 import runtime_state
 import error_catalog
+from sign_tab import SIGN_TASK_TYPES, run_sign_task
 from bale_file_sender import send_document_direct
 from config import ADMIN_ID, DEBUG_LOG_REQUESTS, FEES, get_fee, temp_path
 from sheets import log_event
@@ -2400,7 +2401,11 @@ async def _process_lavayeh_send_sign_code(data: dict, bot: Bot):
     user_id = data["user_id"]
     tracking_code = data.get("tracking_code", "")
     phase = data.get("phase", "navigate")
-    sign_menu_path = data.get("sign_menu_path")
+    # ⭐ فاز «ارسال کد» مسیر منو را در data ندارد — از pending_lavayeh_sign
+    # خوانده می‌شود تا ناوبری مجدد به همان مسیر ثبت (مثلاً اعسار: بدوی/صلح)
+    # برود، نه پیش‌فرض «لایحه».
+    sign_menu_path = data.get("sign_menu_path") or \
+        (runtime_state.pending_lavayeh_sign.get(user_id) or {}).get("sign_menu_path")
 
     from lavayeh_sign_handlers import (
         on_lavayeh_sign_persons_loaded,
@@ -2441,7 +2446,9 @@ async def _process_lavayeh_send_sign_code(data: dict, bot: Bot):
             for row_idx in target_row_indices:
                 person = next((p for p in all_persons if p["idx"] == row_idx), None)
                 person_name = person.get("name", f"شخص {row_idx + 1}") if person else f"شخص {row_idx + 1}"
-                success = await send_sign_code_for_person(bot, user_id, row_idx, person_name, tracking_code)
+                success = await send_sign_code_for_person(
+                    bot, user_id, row_idx, person_name, tracking_code,
+                    menu_path=sign_menu_path)
                 results.append({
                     "idx": row_idx,
                     "name": person_name,
@@ -2529,6 +2536,11 @@ async def _process_tn_send_sign_code(data: dict, bot: Bot):
     user_id = data["user_id"]
     tracking_code = data.get("tracking_code", "")
     sign_menu_path = data.get("sign_menu_path")
+    if not sign_menu_path:
+        # ⭐ فاز «ارسال کد» مسیر منو را در data ندارد — از pending_tn_sign
+        _tn_pending = runtime_state.pending_tn_sign.get(user_id) or {}
+        sign_menu_path = _tn_pending.get("sign_menu_path") or (
+            [_tn_pending["case_type"]] if _tn_pending.get("case_type") else None)
     phase = data.get("phase", "navigate")
 
     from tajdid_nazar_handlers import (
@@ -2567,7 +2579,9 @@ async def _process_tn_send_sign_code(data: dict, bot: Bot):
             for row_idx in target_row_indices:
                 person = next((p for p in all_persons if p["idx"] == row_idx), None)
                 person_name = person.get("name", f"شخص {row_idx + 1}") if person else f"شخص {row_idx + 1}"
-                success = await send_sign_code_for_person(bot, user_id, row_idx, person_name, tracking_code)
+                success = await send_sign_code_for_person(
+                    bot, user_id, row_idx, person_name, tracking_code,
+                    menu_path=sign_menu_path)
                 results.append({
                     "idx": row_idx,
                     "name": person_name,
@@ -2993,10 +3007,59 @@ async def _run_pre_check_task(data: dict, bot: Bot):
                 pass
 
 
+_SIGN_HANDLERS = {
+    "LAVAYEH_SEND_SIGN_CODE": "_process_lavayeh_send_sign_code",
+    "LAVAYEH_SUBMIT_SIGN": "_process_lavayeh_submit_sign",
+    "TN_SEND_SIGN_CODE": "_process_tn_send_sign_code",
+    "TN_SUBMIT_SIGN": "_process_tn_submit_sign",
+    "EZHHARNAMEH_SEND_SIGN_CODE": "_process_ezhharnameh_send_sign_code",
+    "EZHHARNAMEH_SUBMIT_SIGN": "_process_ezhharnameh_submit_sign",
+}
+
+
+async def _run_sign_task(data: dict, bot: Bot):
+    """اجرای هم‌زمان (fire-and-forget) یک تسک امضا در تب اختصاصی کاربر."""
+    handler = globals()[_SIGN_HANDLERS[data.get("task_type")]]
+    try:
+        await run_sign_task(data, bot, handler)
+    except Exception as e:
+        logging.error(f"[SIGN_TAB] خطای مدیریت‌نشده در تسک امضا: {e}", exc_info=True)
+        try:
+            from bug_reporter import report_bug
+            await report_bug(bot, where="_run_sign_task", error=e,
+                             user_id=data.get("user_id"),
+                             context={"task_type": data.get("task_type"),
+                                      "phase": data.get("phase")})
+        except Exception:
+            pass
+
+
+async def _sign_dispatcher(bot: Bot):
+    """⭐ مصرف‌کنندهٔ مستقل sign_job_queue — تسک‌های امضا بلافاصله (حتی
+    وقتی browser_worker مشغول یک ثبت چنددقیقه‌ای است) در تب اختصاصی کاربر
+    اجرا می‌شوند؛ نوبت‌دهی و اعلام «اشخاص در نوبت» داخل sign_tab است."""
+    while True:
+        data = await runtime_state.sign_job_queue.get()
+        try:
+            if not await ensure_browser_alive(bot):
+                # مرورگر فعلاً در دسترس نیست — کمی بعد دوباره
+                await asyncio.sleep(10)
+                runtime_state.sign_job_queue.put_nowait(data)
+                continue
+            asyncio.create_task(_run_sign_task(data, bot))
+        except Exception as e:
+            logging.error(f"[SIGN_TAB] خطا در دیسپچ تسک امضا: {e}", exc_info=True)
+        finally:
+            runtime_state.sign_job_queue.task_done()
+
+
 async def browser_worker(bot: Bot):
     runtime_state.playwright_instance = await async_playwright().start()
     try:
         await _launch_fresh_browser(bot, wait_login=True)
+
+        # ── ⭐ دیسپچر اولویت‌دار تسک‌های امضا (تب اختصاصی هر کاربر) ──
+        asyncio.create_task(_sign_dispatcher(bot))
 
         # ── واچ‌داگ پس‌زمینه برای تشخیص/ترمیم خودکار بسته‌شدن مرورگر ──
         asyncio.create_task(_browser_watchdog(bot))
@@ -3026,6 +3089,11 @@ async def browser_worker(bot: Bot):
                     # طولانی (تجدیدنظر/لایحه و ...) آن را در صف نگه ندارند.
                     if data.get("task_type") == "PRE_CHECK":
                         asyncio.create_task(_run_pre_check_task(data, bot))
+                    elif data.get("task_type") in SIGN_TASK_TYPES:
+                        # ⭐ ناوبری/ارسال/ثبت کد امضا — اولویت‌دار، در تب
+                        # اختصاصی کاربر و بدون انتظار پشت تسک در حال اجرا
+                        # (مثل PRE_CHECK)؛ نوبت‌دهی داخل sign_tab انجام می‌شود.
+                        asyncio.create_task(_run_sign_task(data, bot))
                     else:
                         await process_task(data, bot)
                 except Exception as task_err:

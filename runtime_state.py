@@ -12,13 +12,39 @@ browser_worker در scenarios.py) مقداردهی می‌شن؛ اگر با fro
 import asyncio
 import os
 
-job_queue: asyncio.Queue = asyncio.Queue()
+# ⭐ انواع تسک «امضا» — طبق دستور کارفرما اولویت دارند و در تب اختصاصی
+# هر کاربر اجرا می‌شوند (sign_tab.py). هر put روی job_queue /
+# priority_job_queue با این task_typeها خودکار به sign_job_queue هدایت
+# می‌شود تا پشت تسک طولانی در حال اجرا روی sana_page نماند؛ به این ترتیب
+# لازم نیست همهٔ تولیدکننده‌های تسک امضا (هندلرها) تغییر کنند.
+SIGN_TASK_TYPES = frozenset({
+    "LAVAYEH_SEND_SIGN_CODE", "LAVAYEH_SUBMIT_SIGN",
+    "TN_SEND_SIGN_CODE", "TN_SUBMIT_SIGN",
+    "EZHHARNAMEH_SEND_SIGN_CODE", "EZHHARNAMEH_SUBMIT_SIGN",
+})
+
+# صف اختصاصی تسک‌های امضا — مصرف‌کننده: sign dispatcher در scenarios.py
+sign_job_queue: asyncio.Queue = asyncio.Queue()
+
+
+class _SignRoutingQueue(asyncio.Queue):
+    """صف معمولی که تسک‌های امضا را به sign_job_queue هدایت می‌کند.
+    (asyncio.Queue.put در نهایت self.put_nowait را صدا می‌زند.)"""
+
+    def put_nowait(self, item):
+        if isinstance(item, dict) and item.get("task_type") in SIGN_TASK_TYPES:
+            sign_job_queue.put_nowait(item)
+            return
+        super().put_nowait(item)
+
+
+job_queue: asyncio.Queue = _SignRoutingQueue()
 
 # ⭐ صف اولویت‌دار برای «تایید کد امضا» — وقتی کاربری کد موقتی را که سامانه
 # فرستاده تایپ و ارسال می‌کند (مهلت معمولاً فقط چند دقیقه است)، این تسک
 # باید فوراً و جلوتر از بقیه‌ی تسک‌های صف عادی (ناوبری/استعلام و ...)
 # پردازش شود تا کد قبل از انقضا در سامانه ثبت گردد.
-priority_job_queue: asyncio.Queue = asyncio.Queue()
+priority_job_queue: asyncio.Queue = _SignRoutingQueue()
 login_event: asyncio.Event = asyncio.Event()
 
 # نمونه‌ی زنده‌ی Dispatcher — در بدو اجرا داخل bot.py مقداردهی می‌شود.
@@ -42,6 +68,11 @@ playwright_instance = None
 browser = None
 browser_context = None
 sana_page = None
+
+# ⭐ تب اختصاصی ناوبری امضای هر کاربر ({user_id: Page}) — مدیریت در sign_tab.py.
+# تسک‌های امضا با اولویت و در این تب‌ها اجرا می‌شوند تا پشت ثبت‌های
+# طولانی روی sana_page نمانند و بین فازهای امضا صفحه عوض نشود.
+sign_pages: dict = {}
 
 # قفل برای جلوگیری از تلاش‌های هم‌زمان چندگانه برای بازسازی مرورگر
 # (مثلاً وقتی هم واچ‌داگ پس‌زمینه و هم حلقه‌ی اصلی هم‌زمان کرش را تشخیص می‌دهند)
