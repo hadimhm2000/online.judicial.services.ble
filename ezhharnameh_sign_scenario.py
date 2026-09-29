@@ -31,6 +31,7 @@ import logging
 from aiogram import Bot
 
 import runtime_state
+from browser_helpers import SANA_SERVICE_DELAY_MAX_RETRIES
 # ⭐ صفحهٔ عملیات امضا: داخل تسک امضا تب اختصاصی کاربر (sign_tab)، وگرنه sana_page
 from sign_tab import active_page as active_sign_page
 from browser_helpers import (
@@ -546,8 +547,8 @@ async def send_ezhhar_sign_code_for_person(
             service_delay_count += 1
             logging.warning(
                 f"[EZHHAR_SIGN] تاخیر در اجرای سرویس برای ردیف {row_idx} — "
-                f"تکرار {service_delay_count}/2")
-            if service_delay_count >= 2:
+                f"تکرار {service_delay_count}/{SANA_SERVICE_DELAY_MAX_RETRIES}")
+            if service_delay_count >= SANA_SERVICE_DELAY_MAX_RETRIES:
                 try:
                     await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
                 except Exception:
@@ -555,7 +556,7 @@ async def send_ezhhar_sign_code_for_person(
                 try:
                     await bot.send_message(
                         ADMIN_ID,
-                        f"🚨 [EZHHAR_SIGN] ارسال کد امضا کاربر {user_id} بعد از ۲ بار "
+                        f"🚨 [EZHHAR_SIGN] ارسال کد امضا کاربر {user_id} بعد از چند بار "
                         "تلاش مجدد هم‌چنان «تاخیر در اجرای سرویس» می‌دهد.")
                 except Exception:
                     pass
@@ -919,8 +920,8 @@ async def _enter_code_and_sign(
             service_delay_count += 1
             logging.warning(
                 f"[EZHHAR_SIGN] تاخیر در اجرای سرویس — ردیف {row_idx} — "
-                f"تکرار {service_delay_count}/2")
-            if service_delay_count >= 2:
+                f"تکرار {service_delay_count}/{SANA_SERVICE_DELAY_MAX_RETRIES}")
+            if service_delay_count >= SANA_SERVICE_DELAY_MAX_RETRIES:
                 try:
                     await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
                 except Exception:
@@ -928,7 +929,7 @@ async def _enter_code_and_sign(
                 try:
                     await bot.send_message(
                         ADMIN_ID,
-                        f"🚨 [EZHHAR_SIGN] تایید کد امضا کاربر {user_id} بعد از ۲ بار "
+                        f"🚨 [EZHHAR_SIGN] تایید کد امضا کاربر {user_id} بعد از چند بار "
                         "تلاش مجدد هم‌چنان «تاخیر در اجرای سرویس» می‌دهد.")
                 except Exception:
                     pass

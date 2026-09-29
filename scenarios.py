@@ -9,6 +9,7 @@ from aiogram import Bot
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 import runtime_state
+from browser_helpers import SANA_SERVICE_DELAY_MAX_RETRIES
 import error_catalog
 from sign_tab import SIGN_TASK_TYPES, run_sign_task
 from bale_file_sender import send_document_direct
@@ -1376,9 +1377,9 @@ async def process_task(data, bot: Bot):
                     service_delay_count += 1
                     logging.warning(
                         f"[PHONE_SEARCH] پاپ‌آپ «تاخیر در اجرای سرویس» برای {phone_number} — "
-                        f"تکرار {service_delay_count}/2")
+                        f"تکرار {service_delay_count}/{SANA_SERVICE_DELAY_MAX_RETRIES}")
                     await dismiss_sana_error_popup(sana_page)
-                    if service_delay_count >= 2:
+                    if service_delay_count >= SANA_SERVICE_DELAY_MAX_RETRIES:
                         try:
                             await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
                         except Exception:
@@ -1387,7 +1388,7 @@ async def process_task(data, bot: Bot):
                             await bot.send_message(
                                 ADMIN_ID,
                                 f"🚨 [PHONE_SEARCH] استعلام شماره تماس {phone_number} "
-                                f"(کاربر {user_id}) بعد از ۲ بار تلاش مجدد هم‌چنان "
+                                f"(کاربر {user_id}) بعد از چند بار تلاش مجدد هم‌چنان "
                                 "«تاخیر در اجرای سرویس» می‌دهد.")
                         except Exception:
                             pass
@@ -1653,8 +1654,8 @@ async def process_task(data, bot: Bot):
                     nid_service_delay_count += 1
                     logging.warning(
                         f"[NID_INQUIRY] «تاخیر در اجرای سرویس» برای کدملی {national_id} — "
-                        f"تکرار {nid_service_delay_count}/2")
-                    if nid_service_delay_count >= 2:
+                        f"تکرار {nid_service_delay_count}/{SANA_SERVICE_DELAY_MAX_RETRIES}")
+                    if nid_service_delay_count >= SANA_SERVICE_DELAY_MAX_RETRIES:
                         try:
                             await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
                         except Exception:
@@ -1663,7 +1664,7 @@ async def process_task(data, bot: Bot):
                             await bot.send_message(
                                 ADMIN_ID,
                                 f"🚨 [NID_INQUIRY] استعلام کدملی {national_id} (کاربر {user_id}) "
-                                "بعد از ۲ بار تلاش مجدد هم‌چنان «تاخیر در اجرای سرویس» می‌دهد.")
+                                "بعد از چند بار تلاش مجدد هم‌چنان «تاخیر در اجرای سرویس» می‌دهد.")
                         except Exception:
                             pass
                         return
@@ -1919,12 +1920,12 @@ async def process_task(data, bot: Bot):
                     inquiry_service_delay_count += 1
                     logging.warning(
                         f"[INQUIRY] پاپ‌آپ «تاخیر در اجرای سرویس» برای کد {tracking_code} — "
-                        f"تکرار {inquiry_service_delay_count}/2")
+                        f"تکرار {inquiry_service_delay_count}/{SANA_SERVICE_DELAY_MAX_RETRIES}")
                     try:
                         await sana_page.locator('.sweet-alert.showSweetAlert button.confirm').click(timeout=5000)
                     except Exception:
                         pass
-                    if inquiry_service_delay_count >= 2:
+                    if inquiry_service_delay_count >= SANA_SERVICE_DELAY_MAX_RETRIES:
                         try:
                             await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
                         except Exception:
@@ -1933,7 +1934,7 @@ async def process_task(data, bot: Bot):
                             await bot.send_message(
                                 ADMIN_ID,
                                 f"🚨 [INQUIRY] استعلام «{doc_name}» کد {tracking_code} "
-                                f"(کاربر {user_id}) بعد از ۲ بار تلاش مجدد هم‌چنان "
+                                f"(کاربر {user_id}) بعد از چند بار تلاش مجدد هم‌چنان "
                                 "«تاخیر در اجرای سرویس» می‌دهد.")
                         except Exception:
                             pass

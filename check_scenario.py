@@ -110,9 +110,11 @@ from aiogram import Bot
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 import runtime_state
+from browser_helpers import SANA_SERVICE_DELAY_MAX_RETRIES
 from config import ADMIN_ID, temp_path
 from sheets import log_event
 from browser_helpers import (
+    wait_for_sana_inquiry_loading,
     resilient_sleep, check_and_handle_expiry, soft_click_if_exists,
     goto_url_with_retry, human_delay, force_click_by_text,
     safe_click_by_text, safe_type, wait_for_angular_idle,
@@ -1699,9 +1701,9 @@ async def _click_save_temp_check(page, bot: Bot, user_id: int,
                 service_delay_count += 1
                 logging.warning(
                     f"[CHECK] پاپ‌آپ «تاخیر در اجرای سرویس» در ثبت موقت — "
-                    f"تکرار {service_delay_count}/2")
+                    f"تکرار {service_delay_count}/{SANA_SERVICE_DELAY_MAX_RETRIES}")
                 await _close_sweet_popup(page)
-                if service_delay_count >= 2:
+                if service_delay_count >= SANA_SERVICE_DELAY_MAX_RETRIES:
                     try:
                         await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
                     except Exception:
@@ -1709,7 +1711,7 @@ async def _click_save_temp_check(page, bot: Bot, user_id: int,
                     try:
                         await bot.send_message(
                             ADMIN_ID,
-                            f"🚨 [CHECK] ثبت موقت کاربر {user_id} بعد از ۲ بار "
+                            f"🚨 [CHECK] ثبت موقت کاربر {user_id} بعد از چند بار "
                             "تلاش مجدد هم‌چنان «تاخیر در اجرای سرویس» می‌دهد.")
                     except Exception:
                         pass
@@ -2293,13 +2295,16 @@ def _sana_popup_kind(popup_text: str) -> str:
 
 async def _query_sana_check(page, ng_click: str, bot: Bot, user_id: int,
                             role: str = "", national_id: str = "",
-                            max_retries: int = 3) -> str:
+                            max_retries: int = 4) -> str:
     """استعلام شخص از ثنا با الگوی اظهارنامه — کلیک درست، انتظار لودینگ،
     بررسی پاپ‌آپ‌ها و تشخیص موفقیت (غیرفعال شدن فیلد کدملی).
 
     ⭐ منطق لودینگ/خطا (طبق دستور کارفرما):
-      - به لودینگ بالای صفحه دقت می‌شود: تا لودینگ نمایان است منتظر
-        می‌مانیم (wait_for_horizontal_loading_bar) و به تسک بعدی نمی‌رویم.
+      - نوار لودینگ آبی استعلام پاییده می‌شود (wait_for_sana_inquiry_loading):
+        سریع → ادامه؛ کامل → صبر تا رفتن کامل آن.
+      - «تاریخ تولد ارسالی مربوط به شماره ملی ... اشتباه است» → کدملی اشتباه؛
+        بدون تکرار، CheckSanaDataError (پنجرهٔ ویرایش کدملی).
+      - «تاخیر در اجرای سرویس» → تکرار همان استعلام.
       - اگر خطای انقضای نشست/ورود همزمان ظاهر شد → مدیر باید مجدد لاگین
         کند (check_and_handle_expiry تمدید می‌کند) و تلاش مجدد می‌شود.
       - اگر بعد از لودینگ خطای دیگری نمایش داده شد → بسته می‌شود و
@@ -2309,10 +2314,9 @@ async def _query_sana_check(page, ng_click: str, bot: Bot, user_id: int,
     خروجی: 'ok' | 'failed' (پیام‌ها ارسال شده‌اند) | 'no_response'
     """
     error_seen = False
-    # ⭐ طبق دستور کارفرما: اولین پاپ‌آپ بعد از استعلام — بستن پاپ‌آپ + حذف
-    # سکشن + افزودن مجدد + ورود مجدد کدملی؛ اگر باز هم پاپ‌آپ آمد، متن خطا
-    # برای مدیر و کاربر ارسال می‌شود.
-    readd_done = False
+    # ⭐ طبق دستور جدید کارفرما: اولین پاپ‌آپ خطا بعد از استعلام → فقط یک‌بار
+    # دیگر استعلام؛ اگر باز هم پاپ‌آپ آمد، متن خطا برای مدیر و کاربر.
+    requery_done = False
     service_delay_count = 0
     for attempt in range(max_retries):
         try:
@@ -2342,10 +2346,10 @@ async def _query_sana_check(page, ng_click: str, bot: Bot, user_id: int,
             await asyncio.sleep(3)
             continue
 
-        # صبر اولیه + لودینگ افقی — تا وقتی لودینگ نمایان است منتظر می‌مانیم
-        await asyncio.sleep(5)
-        await wait_for_horizontal_loading_bar(page, bot, user_id)
-        await asyncio.sleep(2)
+        # ⭐ انتظار دقیق برای نوار لودینگ استعلام: سریع → ادامه؛ کامل → صبر تا
+        # رفتن کامل آن. پاپ‌آپ‌ها دست‌نخورده می‌مانند تا همین‌جا خوانده شوند
+        # (قبلاً wait_for_horizontal_loading_bar پاپ‌آپ خطا را بی‌صدا می‌بست).
+        await wait_for_sana_inquiry_loading(page, prefix=f"CHECK-{role or 'شخص'}")
 
         # بررسی انقضای نشست بعد از استعلام
         had_expiry = await check_and_handle_expiry(page, bot, user_id)
@@ -2368,6 +2372,15 @@ async def _query_sana_check(page, ng_click: str, bot: Bot, user_id: int,
             await dismiss_sana_error_popup(page)
             await asyncio.sleep(1)
 
+            # ⭐ «تاریخ تولد ارسالی مربوط به شماره ملی ... اشتباه است» = کدملی
+            # اشتباه → بدون تکرار، پنجرهٔ ویرایش کدملی برای کاربر
+            if kind == "birthdate":
+                logging.warning(
+                    f"[CHECK][{role}] خطای تاریخ تولد ثنا (کدملی اشتباه) برای "
+                    f"{national_id}: {popup_text!r}")
+                raise CheckSanaDataError(
+                    popup_text, kind=kind, national_id=national_id, role=role)
+
             if kind == "session":
                 # مدیریت شده توسط check_and_handle_expiry — تمدید و تلاش مجدد
                 continue
@@ -2378,8 +2391,8 @@ async def _query_sana_check(page, ng_click: str, bot: Bot, user_id: int,
                 service_delay_count += 1
                 logging.warning(
                     f"[CHECK][{role}] پاپ‌آپ «تاخیر در اجرای سرویس» — "
-                    f"تکرار {service_delay_count}/2")
-                if service_delay_count >= 2:
+                    f"تکرار {service_delay_count}/{SANA_SERVICE_DELAY_MAX_RETRIES}")
+                if service_delay_count >= SANA_SERVICE_DELAY_MAX_RETRIES:
                     try:
                         await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
                     except Exception:
@@ -2388,7 +2401,7 @@ async def _query_sana_check(page, ng_click: str, bot: Bot, user_id: int,
                         await bot.send_message(
                             ADMIN_ID,
                             f"🚨 [CHECK] استعلام {role or 'شخص'} کاربر {user_id} "
-                            "بعد از ۲ بار تلاش مجدد هم‌چنان «تاخیر در اجرای "
+                            "بعد از چند بار تلاش مجدد هم‌چنان «تاخیر در اجرای "
                             "سرویس» می‌دهد.")
                     except Exception:
                         pass
@@ -2410,35 +2423,27 @@ async def _query_sana_check(page, ng_click: str, bot: Bot, user_id: int,
                 logging.info(f"[CHECK][{role}] پاپ‌آپ خطا نبود — استعلام قبلاً موفق بود (کدملی {national_id})")
                 return "ok"
 
-            # ⭐ طبق دستور کارفرما (تمام بخش‌های سامانه): اولین پاپ‌آپ بعد از
-            # استعلام کدملی/شناسه ملی → پاپ‌آپ بسته شد؛ حالا سکشن شخص حذف
-            # (onRemoveItem) و دوباره «افزودن» (#btnAddSection) زده می‌شود،
-            # کدملی/شناسه مجدد وارد و استعلام تکرار می‌شود. لودینگ هم در
-            # ابتدای تلاش بعدی مجدداً چک می‌شود.
-            if not readd_done:
+            # ⭐ طبق دستور جدید کارفرما: اولین پاپ‌آپ خطا → فقط یک‌بار دیگر
+            # استعلام (روند حذف/افزودن سکشن حذف شد)؛ پاپ‌آپ دوم → خطای قطعی.
+            if not requery_done:
                 logging.warning(
                     f"[CHECK][{role}] پاپ‌آپ استعلام ثنا ({kind}) برای کدملی "
-                    f"{national_id} — روند حذف/افزودن مجدد سکشن اجرا می‌شود")
-                readd_done = True
-                await readd_person_section(
-                    page, national_id, ng_click,
-                    log_prefix=f"CHECK-{role or 'شخص'}")
+                    f"{national_id} — یک‌بار دیگر استعلام زده می‌شود")
+                requery_done = True
                 await asyncio.sleep(2)
                 continue
 
-            # ⭐ اصلاحیهٔ کارفرما: خطای «تاریخ تولد ارسالی مربوط به شماره ملی
-            # ... اشتباه است» یا «اطلاعاتی با این شناسه ملی ثبت نشده است» یا
-            # «شخص ... در فهرست اشخاص پرونده نیست» — بعد از یک‌بار بازیابی
-            # سکشن باز هم خطا آمد → متن خطا برای کاربر و مدیر ارسال می‌شود
-            # (پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی).
+            # ⭐ «اطلاعاتی با این شناسه ملی ثبت نشده است» یا «شخص ... در فهرست
+            # اشخاص پرونده نیست» — پس از تکرار استعلام باز هم خطا → متن خطا
+            # برای کاربر و مدیر (پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی).
             if kind in ("birthdate", "not_registered", "person_not_in_case"):
                 logging.warning(
                     f"[CHECK][{role}] خطای داده‌ای ثنا برای کدملی {national_id} "
-                    f"بعد از بازیابی سکشن: {popup_text!r}")
+                    f"پس از تکرار استعلام: {popup_text!r}")
                 raise CheckSanaDataError(
                     popup_text, kind=kind, national_id=national_id, role=role)
 
-            # خطای غیر نشست دیگر بعد از بازیابی سکشن → قطعی؛ متن خطا برای
+            # خطای غیر نشست دیگر پس از تکرار استعلام → قطعی؛ متن خطا برای
             # کاربر و مدیر ارسال می‌شود
             logging.warning(
                 f"[CHECK][{role}] خطای استعلام ثنا برای کدملی {national_id} "
