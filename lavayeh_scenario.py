@@ -13,6 +13,7 @@ from aiogram import Bot
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 import runtime_state
+from browser_helpers import SANA_SERVICE_DELAY_MAX_RETRIES
 from config import ADMIN_ID, temp_path
 from sheets import log_event
 from panel_sync import upsert_case_to_panel
@@ -65,6 +66,7 @@ from browser_helpers import (
     goto_url_with_retry, human_delay, force_click_by_text,
     safe_click_by_text, safe_type, wait_for_angular_idle,
     wait_for_horizontal_loading_bar, handle_session_expired,
+    wait_for_sana_inquiry_loading,
     detect_concurrent_login_popup, click_sana_main_menu,
     readd_person_section, dismiss_sana_error_popup,
     detect_sana_service_delay_popup, SanaSystemDownError, SANA_SYSTEM_DOWN_MSG)
@@ -126,6 +128,14 @@ TITLE_SEARCH_MAP = {
     "درخواست مطالبه پرونده": ("مطالبه", 0),
     "درخواست مطالعه پرونده": ("مطالعه", 0),
     "سایر عناوین": ("سایر", 0),
+}
+
+# ⭐ متن دقیق گزینهٔ هدف در لیست سامانه — برای عناوینی که با کلمهٔ جستجو
+# چند گزینه برمی‌گردد و ردیف اول الزاماً گزینهٔ درست نیست. اگر ردیفی با
+# این متن پیدا شد همان کلیک می‌شود؛ وگرنه همان اندیس TITLE_SEARCH_MAP.
+#   «صدور اجرائیه» → «تقاضای صدور اجرائیه» (قبلاً ردیف اولِ «اجرا» انتخاب می‌شد)
+TITLE_TARGET_TEXT_MAP = {
+    "صدور اجرائیه": "تقاضای صدور اجرائیه",
 }
 
 AGENT_TYPE_VALUES = {
@@ -304,7 +314,9 @@ async def process_lavayeh_task(data: dict, bot: Bot):
             # لیست سامانه ردیف نادرستی را انتخاب می‌کرد. از system_title
             # استفاده می‌شود، نه از title خام کاربر.
             search_kw, row_idx = TITLE_SEARCH_MAP.get(system_title, ("دفا", 0))
-            await _select_bill_type(sana_page, search_kw, row_idx, bot, user_id)
+            await _select_bill_type(
+                sana_page, search_kw, row_idx, bot, user_id,
+                target_text=TITLE_TARGET_TEXT_MAP.get(system_title))
             await resilient_sleep(sana_page, 3, bot, user_id)
 
             await _click_taqdim_lavayeh(sana_page, bot, user_id)
@@ -386,6 +398,12 @@ async def process_lavayeh_task(data: dict, bot: Bot):
 
                 await _fill_input(sana_page, "#txtSubNo", str(row_number), bot, user_id)
                 await resilient_sleep(sana_page, 1, bot, user_id)
+
+                # ⭐ پاپ‌آپ ورود همزمان حین ورود شماره پرونده — قبل از انتخاب
+                # استان بررسی می‌شود تا شکست انتخاب استان به‌اشتباه به کاربر
+                # نسبت داده نشود.
+                await _handle_case_info_session_popup(
+                    sana_page, bot, user_id, "اطلاعات پرونده — شماره پرونده")
 
                 province_selected = await _select_province(sana_page, province, bot, user_id)
                 if not province_selected:
@@ -1349,7 +1367,14 @@ async def _click_menu_item(page, text: str, bot: Bot, user_id: int, timeout_sec:
         raise
 
 
-async def _select_bill_type(page, search_kw: str, row_idx: int, bot: Bot, user_id: int):
+async def _select_bill_type(page, search_kw: str, row_idx: int, bot: Bot, user_id: int,
+                            target_text: str = None):
+    """انتخاب عنوان لایحه در ui-select.
+
+    target_text: اگر داده شود، بین گزینه‌های فیلترشده ردیفی کلیک می‌شود که
+    متنش (پس از یکسان‌سازی ی/ي، ک/ك و فاصله‌ها) شامل این متن باشد؛ اگر
+    پیدا نشد، به رفتار قبلی (کلیک روی ردیف row_idx) برمی‌گردیم.
+    """
     search_input = page.locator('.ui-select-search').first
     opened = False
 
@@ -1372,6 +1397,33 @@ async def _select_bill_type(page, search_kw: str, row_idx: int, bot: Bot, user_i
     await search_input.fill("")
     await search_input.type(search_kw, delay=150)
     await asyncio.sleep(2)
+
+    if target_text:
+        exact_clicked = await page.evaluate('''(target) => {
+            const norm = (s) => (s || "")
+                .replace(/ي/g, "ی").replace(/ك/g, "ک")
+                .replace(/[\\u200c\\u200f\\u200e]/g, "")
+                .replace(/\\s+/g, " ").trim();
+            const t = norm(target);
+            const choices = Array.from(document.querySelectorAll(
+                '.ui-select-choices-row, .ui-select-choices div[ng-repeat]'));
+            const visible = choices.filter(el => {
+                const r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0;
+            });
+            // اولویت با تطابق کامل، سپس «شامل»
+            let row = visible.find(el => norm(el.innerText) === t);
+            if (!row) row = visible.find(el => norm(el.innerText).includes(t));
+            if (!row) return null;
+            const inner = row.querySelector('a.ui-select-choices-row-inner') || row;
+            inner.click();
+            return norm(row.innerText);
+        }''', target_text)
+        if exact_clicked:
+            logging.info(f"[LAVAYEH] عنوان «{exact_clicked}» (متن هدف: {target_text}) انتخاب شد")
+            return
+        logging.warning(
+            f"[LAVAYEH] گزینهٔ «{target_text}» در لیست پیدا نشد — فال‌بک به ردیف {row_idx}")
 
     clicked = await page.evaluate(f'''(idx) => {{
         const choices = Array.from(document.querySelectorAll('.ui-select-choices-row, .ui-select-choices div[ng-repeat]'));
@@ -1582,36 +1634,68 @@ async def _select_province(page, province: str, bot: Bot, user_id: int, max_retr
     return False
 
 
+async def _handle_case_info_session_popup(page, bot: Bot, user_id: int, where: str) -> bool:
+    """⭐ تشخیص پاپ‌آپ «ورود به سامانه در صفحه یا رایانه ای دیگر ... منقضی
+    شده است» در مرحلهٔ «اطلاعات پرونده» (شماره پرونده / شماره بایگانی).
+
+    قبلاً این پاپ‌آپ توسط _get_and_close_error_popup_text بی‌صدا بسته و
+    به‌عنوان «خطای صحت‌سنجی» شمرده می‌شد — نتیجه: پیام گمراه‌کنندهٔ «شماره
+    پرونده/بایگانی را بررسی کنید» به کاربر و بی‌خبری مدیر. حالا به مدیر
+    برای لاگین مجدد اطلاع داده می‌شود (handle_session_expired) و پس از
+    لاگین، همان مرحله از نو تلاش می‌شود.
+
+    بازگشت: True اگر پاپ‌آپ ورود همزمان/انقضا دیده و لاگین مجدد انجام شد.
+    """
+    try:
+        is_concurrent = await detect_concurrent_login_popup(page)
+    except Exception:
+        is_concurrent = False
+    if not is_concurrent:
+        return False
+
+    logging.warning(f"[LAVAYEH] ورود همزمان/انقضای نشست در «{where}» — اطلاع به مدیر برای لاگین مجدد")
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"⚠️ [LAVAYEH] خطای ورود همزمان سامانه در مرحلهٔ «{where}» (کاربر {user_id}) — "
+            "لطفاً لاگین مجدد انجام دهید.")
+    except Exception:
+        pass
+    # پیام «پرونده در صف است» برای کاربر داخل handle_session_expired ارسال می‌شود
+    await handle_session_expired(bot, user_id, page=page)
+    await asyncio.sleep(3)
+    return True
+
+
+# سقف دفعات لاگین مجدد در یک مرحلهٔ صحت‌سنجی (جدا از شمارش خطاهای عادی)
+_CASE_INFO_MAX_RELOGINS = 3
+
+
 async def _click_validate_with_retry(page, bot: Bot, user_id: int, max_retries: int = 5):
-    """کلیک روی صحت‌سنجی اطلاعات (شماره پرونده)."""
-    await page.evaluate('''() => {
-        const btn = document.querySelector('#btnAddHst1');
-        if (btn) { btn.click(); return true; }
-        return false;
-    }''')
-    await asyncio.sleep(12)
+    """کلیک روی صحت‌سنجی اطلاعات (شماره پرونده).
 
-    error_text = await _get_and_close_error_popup_text(page)
-    if error_text:
-        if _is_service_down_error(error_text):
-            logging.error(f"[LAVAYEH] سرویس استعلام واحدهای قضایی سنا قطع است — توقف فوری: {error_text}")
-            raise LavayehServiceDownError(
-                "سامانهٔ استعلام واحدهای قضایی سنا موقتاً قطع است. لطفاً دو ساعت دیگر مجدداً تلاش بفرمائید."
-            )
-        logging.warning(f"[LAVAYEH] خطای صحت‌سنجی (تلاش ۱): {error_text}")
-        await asyncio.sleep(5)
+    ⭐ پاپ‌آپ ورود همزمان (قبل یا بعد از کلیک) → لاگین مجدد مدیر و تکرار
+    همان تلاش؛ جزو شمارش خطاهای صحت‌سنجی حساب نمی‌شود.
+    """
+    attempt = 0
+    relogins = 0
+    while attempt < max_retries:
+        if relogins < _CASE_INFO_MAX_RELOGINS and await _handle_case_info_session_popup(
+                page, bot, user_id, "اطلاعات پرونده — شماره پرونده"):
+            relogins += 1
+            continue
 
-    has_table = await _wait_for_case_table(page, bot, user_id)
-    if has_table:
-        return
-
-    for attempt in range(1, max_retries):
         await page.evaluate('''() => {
             const btn = document.querySelector('#btnAddHst1');
             if (btn) { btn.click(); return true; }
             return false;
         }''')
         await asyncio.sleep(12)
+
+        if relogins < _CASE_INFO_MAX_RELOGINS and await _handle_case_info_session_popup(
+                page, bot, user_id, "اطلاعات پرونده — شماره پرونده"):
+            relogins += 1
+            continue
 
         error_text = await _get_and_close_error_popup_text(page)
         if error_text:
@@ -1622,11 +1706,14 @@ async def _click_validate_with_retry(page, bot: Bot, user_id: int, max_retries: 
                 )
             logging.warning(f"[LAVAYEH] خطای صحت‌سنجی (تلاش {attempt+1}): {error_text}")
             await asyncio.sleep(5)
-            continue
+            if attempt > 0:
+                attempt += 1
+                continue
 
         has_table = await _wait_for_case_table(page, bot, user_id)
         if has_table:
             return
+        attempt += 1
 
     logging.warning(f"[LAVAYEH] صحت‌سنجی ناموفق پس از {max_retries} تلاش")
 
@@ -1658,11 +1745,21 @@ async def _click_sana_query_with_retry(
     btn_id: str = None, max_retries: int = 5,
     current_national_id: str = "", person_index: int = -1
 ):
-    # ⭐ طبق دستور کارفرما (تمام بخش‌های سامانه): اولین پاپ‌آپ بعد از استعلام
-    # کدملی/شناسه — بستن پاپ‌آپ + حذف سکشن (onRemoveItem) + افزودن مجدد
-    # (#btnAddSection) + ورود مجدد شناسه؛ اگر باز هم پاپ‌آپ آمد، متن خطا
-    # برای مدیر و کاربر ارسال می‌شود.
-    readd_done = False
+    """استعلام کدملی/شناسه ملی از ثنا (لایحه).
+
+    ⭐ طبق دستور کارفرما (تمام بخش‌های ربات):
+      ۱. بعد از کلیک «استعلام»، نوار لودینگ آبی سامانه پاییده می‌شود: اگر
+         سریع تمام شد ادامه، وگرنه تا رفتن کامل آن صبر
+         (wait_for_sana_inquiry_loading).
+      ۲. خطای «تاریخ تولد ارسالی مربوط به شماره ملی ... اشتباه است» → کدملی
+         اشتباه است؛ بدون تکرار، پنجرهٔ ویرایش کدملی برای کاربر باز می‌شود.
+      ۳. «خطا: تاخیر در اجرای سرویس» → همان استعلام تکرار می‌شود
+         (تا SANA_SERVICE_DELAY_MAX_RETRIES بار).
+      ۴. هر پاپ‌آپ خطای دیگر → بستن و **فقط یک‌بار دیگر** استعلام؛ اگر باز
+         هم خطا آمد، متن خطا برای کاربر و مدیر (روند قدیمی حذف/افزودن سکشن
+         طبق دستور جدید کارفرما حذف شد).
+    """
+    requery_done = False
     service_delay_count = 0
     for attempt in range(max_retries):
         # بررسی session expiry قبل از هر تلاش
@@ -1694,34 +1791,24 @@ async def _click_sana_query_with_retry(
                 if (btn && !btn.disabled) btn.click();
             }''')
 
-        # صبر اولیه
-        await asyncio.sleep(3)
+        # ⭐ انتظار دقیق برای نوار لودینگ استعلام (پاپ‌آپ‌ها دست‌نخورده می‌مانند)
+        await wait_for_sana_inquiry_loading(page, prefix="LAVAYEH")
 
-        # منتظر ناپدید شدن لودینگ افقی بالای صفحه
-        had_loading_error = await wait_for_horizontal_loading_bar(page, bot, user_id, timeout=60)
-        if had_loading_error:
-            logging.warning(f"[LAVAYEH] خطا بعد از لودینگ استعلام — تلاش مجدد")
-            await asyncio.sleep(5)
-            continue
-
-        # بررسی session expiry بعد از استعلام
+        # بررسی session expiry / ورود همزمان بعد از استعلام
         had_expiry = await check_and_handle_expiry(page, bot, user_id)
         if had_expiry:
             logging.info(f"[LAVAYEH] session renewed after query attempt {attempt+1}")
             continue
 
-        # ⭐ طبق دستور کارفرما: «ورود همزمان» همین بالا با check_and_handle_expiry
-        # (بدون سقف تلاش، اطلاع فوری به مدیر) مدیریت شد. اینجا فقط «تاخیر در
-        # اجرای سرویس» را جداگانه چک می‌کنیم — تا ۲ بار تلاش مجدد؛ اگر بعد از
-        # آن هم برطرف نشد، به کاربر اطلاع داده می‌شود که سامانه قطع است.
+        # «خطا: تاخیر در اجرای سرویس» → تکرار همان استعلام
         has_service_delay = await detect_sana_service_delay_popup(page)
         if has_service_delay:
             service_delay_count += 1
             logging.warning(
                 f"[LAVAYEH] پاپ‌آپ «تاخیر در اجرای سرویس» در استعلام اشخاص — "
-                f"تکرار {service_delay_count}/2")
+                f"تکرار {service_delay_count}/{SANA_SERVICE_DELAY_MAX_RETRIES}")
             await dismiss_sana_error_popup(page)
-            if service_delay_count >= 2:
+            if service_delay_count >= SANA_SERVICE_DELAY_MAX_RETRIES:
                 try:
                     await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
                 except Exception:
@@ -1729,7 +1816,7 @@ async def _click_sana_query_with_retry(
                 try:
                     await bot.send_message(
                         ADMIN_ID,
-                        f"🚨 [LAVAYEH] استعلام اشخاص کاربر {user_id} بعد از ۲ بار "
+                        f"🚨 [LAVAYEH] استعلام اشخاص کاربر {user_id} بعد از چند بار "
                         "تلاش مجدد هم‌چنان «تاخیر در اجرای سرویس» می‌دهد.")
                 except Exception:
                     pass
@@ -1738,10 +1825,6 @@ async def _click_sana_query_with_retry(
             await asyncio.sleep(3)
             continue
 
-        # ⭐ اصلاحیهٔ کارفرما: قبل از بستنِ بی‌صدای پاپ‌آپ، متن آن خوانده
-        # می‌شود — خطای «تاریخ تولد ارسالی مربوط به شماره ملی ... اشتباه
-        # است» retry بی‌فایده دارد؛ بلافاصله LavayehSanaDataError پرتاب
-        # می‌شود تا پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی برای کاربر باز شود.
         popup_text = await page.evaluate('''() => {
             const popup = document.querySelector('.sweet-alert.showSweetAlert');
             if (!popup) return null;
@@ -1754,92 +1837,72 @@ async def _click_sana_query_with_retry(
         }''')
         if popup_text:
             _kind = _classify_lavayeh_sana_popup(popup_text)
-            if _kind == "person_not_in_case":
-                # ⭐ طبق دستور کارفرما: اولین پاپ‌آپ → روند حذف/افزودن مجدد
-                # سکشن و تلاش مجدد؛ دفعهٔ دوم → خطای قطعی + اطلاع مدیر/کاربر
-                if not readd_done:
-                    readd_done = True
-                    logging.warning(
-                        f"[LAVAYEH] پاپ‌آپ «فهرست اشخاص پرونده» برای شناسه "
-                        f"{current_national_id} — روند حذف/افزودن مجدد سکشن")
-                    await dismiss_sana_error_popup(page)
-                    await readd_person_section(
-                        page, current_national_id, ng_click_contains,
-                        log_prefix="LAVAYEH")
-                    await asyncio.sleep(2)
-                    continue
-                await _close_error_popup(page)
-                logging.warning(
-                    f"[LAVAYEH] خطای فهرست اشخاص پرونده در زمان استعلام برای شناسه "
-                    f"{current_national_id} بعد از بازیابی سکشن: {popup_text[:150]}")
-                try:
-                    await bot.send_message(
-                        ADMIN_ID,
-                        f"⚠️ [LAVAYEH] خطای استعلام ثنا کاربر {user_id} — شناسه "
-                        f"{current_national_id}: «{popup_text[:200]}»")
-                except Exception:
-                    pass
-                raise LavayehSanaDataError(
-                    popup_text, kind="person_not_in_case",
-                    national_id=current_national_id or
-                    _extract_lavayeh_nid(popup_text),
-                    person_index=person_index)
+
+            # ⭐ تاریخ تولد اشتباه = کدملی اشتباه → فوراً پنجرهٔ ویرایش کدملی
             if _kind == "birthdate":
-                if not readd_done:
-                    readd_done = True
-                    logging.warning(
-                        f"[LAVAYEH] پاپ‌آپ تاریخ تولد برای شناسه "
-                        f"{current_national_id} — روند حذف/افزودن مجدد سکشن")
-                    await dismiss_sana_error_popup(page)
-                    await readd_person_section(
-                        page, current_national_id, ng_click_contains,
-                        log_prefix="LAVAYEH")
-                    await asyncio.sleep(2)
-                    continue
                 await _close_error_popup(page)
                 logging.warning(
-                    f"[LAVAYEH] خطای تاریخ تولد ثنا برای شناسه "
-                    f"{current_national_id} بعد از بازیابی سکشن: {popup_text[:150]}")
+                    f"[LAVAYEH] خطای تاریخ تولد ثنا (کدملی اشتباه) برای شناسه "
+                    f"{current_national_id}: {popup_text[:150]}")
                 try:
                     await bot.send_message(
                         ADMIN_ID,
-                        f"⚠️ [LAVAYEH] خطای استعلام ثنا کاربر {user_id} — شناسه "
-                        f"{current_national_id}: «{popup_text[:200]}»")
+                        f"⚠️ [LAVAYEH] کدملی اشتباه (خطای تاریخ تولد ثنا) کاربر {user_id} — "
+                        f"شناسه {current_national_id}: «{popup_text[:200]}»")
                 except Exception:
                     pass
                 raise LavayehSanaDataError(
                     popup_text, kind="birthdate",
-                    national_id=current_national_id or
-                    _extract_lavayeh_nid(popup_text),
+                    national_id=current_national_id or _extract_lavayeh_nid(popup_text),
                     person_index=person_index)
 
-        closed = await _close_error_popup(page)
-        if closed:
-            # ⭐ محافظ: اگر پاپ‌آپ خطا نبوده و استعلام موفق بوده، سکشن حذف/افزودن نمی‌شود
-            if popup_text:
-                success_now = await page.evaluate('''() => {
-                    const disabled = document.querySelector(
-                        'input[ng-disabled*="ExtractedFromSana"][ng-disabled*="1"], input[disabled]'
-                    );
-                    return disabled !== null;
-                }''')
-                if success_now:
-                    logging.info("[LAVAYEH] پاپ‌آپ خطا نبود — استعلام قبلاً موفق بود")
-                    return
-            # ⭐ طبق دستور کارفرما: پاپ‌آپ خطای دیگر (غیر نشست/داده‌ای) — اولین بار
-            # روند حذف/افزودن مجدد سکشن انجام می‌شود و استعلام تکرار می‌گردد.
-            if not readd_done and popup_text:
-                readd_done = True
+            # محافظ: اگر پاپ‌آپ خطا نبوده و استعلام موفق بوده
+            success_now = await page.evaluate('''() => {
+                const disabled = document.querySelector(
+                    'input[ng-disabled*="ExtractedFromSana"][ng-disabled*="1"], input[disabled]'
+                );
+                return disabled !== null;
+            }''')
+            if success_now:
+                await _close_error_popup(page)
+                logging.info("[LAVAYEH] پاپ‌آپ خطا نبود — استعلام قبلاً موفق بود")
+                return
+
+            # ⭐ اولین پاپ‌آپ خطا → بستن و فقط یک‌بار دیگر استعلام
+            if not requery_done:
+                requery_done = True
                 logging.warning(
-                    f"[LAVAYEH] پاپ‌آپ خطای دیگر بعد از استعلام — روند "
-                    f"حذف/افزودن مجدد سکشن: {popup_text or ''}")
-                await readd_person_section(
-                    page, current_national_id, ng_click_contains,
-                    log_prefix="LAVAYEH")
+                    f"[LAVAYEH] پاپ‌آپ خطا بعد از استعلام شناسه {current_national_id} — "
+                    f"یک‌بار دیگر استعلام زده می‌شود: {popup_text[:150]}")
+                await dismiss_sana_error_popup(page)
                 await asyncio.sleep(2)
                 continue
-            await asyncio.sleep(5)
-            continue
+
+            # پاپ‌آپ دوم → خطای قطعی
+            await _close_error_popup(page)
+            logging.warning(
+                f"[LAVAYEH] خطای استعلام ثنا برای شناسه {current_national_id} "
+                f"پس از تکرار استعلام: {popup_text[:150]}")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"⚠️ [LAVAYEH] خطای استعلام ثنا کاربر {user_id} — شناسه "
+                    f"{current_national_id}: «{popup_text[:200]}»")
+            except Exception:
+                pass
+            if _kind == "person_not_in_case":
+                raise LavayehSanaDataError(
+                    popup_text, kind="person_not_in_case",
+                    national_id=current_national_id or _extract_lavayeh_nid(popup_text),
+                    person_index=person_index)
+            try:
+                await bot.send_message(
+                    user_id,
+                    f"⚠️ خطای استعلام ثنا برای شناسه `{current_national_id or '—'}`:\n\n"
+                    f"«{popup_text[:250]}»")
+            except Exception:
+                pass
+            return
 
         extracted = await page.evaluate('''() => {
             const disabled = document.querySelector(
@@ -1852,23 +1915,14 @@ async def _click_sana_query_with_retry(
             return
         await asyncio.sleep(3)
 
-    # ⭐ طبق دستور کارفرما: اگر بعد از بازیابی سکشن هم استعلام پاسخ قطعی
-    # نداد، متن وضعیت برای مدیر و کاربر ارسال می‌شود.
-    if readd_done:
-        _msg = (
-            f"⚠️ استعلام ثنا برای شناسه `{current_national_id or '—'}` پس از "
-            "تلاش مجدد (حذف و افزودن مجدد سکشن) نتیجه نداد.")
-        try:
-            await bot.send_message(user_id, _msg)
-        except Exception:
-            pass
-        try:
-            await bot.send_message(
-                ADMIN_ID,
-                f"⚠️ [LAVAYEH] استعلام ثنا کاربر {user_id} نتیجه نداد — "
-                f"شناسه {current_national_id}")
-        except Exception:
-            pass
+    # استعلام پس از همهٔ تلاش‌ها پاسخ قطعی نداد
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"⚠️ [LAVAYEH] استعلام ثنا کاربر {user_id} نتیجه نداد — "
+            f"شناسه {current_national_id}")
+    except Exception:
+        pass
 
 
 def _classify_lavayeh_sana_popup(text: str) -> str:
@@ -2073,8 +2127,8 @@ async def _click_save_temp_with_retry(page, bot: Bot, user_id: int, max_retries:
                 service_delay_count += 1
                 logging.warning(
                     f"[LAVAYEH] پاپ‌آپ «تاخیر در اجرای سرویس» در ثبت موقت — "
-                    f"تکرار {service_delay_count}/2")
-                if service_delay_count >= 2:
+                    f"تکرار {service_delay_count}/{SANA_SERVICE_DELAY_MAX_RETRIES}")
+                if service_delay_count >= SANA_SERVICE_DELAY_MAX_RETRIES:
                     try:
                         await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
                     except Exception:
@@ -2082,7 +2136,7 @@ async def _click_save_temp_with_retry(page, bot: Bot, user_id: int, max_retries:
                     try:
                         await bot.send_message(
                             ADMIN_ID,
-                            f"🚨 [LAVAYEH] ثبت موقت کاربر {user_id} بعد از ۲ بار "
+                            f"🚨 [LAVAYEH] ثبت موقت کاربر {user_id} بعد از چند بار "
                             "تلاش مجدد هم‌چنان «تاخیر در اجرای سرویس» می‌دهد.")
                     except Exception:
                         pass
@@ -3127,9 +3181,22 @@ async def _click_validate_with_retry_archive(page, bot: Bot, user_id: int):
     """
     کلیک روی دکمه صحت‌سنجی اطلاعات برای شماره بایگانی.
     این تابع مشابه _click_validate_with_retry است اما از دکمه btnAddHst2 استفاده می‌کند.
+
+    ⭐ پاپ‌آپ ورود همزمان (قبل یا بعد از کلیک) → لاگین مجدد مدیر و تکرار
+    همان تلاش؛ دیگر به‌عنوان «خطای صحت‌سنجی» شمرده نمی‌شود (قبلاً پس از ۲
+    بار، کاربر پیام اشتباه «شماره بایگانی و کد شعبه را بررسی کنید» می‌گرفت).
     """
     consecutive_errors = 0
-    for attempt in range(5):
+    relogins = 0
+    attempt = -1
+    while attempt < 4:
+        attempt += 1
+        if relogins < _CASE_INFO_MAX_RELOGINS and await _handle_case_info_session_popup(
+                page, bot, user_id, "اطلاعات پرونده — شماره بایگانی"):
+            relogins += 1
+            attempt -= 1
+            continue
+
         clicked = await page.evaluate('''() => {
             const btn = document.querySelector('#btnAddHst2');
             if (btn) { btn.click(); return true; }
@@ -3138,6 +3205,12 @@ async def _click_validate_with_retry_archive(page, bot: Bot, user_id: int):
         if not clicked:
             await safe_click_by_text(page, "صحت سنجی اطلاعات", bot, user_id)
         await asyncio.sleep(12)
+
+        if relogins < _CASE_INFO_MAX_RELOGINS and await _handle_case_info_session_popup(
+                page, bot, user_id, "اطلاعات پرونده — شماره بایگانی"):
+            relogins += 1
+            attempt -= 1
+            continue
 
         error_text = await _get_and_close_error_popup_text(page)
         if error_text:

@@ -3285,6 +3285,15 @@ async def send_bulk_item_result(
     if service_type is None:
         service_type = "EZHHARNAMEH" if is_ezhharnameh else "LAVAYEH"
 
+    # ⭐ ثبت برای «چاپ نهایی» روز بعد ساعت ۱۵:۴۵ (به‌جز استعلامات) — final_print.py
+    try:
+        from final_print import record_registration as _fp_record
+        _fp_record(user_id, tracking_code, service_type=service_type,
+                   sign_menu_path=sign_menu_path, is_ezhharnameh=is_ezhharnameh,
+                   title=lavayeh_title)
+    except Exception as _fp_err:
+        logging.warning(f"[FINAL_PRINT] ثبت مورد ناموفق: {_fp_err}")
+
     _SERVICE_LABELS = {"LAVAYEH": "لایحه", "EZHHARNAMEH": "اظهارنامه", "CHECK": "چک", "TAJDID_NAZAR": "تجدیدنظر"}
     service_label = _SERVICE_LABELS.get(service_type, "اظهارنامه" if is_ezhharnameh else "لایحه")
 
@@ -3401,6 +3410,15 @@ async def send_lavayeh_result(
         lavayeh_persons = []
     if service_type is None:
         service_type = "EZHHARNAMEH" if is_ezhharnameh else "LAVAYEH"
+
+    # ⭐ ثبت برای «چاپ نهایی» روز بعد ساعت ۱۵:۴۵ (به‌جز استعلامات) — final_print.py
+    try:
+        from final_print import record_registration as _fp_record
+        _fp_record(user_id, tracking_code, service_type=service_type,
+                   sign_menu_path=sign_menu_path, is_ezhharnameh=is_ezhharnameh,
+                   title=lavayeh_title)
+    except Exception as _fp_err:
+        logging.warning(f"[FINAL_PRINT] ثبت مورد ناموفق: {_fp_err}")
 
     if not hasattr(runtime_state, "active_lavayeh_users"):
         runtime_state.active_lavayeh_users = set()
@@ -3979,6 +3997,9 @@ async def admin_approve_lavayeh_receipt(callback: CallbackQuery, bot: Bot):
             "row_number": pending.get("lavayeh_row_number", 1),
             "persons": pending.get("lavayeh_persons", []),
             "service_type": svc_type,
+            # ⭐ مسیر منوی امضا (چک/اعسار: بدوی یا صلح) — قبلاً در تایید دستی
+            # رسید جا افتاده بود و امضا به مسیر پیش‌فرض «لایحه» می‌رفت
+            "sign_menu_path": pending.get("sign_menu_path"),
             "sign_persons": [],
             "persons_awaiting_sign": [],
             "current_person_idx": None,

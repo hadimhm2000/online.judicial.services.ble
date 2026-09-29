@@ -9,7 +9,10 @@ from aiogram import Bot
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 import runtime_state
+from browser_helpers import SANA_SERVICE_DELAY_MAX_RETRIES
 import error_catalog
+from sign_tab import SIGN_TASK_TYPES, run_sign_task
+from final_print import mark_sent as _fp_mark_sent, report_failure as _fp_report_failure
 from bale_file_sender import send_document_direct
 from config import ADMIN_ID, DEBUG_LOG_REQUESTS, FEES, get_fee, temp_path
 from sheets import log_event
@@ -1166,6 +1169,9 @@ async def process_task(data, bot: Bot):
     subcategory = data.get('doc_subcategory')
     need_attachments = data.get('need_attachments', False)
     task_type = data.get('task_type', 'PRINT')
+    # ⭐ تسک «چاپ نهایی» روز بعد (final_print.py) — همان مسیر استعلام کد رهگیری
+    # ولی فقط ارسال چاپ؛ بدون پیام‌ها/ثبت‌های مخصوص استعلام پولی
+    is_final_print = bool(data.get('final_print'))
 
     # ── سناریوی لایحه ثبت ─────────────────────────────────────────────────
     if task_type == "LAVAYEH_SUBMIT":
@@ -1375,9 +1381,9 @@ async def process_task(data, bot: Bot):
                     service_delay_count += 1
                     logging.warning(
                         f"[PHONE_SEARCH] پاپ‌آپ «تاخیر در اجرای سرویس» برای {phone_number} — "
-                        f"تکرار {service_delay_count}/2")
+                        f"تکرار {service_delay_count}/{SANA_SERVICE_DELAY_MAX_RETRIES}")
                     await dismiss_sana_error_popup(sana_page)
-                    if service_delay_count >= 2:
+                    if service_delay_count >= SANA_SERVICE_DELAY_MAX_RETRIES:
                         try:
                             await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
                         except Exception:
@@ -1386,7 +1392,7 @@ async def process_task(data, bot: Bot):
                             await bot.send_message(
                                 ADMIN_ID,
                                 f"🚨 [PHONE_SEARCH] استعلام شماره تماس {phone_number} "
-                                f"(کاربر {user_id}) بعد از ۲ بار تلاش مجدد هم‌چنان "
+                                f"(کاربر {user_id}) بعد از چند بار تلاش مجدد هم‌چنان "
                                 "«تاخیر در اجرای سرویس» می‌دهد.")
                         except Exception:
                             pass
@@ -1652,8 +1658,8 @@ async def process_task(data, bot: Bot):
                     nid_service_delay_count += 1
                     logging.warning(
                         f"[NID_INQUIRY] «تاخیر در اجرای سرویس» برای کدملی {national_id} — "
-                        f"تکرار {nid_service_delay_count}/2")
-                    if nid_service_delay_count >= 2:
+                        f"تکرار {nid_service_delay_count}/{SANA_SERVICE_DELAY_MAX_RETRIES}")
+                    if nid_service_delay_count >= SANA_SERVICE_DELAY_MAX_RETRIES:
                         try:
                             await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
                         except Exception:
@@ -1662,7 +1668,7 @@ async def process_task(data, bot: Bot):
                             await bot.send_message(
                                 ADMIN_ID,
                                 f"🚨 [NID_INQUIRY] استعلام کدملی {national_id} (کاربر {user_id}) "
-                                "بعد از ۲ بار تلاش مجدد هم‌چنان «تاخیر در اجرای سرویس» می‌دهد.")
+                                "بعد از چند بار تلاش مجدد هم‌چنان «تاخیر در اجرای سرویس» می‌دهد.")
                         except Exception:
                             pass
                         return
@@ -1891,6 +1897,9 @@ async def process_task(data, bot: Bot):
                         )
                     except Exception:
                         pass
+                    if is_final_print:
+                        await _fp_report_failure(bot, user_id, tracking_code, doc_name, f"کد رهگیری متعلق به فرم دیگر: {popup_text}")
+                        return
                     await _handle_wrong_form_tracking_code(bot, user_id, data, tracking_code, doc_name, popup_text)
                     return
                 if popup_text and popup_category == error_catalog.VALIDATION:
@@ -1906,6 +1915,9 @@ async def process_task(data, bot: Bot):
                         )
                     except Exception:
                         pass
+                    if is_final_print:
+                        await _fp_report_failure(bot, user_id, tracking_code, doc_name, "کد رهگیری نامعتبر است")
+                        return
                     await _handle_invalid_tracking_code(bot, user_id, data, tracking_code, doc_name)
                     return
 
@@ -1918,21 +1930,25 @@ async def process_task(data, bot: Bot):
                     inquiry_service_delay_count += 1
                     logging.warning(
                         f"[INQUIRY] پاپ‌آپ «تاخیر در اجرای سرویس» برای کد {tracking_code} — "
-                        f"تکرار {inquiry_service_delay_count}/2")
+                        f"تکرار {inquiry_service_delay_count}/{SANA_SERVICE_DELAY_MAX_RETRIES}")
                     try:
                         await sana_page.locator('.sweet-alert.showSweetAlert button.confirm').click(timeout=5000)
                     except Exception:
                         pass
-                    if inquiry_service_delay_count >= 2:
-                        try:
-                            await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
-                        except Exception:
-                            pass
+                    if inquiry_service_delay_count >= SANA_SERVICE_DELAY_MAX_RETRIES:
+                        if is_final_print:
+                            # چاپ نهایی: به کاربر پیامی نمی‌رود؛ فردا دوباره تلاش می‌شود
+                            await _fp_report_failure(bot, user_id, tracking_code, doc_name, "سامانه: تاخیر در اجرای سرویس (پس از چند بار تلاش)")
+                        else:
+                            try:
+                                await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
+                            except Exception:
+                                pass
                         try:
                             await bot.send_message(
                                 ADMIN_ID,
                                 f"🚨 [INQUIRY] استعلام «{doc_name}» کد {tracking_code} "
-                                f"(کاربر {user_id}) بعد از ۲ بار تلاش مجدد هم‌چنان "
+                                f"(کاربر {user_id}) بعد از چند بار تلاش مجدد هم‌چنان "
                                 "«تاخیر در اجرای سرویس» می‌دهد.")
                         except Exception:
                             pass
@@ -1995,6 +2011,9 @@ async def process_task(data, bot: Bot):
                     await sana_page.locator(".alert-danger").is_visible()
                     or await sana_page.locator('text="اطلاعاتی یافت نشد"').is_visible()
                 ):
+                    if is_final_print:
+                        await _fp_report_failure(bot, user_id, tracking_code, doc_name, "پرونده‌ای با این کد در سامانه یافت نشد")
+                        return
                     await bot.send_message(user_id, f"❌ پرونده‌ای با کد `{tracking_code}` یافت نگردید.")
                     await _bulk_progress_note_result(bot, user_id, tracking_code, doc_name, is_invalid=False)
                     return
@@ -2044,6 +2063,15 @@ async def process_task(data, bot: Bot):
                             await print_page.close()
                             break
 
+                        if is_final_print:
+                            # ⭐ چاپ نهایی روز بعد — فقط ارسال چاپ؛ بدون ثبت استعلام در پنل
+                            await send_document_direct(
+                                user_id, pdf_path,
+                                caption=f"📄 *چاپ نهایی* — کد رهگیری: `{tracking_code}`\n{doc_name}")
+                            os.remove(pdf_path)
+                            _fp_mark_sent(user_id, tracking_code)
+                            logging.info(f"[FINAL_PRINT] چاپ نهایی کد {tracking_code} برای کاربر {user_id} ارسال شد")
+                            return
                         if need_attachments:
                             saved_attachments.append((pdf_path, f"📄 استعلام کد پیگیری: `{tracking_code}`"))
                         else:
@@ -2066,7 +2094,8 @@ async def process_task(data, bot: Bot):
 
                     except Exception as print_err:
                         logging.error(f"خطا در چاپ: {print_err}")
-                        await bot.send_message(user_id, "⚠️ چاپ پرونده با خطا مواجه شد.")
+                        if not is_final_print:
+                            await bot.send_message(user_id, "⚠️ چاپ پرونده با خطا مواجه شد.")
 
                         try:
                             await register_failed_inquiry_to_panel(
@@ -2347,6 +2376,14 @@ async def process_task(data, bot: Bot):
             else:
                 doc_name = f"{category} - {subcategory}" if subcategory else category
 
+                # ⭐ چاپ نهایی خودکار: بدون پیام «اختلال/تکرار رایگان» به کاربر —
+                # مورد در صف final_print می‌ماند و فردا ساعت ۱۵:۴۵ دوباره تلاش می‌شود
+                if is_final_print:
+                    await _fp_report_failure(
+                        bot, user_id, tracking_code, doc_name,
+                        f"خطا پس از {max_task_attempts} تلاش: {str(task_err)[:200]}")
+                    return
+
                 # ── ذخیره در disrupted_users (فرصت تکرار بدون پرداخت) ──
                 import datetime
                 from handlers import DISRUPTED_RETRY_MINUTES, SAMANEH_WRONG_TYPE_ERROR
@@ -2400,7 +2437,11 @@ async def _process_lavayeh_send_sign_code(data: dict, bot: Bot):
     user_id = data["user_id"]
     tracking_code = data.get("tracking_code", "")
     phase = data.get("phase", "navigate")
-    sign_menu_path = data.get("sign_menu_path")
+    # ⭐ فاز «ارسال کد» مسیر منو را در data ندارد — از pending_lavayeh_sign
+    # خوانده می‌شود تا ناوبری مجدد به همان مسیر ثبت (مثلاً اعسار: بدوی/صلح)
+    # برود، نه پیش‌فرض «لایحه».
+    sign_menu_path = data.get("sign_menu_path") or \
+        (runtime_state.pending_lavayeh_sign.get(user_id) or {}).get("sign_menu_path")
 
     from lavayeh_sign_handlers import (
         on_lavayeh_sign_persons_loaded,
@@ -2441,7 +2482,9 @@ async def _process_lavayeh_send_sign_code(data: dict, bot: Bot):
             for row_idx in target_row_indices:
                 person = next((p for p in all_persons if p["idx"] == row_idx), None)
                 person_name = person.get("name", f"شخص {row_idx + 1}") if person else f"شخص {row_idx + 1}"
-                success = await send_sign_code_for_person(bot, user_id, row_idx, person_name, tracking_code)
+                success = await send_sign_code_for_person(
+                    bot, user_id, row_idx, person_name, tracking_code,
+                    menu_path=sign_menu_path)
                 results.append({
                     "idx": row_idx,
                     "name": person_name,
@@ -2529,6 +2572,11 @@ async def _process_tn_send_sign_code(data: dict, bot: Bot):
     user_id = data["user_id"]
     tracking_code = data.get("tracking_code", "")
     sign_menu_path = data.get("sign_menu_path")
+    if not sign_menu_path:
+        # ⭐ فاز «ارسال کد» مسیر منو را در data ندارد — از pending_tn_sign
+        _tn_pending = runtime_state.pending_tn_sign.get(user_id) or {}
+        sign_menu_path = _tn_pending.get("sign_menu_path") or (
+            [_tn_pending["case_type"]] if _tn_pending.get("case_type") else None)
     phase = data.get("phase", "navigate")
 
     from tajdid_nazar_handlers import (
@@ -2567,7 +2615,9 @@ async def _process_tn_send_sign_code(data: dict, bot: Bot):
             for row_idx in target_row_indices:
                 person = next((p for p in all_persons if p["idx"] == row_idx), None)
                 person_name = person.get("name", f"شخص {row_idx + 1}") if person else f"شخص {row_idx + 1}"
-                success = await send_sign_code_for_person(bot, user_id, row_idx, person_name, tracking_code)
+                success = await send_sign_code_for_person(
+                    bot, user_id, row_idx, person_name, tracking_code,
+                    menu_path=sign_menu_path)
                 results.append({
                     "idx": row_idx,
                     "name": person_name,
@@ -2993,10 +3043,59 @@ async def _run_pre_check_task(data: dict, bot: Bot):
                 pass
 
 
+_SIGN_HANDLERS = {
+    "LAVAYEH_SEND_SIGN_CODE": "_process_lavayeh_send_sign_code",
+    "LAVAYEH_SUBMIT_SIGN": "_process_lavayeh_submit_sign",
+    "TN_SEND_SIGN_CODE": "_process_tn_send_sign_code",
+    "TN_SUBMIT_SIGN": "_process_tn_submit_sign",
+    "EZHHARNAMEH_SEND_SIGN_CODE": "_process_ezhharnameh_send_sign_code",
+    "EZHHARNAMEH_SUBMIT_SIGN": "_process_ezhharnameh_submit_sign",
+}
+
+
+async def _run_sign_task(data: dict, bot: Bot):
+    """اجرای هم‌زمان (fire-and-forget) یک تسک امضا در تب اختصاصی کاربر."""
+    handler = globals()[_SIGN_HANDLERS[data.get("task_type")]]
+    try:
+        await run_sign_task(data, bot, handler)
+    except Exception as e:
+        logging.error(f"[SIGN_TAB] خطای مدیریت‌نشده در تسک امضا: {e}", exc_info=True)
+        try:
+            from bug_reporter import report_bug
+            await report_bug(bot, where="_run_sign_task", error=e,
+                             user_id=data.get("user_id"),
+                             context={"task_type": data.get("task_type"),
+                                      "phase": data.get("phase")})
+        except Exception:
+            pass
+
+
+async def _sign_dispatcher(bot: Bot):
+    """⭐ مصرف‌کنندهٔ مستقل sign_job_queue — تسک‌های امضا بلافاصله (حتی
+    وقتی browser_worker مشغول یک ثبت چنددقیقه‌ای است) در تب اختصاصی کاربر
+    اجرا می‌شوند؛ نوبت‌دهی و اعلام «اشخاص در نوبت» داخل sign_tab است."""
+    while True:
+        data = await runtime_state.sign_job_queue.get()
+        try:
+            if not await ensure_browser_alive(bot):
+                # مرورگر فعلاً در دسترس نیست — کمی بعد دوباره
+                await asyncio.sleep(10)
+                runtime_state.sign_job_queue.put_nowait(data)
+                continue
+            asyncio.create_task(_run_sign_task(data, bot))
+        except Exception as e:
+            logging.error(f"[SIGN_TAB] خطا در دیسپچ تسک امضا: {e}", exc_info=True)
+        finally:
+            runtime_state.sign_job_queue.task_done()
+
+
 async def browser_worker(bot: Bot):
     runtime_state.playwright_instance = await async_playwright().start()
     try:
         await _launch_fresh_browser(bot, wait_login=True)
+
+        # ── ⭐ دیسپچر اولویت‌دار تسک‌های امضا (تب اختصاصی هر کاربر) ──
+        asyncio.create_task(_sign_dispatcher(bot))
 
         # ── واچ‌داگ پس‌زمینه برای تشخیص/ترمیم خودکار بسته‌شدن مرورگر ──
         asyncio.create_task(_browser_watchdog(bot))
@@ -3026,6 +3125,11 @@ async def browser_worker(bot: Bot):
                     # طولانی (تجدیدنظر/لایحه و ...) آن را در صف نگه ندارند.
                     if data.get("task_type") == "PRE_CHECK":
                         asyncio.create_task(_run_pre_check_task(data, bot))
+                    elif data.get("task_type") in SIGN_TASK_TYPES:
+                        # ⭐ ناوبری/ارسال/ثبت کد امضا — اولویت‌دار، در تب
+                        # اختصاصی کاربر و بدون انتظار پشت تسک در حال اجرا
+                        # (مثل PRE_CHECK)؛ نوبت‌دهی داخل sign_tab انجام می‌شود.
+                        asyncio.create_task(_run_sign_task(data, bot))
                     else:
                         await process_task(data, bot)
                 except Exception as task_err:
