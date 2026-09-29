@@ -31,6 +31,8 @@ import logging
 from aiogram import Bot
 
 import runtime_state
+# ⭐ صفحهٔ عملیات امضا: داخل تسک امضا تب اختصاصی کاربر (sign_tab)، وگرنه sana_page
+from sign_tab import active_page as active_sign_page
 from browser_helpers import (
     check_and_handle_expiry,
     goto_url_with_retry,
@@ -122,7 +124,7 @@ async def navigate_to_ezhhar_sign_page(
 
     # جریان لاگین مجدد مدیر (باز کردن تب لاگین + انتظار برای تایید)
     try:
-        await handle_session_expired(bot, user_id, page=runtime_state.sana_page)
+        await handle_session_expired(bot, user_id, page=active_sign_page())
     except Exception as e:
         logging.warning(f"[EZHHAR_SIGN] جریان لاگین مجدد مدیر با خطا مواجه شد: {e}")
 
@@ -159,7 +161,7 @@ async def _navigate_to_ezhhar_sign_page_once(
 
     Returns True اگر صفحه جدول امضا ظاهر شد.
     """
-    sana_page = runtime_state.sana_page
+    sana_page = active_sign_page()
     if sana_page is None:
         logging.error("[EZHHAR_SIGN] sana_page is None")
         return False
@@ -307,7 +309,7 @@ async def get_ezhhar_signable_persons(
     Returns:
         list of dicts: [{idx, name, personType, canSend, divVisible}]
     """
-    sana_page = runtime_state.sana_page
+    sana_page = active_sign_page()
     if sana_page is None:
         return []
 
@@ -484,7 +486,7 @@ async def send_ezhhar_sign_code_for_person(
 
     Returns True اگر کد ارسال شد (یا قبلاً ارسال شده بود).
     """
-    sana_page = runtime_state.sana_page
+    sana_page = active_sign_page()
     if sana_page is None:
         return False
 
@@ -598,7 +600,7 @@ async def submit_ezhhar_sign_code(
         dict: {"success": bool, "error": str}
         error values: "wrong_code", "sana_not_registered", "timeout", "error", "max_attempts"
     """
-    sana_page = runtime_state.sana_page
+    sana_page = active_sign_page()
     if sana_page is None:
         return {"success": False, "error": "sana_page is None"}
 

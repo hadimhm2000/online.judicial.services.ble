@@ -128,6 +128,14 @@ TITLE_SEARCH_MAP = {
     "سایر عناوین": ("سایر", 0),
 }
 
+# ⭐ متن دقیق گزینهٔ هدف در لیست سامانه — برای عناوینی که با کلمهٔ جستجو
+# چند گزینه برمی‌گردد و ردیف اول الزاماً گزینهٔ درست نیست. اگر ردیفی با
+# این متن پیدا شد همان کلیک می‌شود؛ وگرنه همان اندیس TITLE_SEARCH_MAP.
+#   «صدور اجرائیه» → «تقاضای صدور اجرائیه» (قبلاً ردیف اولِ «اجرا» انتخاب می‌شد)
+TITLE_TARGET_TEXT_MAP = {
+    "صدور اجرائیه": "تقاضای صدور اجرائیه",
+}
+
 AGENT_TYPE_VALUES = {
     "مدیرعامل": "0091000010000007",
     "قائم مقام": "0091000010000008",
@@ -304,7 +312,9 @@ async def process_lavayeh_task(data: dict, bot: Bot):
             # لیست سامانه ردیف نادرستی را انتخاب می‌کرد. از system_title
             # استفاده می‌شود، نه از title خام کاربر.
             search_kw, row_idx = TITLE_SEARCH_MAP.get(system_title, ("دفا", 0))
-            await _select_bill_type(sana_page, search_kw, row_idx, bot, user_id)
+            await _select_bill_type(
+                sana_page, search_kw, row_idx, bot, user_id,
+                target_text=TITLE_TARGET_TEXT_MAP.get(system_title))
             await resilient_sleep(sana_page, 3, bot, user_id)
 
             await _click_taqdim_lavayeh(sana_page, bot, user_id)
@@ -386,6 +396,12 @@ async def process_lavayeh_task(data: dict, bot: Bot):
 
                 await _fill_input(sana_page, "#txtSubNo", str(row_number), bot, user_id)
                 await resilient_sleep(sana_page, 1, bot, user_id)
+
+                # ⭐ پاپ‌آپ ورود همزمان حین ورود شماره پرونده — قبل از انتخاب
+                # استان بررسی می‌شود تا شکست انتخاب استان به‌اشتباه به کاربر
+                # نسبت داده نشود.
+                await _handle_case_info_session_popup(
+                    sana_page, bot, user_id, "اطلاعات پرونده — شماره پرونده")
 
                 province_selected = await _select_province(sana_page, province, bot, user_id)
                 if not province_selected:
@@ -1349,7 +1365,14 @@ async def _click_menu_item(page, text: str, bot: Bot, user_id: int, timeout_sec:
         raise
 
 
-async def _select_bill_type(page, search_kw: str, row_idx: int, bot: Bot, user_id: int):
+async def _select_bill_type(page, search_kw: str, row_idx: int, bot: Bot, user_id: int,
+                            target_text: str = None):
+    """انتخاب عنوان لایحه در ui-select.
+
+    target_text: اگر داده شود، بین گزینه‌های فیلترشده ردیفی کلیک می‌شود که
+    متنش (پس از یکسان‌سازی ی/ي، ک/ك و فاصله‌ها) شامل این متن باشد؛ اگر
+    پیدا نشد، به رفتار قبلی (کلیک روی ردیف row_idx) برمی‌گردیم.
+    """
     search_input = page.locator('.ui-select-search').first
     opened = False
 
@@ -1372,6 +1395,33 @@ async def _select_bill_type(page, search_kw: str, row_idx: int, bot: Bot, user_i
     await search_input.fill("")
     await search_input.type(search_kw, delay=150)
     await asyncio.sleep(2)
+
+    if target_text:
+        exact_clicked = await page.evaluate('''(target) => {
+            const norm = (s) => (s || "")
+                .replace(/ي/g, "ی").replace(/ك/g, "ک")
+                .replace(/[\\u200c\\u200f\\u200e]/g, "")
+                .replace(/\\s+/g, " ").trim();
+            const t = norm(target);
+            const choices = Array.from(document.querySelectorAll(
+                '.ui-select-choices-row, .ui-select-choices div[ng-repeat]'));
+            const visible = choices.filter(el => {
+                const r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0;
+            });
+            // اولویت با تطابق کامل، سپس «شامل»
+            let row = visible.find(el => norm(el.innerText) === t);
+            if (!row) row = visible.find(el => norm(el.innerText).includes(t));
+            if (!row) return null;
+            const inner = row.querySelector('a.ui-select-choices-row-inner') || row;
+            inner.click();
+            return norm(row.innerText);
+        }''', target_text)
+        if exact_clicked:
+            logging.info(f"[LAVAYEH] عنوان «{exact_clicked}» (متن هدف: {target_text}) انتخاب شد")
+            return
+        logging.warning(
+            f"[LAVAYEH] گزینهٔ «{target_text}» در لیست پیدا نشد — فال‌بک به ردیف {row_idx}")
 
     clicked = await page.evaluate(f'''(idx) => {{
         const choices = Array.from(document.querySelectorAll('.ui-select-choices-row, .ui-select-choices div[ng-repeat]'));
@@ -1582,36 +1632,68 @@ async def _select_province(page, province: str, bot: Bot, user_id: int, max_retr
     return False
 
 
+async def _handle_case_info_session_popup(page, bot: Bot, user_id: int, where: str) -> bool:
+    """⭐ تشخیص پاپ‌آپ «ورود به سامانه در صفحه یا رایانه ای دیگر ... منقضی
+    شده است» در مرحلهٔ «اطلاعات پرونده» (شماره پرونده / شماره بایگانی).
+
+    قبلاً این پاپ‌آپ توسط _get_and_close_error_popup_text بی‌صدا بسته و
+    به‌عنوان «خطای صحت‌سنجی» شمرده می‌شد — نتیجه: پیام گمراه‌کنندهٔ «شماره
+    پرونده/بایگانی را بررسی کنید» به کاربر و بی‌خبری مدیر. حالا به مدیر
+    برای لاگین مجدد اطلاع داده می‌شود (handle_session_expired) و پس از
+    لاگین، همان مرحله از نو تلاش می‌شود.
+
+    بازگشت: True اگر پاپ‌آپ ورود همزمان/انقضا دیده و لاگین مجدد انجام شد.
+    """
+    try:
+        is_concurrent = await detect_concurrent_login_popup(page)
+    except Exception:
+        is_concurrent = False
+    if not is_concurrent:
+        return False
+
+    logging.warning(f"[LAVAYEH] ورود همزمان/انقضای نشست در «{where}» — اطلاع به مدیر برای لاگین مجدد")
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"⚠️ [LAVAYEH] خطای ورود همزمان سامانه در مرحلهٔ «{where}» (کاربر {user_id}) — "
+            "لطفاً لاگین مجدد انجام دهید.")
+    except Exception:
+        pass
+    # پیام «پرونده در صف است» برای کاربر داخل handle_session_expired ارسال می‌شود
+    await handle_session_expired(bot, user_id, page=page)
+    await asyncio.sleep(3)
+    return True
+
+
+# سقف دفعات لاگین مجدد در یک مرحلهٔ صحت‌سنجی (جدا از شمارش خطاهای عادی)
+_CASE_INFO_MAX_RELOGINS = 3
+
+
 async def _click_validate_with_retry(page, bot: Bot, user_id: int, max_retries: int = 5):
-    """کلیک روی صحت‌سنجی اطلاعات (شماره پرونده)."""
-    await page.evaluate('''() => {
-        const btn = document.querySelector('#btnAddHst1');
-        if (btn) { btn.click(); return true; }
-        return false;
-    }''')
-    await asyncio.sleep(12)
+    """کلیک روی صحت‌سنجی اطلاعات (شماره پرونده).
 
-    error_text = await _get_and_close_error_popup_text(page)
-    if error_text:
-        if _is_service_down_error(error_text):
-            logging.error(f"[LAVAYEH] سرویس استعلام واحدهای قضایی سنا قطع است — توقف فوری: {error_text}")
-            raise LavayehServiceDownError(
-                "سامانهٔ استعلام واحدهای قضایی سنا موقتاً قطع است. لطفاً دو ساعت دیگر مجدداً تلاش بفرمائید."
-            )
-        logging.warning(f"[LAVAYEH] خطای صحت‌سنجی (تلاش ۱): {error_text}")
-        await asyncio.sleep(5)
+    ⭐ پاپ‌آپ ورود همزمان (قبل یا بعد از کلیک) → لاگین مجدد مدیر و تکرار
+    همان تلاش؛ جزو شمارش خطاهای صحت‌سنجی حساب نمی‌شود.
+    """
+    attempt = 0
+    relogins = 0
+    while attempt < max_retries:
+        if relogins < _CASE_INFO_MAX_RELOGINS and await _handle_case_info_session_popup(
+                page, bot, user_id, "اطلاعات پرونده — شماره پرونده"):
+            relogins += 1
+            continue
 
-    has_table = await _wait_for_case_table(page, bot, user_id)
-    if has_table:
-        return
-
-    for attempt in range(1, max_retries):
         await page.evaluate('''() => {
             const btn = document.querySelector('#btnAddHst1');
             if (btn) { btn.click(); return true; }
             return false;
         }''')
         await asyncio.sleep(12)
+
+        if relogins < _CASE_INFO_MAX_RELOGINS and await _handle_case_info_session_popup(
+                page, bot, user_id, "اطلاعات پرونده — شماره پرونده"):
+            relogins += 1
+            continue
 
         error_text = await _get_and_close_error_popup_text(page)
         if error_text:
@@ -1622,11 +1704,14 @@ async def _click_validate_with_retry(page, bot: Bot, user_id: int, max_retries: 
                 )
             logging.warning(f"[LAVAYEH] خطای صحت‌سنجی (تلاش {attempt+1}): {error_text}")
             await asyncio.sleep(5)
-            continue
+            if attempt > 0:
+                attempt += 1
+                continue
 
         has_table = await _wait_for_case_table(page, bot, user_id)
         if has_table:
             return
+        attempt += 1
 
     logging.warning(f"[LAVAYEH] صحت‌سنجی ناموفق پس از {max_retries} تلاش")
 
@@ -3127,9 +3212,22 @@ async def _click_validate_with_retry_archive(page, bot: Bot, user_id: int):
     """
     کلیک روی دکمه صحت‌سنجی اطلاعات برای شماره بایگانی.
     این تابع مشابه _click_validate_with_retry است اما از دکمه btnAddHst2 استفاده می‌کند.
+
+    ⭐ پاپ‌آپ ورود همزمان (قبل یا بعد از کلیک) → لاگین مجدد مدیر و تکرار
+    همان تلاش؛ دیگر به‌عنوان «خطای صحت‌سنجی» شمرده نمی‌شود (قبلاً پس از ۲
+    بار، کاربر پیام اشتباه «شماره بایگانی و کد شعبه را بررسی کنید» می‌گرفت).
     """
     consecutive_errors = 0
-    for attempt in range(5):
+    relogins = 0
+    attempt = -1
+    while attempt < 4:
+        attempt += 1
+        if relogins < _CASE_INFO_MAX_RELOGINS and await _handle_case_info_session_popup(
+                page, bot, user_id, "اطلاعات پرونده — شماره بایگانی"):
+            relogins += 1
+            attempt -= 1
+            continue
+
         clicked = await page.evaluate('''() => {
             const btn = document.querySelector('#btnAddHst2');
             if (btn) { btn.click(); return true; }
@@ -3138,6 +3236,12 @@ async def _click_validate_with_retry_archive(page, bot: Bot, user_id: int):
         if not clicked:
             await safe_click_by_text(page, "صحت سنجی اطلاعات", bot, user_id)
         await asyncio.sleep(12)
+
+        if relogins < _CASE_INFO_MAX_RELOGINS and await _handle_case_info_session_popup(
+                page, bot, user_id, "اطلاعات پرونده — شماره بایگانی"):
+            relogins += 1
+            attempt -= 1
+            continue
 
         error_text = await _get_and_close_error_popup_text(page)
         if error_text:

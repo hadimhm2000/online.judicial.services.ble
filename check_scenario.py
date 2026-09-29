@@ -102,6 +102,7 @@
 import asyncio
 import logging
 import os
+import re
 import time
 import html as html_lib
 
@@ -3613,6 +3614,27 @@ async def _fill_doc_field_angular(page, field_name: str, value, prefix: str = "C
     return bool(ok)
 
 
+_FA_AR_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+
+def _normalize_jalali_date(value) -> str:
+    """⭐ یکسان‌سازی تاریخ دادنامه برای فیلد #txtIssueDate سامانه:
+    ارقام فارسی/عربی → لاتین، جداکننده‌های - . \\ → «/»، و صفر پیشرو برای
+    ماه/روز (۱۴۰۳/۶/۵ → 1403/06/05). اگر قالب قابل تشخیص نبود، همان مقدار
+    (با ارقام لاتین) برگردانده می‌شود.
+    """
+    raw = str(value or "").strip().translate(_FA_AR_DIGITS)
+    if not raw:
+        return ""
+    parts = [p for p in re.split(r"[\\/\-\.\s]+", raw) if p]
+    if len(parts) == 3 and all(p.isdigit() for p in parts):
+        y, m, d = parts
+        if len(y) == 2:
+            y = "14" + y
+        return f"{int(y):04d}/{int(m):02d}/{int(d):02d}"
+    return raw
+
+
 async def _fill_attachment_count_and_add(page, count: int, prefix: str = "CHECK") -> None:
     """⭐ دور ۳ — پر کردن «تعداد پیوست‌ها» (#txt001) و کلیک «افزودن پیوست»
     (#incAttach0) قبل از «ثبت و ویرایش پیوست» (#btnSaveDoc).
@@ -3992,7 +4014,7 @@ async def _register_dadnameh_attachment(page, group, group_paths, bot, user_id, 
     → «ثبت و ویرایش پیوست» (btnSaveDoc) با مدیریت خطا → آپلود تصاویر عین سایر منضمات.
     """
     dadnameh_no = str(group.get("dadnameh_no", "") or "").strip()
-    dadnameh_date = str(group.get("dadnameh_date", "") or "").strip()
+    dadnameh_date = _normalize_jalali_date(group.get("dadnameh_date", ""))
     dadnameh_court = str(group.get("dadnameh_court", "") or "").strip()
     dadnameh_branch = str(group.get("dadnameh_branch", "") or "").strip()
     logging.info(
@@ -4035,13 +4057,20 @@ async def _register_dadnameh_attachment(page, group, group_paths, bot, user_id, 
     filled_date = await _fill_doc_field_angular(page, "txtIssueDate", dadnameh_date)
     if filled_date:
         await asyncio.sleep(0.5)
-        # بستن dropdown تقویم فارسی که ممکن است روی فرزندها باز شود
+        # ⭐ بستن تقویم فارسی با Escape/blur — قبلاً همهٔ .dropdown-menuهای
+        # صفحه از DOM حذف می‌شد که اسکوپ‌های AngularJS فرم را خراب می‌کرد و
+        # یکی از اختلاف‌های این پیوست با روال سالم سایر منضمات بود.
         try:
-            await page.evaluate(
-                "() => { document.querySelectorAll('.dropdown-menu, ul.dropdown-menu')"
-                ".forEach(m => m.remove()); }")
+            await page.keyboard.press("Escape")
         except Exception:
             pass
+        try:
+            await page.evaluate(
+                "() => { const el = document.querySelector('#txtIssueDate');"
+                " if (el) el.blur(); }")
+        except Exception:
+            pass
+        await wait_for_angular_idle(page)
     else:
         logging.warning("[CHECK][منضمات] فیلد #txtIssueDate (تاریخ دادنامه) پیدا نشد")
 
@@ -4055,24 +4084,12 @@ async def _register_dadnameh_attachment(page, group, group_paths, bot, user_id, 
         if not filled_court:
             logging.warning("[CHECK][منضمات] فیلد #txtCourt (شماره شعبه) پیدا نشد")
 
-    # ۴) تعداد برگ پیوست (مثل سایر پیوست‌ها)
-    await _fill_doc_field_angular(page, "txt001", str(len(group_paths or [])))
-    await asyncio.sleep(0.5)
-
-    # ۵) «افزودن پیوست»
-    added = await page.evaluate("""() => {
-        const btn = document.querySelector('#incAttach0');
-        if (btn && !btn.disabled) { btn.click(); return true; }
-        return false;
-    }""")
-    if not added:
-        err = "دکمه «افزودن پیوست» (incAttach0) برای دادنامه یافت نشد"
-        logging.error(f"[CHECK][منضمات] {err}")
-        try:
-            await bot.send_message(ADMIN_ID, f"❌ [CHECK] {err} — کاربر {user_id} | کد: {bill_no}")
-        except Exception:
-            pass
-        return False
+    # ۴+۵) تعداد برگ پیوست + «افزودن پیوست» — ⭐ عیناً روال سایر منضمات
+    # (استشهادیه و ...) با _fill_attachment_count_and_add: تعداد>۱ → #txt001
+    # + #incAttach0 + انتظار آرام‌شدن AngularJS؛ تعداد=۱ → فقط #txt001.
+    # قبلاً #incAttach0 همیشه (حتی برای ۱ تصویر) و بدون انتظار کلیک می‌شد.
+    await wait_for_angular_idle(page)
+    await _fill_attachment_count_and_add(page, len(group_paths or []), prefix="CHECK")
     await asyncio.sleep(1)
 
     # ۶) «ثبت و ویرایش پیوست» با ریترای و اعمال خطاها/نکات منضمات
@@ -4094,6 +4111,7 @@ async def _register_dadnameh_attachment(page, group, group_paths, bot, user_id, 
             pass
         return False
     await resilient_sleep(page, 5, bot, user_id)
+    await wait_for_angular_idle(page)
 
     # ۷) آپلود تصاویر عین سایر منضمات
     if group_paths:
