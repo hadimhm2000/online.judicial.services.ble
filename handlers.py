@@ -792,8 +792,14 @@ async def admin_list_prepaid(message: types.Message):
         svc = info.get("service_label") or info.get("service", "؟")
         paid_at = info.get("paid_at", "")
         paid_str = paid_at.strftime("%Y/%m/%d %H:%M") if hasattr(paid_at, "strftime") else str(paid_at)
+        try:
+            from prepay_registration import _split_record
+            _paid, _credit = _split_record(info)
+            _parts = f" (پیش‌پرداخت: {_paid:,} + مانده/بستانکاری: {_credit:,})"
+        except Exception:
+            _parts = ""
         lines.append(
-            f"• کاربر `{uid}` — {amount_rial:,} ریال ({amount_toman:,} تومان) | "
+            f"• کاربر `{uid}` — {amount_rial:,} ریال ({amount_toman:,} تومان){_parts} | "
             f"سرویس: {svc} | زمان: {paid_str}")
     lines.append(
         "\n🗑 حذف: `/prepaid_clear <user_id>`\n"

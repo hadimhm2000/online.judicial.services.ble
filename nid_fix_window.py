@@ -141,6 +141,9 @@ def halve_prepaid(user_id: int) -> int:
     new_rial = old_rial // 2
     prepaid["amount_rial"] = new_rial
     prepaid["amount_toman"] = new_rial // 10
+    # ⭐ هم‌راستا با تفکیک پیش‌پرداخت/مانده در prepay_registration
+    if "prepay_paid_rial" in prepaid:
+        prepaid["prepay_paid_rial"] = int(prepaid.get("prepay_paid_rial", 0) or 0) // 2
     logger.info(
         f"[NID-FIX] جریمه: پیش‌پرداخت کاربر {user_id} نصف شد: "
         f"{old_rial:,} → {new_rial:,} ریال")

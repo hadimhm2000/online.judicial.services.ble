@@ -3361,13 +3361,18 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                 # رکورد مصرف شود تا مدیر هنگام محاسبه دستی هزینه لحاظ کند.
                 _prepay_note = ""
                 try:
-                    from prepay_registration import pop_prepaid
+                    from prepay_registration import pop_prepaid, _split_record
                     _pre = pop_prepaid(user_id)
                     if _pre:
+                        _paid, _credit = _split_record(_pre)
+                        _parts = []
+                        if _paid:
+                            _parts.append(f"💵 مبلغ *{_paid:,} ریال* به عنوان پیش پرداخت، پرداخت شده است")
+                        if _credit:
+                            _parts.append(f"💵 مبلغ *{_credit:,} ریال* مانده/بستانکاری قبلی شما")
                         _prepay_note = (
-                            f"\n\n💵 مبلغ *{int(_pre.get('amount_rial', 0)):,} ریال* "
-                            f"به عنوان پیش پرداخت، پرداخت شده است و در محاسبه "
-                            f"هزینه شما لحاظ خواهد شد.")
+                            "\n\n" + "\n".join(_parts) +
+                            "\nاین مبالغ در محاسبهٔ هزینهٔ شما لحاظ خواهد شد.")
                 except Exception:
                     pass
                 await bot.send_message(

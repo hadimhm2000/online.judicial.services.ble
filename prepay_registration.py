@@ -56,6 +56,35 @@ MIN_INVOICE_AMOUNT_RIAL = 10_000
 PREPAY_INVOICE_TYPE = "reg_prepay"
 
 
+# ═══ ⭐ مانده/بستانکاری کاربر (مبالغ قابل بازگشت/کسر) ═══
+# رکورد runtime_state.prepaid_registrations[user_id] می‌تواند شامل دو بخش باشد:
+#   - prepay_paid_rial: پیش‌پرداختِ پرداخت‌شده برای همین پرونده
+#   - مابقی (credit): مانده/بستانکاری قبلی — ثبت‌شده توسط مدیر
+#     (/prepaid_set) یا باقی‌ماندهٔ پیش‌پرداختِ پرونده‌های قبلی
+# هر دو بخش در فاکتور نهایی از هزینه کل کسر و به کاربر اعلام می‌شوند؛ مانده
+# در پیام/فاکتور پیش‌پرداخت هم درج می‌شود.
+
+def _split_record(rec: dict):
+    """(prepay_paid_rial, credit_rial) یک رکورد — سازگار با رکوردهای قدیمی
+    (بدون prepay_paid_rial: رکورد دستی مدیر = تماماً مانده، وگرنه تماماً
+    پیش‌پرداخت)."""
+    if not rec:
+        return 0, 0
+    amount = max(0, int(rec.get("amount_rial", 0) or 0))
+    if "prepay_paid_rial" in rec:
+        paid = int(rec.get("prepay_paid_rial", 0) or 0)
+    else:
+        paid = 0 if rec.get("manual") else amount
+    paid = max(0, min(paid, amount))
+    return paid, amount - paid
+
+
+def get_credit_rial(user_id: int) -> int:
+    """کل مانده/بستانکاری فعلی کاربر (ریال) — ۰ اگر نداشته باشد."""
+    rec = runtime_state.prepaid_registrations.get(user_id)
+    return max(0, int((rec or {}).get("amount_rial", 0) or 0))
+
+
 def get_prepay_amount_toman(service_key: str) -> int:
     """مبلغ پیش‌پرداخت (تومان) بر اساس نوع سرویس.
 
@@ -109,6 +138,9 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
                 "description": (
                     f"این مبلغ پیش پرداخت {service_label} می باشد\n"
                     f"مبلغ: {amount_toman:,} تومان ({amount_rial:,} ریال)"
+                    + (f"\nمانده/بستانکاری شما: {get_credit_rial(user_id):,} ریال "
+                       f"(در فاکتور نهایی کسر می‌شود)"
+                       if get_credit_rial(user_id) > 0 else "")
                 ),
                 "payload": invoice_payload,
                 "provider_token": BALE_WALLET_TOKEN,
@@ -139,12 +171,20 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
             pass
         return False
 
+    # ⭐ مانده/بستانکاری کاربر (مبالغ قابل بازگشت/کسر) در پیام پیش‌پرداخت درج می‌شود
+    credit_rial = get_credit_rial(user_id)
+    credit_line = (
+        f"💵 مانده/بستانکاری شما: *{credit_rial:,} ریال* — این مبلغ همراه با "
+        f"پیش‌پرداخت، در فاکتور نهایی از هزینهٔ کل کسر می‌گردد.\n\n"
+        if credit_rial > 0 else "")
+
     # ═══ پیام راهنما — عیناً متن دستور کارفرما ═══
     try:
         await bot.send_message(
             user_id,
             f"🧾 *فاکتور پیش پرداخت*\n"
             f"💰 مبلغ: *{amount_toman:,} تومان*\n\n"
+            f"{credit_line}"
             f"این مبلغ پیش پرداخت می باشد لطفا پرداخت تا موارد شما شروع به ثبت گردد. باتشکر",
             parse_mode="Markdown")
     except Exception:
@@ -153,6 +193,7 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
             user_id,
             f"🧾 فاکتور پیش پرداخت\n"
             f"💰 مبلغ: {amount_toman:,} تومان\n\n"
+            f"{credit_line.replace('*', '')}"
             f"این مبلغ پیش پرداخت می باشد لطفا پرداخت تا موارد شما شروع به ثبت گردد. باتشکر")
 
     # اطلاع به مدیر
@@ -161,7 +202,9 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
             ADMIN_ID,
             f"🧾 [PREPAY] فاکتور پیش‌پرداخت {service_label} ارسال شد\n"
             f"👤 کاربر: {user_id}\n"
-            f"💰 مبلغ: {amount_toman:,} تومان — در انتظار پرداخت")
+            f"💰 مبلغ: {amount_toman:,} تومان — در انتظار پرداخت"
+            + (f"\n💵 مانده/بستانکاری کاربر: {credit_rial:,} ریال (در فاکتور نهایی کسر می‌شود)"
+               if credit_rial > 0 else ""))
     except Exception:
         pass
 
@@ -170,10 +213,23 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
 
 def register_prepaid(user_id: int, amount_toman: int, service_key: str,
                      service_label: str, charge_id: str = "") -> None:
-    """ثبت پیش‌پرداخت کاربر برای کسر در پایان کار (یک‌بار مصرف)."""
+    """ثبت پیش‌پرداخت کاربر برای کسر در پایان کار.
+
+    ⭐ رفع باگ: قبلاً رکورد قبلی کاربر بازنویسی می‌شد و مانده/بستانکاری
+    ثبت‌شده توسط مدیر (/prepaid_set) یا باقی‌ماندهٔ پرونده‌های قبلی با
+    پرداخت پیش‌پرداخت جدید بی‌صدا از بین می‌رفت. حالا پیش‌پرداخت جدید به
+    ماندهٔ موجود افزوده می‌شود و هر دو در فاکتور نهایی کسر می‌شوند.
+    """
+    existing = runtime_state.prepaid_registrations.get(user_id)
+    _old_paid, old_credit = _split_record(existing)
+    # پیش‌پرداختِ پرداخت‌نشدهٔ قبلی هم (اگر مصرف نشده) جزو مانده حساب می‌شود
+    carried = _old_paid + old_credit
+    paid_rial = int(amount_toman) * 10
+    total_rial = paid_rial + carried
     runtime_state.prepaid_registrations[user_id] = {
-        "amount_toman": amount_toman,
-        "amount_rial": amount_toman * 10,
+        "amount_toman": total_rial // 10,
+        "amount_rial": total_rial,
+        "prepay_paid_rial": paid_rial,
         "service": service_key,
         "service_label": service_label,
         "charge_id": charge_id,
@@ -181,7 +237,8 @@ def register_prepaid(user_id: int, amount_toman: int, service_key: str,
     }
     logging.info(
         f"[REG-PREPAY] پیش‌پرداخت ثبت شد: user={user_id}, svc={service_key}, "
-        f"مبلغ={amount_toman:,} تومان, charge={charge_id}")
+        f"مبلغ={amount_toman:,} تومان, مانده قبلی={carried:,} ریال, "
+        f"جمع قابل کسر={total_rial:,} ریال, charge={charge_id}")
 
 
 def pop_prepaid(user_id: int):
@@ -198,7 +255,9 @@ def pop_prepaid(user_id: int):
             if not isinstance(stash, dict):
                 stash = {}
                 runtime_state.consumed_prepay_for_panel = stash
-            amount_rial = int(prepay.get("amount_rial", 0) or 0)
+            # مبنای سود پنل فقط پیش‌پرداختِ واقعاً پرداخت‌شده است (نه مانده)
+            amount_rial = _split_record(prepay)[0] if "prepay_paid_rial" in prepay \
+                else int(prepay.get("amount_rial", 0) or 0)
             stash[user_id] = {
                 "amount_toman": amount_rial // 10,
                 "paid_at": prepay.get("paid_at"),
@@ -221,12 +280,34 @@ def adjust_final_fee_with_prepay(user_id: int, final_fee_rial: int):
     prepay = pop_prepaid(user_id)
     if not prepay:
         return final_fee_rial, None
-    prepay_rial = int(prepay.get("amount_rial", 0))
-    adjusted = max(0, int(final_fee_rial) - prepay_rial)
+    paid_rial, credit_rial = _split_record(prepay)
+    available = paid_rial + credit_rial
+    fee = max(0, int(final_fee_rial))
+    applied = min(available, fee)
+    adjusted = fee - applied
+    leftover = available - applied
+    prepay = dict(prepay)
+    prepay["prepay_paid_rial"] = paid_rial
+    prepay["credit_rial"] = credit_rial
+    prepay["applied_rial"] = applied
+    prepay["leftover_rial"] = leftover
+    # ⭐ رفع باگ: اگر مانده بیشتر از هزینه بود، باقی‌مانده حفظ می‌شود تا در
+    # پروندهٔ بعدی کسر گردد (قبلاً کل رکورد حذف و مازاد از بین می‌رفت).
+    if leftover > 0:
+        runtime_state.prepaid_registrations[user_id] = {
+            "amount_toman": leftover // 10,
+            "amount_rial": leftover,
+            "prepay_paid_rial": 0,
+            "service": "leftover",
+            "service_label": "باقی‌ماندهٔ مانده از پروندهٔ قبلی",
+            "charge_id": "",
+            "paid_at": datetime.datetime.now(),
+        }
     logging.info(
-        f"[REG-PREPAY] کسر پیش‌پرداخت: user={user_id}, "
-        f"کل={final_fee_rial:,}, پیش‌پرداخت={prepay_rial:,} → "
-        f"مابقی={adjusted:,} ریال (svc={prepay.get('service')})")
+        f"[REG-PREPAY] کسر مانده/پیش‌پرداخت: user={user_id}, کل={fee:,}, "
+        f"پیش‌پرداخت={paid_rial:,}, مانده={credit_rial:,}, کسرشده={applied:,} → "
+        f"قابل پرداخت={adjusted:,} ریال, باقی‌ماندهٔ مانده={leftover:,} "
+        f"(svc={prepay.get('service')})")
     return adjusted, prepay
 
 
@@ -238,9 +319,24 @@ def build_prepay_fee_text(final_fee_rial: int, prepay_info: dict,
     عنوان پیش پرداخت پرداخت شده، مابقی به‌عنوان «مبلغ قابل پرداخت شما»
     اعلام می‌گردد (فاکتورِ همین مبلغ ارسال می‌شود).
     """
-    prepay_rial = int((prepay_info or {}).get("amount_rial", 0))
-    return (
-        f"💰 *مبلغ کل: {total_fee_rial:,} ریال*\n"
-        f"💵 مبلغ *{prepay_rial:,} ریال* به عنوان پیش پرداخت، پرداخت شده است.\n"
-        f"💳 *مبلغ قابل پرداخت شما: {final_fee_rial:,} ریال*"
-    )
+    info = prepay_info or {}
+    if "credit_rial" in info:
+        paid_rial = int(info.get("prepay_paid_rial", 0) or 0)
+        credit_rial = int(info.get("credit_rial", 0) or 0)
+    else:
+        paid_rial, credit_rial = _split_record(info)
+    leftover = int(info.get("leftover_rial", 0) or 0)
+    lines = [f"💰 *مبلغ کل: {total_fee_rial:,} ریال*"]
+    if paid_rial > 0:
+        lines.append(f"💵 مبلغ *{paid_rial:,} ریال* به عنوان پیش پرداخت، پرداخت شده است.")
+    # فقط بخشی از مانده که واقعاً در این فاکتور مصرف شد (پیش‌پرداخت اول کسر می‌شود)
+    applied = int(info.get("applied_rial", paid_rial + credit_rial) or 0)
+    credit_used = max(0, min(credit_rial, applied - min(paid_rial, applied)))
+    if credit_used > 0:
+        lines.append(f"💵 مبلغ *{credit_used:,} ریال* از مانده/بستانکاری قبلی شما کسر گردید.")
+    lines.append(f"💳 *مبلغ قابل پرداخت شما: {final_fee_rial:,} ریال*")
+    if leftover > 0:
+        lines.append(
+            f"ℹ️ مبلغ *{leftover:,} ریال* از مانده/بستانکاری شما باقی ماند و در "
+            f"پروندهٔ بعدی کسر خواهد شد.")
+    return "\n".join(lines)
