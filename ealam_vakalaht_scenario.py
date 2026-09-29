@@ -42,6 +42,7 @@ from aiogram import Bot
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 import runtime_state
+from browser_helpers import SANA_SERVICE_DELAY_MAX_RETRIES
 from config import ADMIN_ID, temp_path
 from sheets import log_event
 try:
@@ -63,6 +64,7 @@ async def _safe_register_case(**kwargs):
 
 
 from browser_helpers import (
+    wait_for_sana_inquiry_loading,
     resilient_sleep, check_and_handle_expiry, soft_click_if_exists,
     goto_url_with_retry, human_delay, force_click_by_text,
     safe_click_by_text, safe_type, wait_for_angular_idle,
@@ -813,12 +815,13 @@ async def _click_sana_query(page, ng_click: str, bot: Bot, user_id: int,
                             max_retries: int = 5, national_id: str = ""):
     """کلیک دکمه استعلام و منتظر ماندن برای تکمیل
 
-    ⭐ طبق دستور کارفرما (تمام بخش‌های سامانه): بعد از کلیک استعلام ابتدا
-    لودینگ چک می‌شود؛ اگر پاپ‌آپی ظاهر شد یک‌بار بسته شده، سکشن حذف
-    (onRemoveItem) و مجدداً «افزودن» زده می‌شود و شناسه دوباره وارد
-    می‌شود؛ اگر باز هم پاپ‌آپ آمد، متن خطا برای مدیر و کاربر ارسال می‌شود.
+    ⭐ طبق دستور کارفرما (تمام بخش‌های ربات): بعد از کلیک استعلام، نوار
+    لودینگ آبی سامانه پاییده می‌شود (سریع → ادامه؛ کامل → صبر تا رفتن آن).
+    خطای تاریخ تولد = کدملی اشتباه → توقف با پیام ویرایش کدملی. «تاخیر در
+    اجرای سرویس» → تکرار استعلام. سایر پاپ‌آپ‌ها → فقط یک‌بار دیگر استعلام؛
+    اگر باز هم پاپ‌آپ آمد، متن خطا برای مدیر و کاربر.
     """
-    readd_done = False
+    requery_done = False
     service_delay_count = 0
     for attempt in range(max_retries):
         # بررسی session expiry قبل از هر تلاش
@@ -852,15 +855,9 @@ async def _click_sana_query(page, ng_click: str, bot: Bot, user_id: int,
         if not clicked:
             logging.warning(f"[EALAM] دکمه استعلام پیدا نشد (تلاش {attempt+1})")
 
-        # صبر اولیه
-        await asyncio.sleep(3)
-
-        # منتظر ناپدید شدن لودینگ افقی بالای صفحه
-        had_loading_error = await wait_for_horizontal_loading_bar(page, bot, user_id, timeout=60)
-        if had_loading_error:
-            logging.warning(f"[EALAM] خطا بعد از لودینگ استعلام — تلاش مجدد")
-            await asyncio.sleep(5)
-            continue
+        # ⭐ انتظار دقیق برای نوار لودینگ استعلام: سریع → ادامه؛ کامل → صبر تا
+        # رفتن کامل آن. پاپ‌آپ‌ها دست‌نخورده می‌مانند تا پایین‌تر خوانده شوند.
+        await wait_for_sana_inquiry_loading(page, prefix="EALAM")
 
         # بررسی session expiry بعد از استعلام
         had_expiry = await check_and_handle_expiry(page, bot, user_id)
@@ -877,9 +874,9 @@ async def _click_sana_query(page, ng_click: str, bot: Bot, user_id: int,
             service_delay_count += 1
             logging.warning(
                 f"[EALAM] پاپ‌آپ «تاخیر در اجرای سرویس» در استعلام اشخاص — "
-                f"تکرار {service_delay_count}/2")
+                f"تکرار {service_delay_count}/{SANA_SERVICE_DELAY_MAX_RETRIES}")
             await dismiss_sana_error_popup(page)
-            if service_delay_count >= 2:
+            if service_delay_count >= SANA_SERVICE_DELAY_MAX_RETRIES:
                 try:
                     await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
                 except Exception:
@@ -887,7 +884,7 @@ async def _click_sana_query(page, ng_click: str, bot: Bot, user_id: int,
                 try:
                     await bot.send_message(
                         ADMIN_ID,
-                        f"🚨 [EALAM] استعلام اشخاص کاربر {user_id} بعد از ۲ بار "
+                        f"🚨 [EALAM] استعلام اشخاص کاربر {user_id} بعد از چند بار "
                         "تلاش مجدد هم‌چنان «تاخیر در اجرای سرویس» می‌دهد.")
                 except Exception:
                     pass
@@ -896,9 +893,7 @@ async def _click_sana_query(page, ng_click: str, bot: Bot, user_id: int,
             await asyncio.sleep(3)
             continue
 
-        # ⭐ طبق دستور کارفرما: اولین پاپ‌آپ بعد از استعلام → بستن پاپ‌آپ
-        # (بستن) + حذف سکشن (onRemoveItem) + افزودن مجدد (#btnAddSection)
-        # + ورود مجدد شناسه؛ سپس استعلام دوباره کلیک می‌شود.
+        # بررسی پاپ‌آپ خطای استعلام
         popup_text_ealam = await page.evaluate('''() => {
             const popup = document.querySelector('.sweet-alert.showSweetAlert');
             if (!popup) return null;
@@ -921,17 +916,38 @@ async def _click_sana_query(page, ng_click: str, bot: Bot, user_id: int,
                 logging.info("[EALAM] پاپ‌آپ خطا نبود — داده‌های ثنا قبلاً دریافت شد")
                 await _close_error_popup(page)
                 return
-            if not readd_done:
-                readd_done = True
+            # ⭐ «تاریخ تولد ارسالی مربوط به شماره ملی ... اشتباه است» = کدملی
+            # اشتباه → بدون تکرار؛ کاربر باید کدملی را اصلاح کند
+            try:
+                import error_catalog as _ec0
+                _is_bd = _ec0.is_birthdate_error(popup_text_ealam)
+            except Exception:
+                _is_bd = ("تاریخ تولد" in popup_text_ealam and "اشتباه" in popup_text_ealam)
+            if _is_bd:
+                await dismiss_sana_error_popup(page)
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"⚠️ [EALAM] کدملی اشتباه (خطای تاریخ تولد ثنا) کاربر {user_id} — "
+                        f"شناسه {national_id or '—'}: «{popup_text_ealam[:200]}»")
+                except Exception:
+                    pass
+                raise EalamFatalError(
+                    f"کدملی `{national_id or '—'}` اشتباه است و باید ویرایش شود "
+                    f"(پیام سامانه: {popup_text_ealam[:150]}). لطفاً با کدملی صحیح "
+                    "مجدداً اقدام فرمایید.")
+
+            # ⭐ طبق دستور جدید کارفرما: اولین پاپ‌آپ خطا → بستن و فقط یک‌بار
+            # دیگر استعلام (روند حذف/افزودن سکشن حذف شد)
+            if not requery_done:
+                requery_done = True
                 logging.warning(
-                    f"[EALAM] پاپ‌آپ استعلام ثنا — روند حذف/افزودن مجدد سکشن: "
+                    f"[EALAM] پاپ‌آپ استعلام ثنا — یک‌بار دیگر استعلام زده می‌شود: "
                     f"{popup_text_ealam[:120]}")
                 await dismiss_sana_error_popup(page)
-                await readd_person_section(
-                    page, national_id, ng_click, log_prefix="EALAM")
                 await asyncio.sleep(2)
                 continue
-            # پاپ‌آپ دوبار بعد از بازیابی سکشن → متن خطا برای مدیر و کاربر
+            # پاپ‌آپ دوم پس از تکرار استعلام → متن خطا برای مدیر و کاربر
             await dismiss_sana_error_popup(page)
             try:
                 await bot.send_message(
@@ -1094,8 +1110,8 @@ async def _click_save_temp_with_retry(page, bot: Bot, user_id: int, max_retries:
                 service_delay_count += 1
                 logging.warning(
                     f"[EALAM] پاپ‌آپ «تاخیر در اجرای سرویس» در ثبت موقت — "
-                    f"تکرار {service_delay_count}/2")
-                if service_delay_count >= 2:
+                    f"تکرار {service_delay_count}/{SANA_SERVICE_DELAY_MAX_RETRIES}")
+                if service_delay_count >= SANA_SERVICE_DELAY_MAX_RETRIES:
                     try:
                         await bot.send_message(user_id, SANA_SYSTEM_DOWN_MSG)
                     except Exception:
@@ -1103,7 +1119,7 @@ async def _click_save_temp_with_retry(page, bot: Bot, user_id: int, max_retries:
                     try:
                         await bot.send_message(
                             ADMIN_ID,
-                            f"🚨 [EALAM] ثبت موقت کاربر {user_id} بعد از ۲ بار "
+                            f"🚨 [EALAM] ثبت موقت کاربر {user_id} بعد از چند بار "
                             "تلاش مجدد هم‌چنان «تاخیر در اجرای سرویس» می‌دهد.")
                     except Exception:
                         pass

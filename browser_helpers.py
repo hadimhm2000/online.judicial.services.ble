@@ -14,6 +14,17 @@ import runtime_state
 from config import ADMIN_ID
 from keyboards import admin_login_kb
 
+# ⭐ نوار لودینگ آبی سامانه که بعد از کلیک «استعلام» کدملی/شناسه ملی ظاهر می‌شود:
+# <div class="progress-bar progress-bar-striped progress-bar-animated active width-full"
+#      style="background-color:#0072c6" role="progressbar" ...>
+SANA_LOADING_BAR_SELECTOR = ".progress-bar.progress-bar-striped.progress-bar-animated.active"
+
+# ⭐ سقف تکرار یک مرحله هنگام پاپ‌آپ «خطا: تاخیر در اجرای سرویس» — طبق دستور
+# کارفرما همان مرحله تکرار می‌شود؛ فقط اگر پس از این تعداد هم برطرف نشد،
+# پیام قطعی سامانه به کاربر داده می‌شود.
+SANA_SERVICE_DELAY_MAX_RETRIES = 4
+
+
 # آدرسی که سامانه‌ی ثنا هنگام انقضای نشست کاربر را به آن ریدایرکت می‌کند.
 # (SSO — صفحه‌ی جدید لاگین که با فرم قدیمی #txtUsername متفاوت است)
 SESSION_LOGIN_REDIRECT_PREFIXES = [
@@ -421,7 +432,7 @@ async def detect_sana_service_delay_popup(page) -> bool:
             if (!popup) return false;
             const style = window.getComputedStyle(popup);
             if (style.display === 'none' || style.visibility === 'hidden') return false;
-            const text = popup.innerText || "";
+            const text = (popup.innerText || "").replace(/ي/g, "ی").replace(/ك/g, "ک");
             return text.includes("تاخیر در اجرای سرویس") ||
                    text.includes("سرویس با خطا") ||
                    text.includes("خطا در فراخوانی");
@@ -432,7 +443,8 @@ async def detect_sana_service_delay_popup(page) -> bool:
 
 
 async def retry_step_on_service_delay(page, bot: Bot, user_id: int, step_coro_factory,
-                                       step_name: str, max_retries: int = 2,
+                                       step_name: str,
+                                       max_retries: int = SANA_SERVICE_DELAY_MAX_RETRIES,
                                        log_prefix: str = "SANA") -> bool:
     """
     ⭐ طبق دستور کارفرما — اجرای یک «مرحله» (کلیک روی گزینه‌ی استعلام
@@ -886,6 +898,69 @@ async def resilient_sleep(page, seconds, bot: Bot, user_id: int):
         await asyncio.sleep(1)
     return False
 
+
+
+async def wait_for_sana_inquiry_loading(page, appear_grace: float = 3.0,
+                                        max_wait: float = 180.0,
+                                        prefix: str = "SANA") -> dict:
+    """⭐ انتظار دقیق برای نوار لودینگ استعلام ثنا (SANA_LOADING_BAR_SELECTOR).
+
+    طبق دستور کارفرما:
+      - گاهی استعلام خیلی سریع انجام می‌شود (نوار اصلاً دیده نمی‌شود یا
+        بلافاصله می‌رود) → یعنی درست است و ادامه می‌دهیم.
+      - گاهی نوار کامل می‌ماند → باید صبر کرد تا کاملاً برود.
+    پاپ‌آپ‌ها را نمی‌بندد — خواندن و تصمیم‌گیری دربارهٔ پاپ‌آپ بعد از
+    لودینگ با تابع استعلام فراخوان است.
+
+    خروجی: {"appeared": bool, "seconds": float, "timed_out": bool}
+    """
+    js = '''(sel) => {
+        const els = Array.from(document.querySelectorAll(sel));
+        return els.some(el => {
+            const r = el.getBoundingClientRect();
+            if (r.width <= 0 || r.height <= 0) return false;
+            const st = window.getComputedStyle(el);
+            if (st.display === 'none' || st.visibility === 'hidden') return false;
+            return el.offsetParent !== null || st.position === 'fixed';
+        });
+    }'''
+    loop = asyncio.get_event_loop()
+    start = loop.time()
+    appeared = False
+    gone_streak = 0
+    while True:
+        elapsed = loop.time() - start
+        try:
+            visible = bool(await page.evaluate(js, SANA_LOADING_BAR_SELECTOR))
+        except Exception:
+            visible = False
+        if visible:
+            if not appeared:
+                logging.info(f"[{prefix}] لودینگ استعلام ثنا ظاهر شد — انتظار تا پایان")
+            appeared = True
+            gone_streak = 0
+        else:
+            if not appeared and elapsed >= appear_grace:
+                break  # استعلام سریع انجام شد
+            if appeared:
+                gone_streak += 1
+                if gone_streak >= 2:  # دو بررسی پیاپی بدون نوار = واقعاً تمام شد
+                    break
+        if elapsed >= max_wait:
+            logging.warning(f"[{prefix}] لودینگ استعلام ثنا پس از {int(max_wait)} ثانیه هنوز باقی است")
+            return {"appeared": appeared, "seconds": elapsed, "timed_out": True}
+        await asyncio.sleep(0.4)
+    try:
+        await wait_for_angular_idle(page)
+    except Exception:
+        pass
+    await asyncio.sleep(0.8)
+    seconds = loop.time() - start
+    if appeared:
+        logging.info(f"[{prefix}] لودینگ استعلام ثنا پس از {seconds:.1f} ثانیه تمام شد")
+    return {"appeared": appeared, "seconds": seconds, "timed_out": False}
+
+
 async def wait_for_horizontal_loading_bar(page, bot: Bot, user_id: int, timeout: int = 60):
     """
     منتظر ماندن تا نوار لودینگ افقی بالای صفحه ناپدید شود.
@@ -907,7 +982,9 @@ async def wait_for_horizontal_loading_bar(page, bot: Bot, user_id: int, timeout:
         await page.evaluate('''(timeout) => {
             return new Promise((resolve) => {
                 let checks = 0;
-                const maxChecks = timeout;
+                // ⭐ هر بررسی ۵۰۰ میلی‌ثانیه است — قبلاً maxChecks = timeout بود
+                // و مثلاً timeout=60 فقط ۳۰ ثانیه صبر می‌کرد.
+                const maxChecks = timeout * 2;
                 const interval = setInterval(() => {
                     checks++;
                     if (checks >= maxChecks) {
