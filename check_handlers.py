@@ -3791,6 +3791,14 @@ async def check_confirm_handler(message: Message, state: FSMContext):
     # فاکتور و درگاه پرداخت ارسال می‌شود؛ پس از تایید خودکار پرداخت،
     # ثبت آغاز خواهد شد (check_prepay_successful_payment).
     # ثبت دادخواست: ۲,۰۰۰ تومان (اصلاحیهٔ ۱۴۰۵/۰۶/۲۵ — حداقلِ مبلغ فاکتور API).
+    # ⭐ مانده/بستانکاری کاربر کل پیش‌پرداخت را پوشش می‌دهد → بدون فاکتور،
+    # ثبت مستقیم (مانده در فاکتور نهایی کسر می‌شود)
+    from prepay_registration import cover_prepay_from_credit
+    if await cover_prepay_from_credit(bot, user_id, "check",
+                                      f"ثبت دادخواست ({request_title})"):
+        await _submit_check_request(message, state, bot)
+        return
+
     from prepay_registration import send_prepay_invoice
     sent = await send_prepay_invoice(bot, user_id, "check",
                                      f"ثبت دادخواست ({request_title})")

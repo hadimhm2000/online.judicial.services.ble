@@ -2798,6 +2798,13 @@ async def tn_confirm_handler(message: Message, state: FSMContext, bot: Bot):
         # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): پیش‌پرداخت قبل از شروع ثبت —
         # فاکتور و درگاه پرداخت ارسال می‌شود؛ پس از تایید خودکار پرداخت،
         # ثبت آغاز خواهد شد (tn_prepay_successful_payment).
+        # ⭐ مانده/بستانکاری کاربر کل پیش‌پرداخت را پوشش می‌دهد → بدون فاکتور،
+        # ثبت مستقیم (مانده در فاکتور نهایی کسر می‌شود)
+        from prepay_registration import cover_prepay_from_credit
+        if await cover_prepay_from_credit(bot, user_id, "tn", f"دعاوی اعتراضی ({case_type})"):
+            await _submit_tn_request(message, state, bot, data, user_id, case_type)
+            return
+
         sent = await send_prepay_invoice(
             bot, user_id, "tn", f"دعاوی اعتراضی ({case_type})")
         if sent:

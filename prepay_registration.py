@@ -211,6 +211,70 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
     return True
 
 
+async def cover_prepay_from_credit(bot, user_id: int, service_key: str,
+                                   service_label: str) -> bool:
+    """⭐ دستور کارفرما: اگر مانده/بستانکاری کاربر کل مبلغ پیش‌پرداخت را
+    پوشش دهد، مرحلهٔ پرداخت پیش‌پرداخت کلاً حذف و ثبت مستقیم آغاز می‌شود.
+
+    رکورد مانده دست‌نخورده می‌ماند: در فاکتور نهایی کل مانده از هزینه کسر
+    می‌شود — دقیقاً معادل حالتی که کاربر پیش‌پرداخت را بپردازد و همان مبلغ
+    در پایان کسر شود (مبلغ نهایی پرداختی کاربر یکسان است).
+
+    خروجی: True → پیش‌پرداخت پوشش داده شد و پیام‌ها ارسال شدند؛ فراخوان
+    باید بلافاصله ثبت را شروع کند (مثل مسیر کاربران معاف). False → فاکتور
+    پیش‌پرداخت طبق روال ارسال شود.
+    """
+    try:
+        rec = runtime_state.prepaid_registrations.get(user_id)
+        _paid, credit_rial = _split_record(rec)
+        prepay_rial = get_prepay_amount_rial(service_key)
+        if credit_rial < prepay_rial:
+            return False
+    except Exception as e:
+        logging.warning(f"[REG-PREPAY] بررسی پوشش پیش‌پرداخت با مانده ناموفق: {e}")
+        return False
+
+    logging.info(
+        f"[REG-PREPAY] پیش‌پرداخت با مانده پوشش داده شد: user={user_id}, "
+        f"svc={service_key}, پیش‌پرداخت={prepay_rial:,}, مانده={credit_rial:,} ریال")
+    try:
+        await bot.send_message(
+            user_id,
+            f"✅ *پیش‌پرداخت نیاز نیست*\n\n"
+            f"💵 مانده/بستانکاری شما (*{credit_rial:,} ریال*) مبلغ پیش‌پرداخت "
+            f"{service_label} را پوشش می‌دهد.\n"
+            f"این مانده در فاکتور نهایی از هزینهٔ کل کسر می‌گردد.\n\n"
+            f"⏳ درخواست شما در حال ارسال به سامانه قضایی است...",
+            parse_mode="Markdown")
+    except Exception:
+        try:
+            await bot.send_message(
+                user_id,
+                f"✅ پیش‌پرداخت نیاز نیست — مانده/بستانکاری شما ({credit_rial:,} ریال) "
+                f"مبلغ پیش‌پرداخت را پوشش می‌دهد و در فاکتور نهایی کسر می‌گردد.\n"
+                f"⏳ درخواست شما در حال ارسال به سامانه قضایی است...")
+        except Exception:
+            pass
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"💵 [PREPAY] پیش‌پرداخت {service_label} کاربر {user_id} با مانده/"
+            f"بستانکاری ({credit_rial:,} ریال) پوشش داده شد — ثبت بدون پرداخت "
+            f"پیش‌پرداخت آغاز شد (مانده در فاکتور نهایی کسر می‌شود).")
+    except Exception:
+        pass
+    try:
+        from sheets import log_event
+        await log_event(
+            "پرداخت", service_label, str(user_id), user_id,
+            doc_name=f"پیش‌پرداخت {service_label}",
+            payment_status="پوشش از محل مانده/بستانکاری",
+            note=f"پیش‌پرداخت {prepay_rial:,} ریال — مانده {credit_rial:,} ریال")
+    except Exception:
+        pass
+    return True
+
+
 def register_prepaid(user_id: int, amount_toman: int, service_key: str,
                      service_label: str, charge_id: str = "") -> None:
     """ثبت پیش‌پرداخت کاربر برای کسر در پایان کار.

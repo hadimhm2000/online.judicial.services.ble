@@ -1049,6 +1049,14 @@ async def ezhhar_confirm_handler(message: Message, state: FSMContext, bot: Bot):
         # فاکتور و درگاه پرداخت ارسال می‌شود؛ پس از تایید خودکار پرداخت،
         # درخواست به صف ثبت ارسال خواهد شد (ezhhar_prepay_successful_payment).
         # اظهارنامه: ۱,۰۰۰ تومان (اصلاحیهٔ ۱۴۰۵/۰۶/۲۵ — حداقلِ مبلغ فاکتور API).
+        # ⭐ مانده/بستانکاری کاربر کل پیش‌پرداخت را پوشش می‌دهد → بدون فاکتور،
+        # ثبت مستقیم (مانده در فاکتور نهایی کسر می‌شود)
+        from prepay_registration import cover_prepay_from_credit
+        if await cover_prepay_from_credit(bot, user_id, "ezhharnameh", "اظهارنامه"):
+            await _send_ezhhar_task_to_queue(data, user_id, bot=bot)
+            await state.clear()
+            return
+
         from prepay_registration import send_prepay_invoice
         sent = await send_prepay_invoice(bot, user_id, "ezhharnameh", "اظهارنامه")
         if sent:

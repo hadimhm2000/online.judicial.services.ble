@@ -2357,6 +2357,17 @@ async def lavayeh_confirm_handler(message: Message, state: FSMContext, bot: Bot)
         else:
             prepay_svc_key, prepay_label = "lavayeh", f"لایحه ({title})"
 
+        # ⭐ مانده/بستانکاری کاربر کل پیش‌پرداخت را پوشش می‌دهد → بدون فاکتور،
+        # ثبت مستقیم (مانده در فاکتور نهایی کسر می‌شود)
+        from prepay_registration import cover_prepay_from_credit
+        if await cover_prepay_from_credit(bot, user_id, prepay_svc_key, prepay_label):
+            if not hasattr(runtime_state, "active_lavayeh_users"):
+                runtime_state.active_lavayeh_users = set()
+            runtime_state.active_lavayeh_users.add(user_id)
+            await _send_lavayeh_task_to_queue(data, user_id, title, bot=bot)
+            await state.clear()
+            return
+
         from prepay_registration import send_prepay_invoice
         sent = await send_prepay_invoice(bot, user_id, prepay_svc_key, prepay_label)
         if sent:
