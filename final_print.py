@@ -8,6 +8,8 @@ final_print.py — ارسال خودکار «چاپ نهایی» در روز ب�
   ۲. هر موردی (به‌جز استعلامات) که در یک روز ثبت شده، روز بعد ساعت ۱۵:۴۵
      (وقت تهران) عیناً مانند بخش «استعلام کد رهگیری» استعلام می‌شود و فقط
      چاپ برای همان کاربر ارسال می‌گردد.
+  ۲.۱ هر ارسال ناموفق همان روز (بلافاصله) به مدیر اطلاع داده می‌شود
+     (report_failure) و روز بعد دوباره تلاش می‌شود.
   ۳. فهرست موارد روی دیسک (final_print_queue.json) نگه‌داری می‌شود؛ اگر ربات
      قطع شده باشد، پس از راه‌اندازی مجدد همه را به خاطر دارد و اگر ساعت
      ۱۵:۴۵ امروز را از دست داده باشد، اجرای همان روز را جبران می‌کند.
@@ -184,6 +186,45 @@ def mark_failed(user_id: int, tracking_code: str, reason: str = "") -> None:
             _save(data)
     except Exception as e:
         logging.error(f"[FINAL_PRINT] خطا در mark_failed {tracking_code}: {e}")
+
+
+async def report_failure(bot: Bot, user_id: int, tracking_code: str,
+                         doc_name: str, reason: str) -> None:
+    """⭐ طبق دستور کارفرما: هر ارسال ناموفق چاپ نهایی همان روز (بلافاصله)
+    به مدیر اطلاع داده می‌شود. به کاربر پیامی نمی‌رود؛ مورد در صف می‌ماند
+    و روز بعد ساعت ۱۵:۴۵ دوباره تلاش می‌شود (تا MAX_ATTEMPTS روز)."""
+    mark_failed(user_id, tracking_code, reason)
+    attempts = 0
+    try:
+        with _lock:
+            for it in _load()["items"]:
+                if it.get("user_id") == int(user_id) and it.get("tracking_code") == str(tracking_code):
+                    attempts = int(it.get("attempts", 0))
+    except Exception:
+        pass
+    retry_note = (
+        "فردا ساعت ۱۵:۴۵ دوباره تلاش می‌شود."
+        if attempts < MAX_ATTEMPTS else
+        "این آخرین تلاش خودکار بود — لطفاً به‌صورت دستی پیگیری و چاپ را برای کاربر ارسال کنید.")
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            "⚠️ *ارسال چاپ نهایی ناموفق بود*\n\n"
+            f"👤 کاربر: `{user_id}`\n"
+            f"🔢 کد رهگیری: `{tracking_code}`\n"
+            f"📂 نوع: {doc_name}\n"
+            f"❌ علت: {(reason or 'نامشخص')[:250]}\n"
+            f"🔁 تلاش {attempts} از {MAX_ATTEMPTS} — {retry_note}",
+            parse_mode="Markdown")
+    except Exception:
+        # اگر Markdown متن خطا را نپذیرفت، بدون قالب ارسال شود
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"⚠️ ارسال چاپ نهایی ناموفق — کاربر {user_id} — کد {tracking_code} — "
+                f"{doc_name} — علت: {(reason or 'نامشخص')[:250]} — تلاش {attempts}/{MAX_ATTEMPTS}")
+        except Exception:
+            pass
 
 
 # ───────────────────────── اجرای روزانه ─────────────────────────
