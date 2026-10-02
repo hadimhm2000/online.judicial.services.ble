@@ -77,7 +77,9 @@ import runtime_state
 from config import (
     ADMIN_API_BASE,
     ADMIN_ID,
+    PANEL_AUTH_HEADERS,
     BALE_API_BASE,
+    BALE_SSL_CONTEXT,
     BOT_TOKEN,
     CARD_PAY_BANK,
     CARD_PAY_BRAND,
@@ -478,7 +480,7 @@ def _offer_keyboard(entry: dict, use_copy_text: bool) -> dict:
 
 async def _bale_call(method: str, data: aiohttp.FormData | dict) -> dict:
     url = f"{BALE_API_BASE.rstrip('/')}/bot{BOT_TOKEN}/{method}"
-    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
         kw = {"json": data} if isinstance(data, dict) else {"data": data}
         async with session.post(url, timeout=aiohttp.ClientTimeout(total=40), **kw) as resp:
             try:
@@ -929,7 +931,7 @@ async def _upload_receipt_and_sync(bot: Bot, entry: dict) -> None:
         ext = os.path.splitext(f.file_path or "")[1] or (".jpg" if rc.get("kind") == "photo" else ".bin")
         form = aiohttp.FormData()
         form.add_field("files", buf.getvalue(), filename=f"receipt-{entry['id']}{ext}")
-        async with aiohttp.ClientSession() as s:
+        async with aiohttp.ClientSession(headers=PANEL_AUTH_HEADERS) as s:
             async with s.post(f"{ADMIN_API_BASE}/admin/upload", data=form,
                               timeout=aiohttp.ClientTimeout(total=30)) as resp:
                 data = await resp.json(content_type=None)

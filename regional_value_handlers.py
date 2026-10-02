@@ -42,7 +42,7 @@ import ayani_calc
 import ownership_share as osh
 import runtime_state
 from bale_file_sender import send_document_direct
-from config import ADMIN_ID, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, REGIONAL_VALUE_FEE, temp_path
+from config import ADMIN_ID, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, BALE_SSL_CONTEXT, REGIONAL_VALUE_FEE, temp_path
 from exempt_users import is_exempt_user
 from keyboards import back_only_kb, get_main_menu_kb
 from panel_sync import register_case_to_panel, update_case_in_panel
@@ -1483,7 +1483,7 @@ async def _rv_start_payment(message: Message, state: FSMContext, bot: Bot):
     try:
         import json as _json
         invoice_payload = _json.dumps({"type": "regional_value", "uid": message.from_user.id})
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
             invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
             invoice_data = {
                 "chat_id": message.from_user.id,

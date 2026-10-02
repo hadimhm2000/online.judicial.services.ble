@@ -41,7 +41,7 @@ import runtime_state
 import nid_fix_window
 from states import Form
 from bale_file_sender import send_document_direct
-from config import ADMIN_ID, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE
+from config import ADMIN_ID, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, BALE_SSL_CONTEXT
 from exempt_users import is_exempt_user
 from prepay_registration import (
     send_prepay_invoice,
@@ -3521,7 +3521,7 @@ async def send_tajdid_nazar_result(
     # ── ارسال فاکتور بله (sendInvoice) ──────────────────────────────────
     try:
         invoice_payload = _json.dumps({"type": "tajdid_nazar", "uid": user_id})
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
             invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
             invoice_data = {
                 "chat_id": user_id,

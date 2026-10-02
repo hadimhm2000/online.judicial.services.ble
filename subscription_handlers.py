@@ -25,7 +25,7 @@ import json as _json
 import aiohttp
 
 import runtime_state
-from config import ADMIN_ID, BALE_API_BASE, BALE_WALLET_TOKEN, BOT_TOKEN
+from config import ADMIN_ID, BALE_API_BASE, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_SSL_CONTEXT
 from states import Form
 from keyboards import subscription_kb, flow_type_kb, restart_kb, get_flow_type_kb
 
@@ -104,7 +104,7 @@ async def subscription_online_payment(message: Message, state: FSMContext, bot: 
 
     try:
         invoice_payload = _json.dumps({"type": "subscription", "uid": user_id})
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
             invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
             invoice_data = {
                 "chat_id": user_id,

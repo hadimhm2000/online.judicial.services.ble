@@ -11,7 +11,7 @@ import os
 
 import aiohttp
 
-from config import BOT_TOKEN, BALE_API_BASE
+from config import BOT_TOKEN, BALE_API_BASE, BALE_SSL_CONTEXT
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,7 @@ async def _send_document_once(
                 filename=filename,
                 content_type='application/octet-stream'
             )
-            async with session.post(url, data=data, timeout=aiohttp.ClientTimeout(total=60), ssl=False) as resp:
+            async with session.post(url, data=data, timeout=aiohttp.ClientTimeout(total=60), ssl=BALE_SSL_CONTEXT) as resp:
                 result = await resp.json()
                 if result.get('ok'):
                     logger.info(f"[BALE-FILE] فایل ارسال شد: {filename} -> chat {chat_id}")
@@ -159,7 +159,7 @@ async def send_photo_direct(
                 filename=os.path.basename(file_path),
                 content_type='image/jpeg'
             )
-            async with session.post(url, data=data, timeout=aiohttp.ClientTimeout(total=60), ssl=False) as resp:
+            async with session.post(url, data=data, timeout=aiohttp.ClientTimeout(total=60), ssl=BALE_SSL_CONTEXT) as resp:
                 result = await resp.json()
                 if result.get('ok'):
                     return result.get('result')  # dict شامل message_id
@@ -201,7 +201,7 @@ async def create_invoice_link(
                 url,
                 json=body,
                 timeout=aiohttp.ClientTimeout(total=15),
-                ssl=False
+                ssl=BALE_SSL_CONTEXT
             ) as resp:
                 result = await resp.json()
                 if result.get('ok'):
@@ -249,7 +249,7 @@ async def send_invoice(
                 url,
                 json=body,
                 timeout=aiohttp.ClientTimeout(total=15),
-                ssl=False
+                ssl=BALE_SSL_CONTEXT
             ) as resp:
                 result = await resp.json()
                 if result.get('ok'):

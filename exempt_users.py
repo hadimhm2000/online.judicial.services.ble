@@ -33,7 +33,7 @@ import logging
 
 import aiohttp
 
-from config import ADMIN_PANEL_URL, ADMIN_ID
+from config import ADMIN_PANEL_URL, ADMIN_ID, PANEL_AUTH_HEADERS
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ async def _fetch_exempt_ids():
         return _cache["ids"]
 
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(headers=PANEL_AUTH_HEADERS) as session:
             async with session.get(
                 f"{ADMIN_PANEL_URL}/api/admin/exempt-users",
                 timeout=aiohttp.ClientTimeout(total=5)) as resp:

@@ -6,6 +6,11 @@ import { randomUUID } from 'crypto';
 // حداکثر حجم هر فایل: 20 مگابایت (محدودیت بله برای ارسال فایل توسط بات)
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
+// فایل‌هایی که مرورگر روی دامنهٔ پنل اجرا/رندر می‌کند (XSS ذخیره‌شده) — مجاز نیستند
+const BLOCKED_EXTENSIONS = new Set([
+  '.html', '.htm', '.xhtml', '.shtml', '.svg', '.svgz', '.xml', '.xsl', '.js', '.mjs', '.cjs',
+]);
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
@@ -16,6 +21,12 @@ export async function POST(request: NextRequest) {
     }
 
     for (const file of files) {
+      if (BLOCKED_EXTENSIONS.has(path.extname(file.name).toLowerCase())) {
+        return NextResponse.json(
+          { error: `نوع فایل «${file.name}» مجاز نیست` },
+          { status: 400 }
+        );
+      }
       if (file.size > MAX_FILE_BYTES) {
         return NextResponse.json(
           { error: `فایل «${file.name}» بیشتر از حد مجاز (۲۰ مگابایت) است` },

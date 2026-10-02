@@ -43,7 +43,7 @@ import time
 
 import aiohttp
 
-from config import ADMIN_API_BASE
+from config import ADMIN_API_BASE, PANEL_AUTH_HEADERS
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +74,7 @@ def _get_panel_session() -> aiohttp.ClientSession:
         _panel_session = aiohttp.ClientSession(
             connector=connector,
             timeout=_PANEL_TIMEOUT,
+            headers=PANEL_AUTH_HEADERS,
         )
     return _panel_session
 
