@@ -98,10 +98,12 @@ def get_prepay_amount_toman(service_key: str) -> int:
     10000» رد نشود. چون همهٔ مسیرها از همین تابع مبلغ می‌گیرند،
     فاکتور، پیام‌ها و کسرِ پایان کار همیشه یک عدد را می‌بینند.
     """
+    # ⭐ مبلغ از تنظیمات پنل (bot_settings) — در نبود آن، همان مقدار config
+    import bot_settings
     if service_key in _LAYEHE_EIZAR_SERVICES:
-        base = PREPAY_LAYEHE_EIZARNAMEH_TOMAN
+        base = bot_settings.get_int("prepay.lavayeh_ezhhar_toman", PREPAY_LAYEHE_EIZARNAMEH_TOMAN)
     else:
-        base = PREPAY_OTHER_SERVICES_TOMAN
+        base = bot_settings.get_int("prepay.other_toman", PREPAY_OTHER_SERVICES_TOMAN)
     if base * 10 < MIN_INVOICE_AMOUNT_RIAL:
         base = MIN_INVOICE_AMOUNT_RIAL // 10
     return base

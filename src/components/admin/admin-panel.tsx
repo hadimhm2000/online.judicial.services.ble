@@ -16,7 +16,7 @@ import {
   Search, Download, Filter,
   LayoutDashboard, FileCheck2, FileWarning, CreditCard, Send, AlertTriangle, ListChecks, XCircle, Activity,
   ChevronDown, ChevronLeft, CalendarDays, ArrowUp, Zap, ClipboardCheck, Check, Paperclip,
-  Settings, Users, FileSpreadsheet, Printer, Keyboard, Sun, Moon, MessageSquare, Trash2, Clock, Wallet,
+  Settings, Settings2, Users, FileSpreadsheet, Printer, Keyboard, Sun, Moon, MessageSquare, Trash2, Clock, Wallet,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
@@ -206,6 +206,9 @@ export default function AdminPanel() {
   const [creditsPrefill, setCreditsPrefill] = useState<{ baleUserId?: string; fullName?: string; caseId?: string; trackingCode?: string | null } | null>(null);
   const [resetDataOpen, setResetDataOpen] = useState(false);
   const [cardPaymentsOpen, setCardPaymentsOpen] = useState(false);
+  // ⭐ v1.9 — تنظیمات ربات + رضایت کاربران و قیف تبدیل
+  const [botSettingsOpen, setBotSettingsOpen] = useState(false);
+  const [insightsOpen, setInsightsOpen] = useState(false);
 
   useNotificationListener(
     stats?.failed || 0,
@@ -568,6 +571,8 @@ export default function AdminPanel() {
         onOpenCredits={() => { setCreditsPrefill(null); setCreditsOpen(true); }}
         openCreditCount={stats?.openCreditCount ?? 0}
         onOpenCardPayments={() => setCardPaymentsOpen(true)}
+        onOpenBotSettings={() => setBotSettingsOpen(true)}
+        onOpenInsights={() => setInsightsOpen(true)}
         pendingCardPaymentCount={stats?.pendingCardPaymentCount ?? 0}
         onOpenResetData={() => setResetDataOpen(true)}
         isOnline={isOnline}
@@ -931,6 +936,10 @@ export default function AdminPanel() {
         onCreditsChanged={fetchStats}
         cardPaymentsOpen={cardPaymentsOpen}
         onCardPaymentsClose={() => { setCardPaymentsOpen(false); fetchStats(); }}
+        botSettingsOpen={botSettingsOpen}
+        onBotSettingsClose={() => setBotSettingsOpen(false)}
+        insightsOpen={insightsOpen}
+        onInsightsClose={() => setInsightsOpen(false)}
         resetDataOpen={resetDataOpen} onResetDataClose={() => setResetDataOpen(false)}
         onResetDataDone={() => { fetchStats(); fetchCases(); setSelectedIds(new Set()); }}
       />
@@ -971,6 +980,8 @@ export default function AdminPanel() {
         { id: 'exempt-users', label: 'کاربران معاف', icon: Users, group: 'تنظیمات', onSelect: () => setExemptUsersOpen(true) },
         { id: 'credits', label: 'مبالغ قابل بازگشت / کسر', icon: Wallet, group: 'تنظیمات', onSelect: () => { setCreditsPrefill(null); setCreditsOpen(true); } },
         { id: 'card-payments', label: 'پرداخت‌های کارت به کارت', icon: CreditCard, group: 'تنظیمات', onSelect: () => setCardPaymentsOpen(true) },
+        { id: 'bot-settings', label: 'تنظیمات ربات (تعرفه‌ها و متن‌ها)', icon: Settings2, group: 'تنظیمات', onSelect: () => setBotSettingsOpen(true) },
+        { id: 'insights', label: 'رضایت کاربران و قیف تبدیل', icon: Filter, group: 'تنظیمات', onSelect: () => setInsightsOpen(true) },
         { id: 'reset-data', label: 'ریست کامل داده‌ها', icon: Trash2, group: 'تنظیمات', onSelect: () => setResetDataOpen(true) },
       ] as CommandAction[]} />
 
