@@ -39,7 +39,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
-from config import ADMIN_ID, ADMIN_API_BASE, BALE_API_BASE, BOT_TOKEN, BALE_WALLET_TOKEN
+from config import ADMIN_ID, ADMIN_API_BASE, BALE_API_BASE, BOT_TOKEN, BALE_WALLET_TOKEN, PANEL_AUTH_HEADERS
 
 logger = logging.getLogger(__name__)
 
@@ -1207,7 +1207,7 @@ async def panel_message_successful_payment(message: Message, state: FSMContext, 
     last_err = ""
     for attempt in range(1, 4):
         try:
-            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False), headers=PANEL_AUTH_HEADERS) as session:
                 async with session.post(
                     url,
                     json={"paymentId": payment_id},

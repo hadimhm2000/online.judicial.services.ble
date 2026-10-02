@@ -41,7 +41,7 @@ import aiohttp
 import gspread
 from google.oauth2.service_account import Credentials
 
-from config import ADMIN_ID, ADMIN_API_BASE
+from config import ADMIN_ID, ADMIN_API_BASE, PANEL_AUTH_HEADERS
 
 # ────────────────────────── سینک به پنل ادمین (v1.3) ──────────────────────────
 # نگاشت «نام بخش» فارسی (که سناریوها پاس می‌دهند) به serviceType پنل
@@ -85,7 +85,7 @@ async def _find_panel_case(service_type: str, bale_user_id, tracking_code: str):
     try:
         connector = aiohttp.TCPConnector(ssl=False)
         timeout = aiohttp.ClientTimeout(total=15)
-        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout, headers=PANEL_AUTH_HEADERS) as session:
             async with session.get(url, params=params) as resp:
                 if resp.status != 200:
                     return None
@@ -129,7 +129,7 @@ async def _update_panel_case(case_id: str, payment_id: str, system_cost) -> bool
     try:
         connector = aiohttp.TCPConnector(ssl=False)
         timeout = aiohttp.ClientTimeout(total=15)
-        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout, headers=PANEL_AUTH_HEADERS) as session:
             async with session.put(url, json=payload) as resp:
                 if resp.status == 200:
                     return True

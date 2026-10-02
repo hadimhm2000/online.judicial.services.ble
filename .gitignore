@@ -101,3 +101,9 @@ attach_img_*.jpg
 ezhharnameh_*.pdf
 tax_header.jpg
 *.py.bak
+# فایل‌های آپلودی پنل و خروجی‌های موقت ربات — حاوی اسناد/رسید مشتریان
+public/uploads/
+temp_files/
+db/
+.env.*
+!env.example

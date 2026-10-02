@@ -1,5 +1,6 @@
 """تنظیمات کلی ربات بله: توکن، شناسه ادمین، آدرس API، تعرفه‌ها.
 تنها فایلی که برای تغییر قیمت/شماره کارت/توکن باید ویرایش کنی."""
+import logging
 import os
 
 from dotenv import load_dotenv
@@ -65,6 +66,14 @@ ADMIN_PANEL_URL = os.environ.get("ADMIN_PANEL_URL", "http://localhost:3000")
 # آدرس API پنل ادمین — برای همگام‌سازی اشتراک‌ها و ...
 ADMIN_API_BASE = os.environ.get("ADMIN_API_BASE", "http://localhost:3000/api")
 
+# کلید مشترک بین ربات و پنل — پنل همهٔ درخواست‌های /api/admin/* را بدون این
+# کلید رد می‌کند. همین مقدار باید در .env پنل (ADMIN_API_SECRET) هم باشد.
+ADMIN_API_SECRET = os.environ.get("ADMIN_API_SECRET", "")
+if not ADMIN_API_SECRET:
+    logging.warning(
+        "⚠️ ADMIN_API_SECRET تنظیم نشده است — درخواست‌های ربات به پنل ادمین رد خواهند شد.")
+PANEL_AUTH_HEADERS = {"X-Admin-Api-Key": ADMIN_API_SECRET} if ADMIN_API_SECRET else {}
+
 # ================= تنظیمات مالی ربات =================
 CARD_NUMBER = os.environ.get("CARD_NUMBER", "6219861936929354")
 ACCOUNT_NAME = os.environ.get("ACCOUNT_NAME", "هادی منتظران")
@@ -97,7 +106,9 @@ NESHAN_API_KEY = os.environ.get("NESHAN_API_KEY", "")
 REGIONAL_VALUE_FEE = 200000
 
 # توکن کیف پول بله برای پرداخت آنلاین
-BALE_WALLET_TOKEN = "WALLET-eg5yrAJGzAu1tDAn"
+BALE_WALLET_TOKEN = os.environ.get("BALE_WALLET_TOKEN", "")
+if not BALE_WALLET_TOKEN:
+    logging.warning("⚠️ BALE_WALLET_TOKEN تنظیم نشده است — پرداخت آنلاین (sendInvoice) کار نخواهد کرد.")
 
 DEBUG_LOG_REQUESTS = False
 
