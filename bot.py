@@ -41,6 +41,10 @@ card_payment.setup_card_payment(dp)
 # از هر state قابل دسترس باشد؛ هیچ‌کدام به سامانهٔ قضایی درخواست نمی‌فرستند.
 from damages_handlers import damages_router, cpi_reminder_loop
 dp.include_router(damages_router)
+from history_handlers import history_router
+dp.include_router(history_router)
+import wallet
+wallet.setup_wallet(dp)
 dp.include_router(router)
 dp.include_router(admin_relay_router)
 # ⭐ اصلاحیه: fallback_router باید همیشه *آخرین* روتر ثبت‌شده باشد تا فقط
@@ -393,6 +397,7 @@ async def main():
     session = AiohttpSession(api=custom_api_server)
 
     bot = Bot(token=BOT_TOKEN, session=session)
+    wallet.set_bot(bot)
 
     # ارسال پیام تستی به ادمین برای اطمینان از صحت ADMIN_ID
     try:
