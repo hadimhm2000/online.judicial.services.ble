@@ -37,6 +37,9 @@ dp = Dispatcher(storage=MemoryStorage())
 # (فقط عکس‌هایی را می‌گیرد که رسید یک فاکتور کارت‌به‌کارت فعال باشند).
 import card_payment
 card_payment.setup_card_payment(dp)
+# ⭐ دستورات مدیر برای صف خارج از ساعت کاری / قطعی سامانه (sana_gate.py)
+import sana_gate
+dp.include_router(sana_gate.gate_router)
 dp.include_router(router)
 dp.include_router(admin_relay_router)
 # ⭐ اصلاحیه: fallback_router باید همیشه *آخرین* روتر ثبت‌شده باشد تا فقط
@@ -369,6 +372,7 @@ async def main():
         if u in runtime_state.disrupted_users
     ]
     runtime_state._load_persisted_subscriptions()
+    sana_gate.load()
     logging.info(
         f"[START] کرش قبلی: {crashed} | "
         f"کاربران ثبت‌شده: {len(active_submitted)} | "
@@ -451,6 +455,9 @@ async def main():
     # (final_print_queue.json) می‌ماند و اجرای ازدست‌رفته پس از راه‌اندازی جبران می‌شود.
     from final_print import final_print_scheduler
     asyncio.create_task(final_print_scheduler(bot))
+
+    # ⭐ آزادسازی صف خارج از ساعت کاری / پس از رفع قطعی سامانه
+    asyncio.create_task(sana_gate.gate_loop(bot))
 
     # ── تسک ذخیره‌سازی دوره‌ی ──
     persister_task = asyncio.create_task(state_persister(bot))

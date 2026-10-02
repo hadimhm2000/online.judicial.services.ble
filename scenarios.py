@@ -9,6 +9,7 @@ from aiogram import Bot
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 import runtime_state
+import sana_gate
 from browser_helpers import SANA_SERVICE_DELAY_MAX_RETRIES
 import error_catalog
 from sign_tab import SIGN_TASK_TYPES, run_sign_task
@@ -2909,6 +2910,10 @@ async def ensure_browser_alive(bot: Bot, notify_admin: bool = True) -> bool:
     باشد، کاری انجام نمی‌دهد. برمی‌گرداند: True اگر مرورگر (چه از قبل، چه
     بعد از بازسازی) سالم و آماده باشد.
     """
+    # ⭐ مرورگر بسته‌شده توسط مدیر (خارج از ساعت کاری) فقط با /browser_open یا
+    # شروع ساعت کاری (sana_gate.gate_loop) دوباره باز می‌شود
+    if sana_gate.browser_closed_by_admin():
+        return False
     async with runtime_state.browser_relaunch_lock:
         if not _is_browser_dead():
             return True
@@ -2973,6 +2978,9 @@ async def _browser_watchdog(bot: Bot, interval_seconds: int = 20):
     while True:
         await asyncio.sleep(interval_seconds)
         try:
+            # ⭐ مرورگر بسته‌شده توسط مدیر نباید خودکار باز شود
+            if sana_gate.browser_closed_by_admin():
+                continue
             if _is_browser_dead():
                 await ensure_browser_alive(bot)
         except Exception as e:
@@ -3092,7 +3100,9 @@ async def _sign_dispatcher(bot: Bot):
 async def browser_worker(bot: Bot):
     runtime_state.playwright_instance = await async_playwright().start()
     try:
-        await _launch_fresh_browser(bot, wait_login=True)
+        # ⭐ مرورگری که مدیر خارج از ساعت کاری بسته (/browser_close) در استارت باز نمی‌شود
+        if not sana_gate.browser_closed_by_admin():
+            await _launch_fresh_browser(bot, wait_login=True)
 
         # ── ⭐ دیسپچر اولویت‌دار تسک‌های امضا (تب اختصاصی هر کاربر) ──
         asyncio.create_task(_sign_dispatcher(bot))
@@ -3106,6 +3116,13 @@ async def browser_worker(bot: Bot):
             source_queue = runtime_state.job_queue
             try:
                 data, source_queue = await _get_next_job()
+
+                # ⭐ صف خارج از ساعت کاری / قطعی سامانه (sana_gate.py) — تسک
+                # وارد سامانه نمی‌شود؛ در صف ماندگار می‌رود و به کاربر اعلام می‌شود
+                if sana_gate.should_defer(data):
+                    await sana_gate.defer(data, bot)
+                    source_queue.task_done()
+                    continue
 
                 # بررسی سلامت مرورگر قبل از پردازش؛ اگر بسته بود، بدون
                 # ری‌استارت ربات دوباره بازش کن و بعد همین تسک را پردازش کن

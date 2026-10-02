@@ -24,6 +24,7 @@ import runtime_state
 from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, BALE_SSL_CONTEXT, get_fee, FEES
 from exempt_users import is_exempt_user
 from working_hours import is_within_working_hours
+import sana_gate
 from states import Form
 from sheets import append_to_sheet, log_event
 from api_direct import (
@@ -149,22 +150,16 @@ class WorkingHoursMiddleware(BaseMiddleware):
         if event.from_user and event.from_user.id == ADMIN_ID:
             return await handler(event, data)
 
-        within, today_config = await is_within_working_hours()
-        if within:
+        # ⭐ صف خارج از ساعت کاری / قطعی سامانه (sana_gate.py): گرفتن اطلاعات و
+        # پرداخت همیشه آزاد است و ورود به سامانه در sana_gate نوبت‌دهی می‌شود.
+        # فقط استعلام (که همان لحظه به سامانه نیاز دارد) وقتی دروازه بسته است
+        # شروع نمی‌شود. پرداخت موفق هرگز مسدود نمی‌شود.
+        if sana_gate.is_open() or event.successful_payment:
             return await handler(event, data)
-        else:
-            if today_config and not today_config.get("enabled", True):
-                await event.answer("⛔️ *تعطیل*\n\nامروز تعطیل می‌باشد.")
-            else:
-                sh = today_config.get("startHour", 12)
-                sm = today_config.get("startMin", 0)
-                eh = today_config.get("endHour", 22)
-                em = today_config.get("endMin", 0)
-                await event.answer(
-                    f"⛔️ *خارج از ساعت کاری*\n\n"
-                    f"ساعت کاری امروز: {sh:02d}:{sm:02d} الی {eh:02d}:{em:02d}"
-                )
-            return
+        if not sana_gate.is_inquiry_context(event, data.get("raw_state")):
+            return await handler(event, data)
+        await event.answer(sana_gate.closed_inquiry_text())
+        return
 
 router.message.middleware(WorkingHoursMiddleware())
 

@@ -51,6 +51,8 @@ sessions/
 bot_persisted_state*.json
 final_print_queue.json
 final_print_queue.json.tmp
+sana_gate_state.json
+sana_gate_state.json.tmp
 
 # Google credentials (باید از environment variable استفاده شود)
 google-credentials.json
