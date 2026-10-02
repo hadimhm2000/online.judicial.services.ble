@@ -60,6 +60,8 @@ wallet.json.tmp
 feedback_state.json
 feedback_state.json.tmp
 daily_report_state.json
+sana_gate_state.json
+sana_gate_state.json.tmp
 
 # Google credentials (باید از environment variable استفاده شود)
 google-credentials.json

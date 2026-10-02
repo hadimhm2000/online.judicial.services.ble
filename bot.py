@@ -50,6 +50,9 @@ from feedback import feedback_router, feedback_loop
 from daily_report import report_router, daily_report_loop
 dp.include_router(feedback_router)
 dp.include_router(report_router)
+# ⭐ دستورات مدیر برای صف خارج از ساعت کاری / قطعی سامانه (sana_gate.py)
+import sana_gate
+dp.include_router(sana_gate.gate_router)
 dp.include_router(router)
 dp.include_router(admin_relay_router)
 # ⭐ اصلاحیه: fallback_router باید همیشه *آخرین* روتر ثبت‌شده باشد تا فقط
@@ -390,6 +393,7 @@ async def main():
         if u in runtime_state.disrupted_users
     ]
     runtime_state._load_persisted_subscriptions()
+    sana_gate.load()
     logging.info(
         f"[START] کرش قبلی: {crashed} | "
         f"کاربران ثبت‌شده: {len(active_submitted)} | "
@@ -483,6 +487,9 @@ async def main():
     asyncio.create_task(feedback_loop(bot))
     asyncio.create_task(funnel.flush_loop())
     asyncio.create_task(daily_report_loop(bot))
+
+    # ⭐ آزادسازی صف خارج از ساعت کاری / پس از رفع قطعی سامانه
+    asyncio.create_task(sana_gate.gate_loop(bot))
 
     # ── تسک ذخیره‌سازی دوره‌ی ──
     persister_task = asyncio.create_task(state_persister(bot))
