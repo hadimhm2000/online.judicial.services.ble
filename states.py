@@ -416,3 +416,13 @@ class Form(StatesGroup):
     rv_waiting_preview = State()           # پیش‌نمایش (تایید / ویرایش)
     rv_waiting_edit_choice = State()       # انتخاب مورد ویرایش
     rv_waiting_payment = State()
+
+    # =========================================================
+    # State های بخش خسارت تأخیر تأدیه و مهریه به نرخ روز (damages_handlers.py)
+    # =========================================================
+    dmg_waiting_type = State()             # نوع محاسبه (خسارت تأخیر / مهریه)
+    dmg_waiting_amount = State()           # مبلغ اصل خواسته (ریال)
+    dmg_waiting_due_date = State()         # تاریخ سررسید
+    dmg_waiting_calc_date = State()        # تاریخ محاسبه (پیش‌فرض: امروز)
+    mahr_waiting_amount = State()          # مبلغ مهریه (ریال)
+    mahr_waiting_year = State()            # سال وقوع عقد

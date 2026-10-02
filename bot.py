@@ -37,6 +37,10 @@ dp = Dispatcher(storage=MemoryStorage())
 # (فقط عکس‌هایی را می‌گیرد که رسید یک فاکتور کارت‌به‌کارت فعال باشند).
 import card_payment
 card_payment.setup_card_payment(dp)
+# ⭐ بخش‌های مستقل جدید منوی اصلی (۱۴۰۵/۰۷) — قبل از روتر اصلی تا دکمه‌هایشان
+# از هر state قابل دسترس باشد؛ هیچ‌کدام به سامانهٔ قضایی درخواست نمی‌فرستند.
+from damages_handlers import damages_router, cpi_reminder_loop
+dp.include_router(damages_router)
 dp.include_router(router)
 dp.include_router(admin_relay_router)
 # ⭐ اصلاحیه: fallback_router باید همیشه *آخرین* روتر ثبت‌شده باشد تا فقط
@@ -53,6 +57,10 @@ runtime_state.dp = dp
 # تزریق می‌کند).
 dp.message.outer_middleware(user_activity.InactivityGate())
 dp.callback_query.outer_middleware(user_activity.InactivityGate())
+
+# ⭐ اعتبارسنجی رقم کنترل کدملی/شناسه ملی همان لحظهٔ ورود (id_validation.py)
+from id_validation import IdValidationMiddleware
+dp.message.outer_middleware(IdValidationMiddleware())
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -451,6 +459,9 @@ async def main():
     # (final_print_queue.json) می‌ماند و اجرای ازدست‌رفته پس از راه‌اندازی جبران می‌شود.
     from final_print import final_print_scheduler
     asyncio.create_task(final_print_scheduler(bot))
+
+    # ⭐ یادآوری ماهانهٔ ثبت شاخص تورم بانک مرکزی (خسارت تأخیر/مهریه)
+    asyncio.create_task(cpi_reminder_loop(bot))
 
     # ── تسک ذخیره‌سازی دوره‌ی ──
     persister_task = asyncio.create_task(state_persister(bot))
