@@ -45,6 +45,11 @@ from history_handlers import history_router
 dp.include_router(history_router)
 import wallet
 wallet.setup_wallet(dp)
+# ⭐ نظرسنجی پس از تحویل + گزارش شبانهٔ مدیر (/report)
+from feedback import feedback_router, feedback_loop
+from daily_report import report_router, daily_report_loop
+dp.include_router(feedback_router)
+dp.include_router(report_router)
 dp.include_router(router)
 dp.include_router(admin_relay_router)
 # ⭐ اصلاحیه: fallback_router باید همیشه *آخرین* روتر ثبت‌شده باشد تا فقط
@@ -65,6 +70,10 @@ dp.callback_query.outer_middleware(user_activity.InactivityGate())
 # ⭐ اعتبارسنجی رقم کنترل کدملی/شناسه ملی همان لحظهٔ ورود (id_validation.py)
 from id_validation import IdValidationMiddleware
 dp.message.outer_middleware(IdValidationMiddleware())
+
+# ⭐ قیف تبدیل پنل — ثبت مرحلهٔ فرم هر کاربر (funnel.py)
+import funnel
+dp.message.outer_middleware(funnel.FunnelMiddleware())
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -467,6 +476,13 @@ async def main():
 
     # ⭐ یادآوری ماهانهٔ ثبت شاخص تورم بانک مرکزی (خسارت تأخیر/مهریه)
     asyncio.create_task(cpi_reminder_loop(bot))
+
+    # ⭐ تنظیمات قابل ویرایش از پنل، نظرسنجی، قیف تبدیل و گزارش شبانه
+    import bot_settings
+    asyncio.create_task(bot_settings.refresh_loop())
+    asyncio.create_task(feedback_loop(bot))
+    asyncio.create_task(funnel.flush_loop())
+    asyncio.create_task(daily_report_loop(bot))
 
     # ── تسک ذخیره‌سازی دوره‌ی ──
     persister_task = asyncio.create_task(state_persister(bot))

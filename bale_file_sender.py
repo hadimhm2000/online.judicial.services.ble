@@ -44,6 +44,9 @@ def _record_user_file(chat_id, sent: dict | None, filename: str, caption: str | 
         if file_id:
             import user_files
             user_files.record(chat_id, file_id, filename, caption)
+        # ⭐ نظرسنجی پس از تحویل (feedback.py) — ۱۰ دقیقه بعد از آخرین فایل
+        import feedback
+        feedback.schedule(chat_id, filename)
     except Exception as e:
         logger.warning(f"[BALE-FILE] ثبت فایل در سوابق کاربر ناموفق: {e}")
 

@@ -16,6 +16,8 @@ const ExemptUsersDialog = React.lazy(() => import('@/components/admin/exempt-use
 const ResetDataDialog = React.lazy(() => import('@/components/admin/reset-data-dialog'));
 const CreditsDialog = React.lazy(() => import('@/components/admin/credits-dialog'));
 const CardPaymentsDialog = React.lazy(() => import('@/components/admin/card-payments-dialog'));
+const BotSettingsDialog = React.lazy(() => import('@/components/admin/bot-settings-dialog'));
+const InsightsDialog = React.lazy(() => import('@/components/admin/insights-dialog'));
 
 function LoadingFallback() {
   return <div className="animate-pulse h-8 w-48 rounded-lg bg-muted" />;
@@ -76,6 +78,11 @@ interface LazyPanelsProps {
   // ⭐ v1.8 — Card-to-card payments
   cardPaymentsOpen?: boolean;
   onCardPaymentsClose?: () => void;
+  // ⭐ v1.9 — Bot settings + feedback/funnel insights
+  botSettingsOpen?: boolean;
+  onBotSettingsClose?: () => void;
+  insightsOpen?: boolean;
+  onInsightsClose?: () => void;
   // Reset data
   resetDataOpen: boolean;
   onResetDataClose: () => void;
@@ -94,6 +101,8 @@ export default function LazyPanels({
   exemptUsersOpen, onExemptUsersClose,
   creditsOpen = false, onCreditsClose, creditsPrefill, onCreditsChanged,
   cardPaymentsOpen = false, onCardPaymentsClose,
+  botSettingsOpen = false, onBotSettingsClose,
+  insightsOpen = false, onInsightsClose,
   resetDataOpen, onResetDataClose, onResetDataDone,
 }: LazyPanelsProps) {
   return (
@@ -187,6 +196,20 @@ export default function LazyPanels({
         <CardPaymentsDialog
           open={cardPaymentsOpen}
           onOpenChange={(open) => { if (!open) onCardPaymentsClose?.(); }}
+        />
+      </Suspense>
+
+      <Suspense fallback={<LoadingFallback />}>
+        <BotSettingsDialog
+          open={botSettingsOpen}
+          onOpenChange={(open) => { if (!open) onBotSettingsClose?.(); }}
+        />
+      </Suspense>
+
+      <Suspense fallback={<LoadingFallback />}>
+        <InsightsDialog
+          open={insightsOpen}
+          onOpenChange={(open) => { if (!open) onInsightsClose?.(); }}
         />
       </Suspense>
 

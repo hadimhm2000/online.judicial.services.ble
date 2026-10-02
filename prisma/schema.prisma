@@ -214,3 +214,37 @@ model CardPayment {
   @@index([baleUserId])
   @@index([status])
 }
+
+// ⭐ v1.9 — تنظیمات ربات قابل ویرایش از پنل (تعرفه‌ها و متن‌ها) — bot_settings.py
+//   ربات هر ۶۰ ثانیه همهٔ کلیدها را می‌خواند؛ کلید تعریف‌نشده = پیش‌فرض کد ربات.
+//   فهرست کلیدهای معتبر: src/lib/bot-settings.ts
+model BotSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+// ⭐ v1.9 — نظرسنجی ۱ تا ۵ ستاره پس از تحویل نتیجه (feedback.py)
+model Feedback {
+  id         String   @id @default(cuid())
+  baleUserId String
+  fullName   String?
+  rating     Int
+  context    String?  // آخرین فایل تحویل‌شده پیش از نظرسنجی
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+// ⭐ v1.9 — قیف تبدیل: رسیدن هر کاربر به هر مرحلهٔ فرم (funnel.py)
+//   هر (کاربر، سرویس، مرحله) در هر روز حداکثر یک رکورد دارد. step = نام state
+//   ربات یا PAID برای پرداخت موفق.
+model FunnelEvent {
+  id         String   @id @default(cuid())
+  baleUserId String
+  flow       String
+  step       String
+  createdAt  DateTime @default(now())
+
+  @@index([flow, createdAt])
+}

@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import {
   Shield, Bell, RefreshCw, Play, Pause, Volume2, VolumeX, MessageSquare,
   FileSpreadsheet, Moon, Sun, Maximize2, Minimize2, Printer, Keyboard,
-  Wifi, WifiOff, Clock, Users, Trash2, Wallet, CreditCard,
+  Wifi, WifiOff, Clock, Users, Trash2, Wallet, CreditCard, Settings2, Filter,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -29,6 +29,10 @@ export interface AdminHeaderProps {
   /** ⭐ v1.8 — پرداخت‌های کارت‌به‌کارت */
   onOpenCardPayments?: () => void;
   pendingCardPaymentCount?: number;
+  /** ⭐ v1.9 — تنظیمات ربات (تعرفه‌ها و متن‌ها) */
+  onOpenBotSettings?: () => void;
+  /** ⭐ v1.9 — رضایت کاربران و قیف تبدیل */
+  onOpenInsights?: () => void;
   onOpenResetData: () => void;
   isOnline: boolean;
   isFullscreen: boolean;
@@ -65,7 +69,7 @@ function PersianClock() {
 export default function AdminHeader({
   refreshing, onRefresh, autoRefresh, onToggleAutoRefresh,
   isMuted, onToggleMuted, activityCount, onOpenActivity,
-  onOpenBotSender, onOpenSheetsPanel, onOpenWorkingHours, onOpenExemptUsers, onOpenCredits, openCreditCount = 0, onOpenCardPayments, pendingCardPaymentCount = 0, onOpenResetData,
+  onOpenBotSender, onOpenSheetsPanel, onOpenWorkingHours, onOpenExemptUsers, onOpenCredits, openCreditCount = 0, onOpenCardPayments, pendingCardPaymentCount = 0, onOpenBotSettings, onOpenInsights, onOpenResetData,
   isOnline, isFullscreen, onToggleFullscreen, onPrint,
   showShortcuts, onSetShowShortcuts, theme, onToggleTheme,
 }: AdminHeaderProps) {
@@ -213,6 +217,30 @@ export default function AdminHeader({
                       {new Intl.NumberFormat('fa-IR').format(pendingCardPaymentCount)}
                     </span>
                   )}
+                </Button>
+              )}
+
+              {onOpenBotSettings && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-9 w-9 p-0 text-sky-600 hover:text-sky-700 hover:bg-sky-50 dark:hover:bg-sky-900/20"
+                  onClick={onOpenBotSettings}
+                  title="تنظیمات ربات (تعرفه‌ها و متن‌ها)"
+                >
+                  <Settings2 className="h-4 w-4" />
+                </Button>
+              )}
+
+              {onOpenInsights && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-9 w-9 p-0 text-teal-600 hover:text-teal-700 hover:bg-teal-50 dark:hover:bg-teal-900/20"
+                  onClick={onOpenInsights}
+                  title="رضایت کاربران و قیف تبدیل"
+                >
+                  <Filter className="h-4 w-4" />
                 </Button>
               )}
 

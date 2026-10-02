@@ -869,3 +869,39 @@ async def get_user_cases(bale_user_id: int | str, limit: int = 10) -> list | Non
         logger.warning(f"[PANEL_SYNC] دریافت سوابق کاربر {bale_user_id} ناموفق: {err}")
         return None
     return data.get("cases", [])
+
+
+# ── ⭐ تنظیمات ربات، نظرسنجی، قیف تبدیل و گزارش شبانه ─────────────────────
+async def get_bot_settings() -> dict | None:
+    """{key: value} تنظیمات ربات از پنل؛ در خطا None (ربات با پیش‌فرض‌ها ادامه می‌دهد)."""
+    data, err = await _panel_request(
+        "GET", f"{ADMIN_API_BASE}/admin/bot-settings",
+        max_retries=1, timeout=_WAIT_TIMEOUT, breaker_failure=False)
+    if data is None:
+        return None
+    return {s["key"]: s["value"] for s in data.get("settings", []) if "key" in s}
+
+
+def submit_feedback(bale_user_id, full_name: str, rating: int, context: str = ""):
+    """ثبت امتیاز کاربر در پنل (پس‌زمینه)."""
+    payload = {"baleUserId": str(bale_user_id), "fullName": full_name or None,
+               "rating": int(rating), "context": (context or "")[:200] or None}
+    _schedule_panel_job(_panel_request("POST", f"{ADMIN_API_BASE}/admin/feedback", json=payload))
+
+
+async def post_funnel_events(events: list) -> bool:
+    """ارسال دسته‌ای رویدادهای قیف تبدیل؛ True در موفقیت."""
+    data, err = await _panel_request(
+        "POST", f"{ADMIN_API_BASE}/admin/funnel", max_retries=1,
+        breaker_failure=False, json={"events": events})
+    return data is not None
+
+
+async def get_daily_report(date_iso: str) -> dict | None:
+    """خلاصهٔ روز (تهران) برای گزارش شبانهٔ مدیر."""
+    data, err = await _panel_request(
+        "GET", f"{ADMIN_API_BASE}/admin/daily-report",
+        max_retries=_WAIT_RETRIES, timeout=_WAIT_TIMEOUT, params={"date": date_iso})
+    if data is None:
+        logger.warning(f"[PANEL_SYNC] دریافت گزارش روزانه ناموفق: {err}")
+    return data
