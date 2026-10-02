@@ -39,7 +39,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
-from config import ADMIN_ID, ADMIN_API_BASE, BALE_API_BASE, BOT_TOKEN, BALE_WALLET_TOKEN, PANEL_AUTH_HEADERS
+from config import ADMIN_ID, ADMIN_API_BASE, BALE_API_BASE, BOT_TOKEN, BALE_WALLET_TOKEN, PANEL_AUTH_HEADERS, BALE_SSL_CONTEXT
 
 logger = logging.getLogger(__name__)
 
@@ -370,7 +370,7 @@ async def _finalize_send_fee_invoice(message: Message, state: FSMContext):
         logger.info(
             f"[ADMIN-SEND-FEE] ارسال sendInvoice به chat_id={target_user_id}, "
             f"مبلغ={amount:,} ریال, source=send")
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
             async with session.post(url, json=invoice_data, timeout=aiohttp.ClientTimeout(total=20)) as resp:
                 result = await resp.json()
                 if not result.get("ok"):
@@ -893,7 +893,7 @@ async def _finalize_admin_fee_invoice(message: Message, state: FSMContext):
             "prices": [{"label": label, "amount": amount}],
         }
         logger.info(f"[ADMIN-FEE] ارسال sendInvoice به chat_id={target_user_id}, مبلغ={amount:,} ریال, سرویس={svc}")
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
             async with session.post(url, json=invoice_data, timeout=aiohttp.ClientTimeout(total=20)) as resp:
                 result = await resp.json()
                 if not result.get("ok"):

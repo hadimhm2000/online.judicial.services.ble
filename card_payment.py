@@ -79,6 +79,7 @@ from config import (
     ADMIN_ID,
     PANEL_AUTH_HEADERS,
     BALE_API_BASE,
+    BALE_SSL_CONTEXT,
     BOT_TOKEN,
     CARD_PAY_BANK,
     CARD_PAY_BRAND,
@@ -479,7 +480,7 @@ def _offer_keyboard(entry: dict, use_copy_text: bool) -> dict:
 
 async def _bale_call(method: str, data: aiohttp.FormData | dict) -> dict:
     url = f"{BALE_API_BASE.rstrip('/')}/bot{BOT_TOKEN}/{method}"
-    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
         kw = {"json": data} if isinstance(data, dict) else {"data": data}
         async with session.post(url, timeout=aiohttp.ClientTimeout(total=40), **kw) as resp:
             try:

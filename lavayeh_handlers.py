@@ -18,7 +18,7 @@ from aiogram.types import Message, ReplyKeyboardRemove, InlineKeyboardMarkup, In
 
 import runtime_state
 from bale_file_sender import send_document_direct
-from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, calculate_lavayeh_fee, format_lavayeh_fee_explanation, LAVAYEH_SERVICE_FEE, EZHHARNAMEH_SERVICE_FEE, BULK_PREPAY_PER_ROW_TOMAN, temp_path
+from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, BALE_SSL_CONTEXT, calculate_lavayeh_fee, format_lavayeh_fee_explanation, LAVAYEH_SERVICE_FEE, EZHHARNAMEH_SERVICE_FEE, BULK_PREPAY_PER_ROW_TOMAN, temp_path
 from exempt_users import is_exempt_user
 from sheets import log_event
 
@@ -1133,7 +1133,7 @@ async def bulk_confirm_handler(message: Message, state: FSMContext):
         # صدور فاکتور پیش‌پرداخت
         try:
             invoice_payload = _json.dumps({"type": "bulk_prepay", "uid": message.from_user.id, "tracking_code": tracking_code})
-            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
                 invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
                 invoice_data = {
                     "chat_id": message.from_user.id,
@@ -3626,7 +3626,7 @@ async def send_lavayeh_result(
     try:
         invoice_payload = _json.dumps({"type": "lavayeh", "uid": user_id})
         # استفاده از API مستقیم بله (sendInvoice) — طبق مستندات بله
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
             invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
             invoice_data = {
                 "chat_id": user_id,
@@ -3728,7 +3728,7 @@ async def _send_lavayeh_invoice(bot: Bot, user_id: int, amount: int, service_lab
     amount_toman = amount // 10
     try:
         invoice_payload = _json.dumps({"type": "lavayeh", "uid": user_id})
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
             invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
             invoice_data = {
                 "chat_id": user_id,

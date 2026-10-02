@@ -2,6 +2,9 @@
 تنها فایلی که برای تغییر قیمت/شماره کارت/توکن باید ویرایش کنی."""
 import logging
 import os
+import ssl
+
+import certifi
 
 from dotenv import load_dotenv
 
@@ -54,6 +57,11 @@ BALE_API_BASE = os.environ.get(
     "BALE_API_BASE",
     "https://tapi.bale.ai"
 )
+
+# اعتبارسنجی گواهی TLS برای فراخوانی‌های مستقیم API بله (sendInvoice و …) —
+# دقیقاً همان مخزن گواهی‌ای که aiogram برای اتصال اصلی ربات به همین آدرس
+# استفاده می‌کند، تا توکن ربات/کیف پول در معرض حملهٔ MITM نباشد.
+BALE_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 # اگر روزی به یک پروکسی واقعی (HTTP/SOCKS) نیاز شد، می‌توانی این متغیر را
 # در .env ست کنی. در حالت فعلی خالی می‌ماند.

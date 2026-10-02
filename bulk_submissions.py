@@ -1090,12 +1090,12 @@ async def finalize_bulk_batch(bot, user_id: int, tracking_code: str):
         # صدور فاکتور تسویه فقط اگر باقیمانده > 0
         if remaining > 0:
             try:
-                from config import BALE_WALLET_TOKEN, BALE_API_BASE, BOT_TOKEN
+                from config import BALE_WALLET_TOKEN, BALE_API_BASE, BOT_TOKEN, BALE_SSL_CONTEXT
                 import aiohttp
                 import json as _json
 
                 invoice_payload = _json.dumps({"type": "bulk_settlement", "uid": user_id, "tracking_code": tracking_code})
-                async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+                async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
                     invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
                     invoice_data = {
                         "chat_id": user_id,

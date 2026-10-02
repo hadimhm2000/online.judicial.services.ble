@@ -37,7 +37,7 @@ import json as _json
 
 import runtime_state
 from config import (
-    BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, ADMIN_ID,
+    BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, ADMIN_ID, BALE_SSL_CONTEXT,
     PREPAY_LAYEHE_EIZARNAMEH_TOMAN, PREPAY_OTHER_SERVICES_TOMAN,
 )
 
@@ -130,7 +130,7 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
             "uid": user_id,
         })
         async with aiohttp.ClientSession(
-                connector=aiohttp.TCPConnector(ssl=False)) as session:
+                connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
             invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
             invoice_data = {
                 "chat_id": user_id,
