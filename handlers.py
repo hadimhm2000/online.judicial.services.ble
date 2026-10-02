@@ -21,7 +21,7 @@ from aiogram.types import (
 from bale_file_sender import send_document_direct
 
 import runtime_state
-from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, get_fee, FEES
+from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, BALE_SSL_CONTEXT, get_fee, FEES
 from exempt_users import is_exempt_user
 from working_hours import is_within_working_hours
 from states import Form
@@ -1316,7 +1316,7 @@ async def process_main_menu(message: types.Message, state: FSMContext):
         total_rial = total_sum * 10  # تومان به ریال
         try:
             invoice_payload = _json.dumps({"type": "cart", "uid": message.from_user.id})
-            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
                 invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
                 invoice_data = {
                     "chat_id": message.from_user.id,
@@ -1808,7 +1808,7 @@ async def confirm_opt_process(message: types.Message, state: FSMContext, bot: Bo
         fee_rial = fee * 10  # تومان به ریال
         try:
             invoice_payload = _json.dumps({"type": "single", "uid": message.from_user.id})
-            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
                 invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
                 invoice_data = {
                     "chat_id": message.from_user.id,
@@ -2814,7 +2814,7 @@ async def bulk_inquiry_confirm_handler(message: types.Message, state: FSMContext
     total_rial = total_sum * 10
     try:
         invoice_payload = _json.dumps({"type": "bulk_inquiry", "uid": message.from_user.id})
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
             invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
             invoice_data = {
                 "chat_id": message.from_user.id,
