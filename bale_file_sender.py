@@ -34,6 +34,20 @@ def _serialize_reply_markup(reply_markup) -> str | None:
         return None
 
 
+def _record_user_file(chat_id, sent: dict | None, filename: str, caption: str | None):
+    """⭐ «سوابق و فاکتورهای من»: file_id فایل ارسالی برای دریافت دوباره ثبت می‌شود."""
+    try:
+        from config import ADMIN_ID
+        if int(chat_id) == ADMIN_ID:
+            return
+        file_id = ((sent or {}).get('document') or {}).get('file_id')
+        if file_id:
+            import user_files
+            user_files.record(chat_id, file_id, filename, caption)
+    except Exception as e:
+        logger.warning(f"[BALE-FILE] ثبت فایل در سوابق کاربر ناموفق: {e}")
+
+
 async def send_document_direct(
     chat_id: int,
     file_path: str,
@@ -109,6 +123,7 @@ async def _send_document_once(
                 result = await resp.json()
                 if result.get('ok'):
                     logger.info(f"[BALE-FILE] فایل ارسال شد: {filename} -> chat {chat_id}")
+                    _record_user_file(chat_id, result.get('result'), filename, caption)
                     return result.get('result')  # dict شامل message_id
                 else:
                     logger.error(f"[BALE-FILE] خطای API: {result.get('description', 'unknown')}")

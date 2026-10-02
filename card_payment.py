@@ -254,6 +254,12 @@ def track_invoice(invoice_data: dict) -> None:
         invoice_data: همان دیکشنری ارسالی به sendInvoice
                       (chat_id, title, description, payload, prices, ...)
     """
+    # ⭐ کیف پول: اگر موجودی کافی باشد، دکمهٔ «پرداخت از کیف پول» زیر فاکتور
+    try:
+        import wallet
+        wallet.on_invoice(invoice_data)
+    except Exception as e:
+        logger.error(f"[CARD-PAY] پیشنهاد کیف پول ناموفق: {e}")
     if not CARD_PAY_ENABLED:
         return
     try:

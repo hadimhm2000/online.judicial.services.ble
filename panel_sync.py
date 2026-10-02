@@ -856,3 +856,16 @@ async def warmup_panel():
         f"   ربات بدون پنل هم کار می‌کند (sync غیرمسدودکننده است)؛ پرونده‌ها "
         f"تا پنل بالا بیاید در پس‌زمینه صف می‌شوند و گم نمی‌شوند."
     )
+
+
+# ── ⭐ «سوابق و فاکتورهای من» — خواندن پرونده‌های یک کاربر (wait=True) ─────
+async def get_user_cases(bale_user_id: int | str, limit: int = 10) -> list | None:
+    """آخرین پرونده‌های کاربر از پنل؛ در خطا/عدم دسترسی None برمی‌گرداند."""
+    url = f"{ADMIN_API_BASE}/admin/user-cases"
+    params = {"baleUserId": str(bale_user_id), "limit": str(limit)}
+    data, err = await _panel_request(
+        "GET", url, max_retries=_WAIT_RETRIES, timeout=_WAIT_TIMEOUT, params=params)
+    if data is None:
+        logger.warning(f"[PANEL_SYNC] دریافت سوابق کاربر {bale_user_id} ناموفق: {err}")
+        return None
+    return data.get("cases", [])

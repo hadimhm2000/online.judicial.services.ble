@@ -13,6 +13,12 @@ TEST_VISIBLE_USER_ID = ADMIN_ID
 # کانال رسمی
 CHANNEL_LINK = "https://ble.ir/onlinejudicialservice"
 
+# ⭐ دکمه‌های منوی اصلی بخش‌های جدید (۱۴۰۵/۰۷)
+DAMAGES_MENU_TEXT = "📈 خسارت تأخیر و مهریه"
+HISTORY_MENU_TEXT = "📂 سوابق و فاکتورهای من"
+WALLET_MENU_TEXT = "👛 کیف پول"
+BACK_TO_MAIN_TEXT = "🔙 بازگشت به منوی اصلی"
+
 
 def get_flow_type_kb(user_id: int) -> ReplyKeyboardMarkup:
     """کیبورد منوی اصلی — دکمه تست فقط برای مدیر.
@@ -28,7 +34,8 @@ def get_flow_type_kb(user_id: int) -> ReplyKeyboardMarkup:
         [KeyboardButton(text="✍️ ثبت لایحه"), KeyboardButton(text="📄 ثبت اظهارنامه")],
         [KeyboardButton(text=_tn), KeyboardButton(text=_chk)],
         [KeyboardButton(text="💰 محاسبه تمبر"), KeyboardButton(text="🔧 ابزار فایل")],
-        [KeyboardButton(text="🗺️ ارزش منطقه‌ای")],
+        [KeyboardButton(text="🗺️ ارزش منطقه‌ای"), KeyboardButton(text=DAMAGES_MENU_TEXT)],
+        [KeyboardButton(text=HISTORY_MENU_TEXT), KeyboardButton(text=WALLET_MENU_TEXT)],
         # ⭐ گزینهٔ «شروع مجدد» (۱۴۰۵/۰۶) — صرفاً کاربر را به منوی اصلی برمی‌گرداند
         # (از هر مرحله‌ای از هر فلوی — هندلر سراسری در handlers.py)
         [KeyboardButton(text="🔄 شروع مجدد")],
@@ -60,6 +67,8 @@ flow_type_kb = ReplyKeyboardMarkup(
         [KeyboardButton(text="✍️ ثبت لایحه"), KeyboardButton(text="📄 ثبت اظهارنامه")],
         [KeyboardButton(text="⚖️ دعاوی اعتراضی"), KeyboardButton(text="🏦 ثبت دادخواست")],
         [KeyboardButton(text="💰 محاسبه تمبر"), KeyboardButton(text="🔧 ابزار فایل")],
+        [KeyboardButton(text=DAMAGES_MENU_TEXT)],
+        [KeyboardButton(text=HISTORY_MENU_TEXT), KeyboardButton(text=WALLET_MENU_TEXT)],
         # ⭐ گزینهٔ «شروع مجدد» — بازگشت صرف به منوی اصلی (۱۴۰۵/۰۶)
         [KeyboardButton(text="🔄 شروع مجدد")],
     ], resize_keyboard=True)
@@ -1286,3 +1295,24 @@ def create_check_person_type_kb(show_finish: bool = False):
     if show_finish:
         keyboard.append([KeyboardButton(text="✅ اتمام و ادامه")])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+
+# =========================================================
+# کیبوردهای بخش خسارت تأخیر تأدیه و مهریه (damages_handlers.py)
+# =========================================================
+DMG_LATE_TEXT = "💸 خسارت تأخیر تأدیه (چک، سفته، مطالبه وجه)"
+DMG_MAHR_TEXT = "💍 مهریه به نرخ روز"
+DMG_TODAY_TEXT = "📅 محاسبه تا امروز"
+
+dmg_type_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=DMG_LATE_TEXT)],
+        [KeyboardButton(text=DMG_MAHR_TEXT)],
+        [KeyboardButton(text=BACK_TO_MAIN_TEXT)],
+    ], resize_keyboard=True)
+
+dmg_calc_date_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=DMG_TODAY_TEXT)],
+        [KeyboardButton(text="🔙 بازگشت")],
+    ], resize_keyboard=True)

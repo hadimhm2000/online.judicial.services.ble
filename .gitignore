@@ -51,6 +51,12 @@ sessions/
 bot_persisted_state*.json
 final_print_queue.json
 final_print_queue.json.tmp
+cpi_index.json
+cpi_index.json.tmp
+user_files.json
+user_files.json.tmp
+wallet.json
+wallet.json.tmp
 
 # Google credentials (باید از environment variable استفاده شود)
 google-credentials.json
