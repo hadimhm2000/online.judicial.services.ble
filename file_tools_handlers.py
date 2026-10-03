@@ -116,13 +116,7 @@ async def file_tools_entry(message: Message, state: FSMContext):
         return
 
     # نمایش وضعیت اشتراک
-    remaining = runtime_state.get_remaining_free(user_id, "tools")
-    if runtime_state.has_active_subscription(user_id):
-        sub = runtime_state.user_subscriptions[user_id]
-        end_str = sub["end_date"].strftime("%Y/%m/%d %H:%M")
-        status = f"✅ اشتراک فعال تا {end_str}\n\n"
-    else:
-        status = f"📋 استفاده رایگان: {remaining} از {MAX_FREE_USAGE} دفعه باقی‌مانده\n\n"
+    status = runtime_state.usage_status_line(user_id, "tools")
 
     await message.answer(
         f"🛠 *ابزار فایل*\n\n"

@@ -178,6 +178,14 @@ class Form(StatesGroup):
     subscription_waiting_payment = State()       # منتظر دریافت رسید پرداخت اشتراک
     subscription_waiting_admin_review = State()   # منتظر تایید مدیر
 
+    # ⭐ پرداخت تکی تمبر / خسارت تأخیر و مهریه (۱۴۰۵/۰۷)
+    single_pay_choice = State()                  # انتخاب بین اشتراک ماهیانه و پرداخت تکی
+    single_pay_waiting_payment = State()         # منتظر پرداخت فاکتور تکی
+
+    # ⭐ محاسبه هزینه دادرسی (رایگان — ۱۴۰۵/۰۷)
+    court_fee_waiting_amount = State()           # منتظر مبلغ خواسته/محکوم‌به
+    court_fee_waiting_category = State()         # منتظر انتخاب مرحلهٔ دادرسی
+
     # =========================================================
     # State های بخش بازیابی پس از قطعی سامانه
     # =========================================================

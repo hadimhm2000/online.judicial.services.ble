@@ -427,26 +427,83 @@ def has_active_subscription(user_id: int) -> bool:
     return datetime.datetime.now() < sub["end_date"]
 
 
+# ⭐ پرداخت تکی (۱۴۰۵/۰۷): پس از تمام شدن ۲ استفادهٔ رایگان، کاربر بخش «تمبر» و
+# «خسارت تأخیر/مهریه» می‌تواند به‌جای اشتراک ماهیانه فقط همان یک مورد را بپردازد.
+# مبلغ‌ها به ریال — تمبر ۲۰,۰۰۰ تومان، خسارت تأخیر/مهریه ۴۵,۰۰۰ تومان.
+# اعتبار هر پرداخت تکی در همان user_free_usage با کلید «<service>_paid» نگه
+# داشته می‌شود تا با persistence فعلی ذخیره شود.
+SINGLE_USE_FEES = {"stamp": 200_000, "damages": 450_000}
+
+
+def _is_admin(user_id: int) -> bool:
+    try:
+        from config import ADMIN_ID
+        return bool(ADMIN_ID) and str(user_id) == str(ADMIN_ID)
+    except Exception:
+        return False
+
+
+def _paid_key(service: str) -> str:
+    return f"{service}_paid"
+
+
+def get_single_use_credits(user_id: int, service: str) -> int:
+    """تعداد پرداخت‌های تکیِ مصرف‌نشدهٔ کاربر برای این بخش."""
+    return int(get_user_usage(user_id).get(_paid_key(service), 0) or 0)
+
+
+def add_single_use_credit(user_id: int, service: str):
+    """ثبت یک پرداخت تکی موفق برای این بخش."""
+    usage = get_user_usage(user_id)
+    usage[_paid_key(service)] = int(usage.get(_paid_key(service), 0) or 0) + 1
+
+
 def can_use_service(user_id: int, service: str) -> bool:
-    """بررسی آیا کاربر می‌تواند از خدمت استفاده کند (رایگان یا اشتراک)."""
-    if has_active_subscription(user_id):
+    """بررسی آیا کاربر می‌تواند از خدمت استفاده کند (رایگان، اشتراک یا پرداخت تکی).
+    مدیر ربات هیچ‌وقت محدود نمی‌شود."""
+    if _is_admin(user_id) or has_active_subscription(user_id):
         return True
     usage = get_user_usage(user_id)
-    return usage.get(service, 0) < MAX_FREE_USAGE
+    if usage.get(service, 0) < MAX_FREE_USAGE:
+        return True
+    return get_single_use_credits(user_id, service) > 0
 
 
 def increment_usage(user_id: int, service: str):
-    """افزایش شمارنده استفاده رایگان."""
+    """ثبت یک‌بار استفاده: اگر سهمیهٔ رایگان تمام شده و اشتراک فعال نیست،
+    یک پرداخت تکی مصرف می‌شود؛ وگرنه شمارندهٔ رایگان افزایش می‌یابد."""
+    if _is_admin(user_id):
+        return
     usage = get_user_usage(user_id)
+    if (not has_active_subscription(user_id)
+            and usage.get(service, 0) >= MAX_FREE_USAGE
+            and get_single_use_credits(user_id, service) > 0):
+        usage[_paid_key(service)] = get_single_use_credits(user_id, service) - 1
+        return
     usage[service] = usage.get(service, 0) + 1
 
 
 def get_remaining_free(user_id: int, service: str) -> int:
     """دریافت تعداد دفعات باقی‌مانده رایگان."""
-    if has_active_subscription(user_id):
-        return -1  # اشتراک فعال — نامحدود
+    if _is_admin(user_id) or has_active_subscription(user_id):
+        return -1  # اشتراک فعال یا مدیر — نامحدود
     usage = get_user_usage(user_id)
     return max(0, MAX_FREE_USAGE - usage.get(service, 0))
+
+
+def usage_status_line(user_id: int, service: str) -> str:
+    """سطر وضعیت استفاده که در ورود به بخش‌های تمبر/ابزار/خسارت نمایش داده می‌شود."""
+    if has_active_subscription(user_id):
+        end_str = user_subscriptions[user_id]["end_date"].strftime("%Y/%m/%d %H:%M")
+        return f"✅ اشتراک فعال تا {end_str}\n\n"
+    if _is_admin(user_id):
+        return "✅ مدیر — بدون محدودیت و بدون هزینه\n\n"
+    remaining = get_remaining_free(user_id, service)
+    line = f"📋 استفاده رایگان: {remaining} از {MAX_FREE_USAGE} دفعه باقی‌مانده\n\n"
+    credits = get_single_use_credits(user_id, service)
+    if remaining == 0 and credits > 0:
+        line = f"💵 پرداخت تکی: {credits} مورد پرداخت‌شده باقی‌مانده\n\n"
+    return line
 
 
 def activate_subscription(user_id: int):

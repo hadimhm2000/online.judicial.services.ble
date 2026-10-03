@@ -35,8 +35,9 @@ import json
 import logging
 import os
 
-from aiogram import Bot, Router, types
+from aiogram import Bot, F, Router, types
 from aiogram.filters import Command
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 import runtime_state
 from config import ADMIN_ID
@@ -51,7 +52,11 @@ _state = {
     "outage_since": None,
     "browser_closed": False,
     "deferred": [],   # [{"job": {...}, "deferred_at": iso, "reason": "offhours"|"outage"}]
+    # ⭐ سابقهٔ درخواست‌های خارج از ساعت کاری (برای /offhours) — ۷ روز اخیر
+    "offhours_log": [],  # [{"uid": int, "type": str, "at": iso, "status": "queued"|"released"|"admin_submitted"}]
 }
+
+OFFHOURS_LOG_DAYS = 7
 
 # متن‌های کاربر — در صورت تعریف در تنظیمات پنل (bot_settings) از آن‌جا خوانده می‌شوند
 DEFAULT_TEXTS = {
@@ -83,6 +88,17 @@ DEFAULT_TEXTS = {
 
 # دکمه‌های ورود به استعلام (منوی اصلی) و stateهایی که فقط در استعلام استفاده می‌شوند
 INQUIRY_ENTRY_TEXTS = frozenset({"🔍 استعلام", "📦 استعلام (چند مورد همزمان)"})
+
+# ⭐ ۱۴۰۵/۰۷: Form.main_menu (صفحهٔ انتخاب نوع استعلام) مقصد بسیاری از مسیرهای
+# «بازگشت» هم هست و کاربر در آن دکمه‌های منوی اصلی را می‌زند. این دکمه‌ها
+# استعلام نیستند و خارج از ساعت کاری نباید مسدود شوند (مثلاً ابزار فایل،
+# محاسبه تمبر، خسارت تأخیر). تطبیق با «زیررشته» مثل process_main_menu.
+NON_INQUIRY_MENU_KEYWORDS = (
+    "محاسبه تمبر", "ابزار فایل", "خسارت تأخیر", "هزینه دادرسی",
+    "ثبت لایحه", "ثبت اظهارنامه", "دعاوی اعتراضی", "🏦 ثبت دادخواست",
+    "ارزش منطقه‌ای", "سوابق و فاکتور", "کیف پول", "اشتراک ماهیانه",
+    "بازگشت به منوی اصلی",
+)
 INQUIRY_STATES = frozenset({
     "Form:main_menu",
     "Form:waiting_for_tracking_code",
@@ -172,18 +188,33 @@ def deferred_count() -> int:
     return len(_state["deferred"])
 
 
+def _is_admin_job(job: dict) -> bool:
+    uid = job.get("user_id")
+    return bool(ADMIN_ID) and uid is not None and str(uid) == str(ADMIN_ID)
+
+
 def should_defer(job: dict) -> bool:
     if not isinstance(job, dict):
         return False
     if job.get("task_type") in runtime_state.SIGN_TASK_TYPES:
         return False
-    return not is_open()
+    if is_open():
+        return False
+    # ⭐ ۱۴۰۵/۰۷: درخواست‌های خود مدیر و درخواستی که مدیر با /offhours_submit
+    # انتخاب کرده، خارج از ساعت کاری هم ثبت می‌شوند — مگر سامانه قطع باشد یا
+    # مدیر مرورگر را بسته باشد (/browser_close).
+    if _is_admin_job(job) or job.get("admin_forced"):
+        return is_outage() or browser_closed_by_admin()
+    return True
 
 
 def is_inquiry_context(message: types.Message, raw_state: str | None) -> bool:
     """پیام مربوط به شروع/ادامهٔ استعلام است؟ (استعلام همان لحظه به سامانه نیاز دارد)"""
-    if (message.text or "").strip() in INQUIRY_ENTRY_TEXTS:
+    text = (message.text or "").strip()
+    if text in INQUIRY_ENTRY_TEXTS:
         return True
+    if raw_state == "Form:main_menu" and any(k in text for k in NON_INQUIRY_MENU_KEYWORDS):
+        return False
     return raw_state in INQUIRY_STATES
 
 
@@ -198,11 +229,14 @@ def closed_inquiry_text() -> str:
 async def defer(job: dict, bot: Bot):
     """تسک را به صف ماندگار می‌برد و به کاربر اطلاع می‌دهد."""
     reason = "outage" if is_outage() else "offhours"
+    now_iso = datetime.datetime.now(TEHRAN_TZ).isoformat()
     _state["deferred"].append({
         "job": job,
-        "deferred_at": datetime.datetime.now(TEHRAN_TZ).isoformat(),
+        "deferred_at": now_iso,
         "reason": reason,
     })
+    if reason == "offhours" and job.get("user_id"):
+        _log_offhours(job.get("user_id"), _job_label(job), now_iso)
     _save()
     uid = job.get("user_id")
     logger.info(
@@ -220,12 +254,80 @@ async def defer(job: dict, bot: Bot):
         logger.warning(f"[SANA_GATE] خطا در اطلاع به کاربر {uid}: {e}")
 
 
+_TASK_LABELS = {
+    "LAVAYEH_SUBMIT": "لایحه",
+    "EALAM_VAKALAHT_SUBMIT": "اعلام وکالت",
+    "EZHHARNAMEH_SUBMIT": "اظهارنامه",
+    "CHECK_SUBMIT": "دادخواست",
+    "CONTRACT_FIX_SUBMIT": "اصلاح قرارداد",
+    "PRE_CHECK": "استعلام",
+}
+
+
+def _job_label(job: dict) -> str:
+    tt = job.get("task_type")
+    if tt:
+        return _TASK_LABELS.get(tt, str(tt).replace("_", " "))
+    return str(job.get("query_type") or "نامشخص")
+
+
+def _log_offhours(uid, label: str, at_iso: str):
+    """ثبت در سابقهٔ خارج از ساعت کاری و حذف موارد قدیمی‌تر از OFFHOURS_LOG_DAYS روز."""
+    log = _state.setdefault("offhours_log", [])
+    log.append({"uid": uid, "type": label, "at": at_iso, "status": "queued"})
+    cutoff = datetime.datetime.now(TEHRAN_TZ) - datetime.timedelta(days=OFFHOURS_LOG_DAYS)
+    kept = []
+    for e in log:
+        try:
+            if datetime.datetime.fromisoformat(e["at"]) >= cutoff:
+                kept.append(e)
+        except Exception:
+            pass
+    _state["offhours_log"] = kept[-1000:]
+
+
+def _mark_log(uid, status: str):
+    for e in _state.get("offhours_log", []):
+        if str(e.get("uid")) == str(uid) and e.get("status") == "queued":
+            e["status"] = status
+
+
+def deferred_by_user() -> dict:
+    """{user_id: [item, ...]} برای درخواست‌های در صف."""
+    out: dict = {}
+    for item in _state["deferred"]:
+        uid = (item.get("job") or {}).get("user_id")
+        out.setdefault(uid, []).append(item)
+    return out
+
+
+async def submit_user_now(uid) -> int:
+    """⭐ دستور مدیر: درخواست‌های در صف یک کاربر را همین الان وارد سامانه می‌کند
+    (فقط ثبت در سامانه — بدون پرداخت یا پیام اضافه). تعداد تسک‌ها را برمی‌گرداند."""
+    mine = [it for it in _state["deferred"] if str((it.get("job") or {}).get("user_id")) == str(uid)]
+    if not mine:
+        return 0
+    mine_ids = {id(it) for it in mine}
+    _state["deferred"] = [it for it in _state["deferred"] if id(it) not in mine_ids]
+    _mark_log(uid, "admin_submitted")
+    _save()
+    for item in mine:
+        job = dict(item.get("job") or {})
+        job["admin_forced"] = True
+        await runtime_state.job_queue.put(job)
+    logger.info(f"[SANA_GATE] مدیر {len(mine)} درخواست کاربر {uid} را خارج از نوبت وارد سامانه کرد.")
+    return len(mine)
+
+
 async def release(bot: Bot) -> int:
     """همهٔ تسک‌های صف را به‌ترتیب به job_queue برمی‌گرداند."""
     items = list(_state["deferred"])
     if not items:
         return 0
     _state["deferred"] = []
+    for e in _state.get("offhours_log", []):
+        if e.get("status") == "queued":
+            e["status"] = "released"
     _save()
     notified = set()
     for item in items:
@@ -324,6 +426,7 @@ def _status_text() -> str:
         f"درخواست‌های در صف: {deferred_count()}",
         "",
         "دستورات: /outage_on  /outage_off  /browser_close  /browser_open  /gate",
+        "خارج از ساعت کاری: /offhours  /offhours_submit <آیدی کاربر>",
     ]
     return "\n".join(lines)
 
@@ -391,3 +494,88 @@ async def browser_open_cmd(message: types.Message, bot: Bot):
         await ensure_browser_alive(bot, notify_admin=False)
     except Exception as e:
         await message.answer(f"❌ خطا در باز کردن مرورگر: {str(e)[:200]}")
+
+
+# ── ⭐ درخواست‌های خارج از ساعت کاری (۱۴۰۵/۰۷) ─────────────────────────────
+
+_STATUS_FA = {"queued": "در صف", "released": "ثبت‌شده در ساعت کاری", "admin_submitted": "ثبت توسط مدیر"}
+
+
+def _fmt_at(iso: str) -> str:
+    try:
+        return datetime.datetime.fromisoformat(iso).strftime("%m/%d %H:%M")
+    except Exception:
+        return str(iso)[:16]
+
+
+def offhours_report() -> tuple:
+    """متن گزارش /offhours و کیبورد دکمه‌های «ثبت در سامانه» برای هر کاربر در صف."""
+    by_user = deferred_by_user()
+    lines = [f"🌙 *درخواست‌های خارج از ساعت کاری* ({START_HOUR}:00 الی {END_HOUR}:00 ساعت کاری)", ""]
+    if by_user:
+        lines.append(f"⏳ *در صف ثبت — {len(by_user)} کاربر، {deferred_count()} درخواست:*")
+        for uid, items in by_user.items():
+            types_ = "، ".join(sorted({_job_label(it.get("job") or {}) for it in items}))
+            first = min((it.get("deferred_at") or "") for it in items)
+            lines.append(f"• `{uid}` — {len(items)} مورد ({types_}) — از {_fmt_at(first)}")
+    else:
+        lines.append("⏳ هیچ درخواستی در صف خارج از ساعت کاری نیست.")
+
+    log = _state.get("offhours_log", [])
+    users = {}
+    for e in log:
+        users.setdefault(e.get("uid"), []).append(e)
+    lines.append("")
+    lines.append(f"📊 *{OFFHOURS_LOG_DAYS} روز اخیر — {len(users)} کاربر، {len(log)} درخواست خارج از ساعت کاری:*")
+    for uid, entries in list(users.items())[-50:]:
+        last = entries[-1]
+        lines.append(f"• `{uid}` — {len(entries)} مورد — آخرین: {_fmt_at(last.get('at', ''))} "
+                     f"({_STATUS_FA.get(last.get('status'), last.get('status'))})")
+    lines.append("")
+    lines.append("برای ثبت فوری درخواست یک کاربر در سامانه: دکمهٔ زیر یا /offhours_submit <آیدی کاربر>")
+
+    rows = [[InlineKeyboardButton(text=f"▶️ ثبت در سامانه: {uid} ({len(items)})",
+                                  callback_data=f"ohs:{uid}")]
+            for uid, items in list(by_user.items())[:30] if uid is not None]
+    kb = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+    return "\n".join(lines), kb
+
+
+async def _submit_and_report(uid_text: str) -> str:
+    uid_text = (uid_text or "").strip()
+    if not uid_text.lstrip("-").isdigit():
+        return "⚠️ آیدی کاربر نامعتبر است. مثال: /offhours_submit 123456789"
+    if is_outage():
+        return "⚠️ حالت «قطعی سامانه» روشن است؛ ابتدا /outage_off را بزنید."
+    if browser_closed_by_admin():
+        return "⚠️ مرورگر توسط مدیر بسته شده است؛ ابتدا /browser_open را بزنید."
+    count = await submit_user_now(int(uid_text))
+    if not count:
+        return f"ℹ️ درخواستی از کاربر `{uid_text}` در صف خارج از ساعت کاری نیست."
+    return f"▶️ {count} درخواست کاربر `{uid_text}` برای ثبت در سامانه وارد صف پردازش شد."
+
+
+@gate_router.message(Command("offhours"), _is_admin)
+async def offhours_cmd(message: types.Message):
+    text, kb = offhours_report()
+    await message.answer(text, reply_markup=kb)
+
+
+@gate_router.message(Command("offhours_submit"), _is_admin)
+async def offhours_submit_cmd(message: types.Message):
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        text, kb = offhours_report()
+        await message.answer("آیدی کاربر را بعد از دستور بنویسید یا از دکمه‌ها انتخاب کنید.\n\n" + text,
+                             reply_markup=kb)
+        return
+    await message.answer(await _submit_and_report(parts[1]))
+
+
+@gate_router.callback_query(F.data.startswith("ohs:"))
+async def offhours_submit_cb(callback: CallbackQuery):
+    if not (callback.from_user and callback.from_user.id == ADMIN_ID):
+        await callback.answer()
+        return
+    await callback.answer()
+    await callback.message.answer(await _submit_and_report(callback.data.split(":", 1)[1]))

@@ -18,6 +18,8 @@ DAMAGES_MENU_TEXT = "📈 خسارت تأخیر و مهریه"
 HISTORY_MENU_TEXT = "📂 سوابق و فاکتورهای من"
 WALLET_MENU_TEXT = "👛 کیف پول"
 BACK_TO_MAIN_TEXT = "🔙 بازگشت به منوی اصلی"
+# ⭐ محاسبه هزینه دادرسی (رایگان — ۱۴۰۵/۰۷)
+COURT_FEE_MENU_TEXT = "🧾 محاسبه هزینه دادرسی"
 
 
 def get_flow_type_kb(user_id: int) -> ReplyKeyboardMarkup:
@@ -35,6 +37,7 @@ def get_flow_type_kb(user_id: int) -> ReplyKeyboardMarkup:
         [KeyboardButton(text=_tn), KeyboardButton(text=_chk)],
         [KeyboardButton(text="💰 محاسبه تمبر"), KeyboardButton(text="🗺️ ارزش منطقه‌ای")],
         [KeyboardButton(text="🔧 ابزار فایل"), KeyboardButton(text=DAMAGES_MENU_TEXT)],
+        [KeyboardButton(text=COURT_FEE_MENU_TEXT)],
         [KeyboardButton(text=HISTORY_MENU_TEXT), KeyboardButton(text=WALLET_MENU_TEXT)],
         # ⭐ گزینهٔ «شروع مجدد» (۱۴۰۵/۰۶) — صرفاً کاربر را به منوی اصلی برمی‌گرداند
         # (از هر مرحله‌ای از هر فلوی — هندلر سراسری در handlers.py)
@@ -67,7 +70,7 @@ flow_type_kb = ReplyKeyboardMarkup(
         [KeyboardButton(text="✍️ ثبت لایحه"), KeyboardButton(text="📄 ثبت اظهارنامه")],
         [KeyboardButton(text="⚖️ دعاوی اعتراضی"), KeyboardButton(text="🏦 ثبت دادخواست")],
         [KeyboardButton(text="💰 محاسبه تمبر"), KeyboardButton(text="🔧 ابزار فایل")],
-        [KeyboardButton(text=DAMAGES_MENU_TEXT)],
+        [KeyboardButton(text=DAMAGES_MENU_TEXT), KeyboardButton(text=COURT_FEE_MENU_TEXT)],
         [KeyboardButton(text=HISTORY_MENU_TEXT), KeyboardButton(text=WALLET_MENU_TEXT)],
         # ⭐ گزینهٔ «شروع مجدد» — بازگشت صرف به منوی اصلی (۱۴۰۵/۰۶)
         [KeyboardButton(text="🔄 شروع مجدد")],
