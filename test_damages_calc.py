@@ -14,37 +14,38 @@ def _tmp_cpi(tmp_path, monkeypatch):
     monkeypatch.setattr(dc, "CPI_FILE", str(tmp_path / "cpi_index.json"))
 
 
-# جدول ۱۴۰۰=۱۰۰ بانک مرکزی (PDF شهریور ۱۴۰۵) — فقط ماه‌های لازم برای تست
+# جدول ۱۴۰۰=۱۰۰ بانک مرکزی (PDF شهریور ۱۴۰۵) + یک ماه فرضی بعدی برای تست زنجیره
 CBI_1400 = {"1405/02": 667.5, "1405/03": 716.6, "1405/04": 742.8,
-            "1405/05": 770.3, "1405/06": 800.0}
+            "1405/05": 770.3, "1405/06": 800.0, "1405/07": 830.0}
 
 
 def test_seed_series_matches_published_values():
     series, chained, link = dc.judicial_series()
-    assert series["1403/07"] == 1339.1          # مهر ۱۴۰۳ (همان عدد دادحساب)
-    assert series["1395/07"] == 100.0
+    assert series["1403/07"] == 1339.1          # مهر ۱۴۰۳ (جدول دادحساب)
+    assert series["1405/06"] == 3452.0
+    assert series["1395/07"] == 100.0 and min(series) == "1375/01"
     assert not chained and link is None
 
 
 def test_chain_from_cbi_1400_table():
     added = dc.set_monthly_1400(CBI_1400, "test")
-    assert added == ["1405/04", "1405/05", "1405/06"]
+    assert added == ["1405/07"]
     series, chained, link = dc.judicial_series()
-    assert link == "1405/03"
-    assert series["1405/06"] == round(3093.5 * 800.0 / 716.6, 1)    # 3453.5
-    assert chained == {"1405/04", "1405/05", "1405/06"}
+    assert link == "1405/06"
+    assert series["1405/07"] == round(3452 * 830.0 / 800.0, 1)
+    assert chained == {"1405/07"}
+    # همان زنجیره‌ای که دادحساب برای ماه‌های برآوردی‌اش استفاده کرده:
+    assert round(3323.9 * 800.0 / 770.3, 1) == 3452.1
 
 
 def test_sample_calculation_dadhesab():
     """نمونهٔ دادحساب: ۵۰۰ میلیون، سررسید مهر ۱۴۰۳، پرداخت مهر ۱۴۰۵ ← شاخص شهریور ۱۴۰۵."""
-    dc.set_monthly_1400(CBI_1400, "test")
     r = dc.calc_late_payment(500_000_000, (1403, 7, 1), (1405, 7, 11))
     assert r["due_key"] == "1403/07" and r["base_index"] == 1339.1
     assert r["pay_key"] == "1405/07" and r["target_key"] == "1405/06"
-    assert r["used_latest_available"] and r["chained"]
-    assert r["updated_amount"] == round(500_000_000 * 3453.5 / 1339.1)
-    # دادحساب با شاخص برآوردی ۳۴۵۲ به ۱٬۲۸۸٬۹۲۵٬۳۹۸ رسیده؛ با همان شاخص همان عدد درمی‌آید:
-    assert round(500_000_000 * 3452 / 1339.1) == 1_288_925_398
+    assert r["target_index"] == 3452 and r["used_latest_available"]
+    assert r["updated_amount"] == 1_288_925_398
+    assert r["damages"] == 788_925_398
 
 
 def test_payment_month_index_is_used_when_available():
@@ -61,7 +62,7 @@ def test_manual_override_wins_over_seed():
 
 def test_due_before_series_start():
     with pytest.raises(ValueError):
-        dc.calc_late_payment(1_000_000, (1370, 1, 1), (1402, 5, 1))
+        dc.calc_late_payment(1_000_000, (1374, 1, 1), (1402, 5, 1))
 
 
 def test_mahrieh_uses_year_before_payment_and_averages():
@@ -81,10 +82,10 @@ def test_mahrieh_explicit_annual_index():
 
 
 def test_missing_required_month():
-    assert dc.missing_required_month((1405, 4, 3)) is None
-    assert dc.missing_required_month((1405, 5, 3)) == (1405, 4)
-    dc.set_monthly_1400(CBI_1400, "test")
     assert dc.missing_required_month((1405, 7, 3)) is None
+    assert dc.missing_required_month((1405, 8, 3)) == (1405, 7)
+    dc.set_monthly_1400(CBI_1400, "test")
+    assert dc.missing_required_month((1405, 8, 3)) is None
 
 
 def test_parse_inputs():
