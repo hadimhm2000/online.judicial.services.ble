@@ -4424,9 +4424,9 @@ async def chk_nid_cancel_callback(callback: CallbackQuery, state: FSMContext, bo
     _chk_nfw.pop_window(target_user_id)
     await callback.answer("درخواست حذف شد.")
 
-    # جریمه — بازگشت نصف مبلغ پیش‌پرداخت به کیف پول (دستور کارفرما)
+    # جریمه — نصف مبلغ پیش‌پرداخت برای موارد بعدی (عین دستور کارفرما)
     new_rial = _chk_nfw.halve_prepaid(target_user_id)
-    penalty_line = _chk_nfw.penalty_refund_line(new_rial)
+    penalty_line = _chk_nfw.penalty_line(new_rial)
 
     try:
         await callback.message.edit_text(

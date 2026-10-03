@@ -79,6 +79,7 @@ class Form(StatesGroup):
     # State های بخش اعلام وکالت
     # =========================================================
     ealam_vakalaht_national_id = State()
+    ealam_nid_fix_new_nid = State()      # ⭐ ویرایش کدملی وکیل پس از خطای تاریخ تولد ثنا (۴۵ دقیقه)
     ealam_vakalaht_more_lawyers = State()
     ealam_vakalaht_contract_number = State()
     ealam_vakalaht_more_contracts = State()

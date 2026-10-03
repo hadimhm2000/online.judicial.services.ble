@@ -11,8 +11,9 @@
    نیست) رخ می‌دهد:
      - متن خطا برای کاربر ارسال می‌شود
      - کاربر ۴۵ دقیقه فرصت دارد کدملی شخص را ویرایش کند
-     - اگر ظرف ۴۵ دقیقه اقدام نکند → درخواست حذف و «نصف مبلغ پیش‌پرداخت»
-       به کیف پول او بازگردانده می‌شود (halve_prepaid)
+     - اگر ظرف ۴۵ دقیقه اقدام نکند → «نصف مبلغ پیش‌پرداخت» برای موارد بعدی
+       او از هزینه کسر می‌گردد (مبلغ رکورد prepaid_registrations نصف می‌شود
+       و در پایان کارِ درخواست بعدی به‌صورت خودکار اعمال می‌گردد)
      - ⚠️ همه‌چیز در فایل ماندگار (persistence.py) ذخیره می‌شود؛ بنابراین
        حتی پس از کرش یا قطعی ربات، جریمه برای هر درخواست بعدیِ همان کاربر
        مورد محاسبه قرار می‌گیرد.
@@ -46,13 +47,14 @@ FLOW_LAVAYEH = "lavayeh"
 FLOW_EZHHARNAMEH = "ezhharnameh"
 FLOW_TN = "tn"
 FLOW_CHECK = "check"
+FLOW_EALAM = "ealam"
 
 _FLOW_LABELS = {
     FLOW_LAVAYEH: "ثبت لایحه",
     FLOW_EZHHARNAMEH: "ثبت اظهارنامه",
     FLOW_TN: "دعاوی اعتراضی",
     FLOW_CHECK: "ثبت دادخواست",
-    "ealam": "اعلام وکالت",
+    FLOW_EALAM: "اعلام وکالت",
 }
 
 
@@ -65,16 +67,16 @@ def nid_fix_deadline_text() -> str:
     return (
         f"⏰ شما *{NID_FIX_WINDOW_MINUTES} دقیقه* فرصت دارید "
         f"کدملی شخص را ویرایش کنید؛ در غیر این صورت پس از {NID_FIX_WINDOW_MINUTES} دقیقه "
-        "درخواست حذف و *نصف مبلغ پیش‌پرداخت* به کیف پول شما بازگردانده می‌شود."
+        "*نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از هزینه کسر می‌گردد."
     )
 
 
-def penalty_refund_line(refunded_rial: int) -> str:
-    """یک خط پیام بازگشت نصف پیش‌پرداخت به کیف پول — خالی اگر مبلغی نبود."""
-    if refunded_rial <= 0:
+def penalty_line(new_rial: int) -> str:
+    """یک خط پیام جریمه (نصف پیش‌پرداخت برای موارد بعدی) — خالی اگر مبلغی نبود."""
+    if new_rial <= 0:
         return ""
-    return (f"💰 نصف مبلغ پیش‌پرداخت شما ({refunded_rial // 10:,} تومان) "
-            "به کیف پول شما بازگردانده شد.\n")
+    return (f"💰 نصف مبلغ پیش‌پرداخت شما ({new_rial // 10:,} تومان) برای موارد بعدی "
+            "شما لحاظ شد و از هزینه کسر می‌گردد.\n")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -132,38 +134,29 @@ def is_expired(win: dict, now: datetime.datetime = None) -> bool:
 
 
 def halve_prepaid(user_id: int) -> int:
-    """جریمهٔ عدم ویرایش کدملی: نصف پیش‌پرداختِ همین درخواست به کیف پول کاربر
-    بازگردانده می‌شود و نصف دیگر برداشته می‌شود (دستور کارفرما ۱۴۰۵/۰۷).
+    """نصف کردن مبلغ پیش‌پرداختِ باقی‌ماندهٔ کاربر (جریمه).
 
-    خروجی: مبلغ بازگشتی به کیف پول (ریال) — ۰ اگر پیش‌پرداختی نبود.
-    ماندهٔ قبلی کاربر (credit غیر از پیش‌پرداخت) دست‌نخورده باقی می‌ماند.
+    خروجی: مبلغ جدید (ریال) — ۰ اگر پیش‌پرداختی وجود نداشت یا قبلاً مصرف شده.
+    رکورد prepaid_registrations دست‌نخورده می‌ماند (فقط مبلغ نصف می‌شود) تا
+    در پایان کارِ درخواست بعدی از طریق adjust_final_fee_with_prepay به‌صورت
+    خودکار از هزینه کسر گردد. ماندگاری آن هم قبلاً در persistence تضمین شده.
     """
     prepaid = runtime_state.prepaid_registrations.get(user_id)
     if not prepaid:
         return 0
-    from prepay_registration import _split_record
-    paid_rial, credit_rial = _split_record(prepaid)
-    if paid_rial <= 0:
+    old_rial = int(prepaid.get("amount_rial", 0) or 0)
+    if old_rial <= 0:
         return 0
-    refund_rial = paid_rial // 2
-    if credit_rial > 0:
-        prepaid["amount_rial"] = credit_rial
-        prepaid["amount_toman"] = credit_rial // 10
-        prepaid["prepay_paid_rial"] = 0
-    else:
-        runtime_state.prepaid_registrations.pop(user_id, None)
-    if refund_rial > 0:
-        try:
-            import wallet
-            wallet.credit(user_id, refund_rial // 10, "refund",
-                          "بازگشت نصف پیش‌پرداخت (عدم ویرایش کدملی)")
-        except Exception as e:
-            logger.error(f"[NID-FIX] خطا در بازگشت وجه به کیف پول کاربر {user_id}: {e}")
-            return 0
+    new_rial = old_rial // 2
+    prepaid["amount_rial"] = new_rial
+    prepaid["amount_toman"] = new_rial // 10
+    # ⭐ هم‌راستا با تفکیک پیش‌پرداخت/مانده در prepay_registration
+    if "prepay_paid_rial" in prepaid:
+        prepaid["prepay_paid_rial"] = int(prepaid.get("prepay_paid_rial", 0) or 0) // 2
     logger.info(
-        f"[NID-FIX] جریمه: از پیش‌پرداخت {paid_rial:,} ریال کاربر {user_id}، "
-        f"{refund_rial:,} ریال به کیف پول بازگشت")
-    return refund_rial
+        f"[NID-FIX] جریمه: پیش‌پرداخت کاربر {user_id} نصف شد: "
+        f"{old_rial:,} → {new_rial:,} ریال")
+    return new_rial
 
 
 def _cleanup_aliases(user_id: int):
@@ -283,8 +276,8 @@ async def sweep_expired(bot) -> int:
             _cleanup_aliases(uid)
 
             label = flow_label(flow)
-            new_rial = halve_prepaid(uid)  # جریمه — بازگشت نصف پیش‌پرداخت به کیف پول
-            penalty_line = penalty_refund_line(new_rial)
+            new_rial = halve_prepaid(uid)  # جریمه — نصف پیش‌پرداخت برای موارد بعدی
+            penalty_line = penalty_line(new_rial)
             try:
                 await bot.send_message(
                     uid,
@@ -300,8 +293,8 @@ async def sweep_expired(bot) -> int:
                 await bot.send_message(
                     ADMIN_ID,
                     f"⌛ [NID-FIX] مهلت ویرایش کدملی کاربر {uid} ({label}) به پایان "
-                    f"رسید؛ درخواست حذف و نصف پیش‌پرداخت به کیف پول بازگشت "
-                    f"({new_rial:,} ریال).")
+                    f"رسید و جریمهٔ نصف پیش‌پرداخت اعمال شد "
+                    f"({new_rial:,} ریال باقی‌مانده).")
             except Exception:
                 pass
             closed += 1

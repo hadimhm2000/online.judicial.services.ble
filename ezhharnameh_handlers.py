@@ -1499,7 +1499,7 @@ async def ezhhar_delete_request_callback(callback: CallbackQuery, state: FSMCont
         _new_rial = nid_fix_window.halve_prepaid(target_user_id)
         if _new_rial > 0:
             await bot.send_message(
-                target_user_id, nid_fix_window.penalty_refund_line(_new_rial).strip())
+                target_user_id, nid_fix_window.penalty_line(_new_rial).strip())
     except Exception as _pen_err:
         logging.error(f"[EZHHAR] خطا در اعمال جریمه پس از حذف درخواست: {_pen_err}")
     await callback.answer("درخواست حذف شد.")
