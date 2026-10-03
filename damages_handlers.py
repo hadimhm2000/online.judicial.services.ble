@@ -2,18 +2,22 @@
 هندلرهای بخش «خسارت تأخیر تأدیه و مهریه به نرخ روز» — گزینهٔ مستقل منوی اصلی.
 
 جریان کاربر:
-  خسارت تأخیر: مبلغ اصل → تاریخ سررسید → تاریخ محاسبه (یا «تا امروز») → نتیجه
+  خسارت تأخیر: مبلغ اصل → تاریخ سررسید → تاریخ پرداخت (یا «تا امروز») → نتیجه
   مهریه:       مبلغ مهریه → سال وقوع عقد → نتیجه
 
-بخش مدیر (شاخص بانک مرکزی، damages_calc.py):
-  /cpi                        نمایش وضعیت داده و آخرین ماه واردشده
-  /cpi 1405/06 352.4          ثبت/اصلاح شاخص یک ماه
-  /cpi_year 1365 0.21         ثبت شاخص سالانهٔ یک سال (برای مهریه‌های قدیمی)
+بخش مدیر (شاخص بانک مرکزی، damages_calc.py — همهٔ مقادیر با پایهٔ ۱۳۹۵=۱۰۰):
+  /cpi                        نمایش وضعیت داده و آخرین ماه موجود
+  /cpi_fetch                  دریافت فوری آخرین PDF از سایت بانک مرکزی
+  ارسال PDF ماهانهٔ بانک مرکزی با کپشن /cpi_pdf
+                              (وقتی سرور به cbi.ir دسترسی ندارد)
+  /cpi 1405/06 3453.5         ثبت/اصلاح دستی شاخص یک ماه
+  /cpi_year 1365 0.85         ثبت شاخص سالانهٔ یک سال (برای مهریه‌های قبل از ۱۳۷۵)
   ارسال فایل اکسل با کپشن /cpi_import
       ستون‌ها: سال | ماه (برای شاخص سالانه خالی) | شاخص
-      کپشن «/cpi_import replace» کل دادهٔ قبلی را جایگزین می‌کند.
-  یادآوری ماهانه: از روز اول هر ماه شمسی تا وقتی شاخص ماه قبل وارد نشده،
-  روزی یک‌بار به مدیر یادآوری می‌شود (cpi_reminder_loop).
+      کپشن «/cpi_import replace» اصلاحات دستی قبلی را پاک می‌کند.
+  دریافت خودکار ماهانه (cpi_reminder_loop): از روز اول هر ماه شمسی تا وقتی شاخص
+  ماه قبل موجود نشده، روزی یک‌بار PDF جدید از cbi.ir/simplelist/1611.aspx
+  دریافت می‌شود؛ اگر موفق نشد، به مدیر یادآوری می‌شود.
 
 این روتر در bot.py قبل از روتر اصلی ثبت می‌شود و از ساعت کاری مستقل است
 (هیچ درخواستی به سامانه قضایی نمی‌فرستد).
@@ -28,6 +32,7 @@ from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
+import cpi_fetcher
 import damages_calc as dc
 from config import ADMIN_ID, temp_path
 from id_validation import normalize_digits
@@ -132,7 +137,7 @@ async def dmg_due_date(message: Message, state: FSMContext):
         return
     await state.update_data(dmg_due=list(due))
     await message.answer(
-        "📅 خسارت تا چه تاریخی محاسبه شود؟\n"
+        "📅 تاریخ پرداخت (خسارت تا چه تاریخی محاسبه شود؟)\n"
         "تاریخ را به شمسی وارد کنید یا «تا امروز» را بزنید:",
         reply_markup=dmg_calc_date_kb)
     await state.set_state(Form.dmg_waiting_calc_date)
@@ -169,17 +174,21 @@ async def dmg_calc_date(message: Message, state: FSMContext):
 
     note = ""
     if r["used_latest_available"]:
-        note = (f"\n🔸 شاخص ماه قبل از تاریخ محاسبه هنوز منتشر نشده؛ "
-                f"آخرین شاخص موجود ({r['target_key']}) استفاده شد.")
+        note = (f"\n🔸 شاخص ماه پرداخت ({r['pay_key']}) هنوز منتشر نشده؛ از نزدیک‌ترین "
+                f"شاخص موجود ({r['target_key']}) استفاده شد. پس از انتشار شاخص، برای "
+                "نتیجهٔ دقیق‌تر دوباره محاسبه کنید.\n")
     await message.answer(
         "📊 *نتیجهٔ محاسبهٔ خسارت تأخیر تأدیه*\n\n"
-        f"💵 مبلغ اصل: {_fmt(r['amount'])} ریال\n"
-        f"📅 سررسید: {_jdate(tuple(data['dmg_due']))}  (شاخص {r['due_key']}: {r['base_index']:g})\n"
-        f"📅 محاسبه تا: {_jdate(tuple(calc_date))}  (شاخص {r['target_key']}: {r['target_index']:g})\n\n"
-        f"📈 مبلغ به‌روز‌شده: *{_fmt(r['updated_amount'])} ریال*\n"
-        f"💸 خسارت تأخیر تأدیه: *{_fmt(r['damages'])} ریال*\n"
-        f"{note}\n\n"
-        f"فرمول: مبلغ × (شاخص {r['target_key']} ÷ شاخص {r['due_key']})\n\n"
+        f"💵 مبلغ دین: {_fmt(r['amount'])} ریال\n"
+        f"📅 زمان سررسید یا مطالبه: {_jdate(tuple(data['dmg_due']))}  "
+        f"(شاخص {r['due_key']}: {r['base_index']:g})\n"
+        f"📅 زمان پرداخت: {_jdate(tuple(calc_date))}  "
+        f"(شاخص {r['target_key']}: {r['target_index']:g})\n\n"
+        f"📈 اصل دین و خسارت: *{_fmt(r['updated_amount'])} ریال*\n"
+        f"💸 خسارت به تنهایی: *{_fmt(r['damages'])} ریال*\n"
+        f"{note}\n"
+        f"فرمول: مبلغ × (شاخص {r['target_key']} ÷ شاخص {r['due_key']})\n"
+        f"شاخص بانک مرکزی با سال پایهٔ {r['cpi_base']}\n\n"
         f"{DISCLAIMER}",
         reply_markup=dmg_type_kb)
     await state.set_state(Form.dmg_waiting_type)
@@ -260,7 +269,8 @@ async def _notify_admin_missing(bot: Bot, detail: str):
         await bot.send_message(
             ADMIN_ID,
             f"📈 کاربری محاسبهٔ خسارت/مهریه انجام داد ولی {detail}\n"
-            "ثبت شاخص: /cpi سال/ماه مقدار   یا   /cpi_year سال مقدار")
+            "دریافت از بانک مرکزی: /cpi_fetch\n"
+            "ثبت دستی (پایهٔ ۱۳۹۵): /cpi سال/ماه مقدار   یا   /cpi_year سال مقدار")
     except Exception:
         pass
 
@@ -271,22 +281,32 @@ def _is_admin(message: Message) -> bool:
 
 def _cpi_status() -> str:
     data = dc.load_cpi()
+    series, chained, link = dc.judicial_series(data)
     latest = dc.latest_month(data)
     missing = dc.missing_required_month()
+    c1400 = data["monthly_1400"]
     lines = [
         "📈 *وضعیت شاخص تورم (بانک مرکزی)*",
-        f"سال پایه: {data.get('base') or 'نامشخص'}",
-        f"تعداد ماه‌های ثبت‌شده: {len(data['monthly'])}",
-        f"تعداد سال‌های سالانه: {len(data['annual'])}",
-        f"آخرین ماه: {dc.month_key(*latest) if latest else '—'}",
-        f"آخرین به‌روزرسانی: {data.get('updated_at') or '—'}",
+        f"سال پایه: {dc.CPI_BASE}",
+        f"ماه‌های موجود: {len(series)} ({min(series) if series else '—'} تا "
+        f"{dc.month_key(*latest) if latest else '—'})",
+        f"اصلاحات دستی: {len(data['overrides'])} ماه، {len(data['annual_1395'])} سال",
+        f"جدول ۱۴۰۰=۱۰۰ بانک مرکزی: تا {max(c1400) if c1400 else '—'}"
+        + (f" (ماه پیوند {link}، {len(chained)} ماه زنجیره‌ای)" if link else ""),
+        f"آخرین دریافت: {data.get('fetched_at') or '—'}",
+        f"منبع: {data.get('source_pdf') or '—'}",
     ]
+    if chained:
+        lines.append("آخرین شاخص‌ها: " + "، ".join(
+            f"{k}={series[k]:g}" for k in sorted(chained)[-3:]))
     if missing:
-        lines.append(f"⚠️ شاخص ماه {dc.month_key(*missing)} هنوز وارد نشده است.")
+        lines.append(f"⚠️ شاخص ماه {dc.month_key(*missing)} هنوز موجود نیست.")
     lines += [
         "",
-        "ثبت یک ماه: /cpi 1405/06 352.4",
-        "ثبت سالانه: /cpi_year 1365 0.21",
+        "دریافت فوری از بانک مرکزی: /cpi_fetch",
+        "یا ارسال PDF ماهانهٔ بانک مرکزی با کپشن /cpi_pdf",
+        "ثبت دستی یک ماه (پایهٔ ۱۳۹۵): /cpi 1405/06 3453.5",
+        "ثبت سالانه (مهریه): /cpi_year 1365 0.85",
         "ورود دسته‌ای: فایل اکسل (سال | ماه | شاخص) با کپشن /cpi_import",
     ]
     return "\n".join(lines)
@@ -299,17 +319,65 @@ async def cpi_cmd(message: Message):
         await message.answer(_cpi_status())
         return
     if len(parts) != 3:
-        await message.answer("فرمت: /cpi 1405/06 352.4")
+        await message.answer("فرمت: /cpi 1405/06 3453.5")
         return
     ym = parts[1].replace("-", "/").split("/")
     try:
         year, month, value = int(ym[0]), int(ym[1]), float(parts[2])
         assert 1300 <= year <= 1500 and 1 <= month <= 12 and value > 0
     except Exception:
-        await message.answer("⚠️ ورودی نامعتبر. فرمت: /cpi 1405/06 352.4")
+        await message.answer("⚠️ ورودی نامعتبر. فرمت: /cpi 1405/06 3453.5")
         return
     dc.set_monthly(year, month, value)
-    await message.answer(f"✅ شاخص ماه {dc.month_key(year, month)} = {value:g} ثبت شد.")
+    await message.answer(f"✅ شاخص ماه {dc.month_key(year, month)} = {value:g} (پایهٔ ۱۳۹۵) ثبت شد.")
+
+
+async def _fetch_from_cbi() -> list[str]:
+    """آخرین PDF بانک مرکزی را می‌گیرد و ذخیره می‌کند. خروجی: ماه‌های تازه‌اضافه‌شده."""
+    values, url = await asyncio.to_thread(cpi_fetcher.fetch_latest)
+    added = dc.set_monthly_1400(values, url)
+    logger.info(f"[CPI] دریافت از بانک مرکزی: {url} — ماه‌های جدید: {added}")
+    return added
+
+
+def _added_text(added: list[str]) -> str:
+    if not added:
+        return "ماه جدیدی اضافه نشد (آخرین PDF بانک مرکزی قبلاً دریافت شده بود)."
+    series = dc.judicial_series()[0]
+    return "ماه‌های جدید: " + "، ".join(f"{k}={series[k]:g}" for k in added)
+
+
+@damages_router.message(Command("cpi_fetch"), _is_admin)
+async def cpi_fetch_cmd(message: Message):
+    await message.answer("⏳ در حال دریافت از سایت بانک مرکزی...")
+    try:
+        added = await _fetch_from_cbi()
+    except Exception as e:
+        logger.error(f"[CPI] خطا در دریافت از بانک مرکزی: {e}", exc_info=True)
+        await message.answer(
+            f"❌ دریافت از بانک مرکزی ناموفق بود: {str(e)[:300]}\n"
+            "می‌توانید PDF ماهانه را از cbi.ir/simplelist/1611.aspx دانلود و با کپشن /cpi_pdf بفرستید.")
+        return
+    await message.answer(f"✅ {_added_text(added)}\n\n{_cpi_status()}")
+
+
+@damages_router.message(F.document, F.caption.startswith("/cpi_pdf"), _is_admin)
+async def cpi_pdf_cmd(message: Message, bot: Bot):
+    path = temp_path(f"cpi_pdf_{message.message_id}.pdf")
+    try:
+        await bot.download(message.document, destination=path)
+        with open(path, "rb") as f:
+            values = cpi_fetcher.parse_cpi_pdf(f.read())
+        added = dc.set_monthly_1400(values, f"PDF ارسالی مدیر ({message.document.file_name or ''})")
+        await message.answer(f"✅ {_added_text(added)}\n\n{_cpi_status()}")
+    except Exception as e:
+        logger.error(f"[CPI] خطا در خواندن PDF: {e}", exc_info=True)
+        await message.answer(f"❌ خطا در خواندن PDF: {str(e)[:300]}")
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 @damages_router.message(Command("cpi_year"), _is_admin)
@@ -319,7 +387,7 @@ async def cpi_year_cmd(message: Message):
         year, value = int(parts[1]), float(parts[2])
         assert 1300 <= year <= 1500 and value > 0
     except Exception:
-        await message.answer("⚠️ فرمت: /cpi_year 1365 0.21")
+        await message.answer("⚠️ فرمت: /cpi_year 1365 0.85")
         return
     dc.import_rows([(year, None, value)])
     await message.answer(f"✅ شاخص سالانهٔ {year} = {value:g} ثبت شد.")
@@ -376,25 +444,40 @@ async def cpi_import_cmd(message: Message, bot: Bot):
 
 
 async def cpi_reminder_loop(bot: Bot, check_every_seconds: int = 3600):
-    """از روز اول هر ماه شمسی تا ثبت شاخص ماه قبل، روزی یک‌بار (ساعت ۱۰ به بعد) به مدیر یادآوری می‌کند."""
-    last_reminded_day = None
+    """
+    از روز اول هر ماه شمسی تا موجود شدن شاخص ماه قبل، روزی یک‌بار (ساعت ۱۰ به بعد)
+    آخرین PDF را از سایت بانک مرکزی دریافت می‌کند؛ اگر نشد، به مدیر یادآوری می‌کند.
+    """
+    last_checked_day = None
     tehran = datetime.timezone(datetime.timedelta(hours=3, minutes=30))
     while True:
         try:
             await asyncio.sleep(check_every_seconds)
             now = datetime.datetime.now(tehran)
-            if now.hour < 10 or last_reminded_day == now.date():
+            if now.hour < 10 or last_checked_day == now.date():
                 continue
             missing = dc.missing_required_month()
             if not missing:
                 continue
-            last_reminded_day = now.date()
+            last_checked_day = now.date()
+            key = dc.month_key(*missing)
+            error = ""
+            try:
+                added = await _fetch_from_cbi()
+                if key in added or not dc.missing_required_month():
+                    await bot.send_message(
+                        ADMIN_ID, f"📈 شاخص تورم از سایت بانک مرکزی دریافت شد. {_added_text(added)}")
+                    continue
+            except Exception as e:
+                error = f"\nخطای دریافت خودکار: {str(e)[:200]}"
+                logger.error(f"[CPI] خطا در دریافت خودکار: {e}")
             await bot.send_message(
                 ADMIN_ID,
-                f"📈 یادآوری ماهانه: شاخص تورم ماه {dc.month_key(*missing)} هنوز در ربات ثبت نشده است.\n"
-                "پس از انتشار توسط بانک مرکزی ثبت کنید:\n"
-                f"/cpi {dc.month_key(*missing)} مقدار")
+                f"📈 یادآوری ماهانه: شاخص تورم ماه {key} هنوز در ربات موجود نیست "
+                f"(احتمالاً بانک مرکزی هنوز منتشر نکرده).{error}\n"
+                "فردا دوباره خودکار بررسی می‌شود. دریافت فوری: /cpi_fetch\n"
+                "یا PDF را از cbi.ir/simplelist/1611.aspx با کپشن /cpi_pdf بفرستید.")
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.error(f"[CPI] خطا در یادآوری ماهانه: {e}")
+            logger.error(f"[CPI] خطا در دریافت/یادآوری ماهانه: {e}")
