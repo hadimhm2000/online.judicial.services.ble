@@ -371,6 +371,8 @@ class Form(StatesGroup):
     check_esteshahadieh_more = State()
     check_marriage_cert_image = State()   # ⭐ تصاویر سند ازدواج (عناوین خانواده)
     check_marriage_cert_more = State()
+    check_birth_cert_image = State()      # ⭐ تصویر شناسنامه (الزامی — دادخواست نفقه)
+    check_birth_cert_more = State()
     check_cheque_tracking = State()
     check_cheque_next_tracking = State()
     check_attachment_image = State()

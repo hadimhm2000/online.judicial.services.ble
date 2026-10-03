@@ -4137,6 +4137,86 @@ async def _register_dadnameh_attachment(page, group, group_paths, bot, user_id, 
     return True
 
 
+async def _register_birth_certificate(page, group, group_paths, bot, user_id, bill_no) -> bool:
+    """⭐ ثبت «شناسنامه» (دادخواست نفقه) طبق دستور کارفرما:
+
+    «پیوست جدید» → انتخاب «شناسنامه» در attachmentType →
+      - #txtBirthLocation ← 0
+      - #txtNo ← 0
+    → تعداد برگ پیوست + «افزودن پیوست» (عین سایر منضمات) →
+    «ثبت و ویرایش پیوست» (btnSaveDoc) با مدیریت خطا → آپلود تصاویر عین سایر منضمات.
+    """
+    logging.info(f"[CHECK][منضمات] ثبت شناسنامه — تصویر:{len(group_paths)}")
+
+    # ۱) «پیوست جدید»
+    clicked = await page.evaluate("""() => {
+        const btn = document.querySelector('#newAttachmentType');
+        if (btn && !btn.disabled) { btn.click(); return true; }
+        return false;
+    }""")
+    if clicked:
+        await asyncio.sleep(3)
+        await wait_for_angular_idle(page)
+        await asyncio.sleep(1)
+
+    # ۲) انتخاب «شناسنامه» در فهرست نوع سند
+    if not await _select_attachment_type(page, "شناسنامه"):
+        err = "گزینه «شناسنامه» در فهرست نوع سند یافت نشد"
+        logging.error(f"[CHECK][منضمات] {err}")
+        try:
+            await bot.send_message(ADMIN_ID, f"❌ [CHECK] {err} — کاربر {user_id} | کد: {bill_no}")
+        except Exception:
+            pass
+        return False
+    await asyncio.sleep(1)
+    await wait_for_angular_idle(page)
+
+    # ۳) دو فیلد سند = ۰ (محل صدور و شماره)
+    for field_id in ("txtBirthLocation", "txtNo"):
+        if not await _fill_doc_field_angular(page, field_id, "0"):
+            logging.warning(f"[CHECK][منضمات] فیلد #{field_id} (شناسنامه) پیدا نشد")
+        await asyncio.sleep(0.5)
+
+    # ۴) تعداد برگ پیوست + «افزودن پیوست» — عین سایر منضمات
+    await wait_for_angular_idle(page)
+    await _fill_attachment_count_and_add(page, len(group_paths or []), prefix="CHECK")
+    await asyncio.sleep(1)
+
+    # ۵) «ثبت و ویرایش پیوست» با ریترای و اعمال خطاها/نکات منضمات
+    save_ok = await click_save_doc_with_retry(page, bot, user_id, prefix="CHECK")
+    if not save_ok:
+        error_text = await _uh_error_popup_text(page)
+        logging.error(f"[CHECK][منضمات] ذخیره شناسنامه ناموفق: {error_text!r}")
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"❌ [CHECK] ذخیره شناسنامه ناموفق — کاربر {user_id} | کد: {bill_no} | "
+                f"خطا: {(error_text or 'نامشخص')[:200]}")
+        except Exception:
+            pass
+        return False
+    await resilient_sleep(page, 5, bot, user_id)
+    await wait_for_angular_idle(page)
+
+    # ۶) آپلود تصاویر عین سایر منضمات
+    if group_paths:
+        upload_result = await _upload_check_files(
+            page, "شناسنامه", group_paths, bot, user_id, bill_no)
+        if not upload_result.get("success"):
+            logging.error(
+                f"[CHECK][منضمات] آپلود تصاویر شناسنامه ناموفق: {upload_result.get('error')}")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"❌ [CHECK] آپلود تصاویر شناسنامه ناموفق — کاربر {user_id} | کد: {bill_no} | "
+                    f"خطا: {(upload_result.get('error') or 'نامشخص')[:200]}")
+            except Exception:
+                pass
+            return False
+    logging.info("[CHECK][منضمات] شناسنامه ثبت و تصاویر آپلود شد")
+    return True
+
+
 async def _process_check_attachments(
     page,
     request_title: str,
@@ -4383,6 +4463,11 @@ async def _process_check_attachments(
                 page, group, group_paths, bot, user_id, bill_no)
             if not mc_ok:
                 logging.error("[CHECK][منضمات] ثبت سند ازدواج ناموفق بود")
+        elif group.get("is_birth_cert"):
+            bc_ok = await _register_birth_certificate(
+                page, group, group_paths, bot, user_id, bill_no)
+            if not bc_ok:
+                logging.error("[CHECK][منضمات] ثبت شناسنامه ناموفق بود")
         elif bool(group.get("is_dadnameh")):
             dn_ok = await _register_dadnameh_attachment(
                 page, group, group_paths, bot, user_id, bill_no)

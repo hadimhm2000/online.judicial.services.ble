@@ -70,8 +70,9 @@ async def subscription_entry(message: Message, state: FSMContext):
 
     await message.answer(
         f"💳 *فعال‌سازی اشتراک ماهیانه*\n\n"
-        f"با فعال‌سازی اشتراک ماهیانه، از تمامی خدمات بخش *محاسبه تمبر* و *ابزار فایل* "
-        f"بدون محدودیت استفاده خواهید کرد.\n\n"
+        f"با فعال‌سازی اشتراک ماهیانه، از تمامی بخش‌های زیر "
+        f"بدون محدودیت استفاده خواهید کرد:\n"
+        f"{runtime_state.SUBSCRIPTION_FEATURES_TEXT}\n\n"
         f"💰 مبلغ اشتراک: *{SUBSCRIPTION_FEE:,} ریال*\n"
         f"⏱ مدت اشتراک: *{SUBSCRIPTION_DURATION_DAYS} روز*\n\n"
         f"👉 برای پرداخت، دکمه زیر را بزنید:",
@@ -109,7 +110,8 @@ async def subscription_online_payment(message: Message, state: FSMContext, bot: 
             invoice_data = {
                 "chat_id": user_id,
                 "title": f"فاکتور اشتراک ماهیانه",
-                "description": f"اشتراک ماهیانه خدمات قضایی: {fee:,} ریال — مدت {SUBSCRIPTION_DURATION_DAYS} روز",
+                "description": (f"اشتراک ماهیانه خدمات قضایی: {fee:,} ریال — مدت {SUBSCRIPTION_DURATION_DAYS} روز — "
+                                "ابزار فایل، محاسبه تمبر، خسارت تأخیر تأدیه و مهریه"),
                 "payload": invoice_payload,
                 "provider_token": BALE_WALLET_TOKEN,
                 "currency": "IRR",
@@ -130,7 +132,9 @@ async def subscription_online_payment(message: Message, state: FSMContext, bot: 
 
     await message.answer(
         "⏳ فاکتور اشتراک ارسال شد.\n\n"
-        "پس از پرداخت موفق، اشتراک شما به‌صورت خودکار فعال می‌شود.",
+        "پس از پرداخت موفق، اشتراک شما به‌صورت خودکار فعال می‌شود و با همین یک اشتراک "
+        f"از همهٔ امکانات زیر می‌توانید استفاده کنید:\n"
+        f"{runtime_state.SUBSCRIPTION_FEATURES_TEXT}",
         reply_markup=subscription_kb)
 
 
@@ -169,7 +173,8 @@ async def subscription_expiry_checker(bot: Bot):
                         user_id,
                         f"🔔 *اعلام تمدید اشتراک*\n\n"
                         f"اشتراک ماهیانه شما به پایان رسیده است.\n\n"
-                        f"💰 جهت استفاده مجدد از بخش *محاسبه تمبر* و *ابزار فایل*، "
+                        f"💰 جهت استفاده مجدد از بخش‌های *ابزار فایل*، *محاسبه تمبر*، "
+                        f"*خسارت تأخیر تأدیه* و *مهریه*، "
                         f"لطفاً *اشتراک ماهیانه* را مجدداً پرداخت نمایید.\n\n"
                         f"💳 مبلغ اشتراک: *{SUBSCRIPTION_FEE:,} ریال*\n"
                         f"⏱ مدت اشتراک: *{SUBSCRIPTION_DURATION_DAYS} روز*\n\n"
