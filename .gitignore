@@ -57,6 +57,8 @@ user_files.json
 user_files.json.tmp
 wallet.json
 wallet.json.tmp
+users_registry.json
+users_registry.json.tmp
 feedback_state.json
 feedback_state.json.tmp
 daily_report_state.json

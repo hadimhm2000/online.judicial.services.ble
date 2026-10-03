@@ -905,3 +905,15 @@ async def get_daily_report(date_iso: str) -> dict | None:
     if data is None:
         logger.warning(f"[PANEL_SYNC] دریافت گزارش روزانه ناموفق: {err}")
     return data
+
+
+async def get_bot_users() -> list | None:
+    """شناسهٔ همهٔ کاربرانی که در پنل سابقه دارند (برای ارسال همگانی راهنما)؛ در خطا None."""
+    data, err = await _panel_request(
+        "GET", f"{ADMIN_API_BASE}/admin/bot-users",
+        max_retries=_WAIT_RETRIES, timeout=aiohttp.ClientTimeout(total=30, connect=5),
+        breaker_failure=False)
+    if data is None:
+        logger.warning(f"[PANEL_SYNC] دریافت فهرست کاربران ناموفق: {err}")
+        return None
+    return data.get("users", [])
