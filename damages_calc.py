@@ -5,34 +5,45 @@
 
 این ماژول هیچ وابستگی به aiogram ندارد (منطق خالص) — مثل ayani_calc.py.
 
-داده: cpi_index.json (کنار همین فایل، در گیت نیست)
+سری شاخص مورد استفاده: شاخص ماهانه با سال پایهٔ ۱۳۹۵=۱۰۰ (همان سری که در
+محاسبات خسارت تأخیر تأدیه و سامانه‌هایی مثل دادحساب استفاده می‌شود). از سه
+منبع ساخته می‌شود:
+  ۱) data/cpi_judicial_1395.json (در گیت): جدول دادحساب، فروردین ۱۳۷۵ تا آخرین ماه فایل
+  ۲) cpi_index.json ← "overrides": مقادیری که مدیر با /cpi یا اکسل ثبت/اصلاح کرده
+  ۳) cpi_index.json ← "monthly_1400": جدول ۱۴۰۰=۱۰۰ که هر ماه خودکار از PDF
+     بانک مرکزی (cbi.ir/simplelist/1611.aspx، cpi_fetcher.py) خوانده می‌شود.
+     ماه‌های بعد از آخرین مقدار ۱۳۹۵ به‌صورت زنجیره‌ای ساخته می‌شوند:
+       شاخص۱۳۹۵[ماه] = شاخص۱۳۹۵[ماه پیوند] × شاخص۱۴۰۰[ماه] ÷ شاخص۱۴۰۰[ماه پیوند]
+     (ماه پیوند = آخرین ماهی که در هر دو سری موجود است؛ گرد به یک رقم اعشار)
+
+cpi_index.json (کنار همین فایل، در گیت نیست):
     {
-      "base": "1400=100",
-      "monthly": {"1403/01": 205.3, ...},     ← شاخص ماهانه
-      "annual":  {"1365": 0.21, ...},          ← شاخص سالانه (اختیاری)
-      "updated_at": "..."
+      "overrides":    {"1405/04": 3206.6, ...},   ← پایهٔ ۱۳۹۵
+      "annual_1395":  {"1365": 0.85, ...},          ← شاخص سالانهٔ مهریه (اختیاری)
+      "monthly_1400": {"1400/01": 83.3, ...},       ← جدول PDF بانک مرکزی
+      "source_pdf": "...", "fetched_at": "...", "updated_at": "..."
     }
-مدیر داده را با ارسال فایل اکسل (کپشن /cpi_import) یا دستور /cpi وارد می‌کند
-(damages_handlers.py). هر ماه تا وقتی شاخص ماه قبل وارد نشده، به مدیر یادآوری
-می‌شود. ⚠️ همهٔ اعداد باید از یک جدول بانک مرکزی با یک سال پایه وارد شوند.
+کلیدهای قدیمی "monthly"/"annual" (نسخهٔ قبل، با سال پایهٔ نامشخص) نادیده گرفته می‌شوند.
 
 قواعد محاسبه:
   خسارت تأخیر تأدیه (مادهٔ ۵۲۲ قانون آیین دادرسی مدنی):
-      مبلغ به‌روز = مبلغ × (شاخص ماه مبنای پرداخت ÷ شاخص ماه سررسید)
+      مبلغ به‌روز = مبلغ × (شاخص ماه پرداخت ÷ شاخص ماه سررسید)
       خسارت = مبلغ به‌روز − مبلغ
-      ماه مبنای پرداخت = ماهِ قبل از تاریخ محاسبه (آخرین ماهی که شاخصش
-      منتشر شده)؛ اگر شاخص آن ماه هنوز وارد نشده، آخرین ماه موجود استفاده و
-      در نتیجه اعلام می‌شود.
+      اگر شاخص ماه پرداخت هنوز منتشر نشده، نزدیک‌ترین شاخص موجود قبل از آن
+      استفاده و در نتیجه اعلام می‌شود (مثل دادحساب: پرداخت مهر ۱۴۰۵ ← شهریور ۱۴۰۵).
   مهریه به نرخ روز (تبصرهٔ مادهٔ ۱۰۸۲ قانون مدنی):
       مهریهٔ به‌روز = مبلغ × (شاخص سال قبل از سال تأدیه ÷ شاخص سال وقوع عقد)
-      شاخص سالانه = مقدار واردشدهٔ سالانه، یا میانگین ۱۲ ماه همان سال.
+      شاخص سالانه = مقدار ثبت‌شدهٔ سالانه، یا میانگین ۱۲ ماه همان سال.
 """
 import datetime
 import json
 import os
 import threading
 
-CPI_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cpi_index.json")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+CPI_FILE = os.path.join(_HERE, "cpi_index.json")
+SEED_FILE = os.path.join(_HERE, "data", "cpi_judicial_1395.json")
+CPI_BASE = "1395=100"
 
 _lock = threading.Lock()
 
@@ -88,19 +99,27 @@ def parse_amount(text: str) -> int | None:
 
 # ── دادهٔ شاخص ───────────────────────────────────────────────────────────
 
+def _load_json(path: str) -> dict:
+    if not os.path.exists(path):
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 def load_cpi() -> dict:
+    """دادهٔ خام: seed (در گیت) + cpi_index.json (اصلاحات مدیر و جدول ۱۴۰۰ بانک مرکزی)."""
     with _lock:
-        if not os.path.exists(CPI_FILE):
-            return {"base": "", "monthly": {}, "annual": {}, "updated_at": None}
-        with open(CPI_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    data.setdefault("monthly", {})
-    data.setdefault("annual", {})
-    data.setdefault("base", "")
+        seed = _load_json(SEED_FILE)
+        data = _load_json(CPI_FILE)
+    data.setdefault("overrides", {})
+    data.setdefault("annual_1395", {})
+    data.setdefault("monthly_1400", {})
+    data["seed"] = seed.get("monthly", {})
     return data
 
 
 def save_cpi(data: dict):
+    data = {k: v for k, v in data.items() if k not in ("seed",)}
     data["updated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
     tmp = CPI_FILE + ".tmp"
     with _lock:
@@ -109,54 +128,88 @@ def save_cpi(data: dict):
         os.replace(tmp, CPI_FILE)
 
 
+def judicial_series(data: dict | None = None) -> tuple[dict[str, float], set[str], str | None]:
+    """
+    سری ماهانهٔ ۱۳۹۵=۱۰۰.
+    خروجی: (ماه ← شاخص، ماه‌هایی که زنجیره‌ای از جدول ۱۴۰۰ ساخته شده‌اند، ماه پیوند)
+    """
+    data = data or load_cpi()
+    series = dict(data["seed"])
+    series.update(data["overrides"])
+    c1400 = data["monthly_1400"]
+    common = [k for k in series if k in c1400]
+    if not series or not common:
+        return series, set(), None
+    link = max(common)
+    last = max(series)
+    chained = set()
+    for k in sorted(c1400):
+        if k > last:
+            series[k] = round(series[link] * c1400[k] / c1400[link], 1)
+            chained.add(k)
+    return series, chained, link
+
+
 def set_monthly(year: int, month: int, value: float):
+    """ثبت/اصلاح دستی یک ماه (پایهٔ ۱۳۹۵=۱۰۰)."""
     data = load_cpi()
-    data["monthly"][month_key(year, month)] = float(value)
+    data["overrides"][month_key(year, month)] = float(value)
     save_cpi(data)
 
 
-def import_rows(rows: list[tuple], base: str | None = None, replace: bool = False) -> tuple[int, int]:
-    """ورود دسته‌ای: هر سطر (سال، ماه یا None، شاخص). خروجی: (تعداد ماهانه، تعداد سالانه)."""
-    data = {"base": "", "monthly": {}, "annual": {}} if replace else load_cpi()
+def set_monthly_1400(values: dict[str, float], source: str = "") -> list[str]:
+    """ذخیرهٔ جدول ۱۴۰۰=۱۰۰ خوانده‌شده از PDF بانک مرکزی. خروجی: ماه‌های تازه‌اضافه‌شدهٔ سری."""
+    data = load_cpi()
+    before = set(judicial_series(data)[0])
+    data["monthly_1400"].update({k: float(v) for k, v in values.items()})
+    data["source_pdf"] = source
+    data["fetched_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+    save_cpi(data)
+    return sorted(set(judicial_series(data)[0]) - before)
+
+
+def import_rows(rows: list[tuple], replace: bool = False) -> tuple[int, int]:
+    """ورود دسته‌ای (پایهٔ ۱۳۹۵): هر سطر (سال، ماه یا None، شاخص). خروجی: (تعداد ماهانه، تعداد سالانه)."""
+    data = load_cpi()
+    if replace:
+        data["overrides"], data["annual_1395"] = {}, {}
     n_month = n_year = 0
     for year, month, value in rows:
         if month:
-            data["monthly"][month_key(int(year), int(month))] = float(value)
+            data["overrides"][month_key(int(year), int(month))] = float(value)
             n_month += 1
         else:
-            data["annual"][str(int(year))] = float(value)
+            data["annual_1395"][str(int(year))] = float(value)
             n_year += 1
-    if base:
-        data["base"] = base
     save_cpi(data)
     return n_month, n_year
 
 
 def latest_month(data: dict | None = None) -> tuple[int, int] | None:
-    data = data or load_cpi()
-    if not data["monthly"]:
+    series = judicial_series(data)[0]
+    if not series:
         return None
-    key = max(data["monthly"])
-    y, m = key.split("/")
+    y, m = max(series).split("/")
     return int(y), int(m)
 
 
 def missing_required_month(today: tuple[int, int, int] | None = None) -> tuple[int, int] | None:
-    """ماه قبل از ماه جاری اگر شاخصش وارد نشده باشد (برای یادآوری ماهانه به مدیر)."""
+    """ماه قبل از ماه جاری اگر شاخصش هنوز موجود نیست (برای دریافت خودکار و یادآوری به مدیر)."""
     y, m, _ = today or today_jalali()
     py, pm = prev_month(y, m)
-    if month_key(py, pm) in load_cpi()["monthly"]:
+    if month_key(py, pm) in judicial_series()[0]:
         return None
     return py, pm
 
 
 def annual_index(year: int, data: dict | None = None) -> float | None:
     data = data or load_cpi()
-    if str(year) in data["annual"]:
-        return data["annual"][str(year)]
-    values = [data["monthly"].get(month_key(year, m)) for m in range(1, 13)]
+    if str(year) in data["annual_1395"]:
+        return data["annual_1395"][str(year)]
+    series = judicial_series(data)[0]
+    values = [series.get(month_key(year, m)) for m in range(1, 13)]
     if all(v is not None for v in values):
-        return sum(values) / 12
+        return round(sum(values) / 12, 3)
     return None
 
 
@@ -168,38 +221,41 @@ class CpiMissing(Exception):
 
 def calc_late_payment(amount: int, due: tuple[int, int, int],
                       calc_date: tuple[int, int, int] | None = None) -> dict:
+    """calc_date = تاریخ پرداخت (یا امروز)."""
     data = load_cpi()
+    series, chained, _ = judicial_series(data)
     calc_date = calc_date or today_jalali()
     due_key = month_key(due[0], due[1])
-    if due_key not in data["monthly"]:
-        raise CpiMissing(f"شاخص ماه سررسید ({due_key}) وارد نشده است.")
     if (due[0], due[1], due[2]) >= calc_date:
-        raise ValueError("تاریخ سررسید باید قبل از تاریخ محاسبه باشد.")
+        raise ValueError("تاریخ سررسید باید قبل از تاریخ پرداخت/محاسبه باشد.")
+    if due_key not in series:
+        if series and due_key < min(series):
+            raise ValueError(f"شاخص ماهانه از {min(series)} به بعد موجود است؛ "
+                             "سررسید قدیمی‌تر قابل محاسبه نیست.")
+        raise CpiMissing(f"شاخص ماه سررسید ({due_key}) وارد نشده است.")
 
-    target = prev_month(calc_date[0], calc_date[1])
-    target_key = month_key(*target)
+    pay_key = month_key(calc_date[0], calc_date[1])
+    target_key = pay_key
     used_latest = False
-    if target_key not in data["monthly"]:
-        latest = latest_month(data)
-        if latest is None or month_key(*latest) < due_key:
-            raise CpiMissing(f"شاخص ماه {target_key} وارد نشده است.")
-        target, target_key, used_latest = latest, month_key(*latest), True
-    if target_key < due_key:
-        raise ValueError("تاریخ محاسبه باید حداقل یک ماه بعد از سررسید باشد.")
+    if target_key not in series:
+        available = [k for k in series if k <= pay_key]
+        target_key, used_latest = max(available), True     # due_key موجود است پس خالی نیست
 
-    base_idx = data["monthly"][due_key]
-    target_idx = data["monthly"][target_key]
+    base_idx = series[due_key]
+    target_idx = series[target_key]
     updated = round(amount * target_idx / base_idx)
     return {
         "amount": amount,
         "due_key": due_key,
+        "pay_key": pay_key,
         "target_key": target_key,
         "base_index": base_idx,
         "target_index": target_idx,
         "updated_amount": updated,
         "damages": updated - amount,
         "used_latest_available": used_latest,
-        "cpi_base": data.get("base", ""),
+        "chained": target_key in chained,
+        "cpi_base": CPI_BASE,
     }
 
 
@@ -223,5 +279,5 @@ def calc_mahrieh(amount: int, marriage_year: int, payment_year: int | None = Non
         "base_index": base_idx,
         "target_index": target_idx,
         "updated_amount": updated,
-        "cpi_base": data.get("base", ""),
+        "cpi_base": CPI_BASE,
     }

@@ -51,6 +51,7 @@ from aiogram import Bot
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 import runtime_state
+from nid_fix_window import nid_fix_deadline_text as _nid_fix_deadline_text
 from browser_helpers import SANA_SERVICE_DELAY_MAX_RETRIES
 from config import ADMIN_ID, temp_path
 from sheets import log_event
@@ -846,19 +847,6 @@ async def _query_sana(page, ng_click: str, bot: Bot, user_id: int,
                 await handle_session_expired(bot, user_id, page=page)
                 continue
 
-            # ⭐ محافظ: اگر پاپ‌آپ خطا نبوده و استعلام موفق بوده، سکشن حذف/افزودن نمی‌شود
-            success_now = await page.evaluate('''() => {
-                const disabled = document.querySelector(
-                    'input[ng-disabled*="ExtractedFromSana"][ng-disabled*="1"]');
-                if (disabled) return true;
-                const inp = document.querySelector(
-                    '#txtRealIrNationalityCode, #txtRealIrNationalityCode1, #txtNationalityCode');
-                return inp ? inp.disabled : false;
-            }''')
-            if success_now:
-                logging.info("[TN] پاپ‌آپ خطا نبود — استعلام قبلاً موفق بود")
-                return
-
             # ⭐ «تاریخ تولد ارسالی مربوط به شماره ملی ... اشتباه است» = کدملی
             # اشتباه → بدون تکرار، پنجرهٔ ویرایش کدملی (TajdidSanaQueryError)
             try:
@@ -885,6 +873,22 @@ async def _query_sana(page, ng_click: str, bot: Bot, user_id: int,
                     person_role=person_role,
                     person_index=person_index,
                     kind="birthdate")
+
+            # ⭐ محافظ بعد از بررسی خطای تاریخ تولد: فیلدهای غیرفعالِ اشخاصِ
+            # قبلاً استعلام‌شده (مثلاً خواهان هنگام استعلام خوانده) نباید
+            # خطای «تاریخ تولد ... اشتباه است» را پنهان کنند.
+            # ⭐ محافظ: اگر پاپ‌آپ خطا نبوده و استعلام موفق بوده، سکشن حذف/افزودن نمی‌شود
+            success_now = await page.evaluate('''() => {
+                const disabled = document.querySelector(
+                    'input[ng-disabled*="ExtractedFromSana"][ng-disabled*="1"]');
+                if (disabled) return true;
+                const inp = document.querySelector(
+                    '#txtRealIrNationalityCode, #txtRealIrNationalityCode1, #txtNationalityCode');
+                return inp ? inp.disabled : false;
+            }''')
+            if success_now:
+                logging.info("[TN] پاپ‌آپ خطا نبود — استعلام قبلاً موفق بود")
+                return
 
             # ⭐ طبق دستور جدید کارفرما: اولین پاپ‌آپ خطا → بستن و فقط یک‌بار
             # دیگر استعلام (روند حذف/افزودن سکشن حذف شد)؛ پاپ‌آپ دوم → خطا.
@@ -1985,34 +1989,10 @@ async def _fill_jihat_section(page, reasons, case_type: str, bot: Bot, user_id: 
 
 
 async def _reload_page_with_settle(page, prefix: str = "TN") -> bool:
-    """
-    ریلود صفحه طبق قاعدٔ جدید کارفرما:
-      ۱. ریلود صفحه
-      ۲. حتماً ۱۰ ثانیه صبر
-      ۳. بررسی اینکه صفحه واقعاً چیزی نمایش می‌دهد (منو/محتوای بدنه)
-      ۴. اگر چیزی نمایش داده نشد → یک بار دیگر ریلود + ۱۰ ثانیه صبر
-    قبلاً ریلود با ۵–۶ ثانیه صبر انجام می‌شد و گاهی صفحه هنوز خالی بود.
-    """
-    for reload_round in range(1, 3):
-        try:
-            await page.reload()
-        except Exception as e:
-            logging.warning(f"[{prefix}] خطا در ریلود صفحه (دور {reload_round}): {e}")
-        await asyncio.sleep(10)
-        try:
-            loaded = await page.evaluate("""() => {
-                const menu = document.querySelector('a.list-group-item, li.list-group-item');
-                const bodyText = document.body ? (document.body.innerText || "").trim() : "";
-                return !!menu || bodyText.length > 50;
-            }""")
-        except Exception:
-            loaded = False
-        if loaded:
-            logging.info(f"[{prefix}] صفحه پس از ریلود محتوا نمایش داد (دور {reload_round}).")
-            return True
-        logging.warning(
-            f"[{prefix}] پس از ریلود هنوز چیزی نمایش داده نشد (دور {reload_round}/2) — ریلود مجدد...")
-    return False
+    """ریلود صفحه طبق قاعدهٔ کارفرما — پیاده‌سازی مشترک در browser_helpers:
+    ریلود + ۱۰ ثانیه صبر؛ اگر چیزی نمایش داده نشد تا دو بار دیگر ریلود."""
+    from browser_helpers import reload_and_settle
+    return await reload_and_settle(page, prefix)
 
 
 async def _raise_fatal_tn_save_error(bot: Bot, user_id: int, error_text: str):
@@ -3508,8 +3488,7 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                     f"⚠️ *خطای ثبت دعوی اعتراضی در سامانه:*\n\n"
                     f"«{str(e)[:300]}»\n\n"
                     f"شخص ({role_label}) در فهرست اشخاص پرونده نیست و امکان ثبت وجود ندارد.\n\n"
-                    f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این صورت پس از ۳۰ دقیقه، "
-                    f"*نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از هزینه کسر می‌گردد.")
+                    f"{_nid_fix_deadline_text()}")
             else:
                 tn_sana_msg = (
                     f"⚠️ *خطای استعلام ثنا*\n\n"
@@ -3517,8 +3496,7 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                     f"لطفاً یکی از گزینه‌های زیر را انتخاب کنید:\n"
                     f"• *ویرایش شناسه ملی:* شناسه صحیح را ارسال کنید تا ثبت با همان اطلاعات سیو شده ادامه یابد.\n"
                     f"• *حذف درخواست:* درخواست حذف می‌شود.\n\n"
-                    f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این صورت پس از ۳۰ دقیقه، "
-                    f"*نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از هزینه کسر می‌گردد.")
+                    f"{_nid_fix_deadline_text()}")
             await bot.send_message(user_id, tn_sana_msg, reply_markup=kb)
             return  # متوقف — منتظر اصلاح کاربر
 

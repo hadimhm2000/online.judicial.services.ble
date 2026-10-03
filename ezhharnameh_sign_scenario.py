@@ -238,8 +238,8 @@ async def _navigate_to_ezhhar_sign_page_once(
             recovery_ok = await _check_recovery_popup(sana_page, bot, user_id)
             if not recovery_ok:
                 logging.warning("[EZHHAR_SIGN] پاپ‌آپ بازیابی تایید نشد — ریلود")
-                await sana_page.reload()
-                await resilient_sleep(sana_page, 8, bot, user_id)
+                from browser_helpers import reload_and_settle
+                await reload_and_settle(sana_page, "EZHHAR_SIGN")
                 await _close_any_popup(sana_page)
                 await resilient_sleep(sana_page, 3, bot, user_id)
 
@@ -271,8 +271,8 @@ async def _navigate_to_ezhhar_sign_page_once(
 
             if not table_exists:
                 logging.warning("[EZHHAR_SIGN] جدول امضا ظاهر نشد — ریلود و تلاش مجدد")
-                await sana_page.reload()
-                await resilient_sleep(sana_page, 8, bot, user_id)
+                from browser_helpers import reload_and_settle
+                await reload_and_settle(sana_page, "EZHHAR_SIGN")
                 await _close_any_popup(sana_page)
                 await resilient_sleep(sana_page, 3, bot, user_id)
 

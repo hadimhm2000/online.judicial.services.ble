@@ -79,6 +79,14 @@ class EalamFatalError(Exception):
     pass
 
 
+class EalamNidError(EalamFatalError):
+    """⭐ خطای «تاریخ تولد ارسالی مربوط به شماره ملی ... اشتباه است» = کدملی
+    وکیل اشتباه → پنجرهٔ ۴۵ دقیقه‌ای ویرایش کدملی (nid_fix_window)."""
+    def __init__(self, message: str, national_id: str = ""):
+        super().__init__(message)
+        self.national_id = national_id or ""
+
+
 async def process_ealam_vakalaht_task(data: dict, bot: Bot):
     """پردازش تسک اعلام وکالت"""
     sana_page = runtime_state.sana_page
@@ -470,6 +478,46 @@ async def process_ealam_vakalaht_task(data: dict, bot: Bot):
                 note=f"اعلام وکالت ثبت موفق | هزینه: {court_total:,} تومان")
             return
 
+        except EalamNidError as e:
+            # ⭐ کدملی وکیل اشتباه — پنجرهٔ ۴۵ دقیقه‌ای ویرایش کدملی؛ پس از
+            # ویرایش، ثبت با همان اطلاعات سیو شده از نو انجام می‌شود و در صورت
+            # عدم ویرایش، نصف پیش‌پرداخت برای موارد بعدی کاربر لحاظ می‌شود.
+            logging.error(f"[EALAM] کدملی اشتباه user={user_id} nid={e.national_id}: {e}")
+            person_index = lawyers.index(e.national_id) if e.national_id in lawyers else -1
+            try:
+                import nid_fix_window
+                nid_fix_window.start_window(
+                    user_id, flow=nid_fix_window.FLOW_EALAM, task_data=dict(data),
+                    error_text=str(e), national_id=e.national_id,
+                    person_role="وکیل", person_index=person_index)
+                deadline_text = nid_fix_window.nid_fix_deadline_text()
+            except Exception as _win_err:
+                logging.error(f"[EALAM] خطا در شروع پنجرهٔ ویرایش کدملی: {_win_err}")
+                deadline_text = ""
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            fix_kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✏️ ویرایش کدملی",
+                                      callback_data=f"eal_nid_fix:{user_id}")],
+                [InlineKeyboardButton(text="🗑 حذف درخواست",
+                                      callback_data=f"eal_nid_cancel:{user_id}")],
+            ])
+            await bot.send_message(
+                user_id,
+                f"⚠️ *خطای استعلام ثنا*\n\n"
+                f"کدملی وکیل `{e.national_id or '—'}` اشتباه است.\n\n"
+                f"{deadline_text}\n"
+                f"✅ پس از ویرایش، ثبت با همان اطلاعات سیو شده ادامه می‌یابد.",
+                reply_markup=fix_kb)
+            await log_event(
+                "خطای سامانه", "اعلام وکالت", str(user_id), user_id,
+                tracking_code=tracking_code, doc_name="اعلام وکالت",
+                note=f"کدملی وکیل اشتباه: {str(e)[:200]}")
+            await _safe_register_case(
+                event_type="خطای سامانه", full_name=str(user_id), user_id=user_id,
+                trackingCode=tracking_code or "", documentCategory="اعلام وکالت",
+                errorDetails=f"کدملی وکیل اشتباه: {str(e)[:200]}", errorStep="SANA_DATA_ERROR")
+            return
+
         except EalamFatalError as e:
             logging.error(f"[EALAM] خطای قطعی user={user_id}: {e}")
             await bot.send_message(user_id, f"⚠️ *خطای قطعی:* {str(e)[:200]}")
@@ -489,8 +537,8 @@ async def process_ealam_vakalaht_task(data: dict, bot: Bot):
             if attempt < max_attempts - 1:
                 await bot.send_message(ADMIN_ID, f"⚠️ [EALAM] تلاش {attempt+1} ناموفق. ریلود...\nخطا: {str(e)[:300]}")
                 try:
-                    await sana_page.reload()
-                    await asyncio.sleep(6)
+                    from browser_helpers import reload_and_settle
+                    await reload_and_settle(sana_page, "EALAM")
                 except Exception:
                     pass
             else:
@@ -906,17 +954,6 @@ async def _click_sana_query(page, ng_click: str, bot: Bot, user_id: int,
                 .filter(Boolean).join(' ').trim() || null;
         }''')
         if popup_text_ealam:
-            # ⭐ محافظ: اگر پاپ‌آپ خطا نبوده و داده‌ها از ثنا دریافت شده، سکشن حذف/افزودن نمی‌شود
-            success_now = await page.evaluate('''() => {
-                const disabled = document.querySelector(
-                    'input[ng-disabled*="ExtractedFromSana"][ng-disabled*="1"], input[disabled]'
-                );
-                return disabled !== null;
-            }''')
-            if success_now:
-                logging.info("[EALAM] پاپ‌آپ خطا نبود — داده‌های ثنا قبلاً دریافت شد")
-                await _close_error_popup(page)
-                return
             # ⭐ «تاریخ تولد ارسالی مربوط به شماره ملی ... اشتباه است» = کدملی
             # اشتباه → بدون تکرار؛ کاربر باید کدملی را اصلاح کند
             try:
@@ -933,10 +970,22 @@ async def _click_sana_query(page, ng_click: str, bot: Bot, user_id: int,
                         f"شناسه {national_id or '—'}: «{popup_text_ealam[:200]}»")
                 except Exception:
                     pass
-                raise EalamFatalError(
+                raise EalamNidError(
                     f"کدملی `{national_id or '—'}` اشتباه است و باید ویرایش شود "
                     f"(پیام سامانه: {popup_text_ealam[:150]}). لطفاً با کدملی صحیح "
-                    "مجدداً اقدام فرمایید.")
+                    "مجدداً اقدام فرمایید.", national_id=national_id)
+
+            # ⭐ محافظ: اگر پاپ‌آپ خطا نبوده و داده‌ها از ثنا دریافت شده، سکشن حذف/افزودن نمی‌شود
+            success_now = await page.evaluate('''() => {
+                const disabled = document.querySelector(
+                    'input[ng-disabled*="ExtractedFromSana"][ng-disabled*="1"], input[disabled]'
+                );
+                return disabled !== null;
+            }''')
+            if success_now:
+                logging.info("[EALAM] پاپ‌آپ خطا نبود — داده‌های ثنا قبلاً دریافت شد")
+                await _close_error_popup(page)
+                return
 
             # ⭐ طبق دستور جدید کارفرما: اولین پاپ‌آپ خطا → بستن و فقط یک‌بار
             # دیگر استعلام (روند حذف/افزودن سکشن حذف شد)

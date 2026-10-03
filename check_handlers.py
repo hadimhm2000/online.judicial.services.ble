@@ -66,6 +66,8 @@ import runtime_state
 CHECK_FAMILY_TITLES = ["دادخواست طلاق توافقی", "دادخواست طلاق به درخواست زوجه",
                        "دادخواست طلاق به درخواست زوج", "دادخواست نفقه",
                        "دادخواست الزام به تمکین", "دادخواست مهریه"]
+# ⭐ دادخواست نفقه: پس از سند ازدواج، تصویر شناسنامه الزامی است (منضمات: «شناسنامه»)
+CHECK_BIRTH_CERT_TITLES = ("دادخواست نفقه",)
 # طلاق×۳ و «الزام به تمکین»: بدون مبلغ و همیشه دادخواست بدوی
 CHECK_NO_AMOUNT_TITLES = ["دادخواست طلاق توافقی", "دادخواست طلاق به درخواست زوجه",
                           "دادخواست طلاق به درخواست زوج", "دادخواست الزام به تمکین"]
@@ -188,6 +190,7 @@ async def check_entry(message: Message, state: FSMContext):
         _current_cheque_images=[],
         check_esteshahadieh_images=[],
         check_marriage_cert_images=[],
+        check_birth_cert_images=[],
         check_assets_list_images=[],
         check_judgment_images=[],
         check_judgment_no="",
@@ -2352,10 +2355,97 @@ async def check_marriage_date_input_handler(message: Message, state: FSMContext)
         return
 
     await state.update_data(check_marriage_date=normalized)
+    # ⭐ دادخواست نفقه → پس از سند ازدواج، تصویر شناسنامه (الزامی)
+    if data_title_needs_birth_cert(await state.get_data()):
+        await _ask_check_birth_cert(message, state)
+        return
     # ⭐ اصلاحیه (کارفرما — دور ۳): سوال «مدرک یا تصویر دیگری دارید؟» باید
     # *قبل از انتخاب صلاحیت دادگاه* و درست بعد از اطلاعات سند ازدواج پرسیده
     # شود (قبلاً بعد از صلاحیت پرسیده می‌شد که جای اشتباهی بود).
     await _ask_check_extra_docs(message, state)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# مرحله ۸.۶ — تصویر شناسنامه (فقط دادخواست نفقه — الزامی)
+# ══════════════════════════════════════════════════════════════════════════════
+def data_title_needs_birth_cert(data: dict) -> bool:
+    """دادخواست نفقه‌ای که هنوز تصویر شناسنامه ندارد."""
+    return (data.get("check_request_title", "") in CHECK_BIRTH_CERT_TITLES
+            and not data.get("check_birth_cert_images"))
+
+
+async def _ask_check_birth_cert(message: Message, state: FSMContext):
+    await message.answer(
+        "🪪 لطفاً تصویر *شناسنامه* را ارسال فرمایید:\n"
+        "_(اجباری — حداقل یک تصویر)_",
+        reply_markup=check_images_continue_kb)
+    await state.set_state(Form.check_birth_cert_image)
+
+
+@check_router.message(Form.check_birth_cert_image)
+async def check_birth_cert_image_handler(message: Message, state: FSMContext):
+    if not message.photo:
+        text = (message.text or "").strip()
+        if text in ("✅ ادامه", "➕ افزودن تصویر دیگر", "🔙 بازگشت"):
+            await check_birth_cert_more_handler(message, state)
+            return
+        await message.answer("⚠️ لطفاً *عکس* شناسنامه را ارسال فرمایید.")
+        return
+
+    data = await state.get_data()
+    images = data.get("check_birth_cert_images", [])
+    images.append(message.photo[-1].file_id)
+    await state.update_data(check_birth_cert_images=images)
+    await message.answer(
+        "✅ تصویر شناسنامه دریافت شد.\n\n"
+        "در صورت وجود تصویر دیگر، ارسال فرمایید یا *«ادامه»* را بفشارید:",
+        reply_markup=check_images_continue_kb)
+    await state.set_state(Form.check_birth_cert_more)
+
+
+@check_router.message(Form.check_birth_cert_more)
+async def check_birth_cert_more_handler(message: Message, state: FSMContext):
+    if message.photo:
+        await check_birth_cert_image_handler(message, state)
+        return
+
+    text = message.text.strip() if message.text else ""
+
+    if text == "➕ افزودن تصویر دیگر":
+        await message.answer(
+            "📷 تصویر دیگر شناسنامه را ارسال فرمایید:",
+            reply_markup=check_images_continue_kb)
+        await state.set_state(Form.check_birth_cert_image)
+        return
+
+    if text == "✅ ادامه":
+        data = await state.get_data()
+        if not data.get("check_birth_cert_images"):
+            await message.answer(
+                "⚠️ ارسال تصویر *شناسنامه* برای دادخواست نفقه الزامی است. "
+                "لطفاً تصویر را ارسال فرمایید:",
+                reply_markup=check_images_continue_kb)
+            await state.set_state(Form.check_birth_cert_image)
+            return
+        await _ask_check_extra_docs(message, state)
+        return
+
+    if text == "🔙 بازگشت":
+        data = await state.get_data()
+        if data.get("check_birth_cert_images"):
+            # حذف آخرین تصویر و دریافت مجدد
+            images = data["check_birth_cert_images"]
+            images.pop()
+            await state.update_data(check_birth_cert_images=images)
+            await _ask_check_birth_cert(message, state)
+            return
+        await message.answer(
+            "📅 لطفاً *تاریخ وقوع عقد* را به‌صورت `1403/06/15` وارد فرمایید:",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.check_marriage_date)
+        return
+
+    await message.answer("⚠️ لطفاً از دکمه‌ها استفاده کنید:")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2989,6 +3079,11 @@ async def _ask_check_next_after_images(message: Message, state: FSMContext):
         await state.set_state(Form.check_marriage_cert_image)
         return
 
+    # ⭐ دادخواست نفقه → تصویر شناسنامه الزامی (فقط اگر هنوز دریافت نشده)
+    if data_title_needs_birth_cert(data):
+        await _ask_check_birth_cert(message, state)
+        return
+
     # ⭐ «مطالبه وجه بابت...» → بدون سند اختصاصی — سوال «مدرک دیگری؟» و سپس
     # انتخاب صلاحیت دادگاه (دور ۳: این سوال حالا برای همهٔ عناوین *قبل از*
     # صلاحیت پرسیده می‌شود، نه بعد از آن)
@@ -3247,6 +3342,11 @@ async def check_attachment_title_handler(message: Message, state: FSMContext):
                 "_(فقط عدد)_",
                 reply_markup=back_only_kb)
             await state.set_state(Form.check_judgment_branch_no)
+            return
+        if request_title in CHECK_BIRTH_CERT_TITLES:
+            # نفقه → بازگشت به تصویر شناسنامه (از ابتدا)
+            await state.update_data(check_birth_cert_images=[])
+            await _ask_check_birth_cert(message, state)
             return
         if request_title in CHECK_FAMILY_TITLES:
             await message.answer(
@@ -3534,6 +3634,9 @@ async def _go_to_check_preview(message: Message, state: FSMContext):
         lines.append(f"\n📷 استشهادیه: {len(esteshahadieh)} تصویر")
     if marriage_cert:
         lines.append(f"💍 گواهی ازدواج: {len(marriage_cert)} تصویر")
+    birth_cert = data.get("check_birth_cert_images", [])
+    if birth_cert:
+        lines.append(f"🪪 شناسنامه: {len(birth_cert)} تصویر")
     # ⭐ فلوی جدید چک — نمایش فقرات (کدرهگیری + تعداد تصویر هر فقره)
     cheque_items = data.get("check_cheque_items", [])
     if cheque_items:
@@ -3641,6 +3744,15 @@ async def _submit_check_request(message: Message, state: FSMContext, bot: Bot):
             "is_marriage_cert": True,
             "cert_no": data.get("check_marriage_cert_no", ""),
             "cert_date": data.get("check_marriage_date", ""),
+        })
+
+    # ⭐ دادخواست نفقه — شناسنامه (نوع پیوست «شناسنامه»، دو فیلد سند = ۰)
+    birth_ids = data.get("check_birth_cert_images", [])
+    if birth_ids:
+        attachment_groups.append({
+            "title": "شناسنامه",
+            "images": birth_ids,
+            "is_birth_cert": True,
         })
 
     # ⭐ عناوین اعسار — لیست اموال (ساير ضمائم) و دادنامه (تصويردادنامه غيرمكانيزه)
@@ -4224,7 +4336,7 @@ async def chk_nid_fix_callback(callback: CallbackQuery, state: FSMContext, bot: 
     win = _chk_nfw.get_window(target_user_id)
     if not win or win.get("flow") != _chk_nfw.FLOW_CHECK:
         await callback.answer(
-            "⚠️ درخواستی برای ویرایش یافت نشد (مهلت ۳۰ دقیقه‌ای به پایان رسیده است).")
+            "⚠️ درخواستی برای ویرایش یافت نشد (مهلت ۴۵ دقیقه‌ای به پایان رسیده است).")
         return
 
     await callback.answer()
@@ -4314,9 +4426,7 @@ async def chk_nid_cancel_callback(callback: CallbackQuery, state: FSMContext, bo
 
     # جریمه — نصف مبلغ پیش‌پرداخت برای موارد بعدی (عین دستور کارفرما)
     new_rial = _chk_nfw.halve_prepaid(target_user_id)
-    penalty_line = (
-        f"💰 نصف مبلغ پیش‌پرداخت شما ({new_rial // 10:,} تومان) برای موارد بعدی "
-        "شما لحاظ شد و از هزینه کسر می‌گردد.\n" if new_rial > 0 else "")
+    penalty_line = _chk_nfw.penalty_line(new_rial)
 
     try:
         await callback.message.edit_text(

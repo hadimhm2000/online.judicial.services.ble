@@ -33,8 +33,8 @@ def get_flow_type_kb(user_id: int) -> ReplyKeyboardMarkup:
         [KeyboardButton(text="🔍 استعلام"), KeyboardButton(text="📦 استعلام (چند مورد همزمان)")],
         [KeyboardButton(text="✍️ ثبت لایحه"), KeyboardButton(text="📄 ثبت اظهارنامه")],
         [KeyboardButton(text=_tn), KeyboardButton(text=_chk)],
-        [KeyboardButton(text="💰 محاسبه تمبر"), KeyboardButton(text="🔧 ابزار فایل")],
-        [KeyboardButton(text="🗺️ ارزش منطقه‌ای"), KeyboardButton(text=DAMAGES_MENU_TEXT)],
+        [KeyboardButton(text="💰 محاسبه تمبر"), KeyboardButton(text="🗺️ ارزش منطقه‌ای")],
+        [KeyboardButton(text="🔧 ابزار فایل"), KeyboardButton(text=DAMAGES_MENU_TEXT)],
         [KeyboardButton(text=HISTORY_MENU_TEXT), KeyboardButton(text=WALLET_MENU_TEXT)],
         # ⭐ گزینهٔ «شروع مجدد» (۱۴۰۵/۰۶) — صرفاً کاربر را به منوی اصلی برمی‌گرداند
         # (از هر مرحله‌ای از هر فلوی — هندلر سراسری در handlers.py)

@@ -111,6 +111,7 @@ from aiogram import Bot
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 import runtime_state
+from nid_fix_window import nid_fix_deadline_text as _nid_fix_deadline_text
 from browser_helpers import SANA_SERVICE_DELAY_MAX_RETRIES
 from config import ADMIN_ID, temp_path
 from sheets import log_event
@@ -1378,17 +1379,13 @@ async def process_check_task(data: dict, bot: Bot):
                 chk_sana_msg = (
                     f"⚠️ *خطای ثبت دادخواست در سامانه:*\n\n«{str(sana_err)[:300]}»\n\n"
                     f"شخص ({sana_err.role or 'شخص'}) در فهرست اشخاص پرونده نیست و امکان ثبت دادخواست وجود ندارد.\n\n"
-                    f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این "
-                    f"صورت پس از ۳۰ دقیقه، *نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما "
-                    f"از هزینه کسر می‌گردد.\n"
+                    f"{_nid_fix_deadline_text()}\n"
                     f"✅ پس از ویرایش، ثبت با همان اطلاعات سیو شده ادامه می‌یابد.")
             else:
                 chk_sana_msg = (
                     f"⚠️ *خطای استعلام ثنا:*\n\n«{str(sana_err)[:250]}»\n\n"
                     f"❌ کدملی ({sana_err.role or 'شخص'}) اشتباه می باشد.\n\n"
-                    f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این "
-                    f"صورت پس از ۳۰ دقیقه، *نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما "
-                    f"از هزینه کسر می‌گردد.\n"
+                    f"{_nid_fix_deadline_text()}\n"
                     f"✅ پس از ویرایش، ثبت با همان اطلاعات سیو شده ادامه می‌یابد.")
             await bot.send_message(user_id, chk_sana_msg, reply_markup=chk_kb)
             try:
@@ -1850,34 +1847,10 @@ _FAMILY_FALLBACK = {"دادخواست طلاق توافقی": ["طلاق"], "د�
 
 
 async def _reload_page_with_settle(page, prefix: str = "CHECK") -> bool:
-    """
-    ریلود صفحه طبق قاعدٔ جدید کارفرما:
-      ۱. ریلود صفحه
-      ۲. حتماً ۱۰ ثانیه صبر
-      ۳. بررسی اینکه صفحه واقعاً چیزی نمایش می‌دهد (منو/محتوای بدنه)
-      ۴. اگر چیزی نمایش داده نشد → یک بار دیگر ریلود + ۱۰ ثانیه صبر
-    قبلاً ریلود با ۵–۶ ثانیه صبر انجام می‌شد و گاهی صفحه هنوز خالی بود.
-    """
-    for reload_round in range(1, 3):
-        try:
-            await page.reload()
-        except Exception as e:
-            logging.warning(f"[{prefix}] خطا در ریلود صفحه (دور {reload_round}): {e}")
-        await asyncio.sleep(10)
-        try:
-            loaded = await page.evaluate("""() => {
-                const menu = document.querySelector('a.list-group-item, li.list-group-item');
-                const bodyText = document.body ? (document.body.innerText || "").trim() : "";
-                return !!menu || bodyText.length > 50;
-            }""")
-        except Exception:
-            loaded = False
-        if loaded:
-            logging.info(f"[{prefix}] صفحه پس از ریلود محتوا نمایش داد (دور {reload_round}).")
-            return True
-        logging.warning(
-            f"[{prefix}] پس از ریلود هنوز چیزی نمایش داده نشد (دور {reload_round}/2) — ریلود مجدد...")
-    return False
+    """ریلود صفحه طبق قاعدهٔ کارفرما — پیاده‌سازی مشترک در browser_helpers:
+    ریلود + ۱۰ ثانیه صبر؛ اگر چیزی نمایش داده نشد تا دو بار دیگر ریلود."""
+    from browser_helpers import reload_and_settle
+    return await reload_and_settle(page, prefix)
 
 
 async def _select_khasteh_option(page, request_title: str, bot: Bot, user_id: int,
@@ -4139,6 +4112,86 @@ async def _register_dadnameh_attachment(page, group, group_paths, bot, user_id, 
     return True
 
 
+async def _register_birth_certificate(page, group, group_paths, bot, user_id, bill_no) -> bool:
+    """⭐ ثبت «شناسنامه» (دادخواست نفقه) طبق دستور کارفرما:
+
+    «پیوست جدید» → انتخاب «شناسنامه» در attachmentType →
+      - #txtBirthLocation ← 0
+      - #txtNo ← 0
+    → تعداد برگ پیوست + «افزودن پیوست» (عین سایر منضمات) →
+    «ثبت و ویرایش پیوست» (btnSaveDoc) با مدیریت خطا → آپلود تصاویر عین سایر منضمات.
+    """
+    logging.info(f"[CHECK][منضمات] ثبت شناسنامه — تصویر:{len(group_paths)}")
+
+    # ۱) «پیوست جدید»
+    clicked = await page.evaluate("""() => {
+        const btn = document.querySelector('#newAttachmentType');
+        if (btn && !btn.disabled) { btn.click(); return true; }
+        return false;
+    }""")
+    if clicked:
+        await asyncio.sleep(3)
+        await wait_for_angular_idle(page)
+        await asyncio.sleep(1)
+
+    # ۲) انتخاب «شناسنامه» در فهرست نوع سند
+    if not await _select_attachment_type(page, "شناسنامه"):
+        err = "گزینه «شناسنامه» در فهرست نوع سند یافت نشد"
+        logging.error(f"[CHECK][منضمات] {err}")
+        try:
+            await bot.send_message(ADMIN_ID, f"❌ [CHECK] {err} — کاربر {user_id} | کد: {bill_no}")
+        except Exception:
+            pass
+        return False
+    await asyncio.sleep(1)
+    await wait_for_angular_idle(page)
+
+    # ۳) دو فیلد سند = ۰ (محل صدور و شماره)
+    for field_id in ("txtBirthLocation", "txtNo"):
+        if not await _fill_doc_field_angular(page, field_id, "0"):
+            logging.warning(f"[CHECK][منضمات] فیلد #{field_id} (شناسنامه) پیدا نشد")
+        await asyncio.sleep(0.5)
+
+    # ۴) تعداد برگ پیوست + «افزودن پیوست» — عین سایر منضمات
+    await wait_for_angular_idle(page)
+    await _fill_attachment_count_and_add(page, len(group_paths or []), prefix="CHECK")
+    await asyncio.sleep(1)
+
+    # ۵) «ثبت و ویرایش پیوست» با ریترای و اعمال خطاها/نکات منضمات
+    save_ok = await click_save_doc_with_retry(page, bot, user_id, prefix="CHECK")
+    if not save_ok:
+        error_text = await _uh_error_popup_text(page)
+        logging.error(f"[CHECK][منضمات] ذخیره شناسنامه ناموفق: {error_text!r}")
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"❌ [CHECK] ذخیره شناسنامه ناموفق — کاربر {user_id} | کد: {bill_no} | "
+                f"خطا: {(error_text or 'نامشخص')[:200]}")
+        except Exception:
+            pass
+        return False
+    await resilient_sleep(page, 5, bot, user_id)
+    await wait_for_angular_idle(page)
+
+    # ۶) آپلود تصاویر عین سایر منضمات
+    if group_paths:
+        upload_result = await _upload_check_files(
+            page, "شناسنامه", group_paths, bot, user_id, bill_no)
+        if not upload_result.get("success"):
+            logging.error(
+                f"[CHECK][منضمات] آپلود تصاویر شناسنامه ناموفق: {upload_result.get('error')}")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"❌ [CHECK] آپلود تصاویر شناسنامه ناموفق — کاربر {user_id} | کد: {bill_no} | "
+                    f"خطا: {(upload_result.get('error') or 'نامشخص')[:200]}")
+            except Exception:
+                pass
+            return False
+    logging.info("[CHECK][منضمات] شناسنامه ثبت و تصاویر آپلود شد")
+    return True
+
+
 async def _process_check_attachments(
     page,
     request_title: str,
@@ -4385,6 +4438,11 @@ async def _process_check_attachments(
                 page, group, group_paths, bot, user_id, bill_no)
             if not mc_ok:
                 logging.error("[CHECK][منضمات] ثبت سند ازدواج ناموفق بود")
+        elif group.get("is_birth_cert"):
+            bc_ok = await _register_birth_certificate(
+                page, group, group_paths, bot, user_id, bill_no)
+            if not bc_ok:
+                logging.error("[CHECK][منضمات] ثبت شناسنامه ناموفق بود")
         elif bool(group.get("is_dadnameh")):
             dn_ok = await _register_dadnameh_attachment(
                 page, group, group_paths, bot, user_id, bill_no)

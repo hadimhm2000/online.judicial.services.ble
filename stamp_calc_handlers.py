@@ -43,7 +43,8 @@ def _subscription_required_message(user_id: int) -> tuple:
     msg = (
         f"⚠️ *محدودیت استفاده رایگان تمام شد*\n\n"
         f"شما {MAX_FREE_USAGE} بار استفاده رایگان از بخش محاسبه تمبر را مصرف کرده‌اید.\n\n"
-        f"💰 جهت استفاده مجدد از بخش ابزار و محاسبه تمبر، *اشتراک ماهیانه* را فعال نمایید.\n\n"
+        f"💰 جهت استفاده مجدد، *اشتراک ماهیانه* را فعال نمایید؛ یک اشتراک برای همهٔ "
+        f"بخش‌های زیر معتبر است:\n{runtime_state.SUBSCRIPTION_FEATURES_TEXT}\n\n"
         f"💳 مبلغ اشتراک ماهیانه: *{SUBSCRIPTION_FEE:,} ریال*\n\n"
         f"⏱ مدت اشتراک: *{runtime_state.SUBSCRIPTION_DURATION_DAYS} روز*"
     )

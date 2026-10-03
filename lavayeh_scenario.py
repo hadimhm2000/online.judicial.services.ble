@@ -14,6 +14,7 @@ from aiogram import Bot
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 import runtime_state
+from nid_fix_window import nid_fix_deadline_text as _nid_fix_deadline_text
 from browser_helpers import SANA_SERVICE_DELAY_MAX_RETRIES
 from config import ADMIN_ID, temp_path
 from sheets import log_event
@@ -201,34 +202,10 @@ def _is_service_down_error(error_text: str) -> bool:
 
 
 async def _reload_page_with_settle(page, prefix: str = "LAVAYEH") -> bool:
-    """
-    ریلود صفحه طبق قاعدٔ جدید کارفرما:
-      ۱. ریلود صفحه
-      ۲. حتماً ۱۰ ثانیه صبر
-      ۳. بررسی اینکه صفحه واقعاً چیزی نمایش می‌دهد (منو/محتوای بدنه)
-      ۴. اگر چیزی نمایش داده نشد → یک بار دیگر ریلود + ۱۰ ثانیه صبر
-    قبلاً ریلود با ۵–۶ ثانیه صبر انجام می‌شد و گاهی صفحه هنوز خالی بود.
-    """
-    for reload_round in range(1, 3):
-        try:
-            await page.reload()
-        except Exception as e:
-            logging.warning(f"[{prefix}] خطا در ریلود صفحه (دور {reload_round}): {e}")
-        await asyncio.sleep(10)
-        try:
-            loaded = await page.evaluate("""() => {
-                const menu = document.querySelector('a.list-group-item, li.list-group-item');
-                const bodyText = document.body ? (document.body.innerText || "").trim() : "";
-                return !!menu || bodyText.length > 50;
-            }""")
-        except Exception:
-            loaded = False
-        if loaded:
-            logging.info(f"[{prefix}] صفحه پس از ریلود محتوا نمایش داد (دور {reload_round}).")
-            return True
-        logging.warning(
-            f"[{prefix}] پس از ریلود هنوز چیزی نمایش داده نشد (دور {reload_round}/2) — ریلود مجدد...")
-    return False
+    """ریلود صفحه طبق قاعدهٔ کارفرما — پیاده‌سازی مشترک در browser_helpers:
+    ریلود + ۱۰ ثانیه صبر؛ اگر چیزی نمایش داده نشد تا دو بار دیگر ریلود."""
+    from browser_helpers import reload_and_settle
+    return await reload_and_settle(page, prefix)
 
 
 
@@ -893,8 +870,8 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                 if not goto_ok:
                     logging.warning(f"[LAVAYEH] بازگشت به فهرست بعد از منضمات ناموفق (user={user_id})")
                     # تلاش آخر: ریلود صفحه و رفتن به صفحه اصلی
-                    await sana_page.reload()
-                    await asyncio.sleep(5)
+                    from browser_helpers import reload_and_settle
+                    await reload_and_settle(sana_page, "LAVAYEH")
                 await resilient_sleep(sana_page, 4, bot, user_id)
 
             # ══════════════════════════════════════════════════════════
@@ -1976,9 +1953,7 @@ async def _raise_lavayeh_sana_data_error(bot: Bot, user_id: int, error_text: str
         user_id,
         f"{head}\n\n«{error_text}»\n\n"
         f"{note}\n\n"
-        f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این "
-        f"صورت پس از ۳۰ دقیقه، *نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از "
-        f"هزینه کسر می‌گردد.")
+        f"{_nid_fix_deadline_text()}")
     raise LavayehSanaDataError(
         error_text, kind=kind, national_id=national_id,
         person_index=person_index)
@@ -2015,9 +1990,7 @@ async def _raise_fatal_temp_save_error(bot: Bot, user_id: int, error_text: str):
             f"شخص ارائه‌کننده لایحه"
             + (f" به‌نام «{_person_name}»" if _person_name else "")
             + " در فهرست اشخاص پرونده نیست و امکان ثبت لایحه دفاعیه وجود ندارد.\n\n"
-            f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این "
-            f"صورت پس از ۳۰ دقیقه، *نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از "
-            f"هزینه کسر می‌گردد.")
+            f"{_nid_fix_deadline_text()}")
         raise LavayehSanaDataError(
             error_text, kind="person_not_in_case",
             national_id=_extract_lavayeh_nid(error_text),
@@ -2028,9 +2001,7 @@ async def _raise_fatal_temp_save_error(bot: Bot, user_id: int, error_text: str):
             user_id,
             f"⚠️ *خطای استعلام ثنا:*\n\n«{error_text}»\n\n"
             f"❌ کدملی شما اشتباه می باشد.\n\n"
-            f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این "
-            f"صورت پس از ۳۰ دقیقه، *نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از "
-            f"هزینه کسر می‌گردد.")
+            f"{_nid_fix_deadline_text()}")
         raise LavayehSanaDataError(
             error_text, kind="birthdate", national_id=_nid)
 

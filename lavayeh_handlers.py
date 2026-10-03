@@ -2572,7 +2572,7 @@ async def lav_nid_fix_callback(callback: CallbackQuery, state: FSMContext, bot: 
     win = _nfw.get_window(target_user_id)
     if not win or win.get("flow") != _nfw.FLOW_LAVAYEH:
         await callback.answer(
-            "⚠️ درخواستی برای ویرایش یافت نشد (مهلت ۳۰ دقیقه‌ای به پایان رسیده است).")
+            "⚠️ درخواستی برای ویرایش یافت نشد (مهلت ۴۵ دقیقه‌ای به پایان رسیده است).")
         return
 
     await callback.answer()
@@ -2659,9 +2659,7 @@ async def lav_nid_cancel_callback(callback: CallbackQuery, state: FSMContext, bo
 
     # جریمه — نصف مبلغ پیش‌پرداخت برای موارد بعدی (عین دستور کارفرما)
     new_rial = _nfw.halve_prepaid(target_user_id)
-    penalty_line = (
-        f"💰 نصف مبلغ پیش‌پرداخت شما ({new_rial // 10:,} تومان) برای موارد بعدی "
-        "شما لحاظ شد و از هزینه کسر می‌گردد.\n" if new_rial > 0 else "")
+    penalty_line = _nfw.penalty_line(new_rial)
 
     try:
         await callback.message.edit_text(
@@ -2757,6 +2755,114 @@ async def lav_nid_receive_new_nid(message: Message, state: FSMContext, bot: Bot)
     if not hasattr(runtime_state, "active_lavayeh_users"):
         runtime_state.active_lavayeh_users = set()
     runtime_state.active_lavayeh_users.add(user_id)
+    await runtime_state.job_queue.put(task_data)
+    await state.clear()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ⭐ پنجرهٔ ۴۵ دقیقه‌ای ویرایش کدملی وکیل — اعلام وکالت
+# (خطای «تاریخ تولد ارسالی مربوط به شماره ملی ... اشتباه است»)
+# ══════════════════════════════════════════════════════════════════════
+
+@lavayeh_router.callback_query(F.data.startswith("eal_nid_fix:"))
+async def eal_nid_fix_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    target_user_id = int(callback.data.split(":")[1])
+    if callback.from_user.id != target_user_id:
+        await callback.answer("⚠️ این دکمه مربوط به شما نیست.")
+        return
+    win = _nfw.get_window(target_user_id)
+    if not win or win.get("flow") != _nfw.FLOW_EALAM:
+        await callback.answer(
+            f"⚠️ درخواستی برای ویرایش یافت نشد (مهلت {_nfw.NID_FIX_WINDOW_MINUTES} دقیقه‌ای به پایان رسیده است).")
+        return
+    await callback.answer()
+    await bot.send_message(
+        target_user_id,
+        f"🔢 کدملی فعلی وکیل: `{win.get('national_id') or '---'}`\n\n"
+        "لطفاً *کدملی صحیح* را ارسال فرمایید:\n_(۱۰ رقمی)_\n\n"
+        "⚠️ اطلاعات قبلی اعلام وکالت حفظ شده و فقط کدملی اصلاح می‌شود.",
+        reply_markup=back_only_kb)
+    await state.set_state(Form.ealam_nid_fix_new_nid)
+
+
+@lavayeh_router.callback_query(F.data.startswith("eal_nid_cancel:"))
+async def eal_nid_cancel_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    target_user_id = int(callback.data.split(":")[1])
+    if callback.from_user.id != target_user_id:
+        await callback.answer("⚠️ این دکمه مربوط به شما نیست.")
+        return
+    _nfw.pop_window(target_user_id)
+    await callback.answer("درخواست حذف شد.")
+    new_rial = _nfw.halve_prepaid(target_user_id)
+    try:
+        await callback.message.edit_text(
+            (callback.message.text or "") + "\n\n🗑 _درخواست حذف شد._")
+    except Exception:
+        pass
+    await bot.send_message(
+        target_user_id,
+        "🗑 *درخواست اعلام وکالت حذف شد.*\n\n"
+        f"{_nfw.penalty_line(new_rial)}\n"
+        "در صورت نیاز، از منوی اصلی مجدداً اقدام فرمایید.",
+        reply_markup=restart_kb)
+    await state.clear()
+
+
+@lavayeh_router.message(Form.ealam_nid_fix_new_nid)
+async def eal_nid_receive_new_nid(message: Message, state: FSMContext, bot: Bot):
+    """دریافت کدملی جدید وکیل و ارسال مجدد اعلام وکالت با همان اطلاعات."""
+    if not message.text:
+        return
+    user_id = message.from_user.id
+
+    if message.text == "🔙 بازگشت":
+        await message.answer(
+            "برای ویرایش کدملی، دکمهٔ «✏️ ویرایش کدملی» را بزنید؛ "
+            f"مهلت {_nfw.NID_FIX_WINDOW_MINUTES} دقیقه‌ای همچنان برقرار است.",
+            reply_markup=restart_kb)
+        await state.clear()
+        return
+
+    nat_id = _to_en(message.text)
+    if not re.match(r"^[0-9]{10}$", nat_id):
+        await message.answer("⚠️ کدملی باید *۱۰ رقمی* باشد:")
+        return
+
+    win = _nfw.pop_window(user_id)
+    if not win or win.get("flow") != _nfw.FLOW_EALAM:
+        await message.answer(
+            "⚠️ درخواست منقضی شده است. لطفاً مجدداً اقدام فرمایید.",
+            reply_markup=restart_kb)
+        await state.clear()
+        return
+
+    task_data = win.get("task_data") or {}
+    lawyers = list(task_data.get("ealam_lawyers", []))
+    old_nid = win.get("national_id", "")
+    idx = win.get("person_index", -1)
+    if not (isinstance(idx, int) and 0 <= idx < len(lawyers)):
+        idx = lawyers.index(old_nid) if old_nid in lawyers else (0 if len(lawyers) == 1 else -1)
+    if idx < 0:
+        await message.answer(
+            "⚠️ وکیل مورد نظر یافت نشد. لطفاً مجدداً اقدام فرمایید.",
+            reply_markup=restart_kb)
+        await state.clear()
+        return
+    lawyers[idx] = nat_id
+    task_data["ealam_lawyers"] = lawyers
+
+    logging.info(f"[EALAM] کدملی وکیل کاربر {user_id} ویرایش شد: {old_nid} → {nat_id} — ارسال مجدد به صف")
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"✏️ [EALAM] کدملی وکیل کاربر {user_id} ویرایش شد ({old_nid} → {nat_id}) — "
+            "درخواست مجدداً به صف ارسال شد.")
+    except Exception:
+        pass
+    await message.answer(
+        f"✅ کدملی وکیل به `{nat_id}` تغییر یافت.\n\n"
+        "⏳ ثبت اعلام وکالت با *همان اطلاعات سیو شده* ادامه می‌یابد...",
+        reply_markup=restart_kb)
     await runtime_state.job_queue.put(task_data)
     await state.clear()
 

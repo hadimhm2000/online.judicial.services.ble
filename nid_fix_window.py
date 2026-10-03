@@ -4,14 +4,14 @@
 
 این ماژول «منبع واحد حقیقت» برای دو پنجرهٔ زمانی است:
 
-۱) پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی (pending_nid_fix_windows)
+۱) پنجرهٔ ۴۵ دقیقه‌ای ویرایش کدملی (pending_nid_fix_windows)
    وقتی در هر یک از بخش‌های «ثبت لایحه»، «ثبت اظهارنامه»، «دعاوی اعتراضی»
    یا «ثبت دادخواست» خطای ثنا (کدملی اشتباه / تاریخ تولد ارسالی مربوط به
    شماره ملی ... اشتباه است / شخص ارائه‌کننده لایحه در فهرست اشخاص پرونده
    نیست) رخ می‌دهد:
      - متن خطا برای کاربر ارسال می‌شود
-     - کاربر ۳۰ دقیقه فرصت دارد کدملی شخص را ویرایش کند
-     - اگر ظرف ۳۰ دقیقه اقدام نکند → «نصف مبلغ پیش‌پرداخت» برای موارد بعدی
+     - کاربر ۴۵ دقیقه فرصت دارد کدملی شخص را ویرایش کند
+     - اگر ظرف ۴۵ دقیقه اقدام نکند → «نصف مبلغ پیش‌پرداخت» برای موارد بعدی
        او از هزینه کسر می‌گردد (مبلغ رکورد prepaid_registrations نصف می‌شود
        و در پایان کارِ درخواست بعدی به‌صورت خودکار اعمال می‌گردد)
      - ⚠️ همه‌چیز در فایل ماندگار (persistence.py) ذخیره می‌شود؛ بنابراین
@@ -40,20 +40,21 @@ from config import ADMIN_ID
 logger = logging.getLogger(__name__)
 
 # ── ثابت‌ها ────────────────────────────────────────────────────────────────
-NID_FIX_WINDOW_MINUTES = 30          # مهلت ویرایش کدملی
+NID_FIX_WINDOW_MINUTES = 45          # مهلت ویرایش کدملی
 TN_RETRIEVE_FIX_MINUTES = 45         # مهلت ویرایش دادنامه/پرونده/تاریخ
 
 FLOW_LAVAYEH = "lavayeh"
 FLOW_EZHHARNAMEH = "ezhharnameh"
 FLOW_TN = "tn"
 FLOW_CHECK = "check"
+FLOW_EALAM = "ealam"
 
 _FLOW_LABELS = {
     FLOW_LAVAYEH: "ثبت لایحه",
     FLOW_EZHHARNAMEH: "ثبت اظهارنامه",
     FLOW_TN: "دعاوی اعتراضی",
     FLOW_CHECK: "ثبت دادخواست",
-    "ealam": "اعلام وکالت",
+    FLOW_EALAM: "اعلام وکالت",
 }
 
 
@@ -62,16 +63,24 @@ def flow_label(flow: str) -> str:
 
 
 def nid_fix_deadline_text() -> str:
-    """متن استاندارد اعلام مهلت ۳۰ دقیقه‌ای — عین دستور کارفرما."""
+    """متن استاندارد اعلام مهلت ویرایش کدملی — عین دستور کارفرما."""
     return (
-        f"⏰ شما *{NID_FIX_WINDOW_MINUTES} دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ "
-        f"در غیر این صورت پس از {NID_FIX_WINDOW_MINUTES} دقیقه، "
+        f"⏰ شما *{NID_FIX_WINDOW_MINUTES} دقیقه* فرصت دارید "
+        f"کدملی شخص را ویرایش کنید؛ در غیر این صورت پس از {NID_FIX_WINDOW_MINUTES} دقیقه "
         "*نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از هزینه کسر می‌گردد."
     )
 
 
+def penalty_line(new_rial: int) -> str:
+    """یک خط پیام جریمه (نصف پیش‌پرداخت برای موارد بعدی) — خالی اگر مبلغی نبود."""
+    if new_rial <= 0:
+        return ""
+    return (f"💰 نصف مبلغ پیش‌پرداخت شما ({new_rial // 10:,} تومان) برای موارد بعدی "
+            "شما لحاظ شد و از هزینه کسر می‌گردد.\n")
+
+
 # ════════════════════════════════════════════════════════════════════════════
-# ۱) پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی
+# ۱) پنجرهٔ ۴۵ دقیقه‌ای ویرایش کدملی
 # ════════════════════════════════════════════════════════════════════════════
 
 def start_window(user_id: int, flow: str, task_data: dict, error_text: str,
@@ -99,7 +108,7 @@ def start_window(user_id: int, flow: str, task_data: dict, error_text: str,
     }
     runtime_state.pending_nid_fix_windows[user_id] = win
     logger.info(
-        f"[NID-FIX] پنجرهٔ ۳۰ دقیقه‌ای شروع شد: user={user_id}, flow={flow}, "
+        f"[NID-FIX] پنجرهٔ {NID_FIX_WINDOW_MINUTES} دقیقه‌ای شروع شد: user={user_id}, flow={flow}, "
         f"nid={national_id}, deadline={win['deadline'].strftime('%H:%M:%S')}")
     return win
 
@@ -256,7 +265,7 @@ async def sweep_expired(bot) -> int:
     closed = 0
     now = datetime.datetime.now()
 
-    # ── پنجره‌های ۳۰ دقیقه‌ای ویرایش کدملی ──────────────────────────────
+    # ── پنجره‌های ۴۵ دقیقه‌ای ویرایش کدملی ──────────────────────────────
     for uid in list(runtime_state.pending_nid_fix_windows.keys()):
         try:
             win = runtime_state.pending_nid_fix_windows.get(uid)
@@ -268,11 +277,7 @@ async def sweep_expired(bot) -> int:
 
             label = flow_label(flow)
             new_rial = halve_prepaid(uid)  # جریمه — نصف پیش‌پرداخت برای موارد بعدی
-
-            penalty_line = (
-                f"💰 نصف مبلغ پیش‌پرداخت شما "
-                f"({new_rial // 10:,} تومان) برای موارد بعدی شما لحاظ شد و از "
-                "هزینه کسر می‌گردد.\n" if new_rial > 0 else "")
+            penalty_line = penalty_line(new_rial)
             try:
                 await bot.send_message(
                     uid,
