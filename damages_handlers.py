@@ -34,7 +34,9 @@ from aiogram.types import Message
 
 import cpi_fetcher
 import damages_calc as dc
+import damages_pdf
 import runtime_state
+from bale_file_sender import send_document_direct
 from config import ADMIN_ID, temp_path
 from id_validation import normalize_digits
 from keyboards import (
@@ -58,6 +60,32 @@ def _fmt(n: int) -> str:
 
 def _jdate(t: tuple) -> str:
     return f"{t[0]:04d}/{t[1]:02d}/{t[2]:02d}"
+
+
+async def _send_result(message: Message, build, filename: str, caption: str, fallback_text: str):
+    """
+    نتیجه را به‌صورت PDF رسمی (damages_pdf.py) برای کاربر می‌فرستد؛ اگر ساخت یا
+    ارسال PDF ناموفق بود، همان نتیجهٔ متنی قبلی ارسال می‌شود.
+    build: تابعی که مسیر خروجی می‌گیرد و True/False برمی‌گرداند.
+    """
+    path = temp_path(f"damages_{message.from_user.id}_{message.message_id}.pdf")
+    sent = False
+    try:
+        ok = await asyncio.get_running_loop().run_in_executor(None, build, path)
+        if ok and os.path.exists(path):
+            sent = bool(await send_document_direct(
+                message.chat.id, path, filename=filename, caption=caption))
+    except Exception as e:
+        logger.error(f"[DAMAGES] خطا در ساخت/ارسال PDF: {e}", exc_info=True)
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    if sent:
+        await message.answer("برای محاسبهٔ دیگر، نوع محاسبه را انتخاب کنید:", reply_markup=dmg_type_kb)
+    else:
+        await message.answer(fallback_text, reply_markup=dmg_type_kb)
 
 
 async def _back_to_main(message: Message, state: FSMContext):
@@ -219,7 +247,19 @@ async def dmg_calc_date(message: Message, state: FSMContext):
         note = (f"\n🔸 شاخص ماه پرداخت ({r['pay_key']}) هنوز منتشر نشده؛ از نزدیک‌ترین "
                 f"شاخص موجود ({r['target_key']}) استفاده شد. پس از انتشار شاخص، برای "
                 "نتیجهٔ دقیق‌تر دوباره محاسبه کنید.\n")
-    await message.answer(
+    due = tuple(data["dmg_due"])
+    pay = tuple(calc_date)
+    caption = (
+        "📄 گزارش محاسبهٔ خسارت تأخیر تأدیه\n\n"
+        f"💵 مبلغ دین: {_fmt(r['amount'])} ریال\n"
+        f"📈 اصل دین و خسارت: {_fmt(r['updated_amount'])} ریال\n"
+        f"💸 خسارت به تنهایی: {_fmt(r['damages'])} ریال\n"
+        + (f"🔸 شاخص ماه پرداخت هنوز منتشر نشده؛ شاخص {r['target_key']} استفاده شد.\n"
+           if r["used_latest_available"] else ""))
+    await _send_result(
+        message,
+        lambda path: damages_pdf.build_late_payment_pdf(path, r, due, pay),
+        "خسارت_تاخیر_تادیه.pdf", caption,
         "📊 *نتیجهٔ محاسبهٔ خسارت تأخیر تأدیه*\n\n"
         f"💵 مبلغ دین: {_fmt(r['amount'])} ریال\n"
         f"📅 زمان سررسید یا مطالبه: {_jdate(tuple(data['dmg_due']))}  "
@@ -231,8 +271,7 @@ async def dmg_calc_date(message: Message, state: FSMContext):
         f"{note}\n"
         f"فرمول: مبلغ × (شاخص {r['target_key']} ÷ شاخص {r['due_key']})\n"
         f"شاخص بانک مرکزی با سال پایهٔ {r['cpi_base']}\n\n"
-        f"{DISCLAIMER}",
-        reply_markup=dmg_type_kb)
+        f"{DISCLAIMER}")
     await state.set_state(Form.dmg_waiting_type)
 
 
@@ -283,15 +322,21 @@ async def mahr_year(message: Message, state: FSMContext):
         return
 
     runtime_state.increment_usage(message.from_user.id, USAGE_KEY)
-    await message.answer(
+    caption = (
+        "📄 گزارش محاسبهٔ مهریه به نرخ روز\n\n"
+        f"💵 مبلغ مهریه: {_fmt(r['amount'])} ریال (سال عقد {r['marriage_year']})\n"
+        f"💍 مهریه به نرخ روز: {_fmt(r['updated_amount'])} ریال\n")
+    await _send_result(
+        message,
+        lambda path: damages_pdf.build_mahrieh_pdf(path, r),
+        "مهریه_به_نرخ_روز.pdf", caption,
         "📊 *نتیجهٔ محاسبهٔ مهریه به نرخ روز*\n\n"
         f"💵 مبلغ مهریه: {_fmt(r['amount'])} ریال\n"
         f"📅 سال عقد: {r['marriage_year']}  (شاخص سالانه: {r['base_index']:g})\n"
         f"📅 سال مبنا (سال قبل از تأدیه): {r['target_year']}  (شاخص سالانه: {r['target_index']:g})\n\n"
         f"💍 مهریه به نرخ روز: *{_fmt(r['updated_amount'])} ریال*\n\n"
         f"فرمول: مبلغ × (شاخص سال {r['target_year']} ÷ شاخص سال {r['marriage_year']})\n\n"
-        f"{DISCLAIMER}",
-        reply_markup=dmg_type_kb)
+        f"{DISCLAIMER}")
     await state.set_state(Form.dmg_waiting_type)
 
 
