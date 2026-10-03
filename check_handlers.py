@@ -246,6 +246,8 @@ async def check_bulk_download_sample(message: Message, state: FSMContext):
         # جستجوی فایل نمونه در چند مسیر ممکن
         possible_paths = []
         base_dir = os.path.dirname(os.path.abspath(__file__))
+        # قالب نسخهٔ ۲ (چندشیتی، صلاحیت دادگاه مرحله‌ای) — build_bulk_templates.py
+        possible_paths.append(os.path.join(base_dir, "templates", "sample_check_bulk.xlsx"))
         possible_paths.append(os.path.join(base_dir, "sample_check.xlsx"))
         possible_paths.append(os.path.join(base_dir, "نمونه اکسل چک.xlsx"))
         possible_paths.append(os.path.join(os.getcwd(), "sample_check.xlsx"))
@@ -269,21 +271,13 @@ async def check_bulk_download_sample(message: Message, state: FSMContext):
 
         await message.answer(
             "📥 *فایل نمونه اکسل دعاوی چک:*\n\n"
-            "⚠️ *راهنمای تکمیل فایل:*\n\n"
-            "۱. ستون *نوع خواسته*: `صدور اجرائیه چک` یا `مطالبه وجه چک`\n"
-            "۲. ستون *مبلغ چک (ریال)*: فقط عدد به ریال\n"
-            "۳. ستون *کدرهگیری*: شماره کدرهگیری چک\n"
-            "۴. ستون *کدملی خواهان*: کد ملی ۱۰ رقمی\n"
-            "۵. ستون *نام خواهان*: نام و نام خانوادگی\n"
-            "۶. ستون *کدملی خوانده*: کد ملی ۱۰ رقمی\n"
-            "۷. ستون *نام خوانده*: نام و نام خانوادگی\n"
-            "۸. ستون *تعداد چک*: تعداد فقره چک\n"
-            "۹. ستون *شماره چک*: شماره چک\n"
-            "۱۰. ستون *تاریخ چک*: تاریخ سررسید\n"
-            "۱۱. ستون *نام بانک*: نام بانک\n"
-            "۱۲. ستون *کد صلاحیت دادگاه*: کد ۵ رقمی واحد قضایی\n")
+            "📑 هر شیت برای یک حالت است: «۱ نفر - حقیقی»، «۱ نفر - با شخص حقوقی» و «چند نفر». "
+            "هر دادخواست را در شیت مناسب خودش بنویسید؛ می‌توانید چند شیت را هم‌زمان پر کنید.\n"
+            "🏛 صلاحیت دادگاه را به ترتیب از لیست‌های استان، حوزه قضایی و دادگاه انتخاب کنید.\n"
+            "🔍 اگر ردیفی خطا داشته باشد، ربات همین فایل را با خانه‌های قرمز و توضیح خطا برمی‌گرداند.\n")
         try:
-            await send_document_direct(message.chat.id, sample_path)
+            await send_document_direct(message.chat.id, sample_path,
+                                       filename="نمونه_ثبت_دسته_جمعی_چک.xlsx")
         except Exception as doc_err:
             logger.error(f"[CHECK-SAMPLE] خطا در ارسال فایل: {doc_err}")
         await message.answer(
@@ -338,134 +332,145 @@ async def check_bulk_file_upload_handler(message: Message, state: FSMContext):
         file_path = os.path.join(tmp_dir, doc.file_name or "bulk_check.xlsx")
         await message.document.bot.download_file(doc.file_id, file_path)
 
-        # پارس اکسل
-        wb = openpyxl.load_workbook(file_path, data_only=True)
-        ws = wb.active
-        rows = list(ws.iter_rows(values_only=True))
+        # قالب نسخهٔ ۲ (چندشیتی، اشخاص حقوقی، صلاحیت دادگاه مرحله‌ای)
+        from bulk_excel_v2 import detect_and_parse_v2, send_error_workbook
+        v2_result = detect_and_parse_v2(file_path, "check")
+        if v2_result is not None:
+            valid_items = v2_result["valid_items"]
+            errors = [f"ردیف {r['row_index']}: {'، '.join(r['errors'])}" for r in v2_result["invalid_rows"]]
+            data_rows = [None] * v2_result["total_rows"]
+            if v2_result["invalid_rows"]:
+                await send_error_workbook(message.chat.id, file_path, v2_result["invalid_rows"],
+                                          others_continue=bool(valid_items))
+        else:
+            # پارس اکسل
+            wb = openpyxl.load_workbook(file_path, data_only=True)
+            ws = wb.active
+            rows = list(ws.iter_rows(values_only=True))
 
-        if len(rows) < 2:
-            await message.answer(
-                "⚠️ فایل اکسل خالی است یا فقط هدر دارد. لطفاً حداقل یک ردیف داده وارد کنید.",
-                reply_markup=back_only_kb
-            )
-            return
-
-        # هدر (ردیف اول)
-        header = [str(c or "").strip() for c in rows[0]]
-        data_rows = rows[1:]
-
-        # مپ کردن ستون‌ها
-        col_map = {}
-        for i, h in enumerate(header):
-            if "نوع خواسته" in h:
-                col_map["request_title"] = i
-            elif "مبلغ" in h:
-                col_map["amount"] = i
-            elif "کدرهگیری" in h or "رهگیری" in h:
-                col_map["tracking_no"] = i
-            elif "کدملی خواهان" in h or "خواهان" in h and "کدملی" in h:
-                col_map["plaintiff_nat_id"] = i
-            elif "نام خواهان" in h:
-                col_map["plaintiff_name"] = i
-            elif "کدملی خوانده" in h or "خوانده" in h and "کدملی" in h:
-                col_map["defendant_nat_id"] = i
-            elif "نام خوانده" in h:
-                col_map["defendant_name"] = i
-            elif "صلاحیت" in h or "دادگاه" in h:
-                col_map["branch_code"] = i
-
-        required_cols = ["request_title", "amount", "tracking_no", "plaintiff_nat_id", "defendant_nat_id", "branch_code"]
-        missing = [c for c in required_cols if c not in col_map]
-        if missing:
-            await message.answer(
-                f"⚠️ ستون‌های الزامی یافت نشدند: {', '.join(missing)}\n\n"
-                "لطفاً فایل نمونه را دریافت و مطابق آن تکمیل کنید.",
-                reply_markup=back_only_kb
-            )
-            return
-
-        # پردازش ردیف‌ها
-        valid_items = []
-        errors = []
-
-        for idx, row in enumerate(data_rows, start=1):
-            if not any(row):
-                continue
-
-            def _get(col_key):
-                ci = col_map.get(col_key, -1)
-                return str(row[ci]).strip() if ci >= 0 and ci < len(row) and row[ci] is not None else ""
-
-            request_title = _get("request_title")
-            amount_str = _to_en(_get("amount"))
-            tracking_no = _to_en(_get("tracking_no"))
-            plaintiff_nat_id = _to_en(_get("plaintiff_nat_id"))
-            plaintiff_name = _get("plaintiff_name")
-            defendant_nat_id = _to_en(_get("defendant_nat_id"))
-            defendant_name = _get("defendant_name")
-            branch_code = _to_en(_get("branch_code"))
-
-            # اعتبارسنجی
-            if request_title not in ["صدور اجرائیه چک", "مطالبه وجه چک"]:
-                errors.append(f"ردیف {idx}: نوع خواسته نامعتبر ({request_title})")
-                continue
-
-            if not amount_str.isdigit() or int(amount_str) <= 0:
-                errors.append(f"ردیف {idx}: مبلغ نامعتبر")
-                continue
-
-            if not tracking_no:
-                errors.append(f"ردیف {idx}: کدرهگیری خالی است")
-                continue
-
-            if not branch_code:
-                errors.append(f"ردیف {idx}: کد صلاحیت دادگاه خالی است")
-                continue
-
-            # ساخت متن پیشنهادی عنوان خواسته
-            if request_title == "صدور اجرائیه چک":
-                khasteh_text = (
-                    "به موجب یک فقره چک به شماره ... مورخ ... به عهده بانک ملی "
-                    "به مبلغ ... ریال با کدرهگیری ... به انضمام کلیه خسارات دادرسی و حق الوکاله وکیل "
-                    "و خسارات تاخيرتاديه از زمان سررسيد لغايت زمان كامل اجراي حكم و حق الوكاله وكيل"
+            if len(rows) < 2:
+                await message.answer(
+                    "⚠️ فایل اکسل خالی است یا فقط هدر دارد. لطفاً حداقل یک ردیف داده وارد کنید.",
+                    reply_markup=back_only_kb
                 )
-            else:
-                khasteh_text = (
-                    "به موجب ........ فقره چک به شماره ......... مورخ ......... به عهده بانک ....... "
-                    "به انضمام کلیه هزینه های دادرسی و خسارات تاخیرتادیه از زمان سررسید "
-                    "لغایت زمان کامل اجرای حکم و حق الوکاله وکیل"
-                )
+                return
 
-            item = {
-                "check_request_title": request_title,
-                "check_amount": int(amount_str),
-                "check_khasteh_text": khasteh_text,
-                "check_tracking_no": tracking_no,
-                "check_plainiffs": [{
-                    "person_type": "شخص حقیقی",
-                    "national_id": plaintiff_nat_id,
-                    "name": plaintiff_name or "---",
-                    "representative_type": "",
-                }],
-                "check_defendants": [{
-                    "person_type": "شخص حقیقی",
-                    "national_id": defendant_nat_id,
-                    "name": defendant_name or "---",
-                    "representative_type": "",
-                }],
-                "check_witnesses": [],
-                "check_text": "",
-                "check_text_html": "",
-                "check_extra_text": "",
-                "check_images": [],
-                "check_attachment_groups": [],
-                "check_branch_code": branch_code,
-                "check_branch_name": "",
-                "check_branch_path": "",
-                "check_docx_file_id": None,
-                "check_docx_file_name": "",
-            }
-            valid_items.append(item)
+            # هدر (ردیف اول)
+            header = [str(c or "").strip() for c in rows[0]]
+            data_rows = rows[1:]
+
+            # مپ کردن ستون‌ها
+            col_map = {}
+            for i, h in enumerate(header):
+                if "نوع خواسته" in h:
+                    col_map["request_title"] = i
+                elif "مبلغ" in h:
+                    col_map["amount"] = i
+                elif "کدرهگیری" in h or "رهگیری" in h:
+                    col_map["tracking_no"] = i
+                elif "کدملی خواهان" in h or "خواهان" in h and "کدملی" in h:
+                    col_map["plaintiff_nat_id"] = i
+                elif "نام خواهان" in h:
+                    col_map["plaintiff_name"] = i
+                elif "کدملی خوانده" in h or "خوانده" in h and "کدملی" in h:
+                    col_map["defendant_nat_id"] = i
+                elif "نام خوانده" in h:
+                    col_map["defendant_name"] = i
+                elif "صلاحیت" in h or "دادگاه" in h:
+                    col_map["branch_code"] = i
+
+            required_cols = ["request_title", "amount", "tracking_no", "plaintiff_nat_id", "defendant_nat_id", "branch_code"]
+            missing = [c for c in required_cols if c not in col_map]
+            if missing:
+                await message.answer(
+                    f"⚠️ ستون‌های الزامی یافت نشدند: {', '.join(missing)}\n\n"
+                    "لطفاً فایل نمونه را دریافت و مطابق آن تکمیل کنید.",
+                    reply_markup=back_only_kb
+                )
+                return
+
+            # پردازش ردیف‌ها
+            valid_items = []
+            errors = []
+
+            for idx, row in enumerate(data_rows, start=1):
+                if not any(row):
+                    continue
+
+                def _get(col_key):
+                    ci = col_map.get(col_key, -1)
+                    return str(row[ci]).strip() if ci >= 0 and ci < len(row) and row[ci] is not None else ""
+
+                request_title = _get("request_title")
+                amount_str = _to_en(_get("amount"))
+                tracking_no = _to_en(_get("tracking_no"))
+                plaintiff_nat_id = _to_en(_get("plaintiff_nat_id"))
+                plaintiff_name = _get("plaintiff_name")
+                defendant_nat_id = _to_en(_get("defendant_nat_id"))
+                defendant_name = _get("defendant_name")
+                branch_code = _to_en(_get("branch_code"))
+
+                # اعتبارسنجی
+                if request_title not in ["صدور اجرائیه چک", "مطالبه وجه چک"]:
+                    errors.append(f"ردیف {idx}: نوع خواسته نامعتبر ({request_title})")
+                    continue
+
+                if not amount_str.isdigit() or int(amount_str) <= 0:
+                    errors.append(f"ردیف {idx}: مبلغ نامعتبر")
+                    continue
+
+                if not tracking_no:
+                    errors.append(f"ردیف {idx}: کدرهگیری خالی است")
+                    continue
+
+                if not branch_code:
+                    errors.append(f"ردیف {idx}: کد صلاحیت دادگاه خالی است")
+                    continue
+
+                # ساخت متن پیشنهادی عنوان خواسته
+                if request_title == "صدور اجرائیه چک":
+                    khasteh_text = (
+                        "به موجب یک فقره چک به شماره ... مورخ ... به عهده بانک ملی "
+                        "به مبلغ ... ریال با کدرهگیری ... به انضمام کلیه خسارات دادرسی و حق الوکاله وکیل "
+                        "و خسارات تاخيرتاديه از زمان سررسيد لغايت زمان كامل اجراي حكم و حق الوكاله وكيل"
+                    )
+                else:
+                    khasteh_text = (
+                        "به موجب ........ فقره چک به شماره ......... مورخ ......... به عهده بانک ....... "
+                        "به انضمام کلیه هزینه های دادرسی و خسارات تاخیرتادیه از زمان سررسید "
+                        "لغایت زمان کامل اجرای حکم و حق الوکاله وکیل"
+                    )
+
+                item = {
+                    "check_request_title": request_title,
+                    "check_amount": int(amount_str),
+                    "check_khasteh_text": khasteh_text,
+                    "check_tracking_no": tracking_no,
+                    "check_plainiffs": [{
+                        "person_type": "شخص حقیقی",
+                        "national_id": plaintiff_nat_id,
+                        "name": plaintiff_name or "---",
+                        "representative_type": "",
+                    }],
+                    "check_defendants": [{
+                        "person_type": "شخص حقیقی",
+                        "national_id": defendant_nat_id,
+                        "name": defendant_name or "---",
+                        "representative_type": "",
+                    }],
+                    "check_witnesses": [],
+                    "check_text": "",
+                    "check_text_html": "",
+                    "check_extra_text": "",
+                    "check_images": [],
+                    "check_attachment_groups": [],
+                    "check_branch_code": branch_code,
+                    "check_branch_name": "",
+                    "check_branch_path": "",
+                    "check_docx_file_id": None,
+                    "check_docx_file_name": "",
+                }
+                valid_items.append(item)
 
         if not valid_items:
             err_text = "\n".join(errors[:10]) if errors else "هیچ ردیف معتبری یافت نشد."
@@ -481,7 +486,7 @@ async def check_bulk_file_upload_handler(message: Message, state: FSMContext):
             item["query_type"] = "دادخواست_چک"
             item["task_type"] = "CHECK_SUBMIT"
             item["_is_bulk_check"] = True
-            item["_bulk_row_index"] = idx
+            item["_bulk_row_index"] = item.pop("row_index", idx)
             # ⭐ کپی کامل هر ردیف دسته‌جمعی هم برای ادمین ارسال می‌شود
             # (طبق دستور کارفرما — کپی درخواست‌های ثبت دادخواست)
             try:

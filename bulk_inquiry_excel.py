@@ -40,6 +40,12 @@ ATTACHMENT_PAGE_RATE = 5000  # تومان به ازای هر برگ پیوست �
 DATA_SHEET_NAME = "استعلام دسته‌جمعی"
 NON_DATA_SHEETS = {"راهنما", "لیست‌ها"}
 
+# ردیف نمونهٔ قالب (ردیف ۲، خاکستری). اگر دست‌نخورده بماند خوانده نمی‌شود.
+SAMPLE_ROW = ("1405000000000000", "خیر", "", "09120000000", "0000000000")
+
+# ستون هر فیلد در invalid_cells — برای علامت‌گذاری خانه در فایل خطادار
+FIELD_COLUMNS = {"کدرهگیری": 1, "نوع سند": 3, "شماره موبایل": 4, "کدملی": 5}
+
 # ── لیست کامل «نوع سند» — دسته‌های ساده + زیرشاخه‌های فلت‌شده ─────────
 SIMPLE_CATEGORIES = [
     "لایحه", "اظهارنامه", "شکواییه", "دادخواست بدوی", "دعاوی دادگاههای صلح",
@@ -102,13 +108,10 @@ def to_en_digits(s) -> str:
 
 def extract_digits(raw) -> str:
     """استخراج فقط ارقام از مقدار سلول — هر حرف/خط‌تیره/فاصله (مثل پیشوند
-    اجباری T/M/N که در راهنما خواسته‌ایم) نادیده گرفته می‌شود.
+    T/M/N که در قالب قدیمی اجباری بود و حالا اختیاری است) نادیده گرفته می‌شود.
 
-    این تابع دلیل اصلی رفع باگ «کدرهگیری/موبایل به عدد تبدیل و رقم آخر یا
-    صفر ابتدایی گم می‌شود» است: چون کاربر دیگر عدد خالص در سلول تایپ
-    نمی‌کند (بلکه چیزی مثل T1405220948201280 یا M09123456789)، هیچ
-    اپلیکیشن اکسل/گوگل‌شیتی (حتی پیش‌نمایش‌های محدود) این را به‌عنوان عدد
-    تشخیص نمی‌دهد و همیشه دقیقاً همان‌طور که تایپ شده ذخیره می‌ماند."""
+    قالب جدید ستون‌ها را متنی (@) نگه می‌دارد تا اکسل عدد را خراب نکند؛
+    پیشوند حرفی فقط برای فایل‌هایی لازم است که ستونشان متنی نیست."""
     s = to_en_digits(raw)
     return re.sub(r"\D", "", s)
 
@@ -142,7 +145,17 @@ def _cell(ws, col_letter, row):
     val = ws[f"{col_letter}{row}"].value
     if val is None:
         return ""
+    # عددی که اکسل به‌شکل اعشاری ذخیره کرده (مثل 9123456789.0) نباید با «.0»
+    # خوانده شود؛ وگرنه extract_digits یک رقم صفر اضافه می‌سازد.
+    if isinstance(val, float) and val.is_integer():
+        val = int(val)
     return str(val).strip()
+
+
+def _lost_digits(ws, col_letter, row) -> bool:
+    """کدرهگیری ۱۶ رقمی که اکسل به‌شکل عدد ذخیره کرده و رقم آخرش صفر شده."""
+    from bulk_excel_v2 import maybe_lost_digits
+    return maybe_lost_digits(ws[f"{col_letter}{row}"].value)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -156,8 +169,11 @@ def parse_bulk_inquiry_excel(filepath: str):
         values = [ws.cell(row=r, column=c).value for c in range(1, 6)]
         if not any(v not in (None, "") for v in values):
             continue
+        if tuple(_cell(ws, c, r) for c in "ABCDE") == SAMPLE_ROW:
+            continue  # ردیف نمونهٔ دست‌نخوردهٔ قالب
         row = {
             "row_index": r - 1,
+            "tracking_lost_digits": _lost_digits(ws, "A", r),
             "tracking_code": extract_digits(_cell(ws, "A", r)),
             "need_attachments_raw": _cell(ws, "B", r),
             "doc_category_selected": _cell(ws, "C", r),
@@ -184,13 +200,17 @@ def build_bulk_inquiry_items(filepath: str):
 
         # --- کدرهگیری ---
         if tracking_code:
-            if not _is_valid_tracking_code(tracking_code):
+            if row.get("tracking_lost_digits"):
+                invalid_cells.append({
+                    "row_index": row_idx, "field": "کدرهگیری",
+                    "error": f"کدرهگیری «{tracking_code}» به‌شکل عدد ذخیره شده و اکسل رقم آخرش را "
+                             f"از بین برده است؛ خانه را متنی کنید (یا یک T قبلش بگذارید) و کد را دوباره تایپ کنید",
+                })
+            elif not _is_valid_tracking_code(tracking_code):
                 invalid_cells.append({
                     "row_index": row_idx, "field": "کدرهگیری",
                     "error": f"کدرهگیری «{tracking_code}» نامعتبر است "
-                             f"(باید دقیقاً {TRACKING_CODE_LENGTH} رقم و در بازه‌ی مجاز باشد؛ "
-                             f"اگر ستون به‌صورت عدد نمایش داده می‌شود، حتماً قبل از خودِ کد یک حرف "
-                             f"بگذارید، مثلاً T1405220948201280)",
+                             f"(باید دقیقاً {TRACKING_CODE_LENGTH} رقم و در بازه‌ی مجاز باشد)",
                 })
             else:
                 need_att_raw = (row.get("need_attachments_raw") or "").strip()
