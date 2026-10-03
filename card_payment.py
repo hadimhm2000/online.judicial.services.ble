@@ -115,7 +115,7 @@ _ACTIVE = (S_INVOICE, S_CARD_SENT, S_REVIEW)
 
 # payloadهایی که هندلر پرداختشان مستقل از state کاربر مسیریابی می‌شود
 # (global_successful_payment_handler در handlers.py از روی payload تصمیم می‌گیرد)
-_PAYLOAD_ROUTED_TYPES = {"admin_fee", "panel_message", "reg_prepay"}
+_PAYLOAD_ROUTED_TYPES = {"admin_fee", "panel_message", "reg_prepay", "single_use"}
 
 # نوع payload → نام فارسی درخواست (برای پیام مدیر و پنل)
 _TYPE_LABELS = {
@@ -131,6 +131,7 @@ _TYPE_LABELS = {
     "bulk_prepay": "پیش‌پرداخت ثبت دسته‌جمعی",
     "bulk_settlement": "تسویه هزینه سامانه (دسته‌جمعی)",
     "reg_prepay": "پیش‌پرداخت ثبت",
+    "single_use": "پرداخت تکی (تمبر / خسارت تأخیر و مهریه)",
 }
 _SVC_LABELS = {
     "lavayeh": "لایحه",
@@ -146,6 +147,7 @@ _TYPE_TO_PANEL_SERVICE = {
     "regional_value": "REGIONAL_VALUE", "subscription": "SUBSCRIPTION",
     "admin_fee": "ADMIN_FEE", "panel_message": "ADMIN_SEND",
     "bulk_prepay": "BULK", "bulk_settlement": "BULK",
+    "single_use": "SINGLE_USE",
 }
 _SVC_TO_PANEL_SERVICE = {
     "lavayeh": "LAVAYEH", "ealam": "EALAM_VAKALAHT", "ezhharnameh": "EZHHARNAMEH",

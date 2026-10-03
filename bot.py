@@ -43,6 +43,9 @@ card_payment.setup_card_payment(dp)
 # از هر state قابل دسترس باشد؛ هیچ‌کدام به سامانهٔ قضایی درخواست نمی‌فرستند.
 from damages_handlers import damages_router, cpi_reminder_loop
 dp.include_router(damages_router)
+# ⭐ محاسبه هزینه دادرسی — رایگان، بدون اشتراک و مستقل از ساعت کاری
+from court_fee_handlers import court_fee_router
+dp.include_router(court_fee_router)
 from history_handlers import history_router
 dp.include_router(history_router)
 import wallet

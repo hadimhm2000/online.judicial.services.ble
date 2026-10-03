@@ -17,7 +17,7 @@ from aiogram.types import Message
 
 import runtime_state
 from states import Form
-from keyboards import restart_kb, stamp_calc_claim_type_kb, back_only_kb, subscription_kb
+from keyboards import restart_kb, stamp_calc_claim_type_kb, back_only_kb
 from stamp_duty import calculate_stamp_duty, format_result_fa
 
 stamp_calc_router = Router()
@@ -37,20 +37,6 @@ SUBSCRIPTION_FEE = runtime_state.SUBSCRIPTION_FEE
 MAX_FREE_USAGE = runtime_state.MAX_FREE_USAGE
 
 
-def _subscription_required_message(user_id: int) -> tuple:
-    """ساخت پیام و کیبورد درخواست اشتراک."""
-    remaining = runtime_state.get_remaining_free(user_id, "stamp")
-    msg = (
-        f"⚠️ *محدودیت استفاده رایگان تمام شد*\n\n"
-        f"شما {MAX_FREE_USAGE} بار استفاده رایگان از بخش محاسبه تمبر را مصرف کرده‌اید.\n\n"
-        f"💰 جهت استفاده مجدد، *اشتراک ماهیانه* را فعال نمایید؛ یک اشتراک برای همهٔ "
-        f"بخش‌های زیر معتبر است:\n{runtime_state.SUBSCRIPTION_FEATURES_TEXT}\n\n"
-        f"💳 مبلغ اشتراک ماهیانه: *{SUBSCRIPTION_FEE:,} ریال*\n\n"
-        f"⏱ مدت اشتراک: *{runtime_state.SUBSCRIPTION_DURATION_DAYS} روز*"
-    )
-    return msg, subscription_kb
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # ورود به بخش محاسبه تمبر
 # ══════════════════════════════════════════════════════════════════════════════
@@ -59,22 +45,14 @@ async def stamp_calc_entry(message: Message, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id
 
-    # بررسی محدودیت استفاده
+    # بررسی محدودیت استفاده — ⭐ پس از ۲ بار رایگان: اشتراک ماهیانه یا پرداخت تکی
     if not runtime_state.can_use_service(user_id, "stamp"):
-        msg, kb = _subscription_required_message(user_id)
-        await state.update_data(subscription_fee=SUBSCRIPTION_FEE)
-        await state.set_state(Form.subscription_waiting_payment)
-        await message.answer(msg, reply_markup=kb)
+        from single_pay_handlers import offer_subscription_or_single
+        await offer_subscription_or_single(message, state, "stamp")
         return
 
     # نمایش تعداد دفعات باقی‌مانده
-    remaining = runtime_state.get_remaining_free(user_id, "stamp")
-    if runtime_state.has_active_subscription(user_id):
-        sub = runtime_state.user_subscriptions[user_id]
-        end_str = sub["end_date"].strftime("%Y/%m/%d %H:%M")
-        status = f"✅ اشتراک فعال تا {end_str}\n\n"
-    else:
-        status = f"📋 استفاده رایگان: {remaining} از {MAX_FREE_USAGE} دفعه باقی‌مانده\n\n"
+    status = runtime_state.usage_status_line(user_id, "stamp")
 
     await message.answer(
         f"🧮 *محاسبه تمبر مالیاتی وکیل*\n\n"

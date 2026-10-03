@@ -123,6 +123,9 @@ router.include_router(ezhharnameh_router)
 router.include_router(tajdid_nazar_router)
 router.include_router(file_tools_router)
 router.include_router(subscription_router)
+# ⭐ پرداخت تکی تمبر / خسارت تأخیر و مهریه (۱۴۰۵/۰۷)
+from single_pay_handlers import single_pay_router, single_use_successful_payment
+router.include_router(single_pay_router)
 router.include_router(check_router)
 router.include_router(regional_value_router)
 # ⭐ اصلاحیه ۱۴۰۵/۰۶ — پنجرهٔ ۴۵ دقیقه‌ای کد قرارداد وکالت جدید
@@ -231,6 +234,10 @@ async def successful_payment_handler(message: types.Message, state: FSMContext, 
     if _pl.get("type") == "panel_message":
         from admin_relay import panel_message_successful_payment as _pm_pay
         await _pm_pay(message, state, bot)
+        return
+    # ⭐ پرداخت تکی تمبر / خسارت تأخیر و مهریه — payload: {"type": "single_use", ...}
+    if _pl.get("type") == "single_use":
+        await single_use_successful_payment(message, state, bot, _pl)
         return
 
     # ── تشخیص فلوی تک‌موردی vs سبد خرید ──
@@ -457,6 +464,11 @@ async def global_successful_payment_handler(message: types.Message, state: FSMCo
     if _pl.get("type") == "panel_message":
         from admin_relay import panel_message_successful_payment as _pm_pay
         await _pm_pay(message, state, bot)
+        return
+
+    # ⭐ پرداخت تکی تمبر / خسارت تأخیر و مهریه (۱۴۰۵/۰۷) — مسیریابی از روی payload
+    if _pl.get("type") == "single_use" or current_state == Form.single_pay_waiting_payment:
+        await single_use_successful_payment(message, state, bot, _pl)
         return
 
     # ⭐ فاکتور «هزینه دستی مدیر» (/fee) — پردازش اختصاصی:
