@@ -2572,7 +2572,7 @@ async def lav_nid_fix_callback(callback: CallbackQuery, state: FSMContext, bot: 
     win = _nfw.get_window(target_user_id)
     if not win or win.get("flow") != _nfw.FLOW_LAVAYEH:
         await callback.answer(
-            "⚠️ درخواستی برای ویرایش یافت نشد (مهلت ۳۰ دقیقه‌ای به پایان رسیده است).")
+            "⚠️ درخواستی برای ویرایش یافت نشد (مهلت ۴۵ دقیقه‌ای به پایان رسیده است).")
         return
 
     await callback.answer()
@@ -2657,11 +2657,9 @@ async def lav_nid_cancel_callback(callback: CallbackQuery, state: FSMContext, bo
     runtime_state.pending_lavayeh_sana_fix.pop(target_user_id, None)
     await callback.answer("درخواست حذف شد.")
 
-    # جریمه — نصف مبلغ پیش‌پرداخت برای موارد بعدی (عین دستور کارفرما)
+    # جریمه — بازگشت نصف مبلغ پیش‌پرداخت به کیف پول (دستور کارفرما)
     new_rial = _nfw.halve_prepaid(target_user_id)
-    penalty_line = (
-        f"💰 نصف مبلغ پیش‌پرداخت شما ({new_rial // 10:,} تومان) برای موارد بعدی "
-        "شما لحاظ شد و از هزینه کسر می‌گردد.\n" if new_rial > 0 else "")
+    penalty_line = _nfw.penalty_refund_line(new_rial)
 
     try:
         await callback.message.edit_text(

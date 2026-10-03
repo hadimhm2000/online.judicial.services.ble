@@ -829,9 +829,48 @@ async def check_and_handle_load_error(page):
     if has_load_error:
         logging.warning("Initial load error detected. Closing modal and reloading page...")
         await asyncio.sleep(3)
-        await page.reload()
-        await asyncio.sleep(5)
+        await reload_and_settle(page, "SANA")
         return True
+    return False
+
+
+# ⭐ قاعدهٔ کارفرما برای همهٔ ریلودهای سامانه: پس از هر ریلود ۱۰ ثانیه صبر؛
+# اگر چیزی روی صفحه نمایش داده نشد، تا دو بار دیگر ریلود (هر بار ۱۰ ثانیه صبر).
+RELOAD_SETTLE_SECONDS = 10
+RELOAD_EXTRA_ATTEMPTS = 2
+
+
+async def _page_shows_content(page, selector: Optional[str] = None) -> bool:
+    try:
+        if selector:
+            el = await page.query_selector(selector)
+            if el and await el.is_visible():
+                return True
+        return bool(await page.evaluate("""() => {
+            const menu = document.querySelector('a.list-group-item, li.list-group-item');
+            const bodyText = document.body ? (document.body.innerText || "").trim() : "";
+            return !!menu || bodyText.length > 50;
+        }"""))
+    except Exception:
+        return False
+
+
+async def reload_and_settle(page, prefix: str = "SANA", selector: Optional[str] = None) -> bool:
+    """ریلود صفحه + ۱۰ ثانیه صبر؛ اگر چیزی نمایش داده نشد تا دو بار دیگر ریلود.
+    خروجی True یعنی صفحه پس از یکی از ریلودها محتوا نشان داد."""
+    total = 1 + RELOAD_EXTRA_ATTEMPTS
+    for reload_round in range(1, total + 1):
+        try:
+            await page.reload()
+        except Exception as e:
+            logging.warning(f"[{prefix}] خطا در ریلود صفحه (دور {reload_round}/{total}): {e}")
+        await asyncio.sleep(RELOAD_SETTLE_SECONDS)
+        if await _page_shows_content(page, selector):
+            logging.info(f"[{prefix}] صفحه پس از ریلود محتوا نمایش داد (دور {reload_round}/{total}).")
+            return True
+        logging.warning(
+            f"[{prefix}] پس از ریلود چیزی نمایش داده نشد (دور {reload_round}/{total})"
+            + (" — ریلود مجدد..." if reload_round < total else ""))
     return False
 
 

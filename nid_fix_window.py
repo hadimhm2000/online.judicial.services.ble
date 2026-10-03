@@ -4,16 +4,15 @@
 
 این ماژول «منبع واحد حقیقت» برای دو پنجرهٔ زمانی است:
 
-۱) پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی (pending_nid_fix_windows)
+۱) پنجرهٔ ۴۵ دقیقه‌ای ویرایش کدملی (pending_nid_fix_windows)
    وقتی در هر یک از بخش‌های «ثبت لایحه»، «ثبت اظهارنامه»، «دعاوی اعتراضی»
    یا «ثبت دادخواست» خطای ثنا (کدملی اشتباه / تاریخ تولد ارسالی مربوط به
    شماره ملی ... اشتباه است / شخص ارائه‌کننده لایحه در فهرست اشخاص پرونده
    نیست) رخ می‌دهد:
      - متن خطا برای کاربر ارسال می‌شود
-     - کاربر ۳۰ دقیقه فرصت دارد کدملی شخص را ویرایش کند
-     - اگر ظرف ۳۰ دقیقه اقدام نکند → «نصف مبلغ پیش‌پرداخت» برای موارد بعدی
-       او از هزینه کسر می‌گردد (مبلغ رکورد prepaid_registrations نصف می‌شود
-       و در پایان کارِ درخواست بعدی به‌صورت خودکار اعمال می‌گردد)
+     - کاربر ۴۵ دقیقه فرصت دارد کدملی شخص را ویرایش کند
+     - اگر ظرف ۴۵ دقیقه اقدام نکند → درخواست حذف و «نصف مبلغ پیش‌پرداخت»
+       به کیف پول او بازگردانده می‌شود (halve_prepaid)
      - ⚠️ همه‌چیز در فایل ماندگار (persistence.py) ذخیره می‌شود؛ بنابراین
        حتی پس از کرش یا قطعی ربات، جریمه برای هر درخواست بعدیِ همان کاربر
        مورد محاسبه قرار می‌گیرد.
@@ -40,7 +39,7 @@ from config import ADMIN_ID
 logger = logging.getLogger(__name__)
 
 # ── ثابت‌ها ────────────────────────────────────────────────────────────────
-NID_FIX_WINDOW_MINUTES = 30          # مهلت ویرایش کدملی
+NID_FIX_WINDOW_MINUTES = 45          # مهلت ویرایش کدملی
 TN_RETRIEVE_FIX_MINUTES = 45         # مهلت ویرایش دادنامه/پرونده/تاریخ
 
 FLOW_LAVAYEH = "lavayeh"
@@ -62,16 +61,24 @@ def flow_label(flow: str) -> str:
 
 
 def nid_fix_deadline_text() -> str:
-    """متن استاندارد اعلام مهلت ۳۰ دقیقه‌ای — عین دستور کارفرما."""
+    """متن استاندارد اعلام مهلت ویرایش کدملی — عین دستور کارفرما."""
     return (
-        f"⏰ شما *{NID_FIX_WINDOW_MINUTES} دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ "
-        f"در غیر این صورت پس از {NID_FIX_WINDOW_MINUTES} دقیقه، "
-        "*نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از هزینه کسر می‌گردد."
+        f"⏰ شما *{NID_FIX_WINDOW_MINUTES} دقیقه* فرصت دارید "
+        f"کدملی شخص را ویرایش کنید؛ در غیر این صورت پس از {NID_FIX_WINDOW_MINUTES} دقیقه "
+        "درخواست حذف و *نصف مبلغ پیش‌پرداخت* به کیف پول شما بازگردانده می‌شود."
     )
 
 
+def penalty_refund_line(refunded_rial: int) -> str:
+    """یک خط پیام بازگشت نصف پیش‌پرداخت به کیف پول — خالی اگر مبلغی نبود."""
+    if refunded_rial <= 0:
+        return ""
+    return (f"💰 نصف مبلغ پیش‌پرداخت شما ({refunded_rial // 10:,} تومان) "
+            "به کیف پول شما بازگردانده شد.\n")
+
+
 # ════════════════════════════════════════════════════════════════════════════
-# ۱) پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی
+# ۱) پنجرهٔ ۴۵ دقیقه‌ای ویرایش کدملی
 # ════════════════════════════════════════════════════════════════════════════
 
 def start_window(user_id: int, flow: str, task_data: dict, error_text: str,
@@ -99,7 +106,7 @@ def start_window(user_id: int, flow: str, task_data: dict, error_text: str,
     }
     runtime_state.pending_nid_fix_windows[user_id] = win
     logger.info(
-        f"[NID-FIX] پنجرهٔ ۳۰ دقیقه‌ای شروع شد: user={user_id}, flow={flow}, "
+        f"[NID-FIX] پنجرهٔ {NID_FIX_WINDOW_MINUTES} دقیقه‌ای شروع شد: user={user_id}, flow={flow}, "
         f"nid={national_id}, deadline={win['deadline'].strftime('%H:%M:%S')}")
     return win
 
@@ -125,29 +132,38 @@ def is_expired(win: dict, now: datetime.datetime = None) -> bool:
 
 
 def halve_prepaid(user_id: int) -> int:
-    """نصف کردن مبلغ پیش‌پرداختِ باقی‌ماندهٔ کاربر (جریمه).
+    """جریمهٔ عدم ویرایش کدملی: نصف پیش‌پرداختِ همین درخواست به کیف پول کاربر
+    بازگردانده می‌شود و نصف دیگر برداشته می‌شود (دستور کارفرما ۱۴۰۵/۰۷).
 
-    خروجی: مبلغ جدید (ریال) — ۰ اگر پیش‌پرداختی وجود نداشت یا قبلاً مصرف شده.
-    رکورد prepaid_registrations دست‌نخورده می‌ماند (فقط مبلغ نصف می‌شود) تا
-    در پایان کارِ درخواست بعدی از طریق adjust_final_fee_with_prepay به‌صورت
-    خودکار از هزینه کسر گردد. ماندگاری آن هم قبلاً در persistence تضمین شده.
+    خروجی: مبلغ بازگشتی به کیف پول (ریال) — ۰ اگر پیش‌پرداختی نبود.
+    ماندهٔ قبلی کاربر (credit غیر از پیش‌پرداخت) دست‌نخورده باقی می‌ماند.
     """
     prepaid = runtime_state.prepaid_registrations.get(user_id)
     if not prepaid:
         return 0
-    old_rial = int(prepaid.get("amount_rial", 0) or 0)
-    if old_rial <= 0:
+    from prepay_registration import _split_record
+    paid_rial, credit_rial = _split_record(prepaid)
+    if paid_rial <= 0:
         return 0
-    new_rial = old_rial // 2
-    prepaid["amount_rial"] = new_rial
-    prepaid["amount_toman"] = new_rial // 10
-    # ⭐ هم‌راستا با تفکیک پیش‌پرداخت/مانده در prepay_registration
-    if "prepay_paid_rial" in prepaid:
-        prepaid["prepay_paid_rial"] = int(prepaid.get("prepay_paid_rial", 0) or 0) // 2
+    refund_rial = paid_rial // 2
+    if credit_rial > 0:
+        prepaid["amount_rial"] = credit_rial
+        prepaid["amount_toman"] = credit_rial // 10
+        prepaid["prepay_paid_rial"] = 0
+    else:
+        runtime_state.prepaid_registrations.pop(user_id, None)
+    if refund_rial > 0:
+        try:
+            import wallet
+            wallet.credit(user_id, refund_rial // 10, "refund",
+                          "بازگشت نصف پیش‌پرداخت (عدم ویرایش کدملی)")
+        except Exception as e:
+            logger.error(f"[NID-FIX] خطا در بازگشت وجه به کیف پول کاربر {user_id}: {e}")
+            return 0
     logger.info(
-        f"[NID-FIX] جریمه: پیش‌پرداخت کاربر {user_id} نصف شد: "
-        f"{old_rial:,} → {new_rial:,} ریال")
-    return new_rial
+        f"[NID-FIX] جریمه: از پیش‌پرداخت {paid_rial:,} ریال کاربر {user_id}، "
+        f"{refund_rial:,} ریال به کیف پول بازگشت")
+    return refund_rial
 
 
 def _cleanup_aliases(user_id: int):
@@ -256,7 +272,7 @@ async def sweep_expired(bot) -> int:
     closed = 0
     now = datetime.datetime.now()
 
-    # ── پنجره‌های ۳۰ دقیقه‌ای ویرایش کدملی ──────────────────────────────
+    # ── پنجره‌های ۴۵ دقیقه‌ای ویرایش کدملی ──────────────────────────────
     for uid in list(runtime_state.pending_nid_fix_windows.keys()):
         try:
             win = runtime_state.pending_nid_fix_windows.get(uid)
@@ -267,12 +283,8 @@ async def sweep_expired(bot) -> int:
             _cleanup_aliases(uid)
 
             label = flow_label(flow)
-            new_rial = halve_prepaid(uid)  # جریمه — نصف پیش‌پرداخت برای موارد بعدی
-
-            penalty_line = (
-                f"💰 نصف مبلغ پیش‌پرداخت شما "
-                f"({new_rial // 10:,} تومان) برای موارد بعدی شما لحاظ شد و از "
-                "هزینه کسر می‌گردد.\n" if new_rial > 0 else "")
+            new_rial = halve_prepaid(uid)  # جریمه — بازگشت نصف پیش‌پرداخت به کیف پول
+            penalty_line = penalty_refund_line(new_rial)
             try:
                 await bot.send_message(
                     uid,
@@ -288,8 +300,8 @@ async def sweep_expired(bot) -> int:
                 await bot.send_message(
                     ADMIN_ID,
                     f"⌛ [NID-FIX] مهلت ویرایش کدملی کاربر {uid} ({label}) به پایان "
-                    f"رسید و جریمهٔ نصف پیش‌پرداخت اعمال شد "
-                    f"({new_rial:,} ریال باقی‌مانده).")
+                    f"رسید؛ درخواست حذف و نصف پیش‌پرداخت به کیف پول بازگشت "
+                    f"({new_rial:,} ریال).")
             except Exception:
                 pass
             closed += 1

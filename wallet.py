@@ -110,6 +110,15 @@ def _apply(uid, amount_toman: int, kind: str, note: str = ""):
     _save()
 
 
+def credit(uid, amount_toman: int, kind: str, note: str = "") -> int:
+    """افزودن مبلغ به کیف پول کاربر (مثلاً بازگشت وجه). همگام و بدون await،
+    پس در حلقهٔ asyncio اتمیک است. خروجی: موجودی جدید (تومان)."""
+    if int(amount_toman) <= 0:
+        return balance(uid)
+    _apply(uid, int(amount_toman), kind, note)
+    return balance(uid)
+
+
 def _cleanup_offers():
     now = time.time()
     for oid in [k for k, v in _store["offers"].items() if now - v.get("at", 0) > OFFER_TTL_SECONDS]:

@@ -359,8 +359,8 @@ async def _navigate_to_sign_page_once(
 
         if not table_exists:
             logging.warning("[SIGN] جدول امضا ظاهر نشد — ریلود و تلاش مجدد")
-            await sana_page.reload()
-            await resilient_sleep(sana_page, 8, bot, user_id)
+            from browser_helpers import reload_and_settle
+            await reload_and_settle(sana_page, "SIGN")
             await _close_any_popup(sana_page)
             await resilient_sleep(sana_page, 3, bot, user_id)
 

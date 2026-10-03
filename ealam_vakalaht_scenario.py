@@ -488,8 +488,8 @@ async def process_ealam_vakalaht_task(data: dict, bot: Bot):
             if attempt < max_attempts - 1:
                 await bot.send_message(ADMIN_ID, f"⚠️ [EALAM] تلاش {attempt+1} ناموفق. ریلود...\nخطا: {str(e)[:300]}")
                 try:
-                    await sana_page.reload()
-                    await asyncio.sleep(6)
+                    from browser_helpers import reload_and_settle
+                    await reload_and_settle(sana_page, "EALAM")
                 except Exception:
                     pass
             else:
@@ -905,17 +905,6 @@ async def _click_sana_query(page, ng_click: str, bot: Bot, user_id: int,
                 .filter(Boolean).join(' ').trim() || null;
         }''')
         if popup_text_ealam:
-            # ⭐ محافظ: اگر پاپ‌آپ خطا نبوده و داده‌ها از ثنا دریافت شده، سکشن حذف/افزودن نمی‌شود
-            success_now = await page.evaluate('''() => {
-                const disabled = document.querySelector(
-                    'input[ng-disabled*="ExtractedFromSana"][ng-disabled*="1"], input[disabled]'
-                );
-                return disabled !== null;
-            }''')
-            if success_now:
-                logging.info("[EALAM] پاپ‌آپ خطا نبود — داده‌های ثنا قبلاً دریافت شد")
-                await _close_error_popup(page)
-                return
             # ⭐ «تاریخ تولد ارسالی مربوط به شماره ملی ... اشتباه است» = کدملی
             # اشتباه → بدون تکرار؛ کاربر باید کدملی را اصلاح کند
             try:
@@ -936,6 +925,18 @@ async def _click_sana_query(page, ng_click: str, bot: Bot, user_id: int,
                     f"کدملی `{national_id or '—'}` اشتباه است و باید ویرایش شود "
                     f"(پیام سامانه: {popup_text_ealam[:150]}). لطفاً با کدملی صحیح "
                     "مجدداً اقدام فرمایید.")
+
+            # ⭐ محافظ: اگر پاپ‌آپ خطا نبوده و داده‌ها از ثنا دریافت شده، سکشن حذف/افزودن نمی‌شود
+            success_now = await page.evaluate('''() => {
+                const disabled = document.querySelector(
+                    'input[ng-disabled*="ExtractedFromSana"][ng-disabled*="1"], input[disabled]'
+                );
+                return disabled !== null;
+            }''')
+            if success_now:
+                logging.info("[EALAM] پاپ‌آپ خطا نبود — داده‌های ثنا قبلاً دریافت شد")
+                await _close_error_popup(page)
+                return
 
             # ⭐ طبق دستور جدید کارفرما: اولین پاپ‌آپ خطا → بستن و فقط یک‌بار
             # دیگر استعلام (روند حذف/افزودن سکشن حذف شد)

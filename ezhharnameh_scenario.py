@@ -30,6 +30,7 @@ from aiogram import Bot
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 import runtime_state
+from nid_fix_window import nid_fix_deadline_text as _nid_fix_deadline_text
 from browser_helpers import SANA_SERVICE_DELAY_MAX_RETRIES
 from config import ADMIN_ID, temp_path
 from sheets import log_event
@@ -872,17 +873,17 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
                     f"⚠️ *خطای ثبت اظهارنامه در سامانه:*\n\n"
                     f"«{str(e)[:300]}»\n\n"
                     f"شخص ({role_label}) در فهرست اشخاص پرونده نیست و امکان ثبت اظهارنامه وجود ندارد.\n\n"
-                    f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این صورت پس از ۳۰ دقیقه، "
-                    f"*نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از هزینه کسر می‌گردد.")
+                    f"{_nid_fix_deadline_text()}")
             else:
                 sana_msg = (
                     f"⚠️ *خطای استعلام ثنا*\n\n"
-                    f"شناسه ملی `{e.national_id}` ({role_label}) ثبت‌نام ثنا ندارد یا اشتباه است.\n\n"
+                    + (f"کدملی `{e.national_id}` ({role_label}) اشتباه است.\n\n"
+                       if getattr(e, "kind", "") == "birthdate" else
+                       f"شناسه ملی `{e.national_id}` ({role_label}) ثبت‌نام ثنا ندارد یا اشتباه است.\n\n") +
                     f"لطفاً یکی از گزینه‌های زیر را انتخاب کنید:\n"
                     f"• *ویرایش شناسه ملی:* شناسه صحیح را ارسال کنید تا اظهارنامه با همان اطلاعات قبلی ثبت شود.\n"
                     f"• *حذف درخواست:* درخواست اظهارنامه حذف می‌شود.\n\n"
-                    f"⏰ شما *۳۰ دقیقه* فرصت دارید کدملی شخص را ویرایش کنید؛ در غیر این صورت پس از ۳۰ دقیقه، "
-                    f"*نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از هزینه کسر می‌گردد.")
+                    f"{_nid_fix_deadline_text()}")
             await bot.send_message(user_id, sana_msg, reply_markup=kb)
             # ⭐ مهلت ۳۰ دقیقه‌ای/جریمه توسط nid_fix_window.sweep_expired
             # (state_persister) مدیریت می‌شود — تایمر حذف ۱ ساعته قبلی حذف شد.
@@ -943,8 +944,8 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
                     f"⚠️ [EZHHAR] تلاش {attempt+1} ناموفق. ریلود...\nخطا: {str(e)[:300]}"
                 )
                 try:
-                    await sana_page.reload()
-                    await asyncio.sleep(6)
+                    from browser_helpers import reload_and_settle
+                    await reload_and_settle(sana_page, "EZHHAR")
                 except Exception:
                     pass
             else:
@@ -1395,19 +1396,6 @@ async def _query_sana(page, ng_click: str, bot: Bot, user_id: int, is_legal: boo
                 await handle_session_expired(bot, user_id, page=page)
                 continue
 
-            # ⭐ محافظ: اگر پاپ‌آپ خطا نبوده و استعلام موفق بوده، سکشن حذف/افزودن نمی‌شود
-            success_now = await page.evaluate('''() => {
-                const disabled = document.querySelector(
-                    'input[ng-disabled*="ExtractedFromSana"][ng-disabled*="1"]'
-                );
-                if (disabled) return true;
-                const inp = document.querySelector('#txtRealIrNationalityCode, #txtRealIrNationalityCode1');
-                return inp ? inp.disabled : false;
-            }''')
-            if success_now:
-                logging.info("[EZHHAR] پاپ‌آپ خطا نبود — استعلام قبلاً موفق بود")
-                return
-
             # ⭐ «تاریخ تولد ارسالی مربوط به شماره ملی ... اشتباه است» = کدملی
             # اشتباه → بدون تکرار، پنجرهٔ ویرایش کدملی (EzhharSanaQueryError)
             try:
@@ -1434,6 +1422,22 @@ async def _query_sana(page, ng_click: str, bot: Bot, user_id: int, is_legal: boo
                     person_role=person_role,
                     person_index=person_index,
                     kind="birthdate")
+
+            # ⭐ محافظ بعد از بررسی خطای تاریخ تولد: فیلدهای غیرفعالِ اشخاصِ
+            # قبلاً استعلام‌شده (مثلاً خواهان هنگام استعلام خوانده) نباید
+            # خطای «تاریخ تولد ... اشتباه است» را پنهان کنند.
+            # ⭐ محافظ: اگر پاپ‌آپ خطا نبوده و استعلام موفق بوده، سکشن حذف/افزودن نمی‌شود
+            success_now = await page.evaluate('''() => {
+                const disabled = document.querySelector(
+                    'input[ng-disabled*="ExtractedFromSana"][ng-disabled*="1"]'
+                );
+                if (disabled) return true;
+                const inp = document.querySelector('#txtRealIrNationalityCode, #txtRealIrNationalityCode1');
+                return inp ? inp.disabled : false;
+            }''')
+            if success_now:
+                logging.info("[EZHHAR] پاپ‌آپ خطا نبود — استعلام قبلاً موفق بود")
+                return
 
             # ⭐ طبق دستور جدید کارفرما: اولین پاپ‌آپ خطا → بستن و فقط یک‌بار
             # دیگر استعلام (روند حذف/افزودن سکشن حذف شد)؛ پاپ‌آپ دوم → خطا.

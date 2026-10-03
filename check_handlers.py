@@ -4336,7 +4336,7 @@ async def chk_nid_fix_callback(callback: CallbackQuery, state: FSMContext, bot: 
     win = _chk_nfw.get_window(target_user_id)
     if not win or win.get("flow") != _chk_nfw.FLOW_CHECK:
         await callback.answer(
-            "⚠️ درخواستی برای ویرایش یافت نشد (مهلت ۳۰ دقیقه‌ای به پایان رسیده است).")
+            "⚠️ درخواستی برای ویرایش یافت نشد (مهلت ۴۵ دقیقه‌ای به پایان رسیده است).")
         return
 
     await callback.answer()
@@ -4424,11 +4424,9 @@ async def chk_nid_cancel_callback(callback: CallbackQuery, state: FSMContext, bo
     _chk_nfw.pop_window(target_user_id)
     await callback.answer("درخواست حذف شد.")
 
-    # جریمه — نصف مبلغ پیش‌پرداخت برای موارد بعدی (عین دستور کارفرما)
+    # جریمه — بازگشت نصف مبلغ پیش‌پرداخت به کیف پول (دستور کارفرما)
     new_rial = _chk_nfw.halve_prepaid(target_user_id)
-    penalty_line = (
-        f"💰 نصف مبلغ پیش‌پرداخت شما ({new_rial // 10:,} تومان) برای موارد بعدی "
-        "شما لحاظ شد و از هزینه کسر می‌گردد.\n" if new_rial > 0 else "")
+    penalty_line = _chk_nfw.penalty_refund_line(new_rial)
 
     try:
         await callback.message.edit_text(
