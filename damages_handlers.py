@@ -34,11 +34,12 @@ from aiogram.types import Message
 
 import cpi_fetcher
 import damages_calc as dc
+import runtime_state
 from config import ADMIN_ID, temp_path
 from id_validation import normalize_digits
 from keyboards import (
     BACK_TO_MAIN_TEXT, DAMAGES_MENU_TEXT, DMG_LATE_TEXT, DMG_MAHR_TEXT, DMG_TODAY_TEXT,
-    back_only_kb, dmg_calc_date_kb, dmg_type_kb, get_flow_type_kb)
+    back_only_kb, dmg_calc_date_kb, dmg_type_kb, get_flow_type_kb, subscription_kb)
 from states import Form
 
 logger = logging.getLogger(__name__)
@@ -70,11 +71,49 @@ async def _back_to_main(message: Message, state: FSMContext):
 # ══════════════════════════════════════════════════════════════════════════
 # ورود و انتخاب نوع محاسبه
 # ══════════════════════════════════════════════════════════════════════════
+# شمارندهٔ استفادهٔ رایگان این بخش (مشترک برای خسارت تأخیر و مهریه) — مثل
+# «محاسبه تمبر» و «ابزار فایل»: ۲ بار رایگان، سپس اشتراک ماهیانهٔ مشترک.
+USAGE_KEY = "damages"
+
+
+def _subscription_required_message() -> str:
+    return (
+        f"⚠️ *محدودیت استفاده رایگان تمام شد*\n\n"
+        f"شما {runtime_state.MAX_FREE_USAGE} بار استفاده رایگان از بخش محاسبهٔ خسارت "
+        f"تأخیر تأدیه و مهریه را مصرف کرده‌اید.\n\n"
+        f"💰 جهت استفاده مجدد، *اشتراک ماهیانه* را فعال نمایید؛ یک اشتراک برای همهٔ "
+        f"بخش‌های زیر معتبر است:\n{runtime_state.SUBSCRIPTION_FEATURES_TEXT}\n\n"
+        f"💳 مبلغ اشتراک ماهیانه: *{runtime_state.SUBSCRIPTION_FEE:,} ریال*\n\n"
+        f"⏱ مدت اشتراک: *{runtime_state.SUBSCRIPTION_DURATION_DAYS} روز*"
+    )
+
+
+async def _require_subscription(message: Message, state: FSMContext) -> bool:
+    """اگر سهمیهٔ رایگان تمام شده و اشتراک فعال نیست، کاربر را به پرداخت اشتراک
+    می‌برد و True برمی‌گرداند."""
+    if runtime_state.can_use_service(message.from_user.id, USAGE_KEY):
+        return False
+    await state.update_data(subscription_fee=runtime_state.SUBSCRIPTION_FEE)
+    await state.set_state(Form.subscription_waiting_payment)
+    await message.answer(_subscription_required_message(), reply_markup=subscription_kb)
+    return True
+
+
 @damages_router.message(StateFilter("*"), F.text == DAMAGES_MENU_TEXT)
 async def damages_entry(message: Message, state: FSMContext):
     await state.clear()
+    if await _require_subscription(message, state):
+        return
+    user_id = message.from_user.id
+    if runtime_state.has_active_subscription(user_id):
+        end_str = runtime_state.user_subscriptions[user_id]["end_date"].strftime("%Y/%m/%d %H:%M")
+        status = f"✅ اشتراک فعال تا {end_str}\n\n"
+    else:
+        remaining = runtime_state.get_remaining_free(user_id, USAGE_KEY)
+        status = f"📋 استفاده رایگان: {remaining} از {runtime_state.MAX_FREE_USAGE} دفعه باقی‌مانده\n\n"
     await message.answer(
         "📈 *محاسبهٔ خسارت تأخیر تأدیه و مهریه به نرخ روز*\n\n"
+        f"{status}"
         "نوع محاسبه را انتخاب کنید:",
         reply_markup=dmg_type_kb)
     await state.set_state(Form.dmg_waiting_type)
@@ -85,6 +124,8 @@ async def damages_type(message: Message, state: FSMContext):
     text = message.text or ""
     if text == BACK_TO_MAIN_TEXT:
         await _back_to_main(message, state)
+        return
+    if text in (DMG_LATE_TEXT, DMG_MAHR_TEXT) and await _require_subscription(message, state):
         return
     if text == DMG_LATE_TEXT:
         await message.answer(
@@ -172,6 +213,7 @@ async def dmg_calc_date(message: Message, state: FSMContext):
         await message.answer(f"⚠️ {e}")
         return
 
+    runtime_state.increment_usage(message.from_user.id, USAGE_KEY)
     note = ""
     if r["used_latest_available"]:
         note = (f"\n🔸 شاخص ماه پرداخت ({r['pay_key']}) هنوز منتشر نشده؛ از نزدیک‌ترین "
@@ -240,6 +282,7 @@ async def mahr_year(message: Message, state: FSMContext):
         await state.set_state(Form.dmg_waiting_type)
         return
 
+    runtime_state.increment_usage(message.from_user.id, USAGE_KEY)
     await message.answer(
         "📊 *نتیجهٔ محاسبهٔ مهریه به نرخ روز*\n\n"
         f"💵 مبلغ مهریه: {_fmt(r['amount'])} ریال\n"

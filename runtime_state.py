@@ -371,18 +371,25 @@ bulk_inquiry_progress: dict = {}
 # =========================================================
 # سیستم اشتراک و محدودیت استفاده رایگان
 # =========================================================
-# حداکثر استفاده رایگان برای هر بخش (تمبر و ابزار)
+# حداکثر استفاده رایگان برای هر بخش (تمبر، ابزار، خسارت تأخیر/مهریه)
 MAX_FREE_USAGE = 2
 
-# مبلغ اشتراک ماهیانه (ریال)
-SUBSCRIPTION_FEE = 1_000_000
+# مبلغ اشتراک ماهیانه (ریال) — ۲۵۰ هزار تومان
+SUBSCRIPTION_FEE = 2_500_000
+
+# فهرست امکاناتی که یک اشتراک برای همهٔ آن‌ها معتبر است (برای پیام‌ها)
+SUBSCRIPTION_FEATURES_TEXT = (
+    "🔧 ابزار فایل\n"
+    "💰 محاسبه تمبر\n"
+    "📈 محاسبهٔ خسارت تأخیر تأدیه\n"
+    "💍 محاسبهٔ مهریه به نرخ روز")
 
 # مدت اشتراک (روز)
 SUBSCRIPTION_DURATION_DAYS = 30
 
 # دیکشنری شمارنده استفاده رایگان کاربران
 # کلید: user_id (int)
-# مقدار: {"stamp": int, "tools": int}
+# مقدار: {"stamp": int, "tools": int, "damages": int}
 user_free_usage: dict = {}
 
 # دیکشنری اشتراک فعال کاربران
@@ -407,7 +414,7 @@ pending_subscription_payments: dict = {}
 def get_user_usage(user_id: int) -> dict:
     """دریافت شمارنده استفاده کاربر. اگر وجود نداشت، صفر initializes."""
     if user_id not in user_free_usage:
-        user_free_usage[user_id] = {"stamp": 0, "tools": 0}
+        user_free_usage[user_id] = {"stamp": 0, "tools": 0, "damages": 0}
     return user_free_usage[user_id]
 
 

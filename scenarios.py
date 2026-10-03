@@ -103,7 +103,7 @@ async def _close_extra_tabs(browser_context, keep_page=None):
 async def _wait_selector_with_reload(page, selector: str, where: str,
                                      initial_timeout_ms: int = 15000,
                                      reload_wait_s: int = 10,
-                                     max_reloads: int = 2) -> bool:
+                                     max_reloads: int = 3) -> bool:
     """صبر برای ظاهر شدن یک سلکتور؛ در صورت عدم موفقیت سامانه را حداکثر
     ``max_reloads`` بار ریلود می‌کند (هر بار ``reload_wait_s`` ثانیه صبر و
     بررسی مجدد). خروجی False یعنی حتی بعد از همهٔ تلاش‌ها هم پیدا نشد —
@@ -522,8 +522,8 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
             logging.warning(f"[PRE_CHECK] تلاش مجدد با ریلود صفحه (کد: {tracking_code})")
             try:
                 if page:
-                    await page.reload(timeout=30000, wait_until="domcontentloaded")
-                    await asyncio.sleep(5)
+                    from browser_helpers import reload_and_settle
+                    await reload_and_settle(page, "PRE_CHECK")
             except Exception:
                 pass
             # بستن تب فعلی و ایجاد تب جدید
@@ -2372,8 +2372,8 @@ async def process_task(data, bot: Bot):
                                      page=getattr(runtime_state, "sana_page", None))
                 except Exception:
                     pass
-                await sana_page.reload()
-                await asyncio.sleep(5)
+                from browser_helpers import reload_and_settle
+                await reload_and_settle(sana_page, "TASK")
             else:
                 doc_name = f"{category} - {subcategory}" if subcategory else category
 
