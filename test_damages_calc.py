@@ -109,3 +109,15 @@ def test_parse_cbi_pdf_sample():
         values = cpi_fetcher.parse_cpi_pdf(f.read())
     assert values["1400/01"] == 83.3 and values["1403/07"] == 310.1
     assert max(values) == "1405/06" and values["1405/06"] == 800.0
+
+
+def test_result_pdfs_are_built(tmp_path):
+    import damages_pdf
+    r = dc.calc_late_payment(500_000_000, (1403, 7, 1), (1405, 7, 11))
+    late = tmp_path / "late.pdf"
+    assert damages_pdf.build_late_payment_pdf(str(late), r, (1403, 7, 1), (1405, 7, 11))
+    m = dc.calc_mahrieh(10_000_000, 1385, payment_year=1405)
+    mahr = tmp_path / "mahr.pdf"
+    assert damages_pdf.build_mahrieh_pdf(str(mahr), m)
+    assert late.read_bytes()[:4] == b"%PDF" and mahr.read_bytes()[:4] == b"%PDF"
+    assert damages_pdf.month_label("1403/07") == "مهر 1403"
