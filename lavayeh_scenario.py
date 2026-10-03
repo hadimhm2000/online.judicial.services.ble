@@ -4,6 +4,7 @@
 """
 import asyncio
 import logging
+from bug_reporter import notify_admin_step_error, notify_step_popup
 import os
 import time
 import base64
@@ -2708,6 +2709,7 @@ async def _click_apply_all_with_retry(page, expected_count: int, bot: Bot, user_
             return null;
         }''')
         if error_text:
+            await notify_admin_step_error("منضمات", error_text, bot=bot, user_id=user_id, where="LAVAYEH")
             logging.warning(f"[LAVAYEH][منضمات] خطا در اعمال همه (تلاش {attempt+1}): {error_text}")
             await resilient_sleep(page, 5, bot, user_id)
             continue
@@ -2816,6 +2818,7 @@ async def _click_preparation_with_retry(page, bot: Bot, user_id: int, max_retrie
                 return True
 
             elif popup_info['type'] == 'error':
+                await notify_step_popup(page, "آماده‌سازی", bot=bot, user_id=user_id, where="LAVAYEH")
                 # ⭐ تشخیص ورود همزمان/انقضای نشست — به‌جای ۳ بار retry
                 # بی‌فایده، نشست تمدید می‌شود (اطلاع به مدیر برای لاگین
                 # مجدد) و سپس کلیک آماده‌سازی از ابتدا تکرار می‌شود.
@@ -2832,6 +2835,7 @@ async def _click_preparation_with_retry(page, bot: Bot, user_id: int, max_retrie
 
             else:
                 # پاپ‌آپ ناشناخته — بستن و تلاش مجدد
+                await notify_step_popup(page, "آماده‌سازی", bot=bot, user_id=user_id, where="LAVAYEH")
                 logging.warning(f"[LAVAYEH] پاپ‌آپ ناشناخته: {popup_info['h2']} (تلاش {attempt+1})")
                 await _close_error_popup(page)
                 await asyncio.sleep(2)
@@ -2928,6 +2932,7 @@ async def _click_preparation_with_retry(page, bot: Bot, user_id: int, max_retrie
                 return True
 
             elif result['type'] == 'error':
+                await notify_admin_step_error("آماده‌سازی", result.get('h2') or "خطا", bot=bot, user_id=user_id, where="LAVAYEH")
                 # ⭐ تشخیص ورود همزمان/انقضای نشست — این پاپ‌آپ h2 خالی و
                 # متن کامل در p است («با این شناسه ... منقضی شده است»).
                 # قبلاً بدون تمدید نشست ۳ بار retry بی‌فایده انجام می‌شد.

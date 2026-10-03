@@ -330,3 +330,103 @@ async def upload_logs(bot, chat_id: Optional[int] = None, which: str = "bugs") -
         except Exception:
             pass
         return False
+
+
+# =========================================================
+# ⭐ اطلاع فوری به مدیر از هر خطای «منضمات» و «آماده‌سازی»
+# ---------------------------------------------------------
+# طبق دستور کارفرما: در تمام بخش‌ها، اگر در مرحلهٔ منضمات یا آماده‌سازی
+# خطایی رخ داد — حتی اگر آن خطا در error_catalog شناخته‌شده باشد و ربات
+# خودش آن را مدیریت کند — ابتدا به مدیر اطلاع داده می‌شود. روند خودکار
+# ربات (تلاش مجدد/تمدید نشست/...) بعد از ارسال این اطلاع، مثل قبل ادامه
+# می‌یابد. این توابع هرگز استثناء پرتاب نمی‌کنند.
+# =========================================================
+import contextvars
+
+# زمینهٔ تسک در حال اجرا (کاربر/کد/نوع تسک) — در scenarios.process_task تنظیم می‌شود
+_job_ctx: contextvars.ContextVar = contextvars.ContextVar("bug_reporter_job_ctx", default=None)
+_default_bot = None
+_last_step_alert_at: dict = {}
+_STEP_ALERT_MIN_INTERVAL = 60  # ثانیه — همان خطای همان کاربر/مرحله حداکثر هر ۶۰ ثانیه
+
+
+def set_default_bot(bot) -> None:
+    """ثبت نمونهٔ bot برای مسیرهایی که bot را در دسترس ندارند (upload_helpers)."""
+    global _default_bot
+    _default_bot = bot
+
+
+def set_job_context(bot, data: Optional[dict]) -> None:
+    """ثبت زمینهٔ تسک جاری (در ابتدای process_task)."""
+    try:
+        d = data or {}
+        _job_ctx.set({
+            "bot": bot,
+            "user_id": d.get("user_id"),
+            "task_type": d.get("task_type") or d.get("query_type"),
+            "tracking_code": d.get("tracking_code") or d.get("bill_no"),
+        })
+    except Exception:
+        pass
+
+
+async def notify_admin_step_error(step: str, text, *, bot=None, user_id=None,
+                                  where: str = "") -> None:
+    """ارسال اطلاع خطای مرحلهٔ «منضمات»/«آماده‌سازی» به مدیر (با دسته و
+    اقدام تعیین‌شده در error_catalog)."""
+    try:
+        if not text:
+            return
+        ctx = _job_ctx.get() or {}
+        bot = bot or ctx.get("bot") or _default_bot
+        if user_id is None:
+            user_id = ctx.get("user_id")
+        if not (bot and ADMIN_ID):
+            return
+        import error_catalog
+        norm = error_catalog.normalize(text)
+        key = f"{user_id}|{step}|{norm[:80]}"
+        now = time.time()
+        if now - _last_step_alert_at.get(key, 0) < _STEP_ALERT_MIN_INTERVAL:
+            return
+        _last_step_alert_at[key] = now
+        decision = error_catalog.decide(text)
+        known = decision["category"] != error_catalog.UNKNOWN
+        lines = [
+            f"⚠️ خطا در مرحلهٔ «{step}»" + (f" ({where})" if where else ""),
+            f"📝 متن سامانه: {str(text).strip()[:400]}",
+            f"🏷 نوع: {decision['label']} — {'شناخته‌شده' if known else 'ناشناخته'}",
+            f"🤖 اقدام ربات: {decision['action']}",
+        ]
+        if ctx.get("task_type"):
+            lines.append(f"📂 سرویس: {ctx.get('task_type')}")
+        if ctx.get("tracking_code"):
+            lines.append(f"🧾 کد: {ctx.get('tracking_code')}")
+        if user_id is not None:
+            lines.append(f"👤 کاربر: {user_id}")
+            lines.append(f"🛠 رسیدگی دستی: /send {user_id} — /case {user_id}")
+        logging.warning(f"[STEP_ERROR] {step} | user={user_id} | {norm[:200]}")
+        await _send_admin_text(bot, "\n".join(lines))
+    except Exception as e:
+        try:
+            logging.error(f"[BUG_REPORTER] خطا در notify_admin_step_error: {e}")
+        except Exception:
+            pass
+
+
+async def notify_step_popup(page, step: str, *, bot=None, user_id=None, where: str = "") -> None:
+    """خواندن متن پاپ‌آپ خطای باز (بدون بستن آن) و اطلاع به مدیر."""
+    try:
+        text = await page.evaluate('''() => {
+            const popup = document.querySelector('.sweet-alert.showSweetAlert');
+            if (!popup) return null;
+            const s = popup.querySelector('.sa-icon.sa-success');
+            if (s && window.getComputedStyle(s).display !== 'none') return null;
+            const h2 = popup.querySelector('h2');
+            const p = popup.querySelector('p');
+            return [h2 ? h2.innerText : '', p ? p.innerText : ''].filter(Boolean).join(' - ').trim() || null;
+        }''')
+    except Exception:
+        text = None
+    if text:
+        await notify_admin_step_error(step, text, bot=bot, user_id=user_id, where=where)

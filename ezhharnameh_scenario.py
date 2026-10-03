@@ -22,6 +22,7 @@
 
 import asyncio
 import logging
+from bug_reporter import notify_admin_step_error, notify_step_popup
 import os
 import time
 import html as html_lib
@@ -2360,6 +2361,7 @@ async def _click_preparation(page, bot: Bot, user_id: int, max_retries: int = 3)
         # (اطلاع به مدیر برای لاگین مجدد) و همان تلاش پس از آن ادامه می‌یابد.
         is_concurrent = await detect_concurrent_login_popup(page)
         if is_concurrent:
+            await notify_step_popup(page, "آماده‌سازی", bot=bot, user_id=user_id, where="EZHHAR")
             logging.warning(f"[EZHHAR] ورود همزمان/انقضای نشست در آماده‌سازی (تلاش {attempt+1}) — تمدید نشست")
             await handle_session_expired(bot, user_id, page=page)
             await asyncio.sleep(3)
@@ -2403,6 +2405,7 @@ async def _click_preparation(page, bot: Bot, user_id: int, max_retries: int = 3)
             return True
 
         # بستن هر پاپ‌آپ خطای دیگر
+        await notify_step_popup(page, "آماده‌سازی", bot=bot, user_id=user_id, where="EZHHAR")
         await _close_popup(page)
         await asyncio.sleep(30)
         await _close_success_popup(page)

@@ -28,6 +28,7 @@
 """
 import asyncio
 import logging
+from bug_reporter import notify_admin_step_error, notify_step_popup
 import os
 
 from aiogram import Bot
@@ -628,6 +629,7 @@ async def _finish_check(page, bill_no: str, branch_code: str,
             await resilient_sleep(page, 5, bot, user_id)
             continue
         # پاپ‌آپ دیگر (خطا) → بستن و تلاش مجدد
+        await notify_admin_step_error("آماده‌سازی", popup_text, bot=bot, user_id=user_id, where="CONTRACT-FIX")
         await page.evaluate('''() => {
             const popup = document.querySelector('.sweet-alert.showSweetAlert');
             if (popup) { const b = popup.querySelector('button.confirm'); if (b) b.click(); }

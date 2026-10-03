@@ -444,6 +444,11 @@ async def main():
     session = AiohttpSession(api=custom_api_server)
 
     bot = Bot(token=BOT_TOKEN, session=session)
+    try:
+        from bug_reporter import set_default_bot
+        set_default_bot(bot)
+    except Exception:
+        pass
     wallet.set_bot(bot)
 
     # ارسال پیام تستی به ادمین برای اطمینان از صحت ADMIN_ID

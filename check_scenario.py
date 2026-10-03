@@ -101,6 +101,7 @@
 
 import asyncio
 import logging
+from bug_reporter import notify_admin_step_error, notify_step_popup
 import os
 import re
 import time
@@ -1112,6 +1113,7 @@ async def process_check_task(data: dict, bot: Bot):
 
                 # هر پاپ‌آپ دیگری (خطای سامانه غیر از ورود همزمان) → طبق
                 # مشخصات، دوباره «تایید اطلاعات» را انتخاب کن
+                await notify_admin_step_error("آماده‌سازی", popup_text, bot=bot, user_id=user_id, where="CHECK")
                 logging.warning(
                     f"[CHECK] پاپ‌آپ غیرمنتظره در آماده‌سازی (تلاش {confirm_attempt+1}/4): {popup_text!r}"
                 )

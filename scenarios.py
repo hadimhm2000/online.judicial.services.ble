@@ -1200,6 +1200,12 @@ async def process_task(data, bot: Bot):
     # ⭐ تسک «چاپ نهایی» روز بعد (final_print.py) — همان مسیر استعلام کد رهگیری
     # ولی فقط ارسال چاپ؛ بدون پیام‌ها/ثبت‌های مخصوص استعلام پولی
     is_final_print = bool(data.get('final_print'))
+    # ⭐ زمینهٔ تسک برای اطلاع خطاهای منضمات/آماده‌سازی به مدیر (bug_reporter)
+    try:
+        from bug_reporter import set_job_context
+        set_job_context(bot, data)
+    except Exception:
+        pass
 
     # ── سناریوی لایحه ثبت ─────────────────────────────────────────────────
     if task_type == "LAVAYEH_SUBMIT":

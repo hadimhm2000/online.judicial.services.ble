@@ -162,3 +162,44 @@ def test_correction_same_category():
     run(handlers.process_corrected_doc_category(_msg(CORRECTED_SAME_CATEGORY_TEXT, uid=8), st))
     job = runtime_state.job_queue.get_nowait()
     assert job["doc_category"] == "اظهارنامه" and job["free_retry_used"] is True
+
+
+# ── اطلاع خطاهای منضمات/آماده‌سازی به مدیر ─────────────────────────
+
+def test_step_error_notifies_admin_with_context_and_dedupe(monkeypatch):
+    import bug_reporter
+    sent = []
+
+    async def fake_send(bot, text):
+        sent.append(text)
+
+    monkeypatch.setattr(bug_reporter, "_send_admin_text", fake_send)
+    monkeypatch.setattr(bug_reporter, "ADMIN_ID", 1)
+    bug_reporter._last_step_alert_at.clear()
+
+    async def scenario():
+        bug_reporter.set_job_context(MagicMock(), {"user_id": 42, "task_type": "LAVAYEH_SUBMIT", "tracking_code": "123"})
+        await bug_reporter.notify_admin_step_error("منضمات", "حجم فایل بیش از حد مجاز است")
+        await bug_reporter.notify_admin_step_error("منضمات", "حجم فایل بیش از حد مجاز است")  # تکراری
+        await bug_reporter.notify_admin_step_error("آماده‌سازی", "متن کاملاً ناشناخته")
+
+    run(scenario())
+    assert len(sent) == 2
+    assert "شناخته‌شده" in sent[0] and "/send 42" in sent[0] and "LAVAYEH_SUBMIT" in sent[0]
+    assert "ناشناخته" in sent[1]
+
+
+def test_upload_error_popup_reader_notifies_admin(monkeypatch):
+    import bug_reporter
+    import upload_helpers
+    calls = []
+
+    async def fake_notify(step, text, **kw):
+        calls.append((step, text))
+
+    monkeypatch.setattr(bug_reporter, "notify_admin_step_error", fake_notify)
+    monkeypatch.setattr(upload_helpers.asyncio, "sleep", AsyncMock())
+    page = MagicMock()
+    page.evaluate = AsyncMock(return_value="نوع فایل مجاز نیست")
+    assert run(upload_helpers.get_and_close_error_popup_text(page)) == "نوع فایل مجاز نیست"
+    assert calls == [("منضمات", "نوع فایل مجاز نیست")]
