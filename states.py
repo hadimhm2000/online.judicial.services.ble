@@ -7,6 +7,8 @@ class Form(StatesGroup):
     main_menu = State()
     waiting_for_tracking_code = State()
     waiting_for_corrected_tracking_code = State()  # فرصت رایگان اصلاح کدرهگیری نامعتبر/نادرست (۴۵ دقیقه)
+    waiting_for_corrected_doc_category = State()     # انتخاب دستهٔ صحیح در همان فرصت اصلاح رایگان
+    waiting_for_corrected_doc_subcategory = State()  # انتخاب زیردستهٔ صحیح در همان فرصت اصلاح رایگان
     waiting_for_phone_number = State()
     waiting_for_national_id = State()
     waiting_for_doc_category = State()

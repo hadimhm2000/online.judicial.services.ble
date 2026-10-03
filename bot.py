@@ -12,6 +12,8 @@ logging.basicConfig(
 )
 
 from aiogram import Bot, Dispatcher
+from aiogram.fsm.context import FSMContext
+from aiogram.types import ErrorEvent
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -60,6 +62,38 @@ dp.include_router(admin_relay_router)
 # نشد، اجرا شود — نه زودتر.
 dp.include_router(fallback_router)
 runtime_state.dp = dp
+
+
+# ⭐ هر خطای پیش‌بینی‌نشده در هر روند (هر هندلری در هر روتر) که باعث توقف آن
+# روند شود، ابتدا به مدیر اعلام می‌شود (گزارش کامل + دستور رسیدگی دستی
+# /send یا /case). رفتار روندهای سالم تغییری نمی‌کند — این هندلر فقط وقتی
+# اجرا می‌شود که یک هندلر استثنای مدیریت‌نشده پرتاب کرده باشد.
+@dp.errors()
+async def _unhandled_flow_error(event: ErrorEvent, bot: Bot, state: FSMContext = None):
+    try:
+        update = event.update
+        user = None
+        where = "handler"
+        if update.message is not None:
+            user = update.message.from_user
+            where = f"handler:message:{(update.message.text or '')[:40]}"
+        elif update.callback_query is not None:
+            user = update.callback_query.from_user
+            where = f"handler:callback:{(update.callback_query.data or '')[:40]}"
+        state_name = None
+        if state is not None:
+            try:
+                state_name = await state.get_state()
+            except Exception:
+                state_name = None
+        await report_bug(
+            bot, where=where, error=event.exception,
+            user_id=user.id if user else None,
+            context={"state": state_name} if state_name else None,
+            with_screenshot=False)
+    except Exception as e:
+        logging.error(f"[ERRORS] خطا در گزارش خطای مدیریت‌نشده: {e}")
+    return True
 
 # ⭐ گیت بی‌کاری ۱ ساعته (۱۴۰۵/۰۶) — هر پیام/کال‌بک «اقدام» کاربر ثبت
 # می‌شود؛ اگر بیش از یک ساعت از آخرین اقدامش گذشته باشد، state او بی‌صدا

@@ -87,6 +87,8 @@ INQUIRY_STATES = frozenset({
     "Form:main_menu",
     "Form:waiting_for_tracking_code",
     "Form:waiting_for_corrected_tracking_code",
+    "Form:waiting_for_corrected_doc_category",
+    "Form:waiting_for_corrected_doc_subcategory",
     "Form:waiting_for_phone_number",
     "Form:waiting_for_national_id",
     "Form:waiting_for_doc_category",

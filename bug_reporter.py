@@ -201,6 +201,11 @@ async def report_bug(
             except Exception:
                 ctx = str(context)[:1200]
             lines.append(f"🧩 زمینه: {ctx}")
+        if user_id is not None:
+            # ⭐ مدیر مشکل را دستی حل می‌کند و نتیجه را برای کاربر می‌فرستد
+            lines.append(
+                f"🛠 رسیدگی دستی: /send {user_id} (ارسال پیام/فایل) — "
+                f"/case {user_id} (ارسال نتیجهٔ پرونده)")
         head = "\n".join(lines)
         full_text = head + (f"\n\n🧵 Traceback:\n{tb}" if tb else "")
 

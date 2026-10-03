@@ -26,6 +26,7 @@ MAX_BUFFER = 5000
 
 _INQUIRY_STATES = {
     "main_menu", "waiting_for_tracking_code", "waiting_for_corrected_tracking_code",
+    "waiting_for_corrected_doc_category", "waiting_for_corrected_doc_subcategory",
     "waiting_for_phone_number", "waiting_for_national_id", "waiting_for_doc_category",
     "waiting_for_doc_subcategory", "waiting_for_attachments_opt", "confirm_opt",
     "waiting_for_payment_receipt",

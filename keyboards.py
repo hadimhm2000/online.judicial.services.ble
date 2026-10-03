@@ -781,6 +781,25 @@ disrupted_retry_kb = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# ⭐ تلاش مجدد disrupted برای استعلام کدرهگیری: امکان اصلاح کد/دسته (یک‌بار رایگان)
+disrupted_retry_fix_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🔄 تلاش مجدد (بدون پرداخت هزینه)")],
+        [KeyboardButton(text="✏️ اصلاح کدرهگیری یا دسته (بدون پرداخت هزینه)")],
+        [KeyboardButton(text="❌ انصراف")],
+    ],
+    resize_keyboard=True
+)
+
+# ⭐ انتخاب دستهٔ صحیح در فرصت اصلاح رایگان کدرهگیری
+CORRECTED_SAME_CATEGORY_TEXT = "✅ همان دستهٔ قبلی"
+corrected_doc_category_kb = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text=CORRECTED_SAME_CATEGORY_TEXT)]] + [
+        list(row) for row in doc_category_kb.keyboard
+    ],
+    resize_keyboard=True
+)
+
 # =========================================================
 # کیبوردهای بخش تست مدیر (منضمات / امضا)
 # =========================================================

@@ -358,3 +358,151 @@ def log_unknown(prefix, text):
     norm = normalize(text)
     if norm:
         logging.warning(f"[{prefix}][ERROR_CATALOG] خطای ناشناخته (به کاتالوگ اضافه شود): {norm[:200]}")
+
+
+# =====================================================================
+# ⭐ جدول تصمیم مرکزی (Error Policy)
+# ---------------------------------------------------------------------
+# هر بخش ربات که به خطا/پاپ‌آپ سامانه می‌خورد، ابتدا با classify() دستهٔ
+# خطا را از همین فایل پیدا می‌کند و سپس با decide() از همین جدول می‌خواند
+# که چه اقدامی باید انجام شود. این جدول فقط «تصمیم» را مشخص می‌کند؛ اجرای
+# آن در همان بخشی است که خطا رخ داده (تا روندهای فعلیِ درست تغییری نکنند).
+#
+# برای افزودن خطای جدید: الگوی متن را به CATALOG بالا اضافه کنید و اگر
+# اقدام خاصی لازم دارد، یک ردیف به ERROR_POLICY اضافه کنید.
+# =====================================================================
+
+# ── اقدام‌ها ──
+ACTION_CONTINUE = "continue"                  # خطا نیست / ادامهٔ روند
+ACTION_RETRY_SAME = "retry_same"              # خطای موقت سامانه — تلاش مجدد همان مرحله
+ACTION_RELOGIN = "relogin"                    # انقضای نشست — ورود مجدد و ادامه
+ACTION_FREE_CORRECTION = "free_correction"    # ورودی کاربر اشتباه — یک‌بار اصلاح رایگان
+ACTION_SWITCH_CATEGORY = "switch_category"    # دستهٔ اشتباه — ورود خودکار به دستهٔ صحیح
+ACTION_ASK_USER = "ask_user"                  # اطلاع به کاربر برای اصلاح همان فیلد
+ACTION_STOP_NOTIFY_ADMIN = "stop_notify_admin"  # توقف روند + اطلاع به مدیر برای رسیدگی دستی
+
+# ── دسته → (اقدام، اطلاع به مدیر؟) ──
+ERROR_POLICY = {
+    SESSION_EXPIRY: (ACTION_RELOGIN, True),
+    LOAD_ERROR: (ACTION_RETRY_SAME, False),
+    VALIDATION: (ACTION_FREE_CORRECTION, True),
+    WRONG_FORM_TRACKING_CODE: (ACTION_SWITCH_CATEGORY, True),
+    NOT_FOUND: (ACTION_STOP_NOTIFY_ADMIN, True),
+    NATIONAL_ID_INVALID_OR_NOT_REGISTERED: (ACTION_ASK_USER, True),
+    RETRIEVE_MISMATCH: (ACTION_ASK_USER, True),
+    PERSON_NOT_IN_CASE: (ACTION_ASK_USER, True),
+    SIGN_WRONG_CODE: (ACTION_ASK_USER, False),
+    SIGN_SANA_NOT_REGISTERED: (ACTION_ASK_USER, True),
+    UPLOAD_PAGE_COUNT: (ACTION_RETRY_SAME, False),
+    UPLOAD_FILE_SIZE: (ACTION_ASK_USER, True),
+    UPLOAD_FILE_TYPE: (ACTION_ASK_USER, True),
+    UPLOAD_DUPLICATE: (ACTION_CONTINUE, False),
+    UPLOAD_REGISTERED: (ACTION_CONTINUE, False),
+    UPLOAD_CONFIRMED: (ACTION_CONTINUE, False),
+    SIGN_CODE_SENT: (ACTION_CONTINUE, False),
+    SIGN_ALREADY_SENT: (ACTION_CONTINUE, False),
+    SIGN_SUCCESS: (ACTION_CONTINUE, False),
+    RECOVERY_SUCCESS: (ACTION_CONTINUE, False),
+    SUCCESS: (ACTION_CONTINUE, False),
+    GENERAL_ERROR: (ACTION_STOP_NOTIFY_ADMIN, True),
+    UNKNOWN: (ACTION_STOP_NOTIFY_ADMIN, True),
+}
+
+
+def decide(text) -> dict:
+    """تصمیم مرکزی برای یک متن خطا/پاپ‌آپ سامانه.
+
+    خروجی: {"category", "action", "notify_admin", "label"}
+    """
+    cat = classify(text)
+    action, notify = ERROR_POLICY.get(cat, (ACTION_STOP_NOTIFY_ADMIN, True))
+    return {"category": cat, "action": action, "notify_admin": notify, "label": describe(text)}
+
+
+# =====================================================================
+# ⭐ استعلام کدرهگیری: پیام‌های فرصت اصلاح رایگان (یک‌بار) و «موردی استعلام نشد»
+# =====================================================================
+
+INQUIRY_FREE_CORRECTION_MSG = (
+    "❌ کدرهگیری اشتباه است یا دستهٔ مربوطه را به‌اشتباه انتخاب کرده‌اید.\n\n"
+    "✅ *یک‌بار دیگر* امکان اصلاح بدون پرداخت هزینه را دارید "
+    "(تا {minutes} دقیقه).\n\n"
+    "لطفاً کدرهگیری صحیح را ارسال نمایید (در مرحلهٔ بعد می‌توانید دسته را هم اصلاح کنید):"
+)
+
+INQUIRY_NOTHING_FOUND_MSG = (
+    "❌ با اطلاعات اصلاح‌شده هم موردی استعلام نشد.\n\n"
+    "🔖 کدرهگیری: `{tracking_code}`\n"
+    "📂 دسته: {doc_name}\n\n"
+    "فرصت اصلاح رایگان استفاده شده است. در صورت نیاز، پشتیبانی موضوع را بررسی و "
+    "نتیجه را برایتان ارسال خواهد کرد."
+)
+
+INQUIRY_CATEGORY_SWITCHED_NOTE = (
+    "⚠️ دسته‌ای که انتخاب کرده بودید («{old}») اشتباه بود؛ "
+    "استعلام در دستهٔ صحیح «{new}» انجام شد."
+)
+
+
+# =====================================================================
+# ⭐ نگاشت پیام «این کد رهگیری مربوط به «…» می باشد» به دستهٔ منوی ربات
+# ---------------------------------------------------------------------
+# ترتیب مهم است: موارد خاص‌تر (شورا/دیوان/کیفری) پیش از موارد عمومی.
+# هر ردیف: (کلیدواژه‌های لازم — همه باید باشند، دستهٔ اصلی، زیردسته)
+# نام زیردسته‌ها دقیقاً مطابق keyboards.SUB_MENUS است.
+# =====================================================================
+WRONG_FORM_TARGETS = [
+    (("دیوان", "تجدیدنظر"), "دیوان عدالت اداری", "تجدیدنظرخواهی دیوان عدالت اداری"),
+    (("دیوان", "دادخواست"), "دیوان عدالت اداری", "دادخواست بدوی دیوان عدالت اداری"),
+    (("شورا", "تجدیدنظر"), "شورای حل اختلاف", "تجدیدنظرخواهی شورا"),
+    (("شورا", "واخواهی"), "شورای حل اختلاف", "واخواهی شورا"),
+    (("شورا", "اعتراض ثالث"), "شورای حل اختلاف", "اعتراض ثالث شورا"),
+    (("تجدیدنظر",), "دعاوی اعتراضی", "تجدیدنظرخواهی"),
+    (("واخواهی",), "دعاوی اعتراضی", "واخواهی"),
+    (("فرجام",), "دعاوی اعتراضی", "فرجام خواهی"),
+    (("اعاده دادرسی", "کیفری"), "دعاوی اعتراضی", "اعاده دادرسی کیفری"),
+    (("اعاده دادرسی",), "دعاوی اعتراضی", "اعاده دادرسی مدنی"),
+    (("اعتراض ثالث",), "دعاوی اعتراضی", "اعتراض ثالث"),
+    (("اعتراض به قرار",), "دعاوی اعتراضی", "اعتراض به قرار دادسرا"),
+    (("تقابل",), "دعاوی طاری", "دعوای تقابل"),
+    (("ورود ثالث",), "دعاوی طاری", "دعوای ورود ثالث"),
+    (("جلب ثالث",), "دعاوی طاری", "دعوای جلب ثالث"),
+    (("اظهارنامه",), "اظهارنامه", None),
+    (("لایحه",), "لایحه", None),
+    (("شکواییه",), "شکواییه", None),
+    (("شکوائیه",), "شکواییه", None),
+    (("صلح",), "دعاوی دادگاههای صلح", None),
+    (("دادخواست",), "دادخواست بدوی", None),
+]
+_NORMALIZED_WRONG_FORM_TARGETS = [
+    (tuple(normalize(k).replace(" ", "") for k in keys), cat, sub)
+    for keys, cat, sub in WRONG_FORM_TARGETS
+]
+
+
+def extract_wrong_form_name(text) -> str:
+    """نام فرم داخل «…» در پیام «این کد رهگیری مربوط به «X» می باشد» — خالی اگر نبود."""
+    if not text:
+        return ""
+    m = re.search(r"«([^»]+)»", str(text))
+    if m:
+        return m.group(1).strip()
+    m = re.search(r"مربوط\s*به\s+(.+?)\s+می\s*باشد", normalize(text))
+    return m.group(1).strip() if m else ""
+
+
+def resolve_wrong_form_target(text):
+    """دستهٔ صحیح منوی ربات برای پیام «کد رهگیری مربوط به فرم دیگر».
+
+    خروجی: (دستهٔ اصلی، زیردسته یا None) — یا None اگر نام فرم شناخته نشد.
+    فقط نام داخل «…» بررسی می‌شود تا واژه‌های عمومی پیام (مثل «فرم») اشتباه
+    تطبیق نخورند.
+    """
+    name = extract_wrong_form_name(text)
+    if not name:
+        return None
+    key = normalize(name).replace(" ", "")
+    for keys, cat, sub in _NORMALIZED_WRONG_FORM_TARGETS:
+        if all(k in key for k in keys):
+            return (cat, sub)
+    return None
