@@ -138,6 +138,9 @@ from stamp_duty import calculate_stamp_duty
 
 check_router = Router()
 
+from check_bulk_handlers import check_bulk_router, start_check_bulk_images  # noqa: E402
+check_router.include_router(check_bulk_router)
+
 logger = logging.getLogger(__name__)
 
 MAX_CHECK_IMAGES = 3
@@ -271,8 +274,10 @@ async def check_bulk_download_sample(message: Message, state: FSMContext):
 
         await message.answer(
             "📥 *فایل نمونه اکسل دعاوی چک:*\n\n"
-            "📑 هر شیت برای یک حالت است: «۱ نفر - حقیقی»، «۱ نفر - با شخص حقوقی» و «چند نفر». "
-            "هر دادخواست را در شیت مناسب خودش بنویسید؛ می‌توانید چند شیت را هم‌زمان پر کنید.\n"
+            "📑 شیت را بر اساس خواهان انتخاب کنید: «خواهان حقیقی»، «خواهان حقوقی (شرکت)» یا «چند خواهان». "
+            "می‌توانید چند شیت را هم‌زمان پر کنید.\n"
+            "👥 برای خوانده ۵ ستون هست و حداقل یکی لازم است: کدملی ۱۰ رقمی یا شناسه ملی ۱۱ رقمی شرکت (نماینده لازم نیست).\n"
+            "🧾 بعد از ارسال فایل، ربات برای هر ردیف ۳ تصویر می‌خواهد: روی چک، پشت چک، گواهی عدم پرداخت.\n"
             "🏛 صلاحیت دادگاه را به ترتیب از لیست‌های استان، حوزه قضایی و دادگاه انتخاب کنید.\n"
             "🔍 اگر ردیفی خطا داشته باشد، ربات همین فایل را با خانه‌های قرمز و توضیح خطا برمی‌گرداند.\n")
         try:
@@ -479,25 +484,14 @@ async def check_bulk_file_upload_handler(message: Message, state: FSMContext):
                 reply_markup=back_only_kb)
             return
 
-        # ارسال به صف پردازش
-        user_id = message.from_user.id
+        # خلاصهٔ فایل؛ سپس برای هر ردیف ۳ تصویر چک گرفته می‌شود
+        # (check_bulk_handlers) و بعد از آخرین ردیف همه با یک کد پیگیری
+        # دسته‌جمعی به صف می‌روند.
         for idx, item in enumerate(valid_items, start=1):
-            item["user_id"] = user_id
-            item["query_type"] = "دادخواست_چک"
-            item["task_type"] = "CHECK_SUBMIT"
-            item["_is_bulk_check"] = True
             item["_bulk_row_index"] = item.pop("row_index", idx)
-            # ⭐ کپی کامل هر ردیف دسته‌جمعی هم برای ادمین ارسال می‌شود
-            # (طبق دستور کارفرما — کپی درخواست‌های ثبت دادخواست)
-            try:
-                await send_check_submission_to_admin(
-                    message.bot, ADMIN_ID, user_id, item)
-            except Exception as e:
-                logger.error(f"Error sending bulk check submission to admin: {e}", exc_info=True)
-            await runtime_state.job_queue.put(item)
 
         summary = (
-            f"✅ *فایل دسته‌جمعی با موفقیت پردازش شد!*\n\n"
+            f"✅ *فایل دسته‌جمعی خوانده شد.*\n\n"
             f"📊 تعداد کل ردیف‌ها: {len(data_rows)}\n"
             f"✅ ردیف‌های معتبر: *{len(valid_items)}* مورد\n"
         )
@@ -506,29 +500,12 @@ async def check_bulk_file_upload_handler(message: Message, state: FSMContext):
             summary += "\n📋 *خطاها:*\n" + "\n".join(errors[:10])
             if len(errors) > 10:
                 summary += f"\n... و {len(errors) - 10} خطای دیگر"
-
-        summary += (
-            f"\n\n⏳ تمامی موارد معتبر به *صف پردازش* ارسال شدند."
-            f"\n📋 نتایج به صورت خودکار برایتان ارسال خواهد شد."
-        )
-
-        await state.clear()
-        from keyboards import flow_type_kb
         try:
-            await message.answer(summary, reply_markup=flow_type_kb)
+            await message.answer(summary, parse_mode="Markdown")
         except Exception:
-            await message.answer(summary, reply_markup=flow_type_kb)
+            await message.answer(summary.replace("*", ""))
 
-        # لاگ
-        try:
-            from sheets import log_event
-            log_event(
-                user_id=user_id,
-                event_type="CHECK_BULK_SUBMIT",
-                details=f"{len(valid_items)} items from Excel"
-            )
-        except Exception:
-            pass
+        await start_check_bulk_images(message, state, valid_items)
 
     except Exception as e:
         logger.error(f"Error processing bulk check Excel: {e}", exc_info=True)

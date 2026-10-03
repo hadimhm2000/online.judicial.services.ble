@@ -305,6 +305,11 @@ class Form(StatesGroup):
     check_request_type = State()          # انتخاب تکی یا دسته‌جمعی
     check_bulk_input_method = State()     # انتخاب نوع فایل (اکسل)
     check_bulk_file_upload = State()      # دریافت فایل اکسل
+    # ثبت دسته‌جمعی چک — ۳ تصویر اجباری برای هر ردیف (check_bulk_handlers.py)
+    bulk_check_images_row = State()
+    bulk_check_extra_attachment_choice = State()
+    bulk_check_extra_attachment_title = State()
+    bulk_check_extra_attachment_images = State()
     check_request_title = State()         # انتخاب عنوان خواسته (صدور اجرائیه / مطالبه وجه / مطالبه وجه بابت...)
     check_court_type = State()            # ⭐ عناوین اعسار: دادگاه حقوقی یا دادگاه صلح
     check_amount = State()                # مبلغ چک به ریال

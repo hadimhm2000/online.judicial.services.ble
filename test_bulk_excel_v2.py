@@ -27,7 +27,7 @@ def _cid(prefix10: str) -> str:
 
 
 N1, N2, N3, N4 = _nid("001234567"), _nid("004987654"), _nid("123456780"), _nid("223344556")
-C1 = _cid("1010234567")
+C1, C2 = _cid("1010234567"), _cid("1410234567")
 
 
 def _fill(ws, spec, row, values):
@@ -124,11 +124,14 @@ def test_every_lavayeh_branch_resolves():
 def test_ezhharnameh_sheets(templates, tmp_path):
     wb = openpyxl.load_workbook(templates["ezhharnameh"])
     simple, legal, multi = v2.EZHHARNAMEH_SHEETS
-    _fill(wb[simple.name], simple, 3, {"d1_id": N1, "a1_id": N2, "text": "متن"})
+    _fill(wb[simple.name], simple, 3, {"d1_id": N1, "a1": N2, "text": "متن"})
+    # مخاطب ۳ شرکت است (بدون نماینده) و ستون ۲ خالی مانده
     _fill(wb[legal.name], legal, 3, {"d1_type": v2.PERSON_LEGAL, "d1_id": C1, "d1_rep": N3,
-                                     "a1_type": v2.PERSON_NATURAL, "a1_id": N2, "text": "متن"})
+                                     "a1": N2, "a3": C2, "text": "متن"})
     _fill(wb[multi.name], multi, 3, {"d1_type": v2.PERSON_LAWYER, "d1_id": N1,
-                                     "a1_type": v2.PERSON_NATURAL, "a1_id": N2, "text": "متن"})
+                                     "a1": N2, "text": "متن"})
+    # هیچ مخاطبی وارد نشده
+    _fill(wb[simple.name], simple, 4, {"d1_id": N1, "text": "متن"})
     path = tmp_path / "ez.xlsx"
     wb.save(path)
 
@@ -138,8 +141,10 @@ def test_ezhharnameh_sheets(templates, tmp_path):
     assert s["declarants"] == [{"type": "حقیقی", "id": N1, "company_rep": ""}]
     assert s["title"] == "سایر"
     assert l["declarants"] == [{"type": "حقوقی", "id": C1, "company_rep": N3}]
-    assert l["addressees"] == [{"type": "حقیقی", "id": N2}]
-    assert "وکیل" in res["invalid_rows"][0]["errors"][0]
+    assert l["addressees"] == [{"type": "حقیقی", "id": N2}, {"type": "حقوقی", "id": C2}]
+    errors = {(r["sheet"], r["excel_row"]): r["errors"] for r in res["invalid_rows"]}
+    assert "وکیل" in errors[(multi.name, 3)][0]
+    assert errors[(simple.name, 4)] == ["حداقل یک مخاطب لازم است (ستون «کدملی/شناسه مخاطب ۱»)"]
 
 
 def test_check_sheets(templates, tmp_path):
@@ -148,14 +153,17 @@ def test_check_sheets(templates, tmp_path):
     unit = next(p for p in v2.check_tree_paths() if p[2] != v2.NONE_MARK)
     br = dict(zip(("br1", "br2", "br3"), unit))
     common = {"title": "صدور اجرائیه چک", "amount": "1,000,000", "tracking": "1402123456789012", "text": "متن"}
-    _fill(wb[simple.name], simple, 3, dict(common, pl1_id=N1, df1_id=N2, **br))
+    _fill(wb[simple.name], simple, 3, dict(common, pl1_id=N1, df1=N2, **br))
+    # خوانده‌ها: یک حقیقی و یک شرکت بدون نماینده
     _fill(wb[legal.name], legal, 3, dict(common, pl1_type=v2.PERSON_LEGAL, pl1_id=C1, pl1_rep=N3,
-                                         pl1_rep_type="مدیرعامل", df1_type=v2.PERSON_NATURAL, df1_id=N2, **br))
+                                         pl1_rep_type="مدیرعامل", df1=N2, df5=C2, **br))
     _fill(wb[multi.name], multi, 3, dict(common, pl1_type=v2.PERSON_NATURAL, pl1_id=N1,
                                          pl2_type=v2.PERSON_NATURAL, pl2_id=N1,
-                                         df1_type=v2.PERSON_NATURAL, df1_id=N2, **br))
+                                         df1=N2, **br))
     # کدرهگیری که اکسل به عدد تبدیل کرده
-    _fill(wb[simple.name], simple, 4, dict(common, pl1_id=N1, df1_id=N2, tracking=1402123456789010, **br))
+    _fill(wb[simple.name], simple, 4, dict(common, pl1_id=N1, df1=N2, tracking=1402123456789010, **br))
+    # کد خوانده نه ۱۰ رقم معتبر است نه ۱۱ رقم
+    _fill(wb[simple.name], simple, 5, dict(common, pl1_id=N1, df2="123456789012", **br))
     path = tmp_path / "ck.xlsx"
     wb.save(path)
 
@@ -168,9 +176,14 @@ def test_check_sheets(templates, tmp_path):
     assert s["check_khasteh_text"] == v2.CHECK_DEFAULT_KHASTEH["صدور اجرائیه چک"]
     assert l["check_plainiffs"][0] == {"person_type": "شخص حقوقی", "company_id": C1,
                                        "representative_type": "مدیرعامل", "national_id": N3}
+    assert l["check_defendants"] == [
+        {"person_type": "شخص حقیقی", "national_id": N2, "name": "---", "representative_type": ""},
+        {"person_type": "شخص حقوقی", "company_id": C2, "representative_type": "", "national_id": ""},
+    ]
     errors = {r["excel_row"]: r for r in res["invalid_rows"]}
     assert any("تکراری" in e for e in errors[3]["errors"])  # چند نفر: کدملی تکراری
     assert any("رقم آخر" in e for e in errors[4]["errors"])
+    assert errors[5]["errors"] == ["کد خوانده 2 «123456789012» معتبر نیست (حقیقی: کدملی ۱۰ رقمی، شرکت: شناسه ملی ۱۱ رقمی)"]
 
 
 def test_partially_edited_sample_is_read(templates, tmp_path):
@@ -187,7 +200,7 @@ def test_partially_edited_sample_is_read(templates, tmp_path):
 def test_error_workbook(templates, tmp_path):
     wb = openpyxl.load_workbook(templates["ezhharnameh"])
     spec = v2.EZHHARNAMEH_SHEETS[0]
-    _fill(wb[spec.name], spec, 3, {"d1_id": "123", "a1_id": N2, "text": "متن"})
+    _fill(wb[spec.name], spec, 3, {"d1_id": "123", "a1": N2, "text": "متن"})
     src = tmp_path / "src.xlsx"
     wb.save(src)
     res = v2.parse_v2(str(src), "ezhharnameh")
@@ -220,7 +233,7 @@ def test_parse_excel_file_routes_v2_and_keeps_legacy(templates, tmp_path):
 
     wb = openpyxl.load_workbook(templates["ezhharnameh"])
     spec = v2.EZHHARNAMEH_SHEETS[0]
-    _fill(wb[spec.name], spec, 3, {"d1_id": N1, "a1_id": N2, "text": "متن"})
+    _fill(wb[spec.name], spec, 3, {"d1_id": N1, "a1": N2, "text": "متن"})
     path = tmp_path / "v2.xlsx"
     wb.save(path)
     assert len(parse_excel_file(str(path), "ezhharnameh")["valid_items"]) == 1

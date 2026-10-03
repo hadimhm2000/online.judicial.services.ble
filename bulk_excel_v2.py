@@ -7,7 +7,7 @@ bulk_excel_v2.py
 
 چه چیزی نسبت به قالب‌های قبلی عوض شده؟
   • هر فایل چند شیت دارد و کاربر هر پرونده را در شیتی می‌نویسد که با آن جور
-    است (مثلاً «۱ نفر - حقیقی»، «۱ نفر - با شخص حقوقی»، «چند نفر»). در یک
+    است (مثلاً «خواهان حقیقی»، «خواهان حقوقی (شرکت)»، «چند خواهان»). در یک
     فایل می‌شود چند شیت را هم‌زمان پر کرد؛ همهٔ شیت‌ها با هم خوانده می‌شوند.
   • ستون‌ها با «عنوان ستون» خوانده می‌شوند، نه با حرف ستون.
   • شعبه با لیست کشویی چندمرحله‌ای انتخاب می‌شود (استان ← حوزه ← ...) و
@@ -126,7 +126,7 @@ def _nid(key, header, required=False, note=""):
 
 def _person_cols(prefix, label, n, types_list, with_rep_type, required):
     """ستون‌های یک شخص در شیت‌های حقوقی/چندنفره: نوع، کد، نمایندهٔ شرکت (+ نوع نماینده)."""
-    tag = "" if n is None else " " + str(n).translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
+    tag = "" if n is None else " " + _fa(n)
     cols = [
         Col(f"{prefix}_type", f"نوع {label}{tag} ▼", "choice", required, 14,
             "از لیست انتخاب کنید.", list_name=types_list),
@@ -138,6 +138,24 @@ def _person_cols(prefix, label, n, types_list, with_rep_type, required):
     if with_rep_type:
         cols.append(Col(f"{prefix}_rep_type", f"سمت نماینده {label}{tag} ▼", "choice", False, 14,
                         "فقط اگر «شخص حقوقی» است.", list_name="RepTypes"))
+    return cols
+
+
+MAX_COUNTERPARTIES = 5
+
+
+def _fa(n):
+    return str(n).translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
+
+
+def _counterparty_cols(prefix, label):
+    """۵ ستون کدملی/شناسهٔ طرف مقابل (خوانده یا مخاطب). حداقل یکی لازم است.
+    ۱۰ رقم = شخص حقیقی، ۱۱ رقم = شخص حقوقی (برای شرکت نماینده لازم نیست)."""
+    cols = []
+    for n in range(1, MAX_COUNTERPARTIES + 1):
+        note = (f"حداقل یک {label} لازم است؛ از ستون ۱ شروع کنید. " if n == 1 else "")
+        note += "شخص حقیقی: کدملی ۱۰ رقمی. شرکت: شناسه ملی ۱۱ رقمی (نماینده لازم نیست)."
+        cols.append(Col(f"{prefix}{n}", f"کدملی/شناسه {label} {_fa(n)}", "pid", n == 1, 17, note))
     return cols
 
 
@@ -187,30 +205,29 @@ _EZ_TAIL = [
 ]
 
 EZHHARNAMEH_SHEETS = [
-    SheetSpec("۱ نفر - حقیقی", "حقیقی", [
+    SheetSpec("اظهارکننده حقیقی", "حقیقی", [
         _nid("d1_id", "کدملی اظهارکننده", True),
-        _nid("a1_id", "کدملی مخاطب", True),
-    ] + _EZ_TAIL, {
-        "d1_id": "0000000001", "a1_id": "0000000002",
+    ] + _counterparty_cols("a", "مخاطب") + _EZ_TAIL, {
+        "d1_id": "0000000001", "a1": "0000000002",
         "text": "متن نمونه — این ردیف را پاک کنید یا رویش بنویسید",
     }),
-    SheetSpec("۱ نفر - با شخص حقوقی", "حقوقی",
+    SheetSpec("اظهارکننده حقوقی (شرکت)", "حقوقی",
               _person_cols("d1", "اظهارکننده", None, "TwoTypes", False, True)
-              + _person_cols("a1", "مخاطب", None, "TwoTypes", False, True)[:2]
+              + _counterparty_cols("a", "مخاطب")
               + _EZ_TAIL, {
         "d1_type": PERSON_LEGAL, "d1_id": "10000000000", "d1_rep": "0000000001",
-        "a1_type": PERSON_NATURAL, "a1_id": "0000000002",
+        "a1": "0000000002",
         "text": "متن نمونه — این ردیف را پاک کنید یا رویش بنویسید",
     }),
-    SheetSpec("چند نفر (تا ۴)", "چند نفر",
+    SheetSpec("چند اظهارکننده (تا ۴)", "چند نفر",
               sum((_person_cols(f"d{n}", "اظهارکننده", n, "DeclTypes", False, n == 1) for n in range(1, 5)), [])
-              + sum((_person_cols(f"a{n}", "مخاطب", n, "TwoTypes", False, n == 1)[:2] for n in range(1, 5)), [])
+              + _counterparty_cols("a", "مخاطب")
               + [_nid("case_rep1", "کدملی نماینده پرونده ۱ (اختیاری)"),
                  _nid("case_rep2", "کدملی نماینده پرونده ۲ (اختیاری)")]
               + _EZ_TAIL[1:], {
         "d1_type": PERSON_NATURAL, "d1_id": "0000000001",
         "d2_type": PERSON_NATURAL, "d2_id": "0000000003",
-        "a1_type": PERSON_NATURAL, "a1_id": "0000000002",
+        "a1": "0000000002",
         "text": "متن نمونه — این ردیف را پاک کنید یا رویش بنویسید",
     }),
 ]
@@ -233,23 +250,23 @@ _CHECK_SAMPLE_COMMON = {
 }
 
 CHECK_SHEETS = [
-    SheetSpec("۱ نفر - حقیقی", "حقیقی", _CHECK_HEAD + [
+    SheetSpec("خواهان حقیقی", "حقیقی", _CHECK_HEAD + [
         _nid("pl1_id", "کدملی خواهان", True),
-        _nid("df1_id", "کدملی خوانده", True),
-    ] + _CHECK_TAIL, dict(_CHECK_SAMPLE_COMMON, pl1_id="0000000001", df1_id="0000000002")),
-    SheetSpec("۱ نفر - با شخص حقوقی", "حقوقی", _CHECK_HEAD
+    ] + _counterparty_cols("df", "خوانده") + _CHECK_TAIL,
+        dict(_CHECK_SAMPLE_COMMON, pl1_id="0000000001", df1="0000000002")),
+    SheetSpec("خواهان حقوقی (شرکت)", "حقوقی", _CHECK_HEAD
               + _person_cols("pl1", "خواهان", None, "TwoTypes", True, True)
-              + _person_cols("df1", "خوانده", None, "TwoTypes", True, True)
+              + _counterparty_cols("df", "خوانده")
               + _CHECK_TAIL, dict(_CHECK_SAMPLE_COMMON,
                                   pl1_type=PERSON_LEGAL, pl1_id="10000000000", pl1_rep="0000000001",
-                                  pl1_rep_type="مدیرعامل", df1_type=PERSON_NATURAL, df1_id="0000000002")),
-    SheetSpec("چند نفر (تا ۴)", "چند نفر", _CHECK_HEAD
+                                  pl1_rep_type="مدیرعامل", df1="0000000002")),
+    SheetSpec("چند خواهان (تا ۴)", "چند نفر", _CHECK_HEAD
               + sum((_person_cols(f"pl{n}", "خواهان", n, "DeclTypes", True, n == 1) for n in range(1, 5)), [])
-              + sum((_person_cols(f"df{n}", "خوانده", n, "TwoTypes", True, n == 1) for n in range(1, 5)), [])
+              + _counterparty_cols("df", "خوانده")
               + _CHECK_TAIL, dict(_CHECK_SAMPLE_COMMON,
                                   pl1_type=PERSON_NATURAL, pl1_id="0000000001",
                                   pl2_type=PERSON_NATURAL, pl2_id="0000000003",
-                                  df1_type=PERSON_NATURAL, df1_id="0000000002")),
+                                  df1="0000000002")),
 ]
 
 SHEETS_BY_SERVICE = {
@@ -502,6 +519,39 @@ def _read_person(errs, values, prefix, label, allowed_types, need_rep_type, defa
     return person
 
 
+def _read_counterparties(errs, values, raw, prefix, label):
+    """۵ ستون خوانده/مخاطب. طول کد نوع شخص را مشخص می‌کند:
+    ۱۱ رقم = شخص حقوقی (بدون نماینده)، وگرنه کدملی شخص حقیقی."""
+    people, had_error = [], False
+    for n in range(1, MAX_COUNTERPARTIES + 1):
+        key = f"{prefix}{n}"
+        text = values.get(key, "")
+        if not text:
+            continue
+        lbl = f"{label} {n}"
+        if maybe_lost_digits(raw.get(key)):
+            errs.add(f"کد {lbl} به‌شکل عدد ذخیره شده و رقم‌های آخرش از بین رفته؛ خانه را متنی کنید و دوباره تایپ کنید", key)
+            had_error = True
+            continue
+        d = digits_only(text)
+        if len(d) == 11:
+            if not is_valid_legal_id(d):
+                errs.add(f"شناسه ملی {lbl} «{text}» معتبر نیست (شرکت: ۱۱ رقم)", key)
+                had_error = True
+                continue
+            people.append({"type": PERSON_LEGAL, "id": d, "company_rep": "", "company_rep_type": ""})
+        else:
+            nid = _clean_nid(text)
+            if len(d) > 11 or not is_valid_national_id(nid):
+                errs.add(f"کد {lbl} «{text}» معتبر نیست (حقیقی: کدملی ۱۰ رقمی، شرکت: شناسه ملی ۱۱ رقمی)", key)
+                had_error = True
+                continue
+            people.append({"type": PERSON_NATURAL, "id": nid, "company_rep": "", "company_rep_type": ""})
+    if not people and not had_error:
+        errs.add(f"حداقل یک {label} لازم است (ستون «کدملی/شناسه {label} ۱»)", f"{prefix}1")
+    return people
+
+
 def _plain(msg: str) -> str:
     """پیام اعتبارسنج‌های ثبت تکی (با ⚠️ و * و «مجدداً وارد کنید») → متن ساده برای اکسل."""
     msg = (msg or "").replace("⚠️", "").replace("*", "").replace("مجدداً وارد کنید:", "")
@@ -594,22 +644,18 @@ def _parse_ezhharnameh_row(spec, values, raw, errs):
     decl_types = SIMPLE_LISTS["DeclTypes"] if spec.name == EZHHARNAMEH_SHEETS[2].name else SIMPLE_LISTS["TwoTypes"]
     default = PERSON_NATURAL if simple else None
 
-    declarants, addressees, all_ids = [], [], []
+    declarants, all_ids = [], []
     for n in range(1, 5):
         p = _read_person(errs, values, f"d{n}", f"اظهارکننده {n}" if n > 1 else "اظهارکننده",
                          decl_types, False, default)
         if p:
             declarants.append({"type": _SHORT_TYPE[p["type"]], "id": p["id"], "company_rep": p["company_rep"]})
             all_ids += [p["id"], p["company_rep"]]
-        p = _read_person(errs, values, f"a{n}", f"مخاطب {n}" if n > 1 else "مخاطب",
-                         SIMPLE_LISTS["TwoTypes"], False, default)
-        if p:
-            addressees.append({"type": _SHORT_TYPE[p["type"]], "id": p["id"]})
-            all_ids.append(p["id"])
     if not declarants and not errs.keys.count("d1_id"):
         errs.add("اظهارکننده وارد نشده", "d1_id")
-    if not addressees and not errs.keys.count("a1_id"):
-        errs.add("مخاطب وارد نشده", "a1_id")
+    addressees = [{"type": _SHORT_TYPE[p["type"]], "id": p["id"]}
+                  for p in _read_counterparties(errs, values, raw, "a", "مخاطب")]
+    all_ids += [a["id"] for a in addressees]
     types = [d["type"] for d in declarants]
     if "وکیل" in types and not any(t != "وکیل" for t in types):
         errs.add("اظهارکننده وکیل دارد؛ حداقل یک اظهارکنندهٔ حقیقی یا حقوقی هم لازم است")
@@ -658,21 +704,16 @@ def _parse_check_row(spec, values, raw, errs):
     simple = spec.name == CHECK_SHEETS[0].name
     pl_types = SIMPLE_LISTS["DeclTypes"] if spec.name == CHECK_SHEETS[2].name else SIMPLE_LISTS["TwoTypes"]
     default = PERSON_NATURAL if simple else None
-    plaintiffs, defendants, all_ids = [], [], []
+    plaintiffs, all_ids = [], []
     for n in range(1, 5):
         p = _read_person(errs, values, f"pl{n}", f"خواهان {n}" if n > 1 else "خواهان", pl_types, True, default)
         if p:
             plaintiffs.append(p)
             all_ids += [p["id"], p["company_rep"]]
-        p = _read_person(errs, values, f"df{n}", f"خوانده {n}" if n > 1 else "خوانده",
-                         SIMPLE_LISTS["TwoTypes"], True, default)
-        if p:
-            defendants.append(p)
-            all_ids += [p["id"], p["company_rep"]]
     if not plaintiffs and "pl1_id" not in errs.keys:
         errs.add("خواهان وارد نشده", "pl1_id")
-    if not defendants and "df1_id" not in errs.keys:
-        errs.add("خوانده وارد نشده", "df1_id")
+    defendants = _read_counterparties(errs, values, raw, "df", "خوانده")
+    all_ids += [p["id"] for p in defendants]
 
     witnesses = []
     for key, label in (("w1", "کدملی گواه ۱"), ("w2", "کدملی گواه ۲")):
