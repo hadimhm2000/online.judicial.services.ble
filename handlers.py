@@ -555,11 +555,25 @@ async def global_successful_payment_handler(message: types.Message, state: FSMCo
         await _tn_pay(message, state, bot)
         return
 
+    # ── پیش‌پرداخت و تسویهٔ دسته‌جمعی — پردازش مستقیم ──
+    # (هندلرهای decorated این دو در lavayeh_router از مسیر روتر مادر
+    #  unreachable بودند و این پرداخت‌ها بی‌صدا رها می‌شدند.)
+    if current_state == Form.bulk_prepay_wait or _pl.get("type") == "bulk_prepay":
+        if _pl.get("svc") == "check":
+            from check_bulk_handlers import check_bulk_prepay_successful_payment as _ckb_pay
+            await _ckb_pay(message, state, bot)
+        else:
+            from lavayeh_handlers import bulk_prepay_successful_payment as _bulk_pay
+            await _bulk_pay(message, state, bot)
+        return
+    if current_state == Form.bulk_settlement_wait or _pl.get("type") == "bulk_settlement":
+        from lavayeh_handlers import bulk_settlement_successful_payment as _settle_pay
+        await _settle_pay(message, state, bot)
+        return
+
     # ── سایر حالت‌های اختصاصی — بدون مداخله ──
     if current_state in (Form.waiting_for_ealam_payment_receipt,
-                         Form.stamp_calc_waiting_payment,
-                         Form.bulk_prepay_wait,
-                         Form.bulk_settlement_wait):
+                         Form.stamp_calc_waiting_payment):
         return
 
     # ── پرداخت اشتراک ماهیانه ──
@@ -2783,15 +2797,9 @@ async def _bulk_inquiry_start(message: types.Message, state: FSMContext):
         "📊 *استعلام دسته‌جمعی از طریق فایل اکسل*\n\n"
         "💡 این گزینه مخصوص زمانی است که *بیش از ۵ استعلام* هم‌زمان دارید.\n\n"
         "📎 همین الان یک *فایل اکسل نمونه* برای شما ارسال شد.\n\n"
-        "⚠️ *یک قانون ساده، حتماً رعایت کنید:*\n"
-        "قبل از هر عدد در این سه ستون، همیشه یک حرف بگذارید (دقیقاً مثل "
-        "سرستون‌های خودِ فایل):\n"
-        "   • کدرهگیری → با حرف *T*:  `T1405220948201280`\n"
-        "   • موبایل → با حرف *M*:  `M09123456789`\n"
-        "   • کدملی → با حرف *N*:  `N0012345678`\n"
-        "اگر این حرف را نگذارید، اکسل/گوگل‌شیت (حتی پیش‌نمایش بله) عدد را "
-        "خراب می‌کند (رقم آخر گم می‌شود یا صفر اول حذف می‌شود). با این "
-        "حرف، هیچ برنامه‌ای دیگر عدد را به‌هم نمی‌ریزد.\n\n"
+        "✅ ستون‌های کدرهگیری، موبایل و کدملی متنی هستند، پس صفر اول و رقم‌های "
+        "آخر حذف نمی‌شوند و دیگر لازم نیست قبل از عدد حرف T/M/N بگذارید. اگر عددها "
+        "را از فایل دیگری کپی می‌کنید، با «Paste Values» (فقط مقدار) بچسبانید.\n\n"
         "⚠️ فایل را مستقیم داخل پیش‌نمایش بله ادیت نکنید (پیامی مثل «Read Only "
         "- Save a copy to edit» یعنی در حالت پیش‌نمایش هستید). اول:\n"
         "   • روی «Save a copy» بزنید، یا\n"
@@ -2800,7 +2808,9 @@ async def _bulk_inquiry_start(message: types.Message, state: FSMContext):
         "۱. همان فایل ارسال‌شده را تکمیل کنید (شیت «راهنما» را هم ببینید)\n"
         "۲. در هر ردیف فقط همان ستونی را که لازم دارید پر کنید\n"
         "۳. برای کدرهگیری با منضمات، «دریافت پیوست‌ها؟» را بله و «نوع سند» "
-        "را حتماً از لیست کشویی انتخاب کنید (برای محاسبه‌ی دقیق تعداد برگ)\n\n"
+        "را حتماً از لیست کشویی انتخاب کنید (برای محاسبه‌ی دقیق تعداد برگ)\n"
+        "۴. ردیف خاکستری نمونه است؛ رویش بنویسید یا پاکش کنید\n"
+        "۵. اگر خانه‌ای خطا داشت، ربات همین فایل را با خانه‌های قرمز برمی‌گرداند\n\n"
         "✅ سپس همین فایل تکمیل‌شده را اینجا ارسال کنید:",
         reply_markup=ReplyKeyboardRemove()
     )
@@ -2851,6 +2861,17 @@ async def bulk_inquiry_file_handler(message: types.Message, state: FSMContext, b
 
     valid_items = parsed["valid_items"]
     invalid_cells = parsed["invalid_cells"]
+
+    if invalid_cells:
+        # همان فایل کاربر با خانه‌های خطادار قرمز برمی‌گردد
+        from bulk_excel_v2 import send_error_workbook
+        from bulk_inquiry_excel import DATA_SHEET_NAME, FIELD_COLUMNS
+        await send_error_workbook(message.chat.id, file_path, [
+            {"row_index": c["row_index"], "excel_row": c["row_index"] + 1,
+             "cols": [FIELD_COLUMNS[c["field"]]] if c["field"] in FIELD_COLUMNS else [],
+             "errors": [f"{c['field']}: {c['error']}"]}
+            for c in invalid_cells
+        ], default_sheet=DATA_SHEET_NAME, others_continue=bool(valid_items))
 
     if not valid_items:
         error_msg = "⚠️ هیچ استعلام معتبری در فایل یافت نشد."

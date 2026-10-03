@@ -192,10 +192,23 @@ def _cell_value(ws, col: int, row: int) -> str:
     return ''.join(c for c in raw if not (0xD800 <= ord(c) <= 0xDFFF) and ord(c) != 0xFFFD)
 
 
+def _exact_branch_code(branch_name: str) -> str:
+    """فقط تطبیق دقیق نام شعبه — برخلاف _resolve_branch_code شعبهٔ «شبیه» را
+    حدس نمی‌زند، چون حدس اشتباه یعنی ثبت بی‌صدا در شعبهٔ دیگر."""
+    return _load_branch_code_lookup().get((branch_name or "").strip(), "")
+
+
 def parse_excel_file(filepath: str, service_type: str) -> dict:
+    # قالب نسخهٔ ۲ (چندشیتی، شعبهٔ مرحله‌ای) — خروجی هم‌شکل همین تابع است
+    from bulk_excel_v2 import detect_and_parse_v2
+    v2_result = detect_and_parse_v2(filepath, service_type)
+    if v2_result is not None:
+        return v2_result
+
     valid_items = []
     invalid_rows = []
     total_rows = 0
+    ws = None
 
     try:
         wb = openpyxl.load_workbook(filepath, data_only=True)
@@ -271,6 +284,11 @@ def parse_excel_file(filepath: str, service_type: str) -> dict:
                         errors.append("\u06a9\u062f\u0645\u0644\u06cc \u0627\u0631\u0627\u0626\u0647\u200c\u062f\u0647\u0646\u062f\u0647 \u0627\u0644\u0632\u0627\u0645\u06cc \u0627\u0633\u062a")
                     if not text:
                         errors.append("\u0645\u062a\u0646 \u0644\u0627\u06cc\u062d\u0647 \u062e\u0627\u0644\u06cc \u0627\u0633\u062a")
+                    branch_code = ""
+                    if method_clean == "\u0628\u0627\u06cc\u06af\u0627\u0646\u06cc":
+                        branch_code = _exact_branch_code(branch_name)
+                        if not branch_code:
+                            errors.append(f"شعبه «{branch_name}» در فهرست شعب پیدا نشد؛ نام شعبه را از لیست کشویی انتخاب کنید")
 
                     if errors:
                         invalid_rows.append({"row_index": row_num, "errors": errors})
@@ -288,6 +306,7 @@ def parse_excel_file(filepath: str, service_type: str) -> dict:
                             item["archive_number"] = archive_number
                             item["province"] = province_branch
                             item["branch_name"] = branch_name
+                            item["branch_code"] = branch_code
                         if has_lawyer and "\u0628\u0644\u0647" in has_lawyer and lawyer_id:
                             item["lawyer_id"] = lawyer_id
                         valid_items.append(item)
@@ -385,6 +404,12 @@ def parse_excel_file(filepath: str, service_type: str) -> dict:
 
     except Exception as e:
         logger.error(f"Error parsing Excel file {filepath}: {e}", exc_info=True)
+
+    # جای هر ردیف خطادار در فایل — برای ساخت فایل خطادار (bulk_excel_v2.send_error_workbook)
+    for row in invalid_rows:
+        if ws is not None:
+            row.setdefault("sheet", ws.title)
+        row.setdefault("excel_row", row["row_index"] + 1)
 
     return {"valid_items": valid_items, "invalid_rows": invalid_rows, "total_rows": total_rows}
 
@@ -796,8 +821,9 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
 
                 # استخراج کد شعبه از نام شعبه (برای روش بایگانی)
                 _branch_name_raw = item.get("branch_name", "")
-                _resolved_branch_code = _resolve_branch_code(_branch_name_raw) \
-                    if method == "شعبه و شماره بایگانی" else ""
+                # کد شعبه هنگام خواندن فایل با تطبیق دقیق پیدا شده (item["branch_code"])
+                _resolved_branch_code = item.get("branch_code") or (
+                    _resolve_branch_code(_branch_name_raw) if method == "شعبه و شماره بایگانی" else "")
                 if method == "شعبه و شماره بایگانی" and _resolved_branch_code:
                     logger.info(f"[BULK-QUEUE] کد شعبه استخراج شد: '{_branch_name_raw}' -> '{_resolved_branch_code}'")
                 elif method == "شعبه و شماره بایگانی":

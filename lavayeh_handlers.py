@@ -50,6 +50,7 @@ from keyboards import (
     bulk_attachment_all_more_kb,
     bulk_attachment_all_more_choice_kb)
 from stamp_duty import calculate_stamp_duty, format_result_fa
+from bulk_excel_v2 import send_error_workbook
 from bulk_submissions import (
     parse_excel_file,
     parse_text_or_image_input,
@@ -352,7 +353,9 @@ async def bulk_input_method_handler(message: Message, state: FSMContext):
             caption_text = (
                 "📎 *فایل اکسل نمونه ثبت دسته‌جمعی اظهارنامه*\n\n"
                 "📌 لطفاً فایل اکسل فوق را دانلود کرده و ستون‌ها را تکمیل فرمایید.\n"
-                "💡 *نگران نباشید!* حتی اگر بعضی موارد (مثل فرمت کد ملی یا شناسه ملی) را هم درست یا کامل انتخاب نکنید، سیستم با پردازش هوشمند و جایگزینی مقادیر پیش‌فرض، مانع از اختلال یا توقف در روند ثبت خواهد شد.\n\n"
+                "📑 شیت را بر اساس اظهارکننده انتخاب کنید: «اظهارکننده حقیقی»، «اظهارکننده حقوقی (شرکت)» یا «چند اظهارکننده». می‌توانید چند شیت را هم‌زمان پر کنید.\n"
+                "👥 برای مخاطب ۵ ستون هست و حداقل یکی لازم است: کدملی ۱۰ رقمی یا شناسه ملی ۱۱ رقمی شرکت (نماینده لازم نیست).\n"
+                "🔍 اگر ردیفی خطا داشته باشد، ربات همین فایل را با خانه‌های قرمز و توضیح خطا برمی‌گرداند تا فقط همان‌ها را اصلاح کنید.\n\n"
                 "✅ اکنون فایل اکسل تکمیل‌شده خود را ارسال (آپلود) فرمایید:"
             )
         else:
@@ -361,7 +364,8 @@ async def bulk_input_method_handler(message: Message, state: FSMContext):
             caption_text = (
                 "📎 *فایل اکسل نمونه ثبت دسته‌جمعی لوایح*\n\n"
                 "📌 لطفاً فایل اکسل فوق را دانلود کرده و ستون‌ها را تکمیل فرمایید.\n"
-                "💡 *نگران نباشید!* حتی اگر بعضی موارد (مثل فرمت کد ملی یا شناسه شعبه) را هم درست یا کامل انتخاب نکنید، سیستم با پردازش هوشمند و جایگزینی مقادیر پیش‌فرض، مانع از اختلال یا توقف در روند ثبت خواهد شد.\n\n"
+                "📑 اگر شماره پرونده دارید از شیت «با شماره پرونده» و اگر ندارید از شیت «با شماره بایگانی» استفاده کنید. شعبه را به ترتیب از لیست‌های استان، حوزه، مرجع و شعبه انتخاب کنید.\n"
+                "🔍 اگر ردیفی خطا داشته باشد، ربات همین فایل را با خانه‌های قرمز و توضیح خطا برمی‌گرداند تا فقط همان‌ها را اصلاح کنید.\n\n"
                 "✅ اکنون فایل اکسل تکمیل‌شده خود را ارسال (آپلود) فرمایید:"
             )
 
@@ -434,6 +438,7 @@ async def bulk_file_upload_handler(message: Message, state: FSMContext):
                     error_msg += f"  • ردیف {row['row_index']}: {', '.join(row['errors'])}\n"
             error_msg += "\nلطفاً مجدداً تلاش کنید."
             await message.answer(error_msg)
+            await send_error_workbook(message.chat.id, local_path, invalid_rows)
             return
 
         # نمایش گزارش نقص‌ها (اگر وجود دارد) اما ادامه روند
@@ -443,6 +448,7 @@ async def bulk_file_upload_handler(message: Message, state: FSMContext):
                 warning += f"  • ردیف {row['row_index']}: {', '.join(row['errors'])}\n"
             warning += f"\n✅ *{len(items)} ردیف معتبر برای ثبت باقی مانده است.*"
             await message.answer(warning)
+            await send_error_workbook(message.chat.id, local_path, invalid_rows, others_continue=True)
 
     else:
         await message.answer("⚠️ لطفاً فقط فایل اکسل (.xlsx) معتبر ارسال فرمایید.")
@@ -2886,8 +2892,12 @@ async def bulk_prepay_successful_payment(message: Message, state: FSMContext, bo
     """پرداخت موفق پیش‌پرداخت دسته‌جمعی — ارسال به مدیر"""
     user_id = message.from_user.id
     data = await state.get_data()
-    tracking_code = data.get("bulk_prepay_tracking_code", "")
     payment = message.successful_payment
+    try:
+        _payload = _json.loads(payment.invoice_payload or "{}")
+    except Exception:
+        _payload = {}
+    tracking_code = _payload.get("tracking_code") or data.get("bulk_prepay_tracking_code", "")
     
     if not tracking_code or tracking_code not in BULK_TASKS:
         logging.error(f"[BULK-PREPAY] tracking_code یافت نشد: {tracking_code}")
@@ -2981,9 +2991,15 @@ async def bulk_settlement_successful_payment(message: Message, state: FSMContext
     except Exception as e:
         logging.error(f"[BULK-SETTLE-PAY] خطا در اطلاع‌رسانی ادمین: {e}", exc_info=True)
 
-    # یافتن batch_tracking_code از BULK_TASKS بر اساس user_id
+    # یافتن batch_tracking_code — اول از payload فاکتور، بعد بر اساس user_id
     batch_tc = None
-    for tc, td in BULK_TASKS.items():
+    try:
+        _payload_tc = _json.loads(payment.invoice_payload or "{}").get("tracking_code")
+    except Exception:
+        _payload_tc = None
+    if _payload_tc in BULK_TASKS:
+        batch_tc = _payload_tc
+    for tc, td in ([] if batch_tc else BULK_TASKS.items()):
         if td.get("user_id") == user_id and td.get("status") in ("queued", "processing"):
             batch_tc = tc
             break
