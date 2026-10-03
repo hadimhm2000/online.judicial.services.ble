@@ -568,6 +568,9 @@ async def get_and_close_error_popup_text(page) -> Optional[str]:
     }''')
     if text:
         await asyncio.sleep(1)
+        # ⭐ اطلاع فوری به مدیر (حتی برای خطای شناخته‌شده)
+        from bug_reporter import notify_admin_step_error
+        await notify_admin_step_error("منضمات", text)
     return text
 
 
@@ -1191,6 +1194,10 @@ async def wait_save_doc_popup_result(
         last = await read_save_doc_popup(page)
         if last:
             _log(prefix, f"پاپ‌آپ نتیجهٔ ذخیره: [{last['status']}] {last['text'][:160]}")
+            if last.get("status") != "success":
+                # ⭐ اطلاع فوری به مدیر (حتی برای خطای شناخته‌شده)
+                from bug_reporter import notify_admin_step_error
+                await notify_admin_step_error("منضمات", last.get("text") or last.get("status"), where=prefix)
             return last
         await asyncio.sleep(1)
     return {"status": "none", "text": (last or {}).get("text", ""), "contract_no": ""}

@@ -38,7 +38,8 @@ from keyboards import (
     attachments_kb, cart_kb, pay_kb, confirm_single_kb, confirm_cart_kb, bulk_inquiry_confirm_kb,
     cart_main_menu_kb,
     admin_login_kb, SUB_MENUS, create_submenu_kb, back_only_kb, new_lavayeh_request_kb,
-    payment_cancel_kb, disrupted_retry_kb, test_mode_doc_type_kb, test_mode_section_kb,
+    payment_cancel_kb, disrupted_retry_kb, disrupted_retry_fix_kb,
+    corrected_doc_category_kb, CORRECTED_SAME_CATEGORY_TEXT, test_mode_doc_type_kb, test_mode_section_kb,
     test_mode_att_title_kb_first, test_mode_att_title_kb, test_mode_att_more_kb,
     test_mode_ealam_representative_kb, test_mode_ealam_stamp_kb, test_mode_ealam_stamp_type_kb,
     test_mode_tn_case_type_kb, test_mode_check_path_kb,
@@ -995,7 +996,9 @@ async def cmd_start(message: types.Message, state: FSMContext):
                 f"⚠️ *شما یک استعلام پرداخت‌شده دارید که به‌دلیل اختلال سامانه کامل نشد.*\n\n"
                 f"🔧 شما {remaining} دقیقه دیگر فرصت دارید بدون پرداخت مجدد، تلاش کنید.\n\n"
                 f"آیا مایلید تلاش مجدد انجام دهید؟",
-                reply_markup=disrupted_retry_kb)
+                reply_markup=(disrupted_retry_fix_kb
+                              if (disrupted_info.get("job_data") or {}).get("query_type") == "کد رهگیری"
+                              else disrupted_retry_kb))
             await state.set_state(Form.waiting_for_disrupted_retry)
             return
         else:
@@ -1039,6 +1042,20 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
 
 # ================= هندلر تلاش مجدد بدون پرداخت (disrupted retry) =================
+_DISRUPTED_BUTTON_TEXTS = frozenset({
+    "🔄 تلاش مجدد (بدون پرداخت هزینه)",
+    "✏️ اصلاح کدرهگیری یا دسته (بدون پرداخت هزینه)",
+})
+
+
+# ⭐ دکمه‌های پیام «اختلال سامانه» مستقیماً (بدون /start) هم کار کنند —
+# فقط برای کاربری که واقعاً در disrupted_users است.
+@router.message(StateFilter("*"), F.text.in_(_DISRUPTED_BUTTON_TEXTS),
+                F.from_user.id.func(lambda uid: uid in runtime_state.disrupted_users))
+async def process_disrupted_retry_button(message: types.Message, state: FSMContext, bot: Bot):
+    await process_disrupted_retry(message, state, bot)
+
+
 @router.message(Form.waiting_for_disrupted_retry)
 async def process_disrupted_retry(message: types.Message, state: FSMContext, bot: Bot):
     """کاربر disrupted می‌تواند یک‌بار بدون پرداخت تلاش مجدد کند."""
@@ -1051,6 +1068,25 @@ async def process_disrupted_retry(message: types.Message, state: FSMContext, bot
             reply_markup=get_main_menu_kb(message.from_user.id)
         )
         await state.set_state(Form.main_menu)
+        return
+
+    # ⭐ اصلاح کدرهگیری/دسته به‌جای تکرار با همان اطلاعات (فقط استعلام کدرهگیری)
+    if message.text and "اصلاح کدرهگیری" in message.text:
+        info = runtime_state.disrupted_users.pop(user_id, None)
+        job_data = (info or {}).get("job_data") or {}
+        if not info or job_data.get("query_type") != "کد رهگیری":
+            await message.answer("⚠️ وضعیت تلاش مجدد یافت نشد. لطفاً از اول شروع کنید.", reply_markup=get_main_menu_kb(user_id))
+            await state.set_state(Form.main_menu)
+            return
+        runtime_state.invalid_tracking_retry[user_id] = {
+            "expires_at": info["timestamp"] + datetime.timedelta(minutes=DISRUPTED_RETRY_MINUTES),
+            "remaining": 1,
+            "template_job": dict(job_data),
+        }
+        await message.answer(
+            "✏️ لطفاً کدرهگیری صحیح را ارسال نمایید (در مرحلهٔ بعد می‌توانید دسته را هم اصلاح کنید):",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.waiting_for_corrected_tracking_code)
         return
 
     if message.text and "تلاش مجدد" in message.text:
@@ -1072,7 +1108,9 @@ async def process_disrupted_retry(message: types.Message, state: FSMContext, bot
             return
 
         # تلاش مجدد — ارسال مجدد job به صف بدون نیاز به پرداخت
-        job_data = info["job_data"]
+        # ⭐ فقط یک‌بار: اگر این تکرار هم ناموفق شد، فرصت جدید داده نمی‌شود
+        job_data = dict(info["job_data"])
+        job_data["disrupted_retry_used"] = True
         queue_pos = runtime_state.job_queue.qsize()
         queue_note = f"\n📊 موقعیت شما در صف: *{queue_pos + 1}*" if queue_pos > 0 else "\n▶️ پردازش بلافاصله آغاز می‌شود."
 
@@ -1464,6 +1502,25 @@ async def process_corrected_tracking_code(message: types.Message, state: FSMCont
     template_job = dict(info.get("template_job") or {})
     template_job["user_id"] = user_id
     template_job["tracking_code"] = clean_code
+    # ⭐ فرصت اصلاح رایگان فقط یک‌بار است؛ اگر این job هم ناموفق شد، به
+    # کاربر «موردی استعلام نشد» اعلام می‌شود (scenarios._start_free_retry_window)
+    template_job["free_retry_used"] = True
+    template_job.pop("auto_switched_from", None)
+
+    # ⭐ استعلام تک‌موردی: کاربر بتواند دسته را هم اصلاح کند
+    if info.get("remaining", 1) <= 1 and template_job.get("query_type") == "کد رهگیری":
+        info["pending_job"] = template_job
+        runtime_state.invalid_tracking_retry[user_id] = info
+        prev = template_job.get("doc_subcategory") or template_job.get("doc_category") or "-"
+        await message.answer(
+            f"✅ کدرهگیری `{clean_code}` دریافت شد.\n\n"
+            f"دستهٔ قبلی شما: «{prev}»\n"
+            f"اگر دسته را اشتباه انتخاب کرده بودید، دستهٔ صحیح را انتخاب کنید؛ "
+            f"در غیر این صورت «{CORRECTED_SAME_CATEGORY_TEXT}» را بزنید:",
+            reply_markup=corrected_doc_category_kb
+        )
+        await state.set_state(Form.waiting_for_corrected_doc_category)
+        return
 
     remaining = info.get("remaining", 1) - 1
     queue_position = runtime_state.job_queue.qsize()
@@ -1487,6 +1544,91 @@ async def process_corrected_tracking_code(message: types.Message, state: FSMCont
         await state.clear()
 
     await runtime_state.job_queue.put(template_job)
+
+
+async def _corrected_retry_info_or_expire(message: types.Message, state: FSMContext):
+    """اطلاعات فرصت اصلاح رایگانِ معتبر (یا None اگر منقضی/ناموجود بود و پیام داده شد)."""
+    user_id = message.from_user.id
+    info = runtime_state.invalid_tracking_retry.get(user_id)
+    if not info or not info.get("pending_job"):
+        runtime_state.invalid_tracking_retry.pop(user_id, None)
+        await message.answer(
+            "⚠️ فرصت اصلاح یافت نشد یا قبلاً استفاده شده است.\nلطفاً از منوی اصلی مجدداً اقدام فرمایید.",
+            reply_markup=get_main_menu_kb(user_id))
+        await state.set_state(Form.main_menu)
+        return None
+    if datetime.datetime.now() > info["expires_at"]:
+        runtime_state.invalid_tracking_retry.pop(user_id, None)
+        await message.answer(
+            f"⏰ بازه‌ی {runtime_state.INVALID_TRACKING_RETRY_MINUTES} دقیقه‌ای فرصت رایگان به پایان رسیده است.\n"
+            f"برای ادامه لازم است مجدداً از منوی اصلی و با پرداخت هزینه اقدام فرمایید.",
+            reply_markup=get_main_menu_kb(user_id))
+        await state.set_state(Form.main_menu)
+        return None
+    return info
+
+
+async def _enqueue_corrected_job(message: types.Message, state: FSMContext, job: dict):
+    user_id = message.from_user.id
+    runtime_state.invalid_tracking_retry.pop(user_id, None)
+    queue_position = runtime_state.job_queue.qsize()
+    queue_note = f"\n📊 موقعیت شما در صف: {queue_position + 1}" if queue_position > 0 else "\n▶️ پردازش بلافاصله آغاز می‌شود."
+    doc_name = job.get("doc_subcategory") or job.get("doc_category") or "-"
+    await message.answer(
+        f"✅ اطلاعات اصلاح‌شده دریافت شد و بدون پرداخت هزینه‌ی مجدد در صف پردازش قرار گرفت.\n"
+        f"📋 کدرهگیری: {job.get('tracking_code')}\n📂 دسته: {doc_name}{queue_note}",
+        reply_markup=restart_kb)
+    await state.clear()
+    await runtime_state.job_queue.put(job)
+
+
+@router.message(Form.waiting_for_corrected_doc_category)
+async def process_corrected_doc_category(message: types.Message, state: FSMContext):
+    """انتخاب دستهٔ صحیح در فرصت اصلاح رایگان (بعد از ارسال کدرهگیری اصلاح‌شده)."""
+    if not message.text:
+        return
+    info = await _corrected_retry_info_or_expire(message, state)
+    if not info:
+        return
+    job = dict(info["pending_job"])
+    text = message.text.strip()
+    if text == CORRECTED_SAME_CATEGORY_TEXT:
+        await _enqueue_corrected_job(message, state, job)
+        return
+    valid_categories = {b.text for row in doc_category_kb.keyboard for b in row}
+    if text not in valid_categories:
+        await message.answer("لطفاً یکی از دسته‌های زیر را انتخاب کنید:", reply_markup=corrected_doc_category_kb)
+        return
+    job["doc_category"] = text
+    job["doc_subcategory"] = None
+    info["pending_job"] = job
+    if text in SUB_MENUS:
+        await message.answer(f"نوع دقیق «{text}» را مشخص کنید:", reply_markup=create_submenu_kb(text))
+        await state.set_state(Form.waiting_for_corrected_doc_subcategory)
+        return
+    await _enqueue_corrected_job(message, state, job)
+
+
+@router.message(Form.waiting_for_corrected_doc_subcategory)
+async def process_corrected_doc_subcategory(message: types.Message, state: FSMContext):
+    """انتخاب زیردستهٔ صحیح در فرصت اصلاح رایگان."""
+    if not message.text:
+        return
+    info = await _corrected_retry_info_or_expire(message, state)
+    if not info:
+        return
+    job = dict(info["pending_job"])
+    category = job.get("doc_category")
+    if message.text == "🔙 بازگشت به منوی قبل":
+        await message.answer("دستهٔ صحیح را انتخاب کنید:", reply_markup=corrected_doc_category_kb)
+        await state.set_state(Form.waiting_for_corrected_doc_category)
+        return
+    if message.text not in SUB_MENUS.get(category, []):
+        await message.answer(f"لطفاً نوع دقیق «{category}» را از گزینه‌ها انتخاب کنید:",
+                             reply_markup=create_submenu_kb(category))
+        return
+    job["doc_subcategory"] = message.text
+    await _enqueue_corrected_job(message, state, job)
 
 
 @router.message(Form.waiting_for_doc_category)

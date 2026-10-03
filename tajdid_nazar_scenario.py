@@ -43,6 +43,7 @@
 import asyncio
 import html as html_lib
 import logging
+from bug_reporter import notify_admin_step_error, notify_step_popup
 import os
 import time
 
@@ -2251,6 +2252,7 @@ async def _click_preparation(page, bot: Bot, user_id: int, max_retries: int = 3)
         # خطا؟
         error_text = await _get_error_text(page, click_confirm=False)
         if error_text:
+            await notify_admin_step_error("آماده‌سازی", error_text, bot=bot, user_id=user_id, where="TN")
             if _is_session_error_text(error_text):
                 logging.warning("[TN] ورود همزمان در آماده‌سازی — تمدید نشست")
                 await handle_session_expired(bot, user_id, page=page)

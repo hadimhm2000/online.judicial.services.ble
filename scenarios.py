@@ -1107,7 +1107,15 @@ async def _start_free_retry_window(bot: Bot, user_id: int, notice_text: str, dat
     runtime_state.INVALID_TRACKING_RETRY_MINUTES دقیقه)، به‌همراه ارسال
     notice_text به کاربر. هم برای خطای «کدرهگیری نامعتبر» و هم برای خطای
     «کدرهگیری متعلق به فرم/نوع سند دیگر» استفاده می‌شود — هم برای استعلام
-    تکی و هم برای هر آیتم از استعلام دسته‌جمعی (کارت/اکسل)."""
+    تکی و هم برای هر آیتم از استعلام دسته‌جمعی (کارت/اکسل).
+
+    ⭐ فرصت اصلاح رایگان فقط یک‌بار است: اگر همین job خودش حاصل اصلاح
+    رایگان بوده (free_retry_used)، دیگر فرصت جدید داده نمی‌شود و به کاربر
+    اعلام می‌شود موردی استعلام نشد (طبق error_catalog)."""
+    if data.get("free_retry_used"):
+        await _inquiry_final_not_found(bot, user_id, data, tracking_code, doc_name,
+                                       "پس از اصلاح رایگان هم استعلام نشد")
+        return
     was_batch_item = await _bulk_progress_note_result(bot, user_id, tracking_code, doc_name, is_invalid=True)
     if was_batch_item:
         return
@@ -1127,18 +1135,42 @@ async def _start_free_retry_window(bot: Bot, user_id: int, notice_text: str, dat
         logging.error(f"[INQUIRY] خطا در تنظیم state اصلاح کدرهگیری: {e}")
 
 
+async def _inquiry_final_not_found(bot: Bot, user_id: int, data: dict, tracking_code: str, doc_name: str, reason: str):
+    """پایان استعلام بعد از مصرف فرصت اصلاح رایگان: «موردی استعلام نشد» به
+    کاربر + اطلاع به مدیر (با دستور ارسال دستی نتیجه) + ثبت ناموفق در پنل."""
+    try:
+        await bot.send_message(user_id, error_catalog.INQUIRY_NOTHING_FOUND_MSG.format(
+            tracking_code=tracking_code, doc_name=doc_name))
+    except Exception as e:
+        logging.error(f"[INQUIRY] خطا در ارسال پیام «موردی استعلام نشد»: {e}")
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"🛑 [INQUIRY_STOP] کاربر {user_id} — {reason}\n"
+            f"کد: {tracking_code} — نوع: {doc_name}\n"
+            f"برای ارسال دستی نتیجه به کاربر: /send {user_id}")
+    except Exception:
+        pass
+    try:
+        await register_failed_inquiry_to_panel(
+            user_id=user_id, full_name=data.get('full_name', ''),
+            tracking_code=tracking_code, doc_category=data.get('doc_category'),
+            doc_subcategory=data.get('doc_subcategory'),
+            fee=data.get('payment_fee', 0),
+            error_details=reason, error_step="free_correction_exhausted",
+        )
+    except Exception as panel_err:
+        logging.warning(f"خطا در ثبت استعلام ناموفق: {panel_err}")
+
+
 async def _handle_invalid_tracking_code(bot: Bot, user_id: int, data: dict, tracking_code: str, doc_name: str):
     """مدیریت خطای «کد رهگیری نامعتبر است» که سامانه نشان می‌دهد —
     هم برای استعلام تکی و هم برای هر آیتم از استعلام دسته‌جمعی (کارت/اکسل).
 
     ⭐ طبق دستور کارفرما: به کاربر اعلام می‌شود که کدرهگیری اشتباه است
     یا عنوان دسته بندی را درست انتخاب نکرده است."""
-    notice_text = (
-        f"❌ کدرهگیری اشتباه است یا عنوان دسته بندی را درست انتخاب نکرده اید.\n\n"
-        f"⏰ شما *{runtime_state.INVALID_TRACKING_RETRY_MINUTES} دقیقه* فرصت دارید تا بدون پرداخت هزینه‌ی مجدد، "
-        f"کدرهگیری صحیح را ارسال و دوباره استعلام بگیرید.\n\n"
-        f"لطفاً کدرهگیری جدید را ارسال نمایید:"
-    )
+    notice_text = error_catalog.INQUIRY_FREE_CORRECTION_MSG.format(
+        minutes=runtime_state.INVALID_TRACKING_RETRY_MINUTES)
     await _start_free_retry_window(bot, user_id, notice_text, data, tracking_code, doc_name)
 
 
@@ -1150,13 +1182,8 @@ async def _handle_wrong_form_tracking_code(bot: Bot, user_id: int, data: dict, t
     ⭐ طبق دستور کارفرما: عین همان پیام خطای سامانه + اعلام اینکه کدرهگیری
     اشتباه است یا عنوان دسته بندی درست انتخاب نشده + مهلت ۴۵ دقیقه‌ای
     ثبت مجدد بدون پرداخت هزینه."""
-    notice_text = (
-        f"❌ {system_text}\n\n"
-        f"⚠️ کدرهگیری اشتباه است یا عنوان دسته بندی را درست انتخاب نکرده اید.\n\n"
-        f"تا {runtime_state.INVALID_TRACKING_RETRY_MINUTES} دقیقه دیگر فرصت دارید تا بدون پرداخت هزینه مجدد ، "
-        f"درخواست خود را مجددا ثبت بفرمائید.\n\n"
-        f"لطفاً کدرهگیری صحیح را ارسال نمایید:"
-    )
+    notice_text = f"❌ {system_text}\n\n" + error_catalog.INQUIRY_FREE_CORRECTION_MSG.format(
+        minutes=runtime_state.INVALID_TRACKING_RETRY_MINUTES)
     await _start_free_retry_window(bot, user_id, notice_text, data, tracking_code, doc_name)
 
 
@@ -1173,6 +1200,12 @@ async def process_task(data, bot: Bot):
     # ⭐ تسک «چاپ نهایی» روز بعد (final_print.py) — همان مسیر استعلام کد رهگیری
     # ولی فقط ارسال چاپ؛ بدون پیام‌ها/ثبت‌های مخصوص استعلام پولی
     is_final_print = bool(data.get('final_print'))
+    # ⭐ زمینهٔ تسک برای اطلاع خطاهای منضمات/آماده‌سازی به مدیر (bug_reporter)
+    try:
+        from bug_reporter import set_job_context
+        set_job_context(bot, data)
+    except Exception:
+        pass
 
     # ── سناریوی لایحه ثبت ─────────────────────────────────────────────────
     if task_type == "LAVAYEH_SUBMIT":
@@ -1901,6 +1934,30 @@ async def process_task(data, bot: Bot):
                     if is_final_print:
                         await _fp_report_failure(bot, user_id, tracking_code, doc_name, f"کد رهگیری متعلق به فرم دیگر: {popup_text}")
                         return
+                    # ⭐ طبق error_catalog (ACTION_SWITCH_CATEGORY): اگر نام فرم
+                    # صحیح از متن سامانه شناخته شد، بدون قطع روند همان استعلام
+                    # در دستهٔ صحیح گرفته می‌شود (فقط یک‌بار برای هر job).
+                    switch_target = error_catalog.resolve_wrong_form_target(popup_text)
+                    if (
+                        switch_target
+                        and not data.get("auto_switched_from")
+                        and tuple(switch_target) != (category, subcategory or None)
+                    ):
+                        new_cat, new_sub = switch_target
+                        new_doc_name = new_sub if new_sub else new_cat
+                        try:
+                            await bot.send_message(
+                                ADMIN_ID,
+                                f"🔀 [INQUIRY] کاربر {user_id} — کد {tracking_code}: "
+                                f"تغییر خودکار دسته از «{doc_name}» به «{new_doc_name}»")
+                        except Exception:
+                            pass
+                        switched = dict(data)
+                        switched["doc_category"] = new_cat
+                        switched["doc_subcategory"] = new_sub
+                        switched["auto_switched_from"] = doc_name
+                        await process_task(switched, bot)
+                        return
                     await _handle_wrong_form_tracking_code(bot, user_id, data, tracking_code, doc_name, popup_text)
                     return
                 if popup_text and popup_category == error_catalog.VALIDATION:
@@ -2073,10 +2130,14 @@ async def process_task(data, bot: Bot):
                             _fp_mark_sent(user_id, tracking_code)
                             logging.info(f"[FINAL_PRINT] چاپ نهایی کد {tracking_code} برای کاربر {user_id} ارسال شد")
                             return
+                        print_caption = f"📄 استعلام کد پیگیری: `{tracking_code}`"
+                        if data.get("auto_switched_from"):
+                            print_caption += "\n\n" + error_catalog.INQUIRY_CATEGORY_SWITCHED_NOTE.format(
+                                old=data["auto_switched_from"], new=doc_name)
                         if need_attachments:
-                            saved_attachments.append((pdf_path, f"📄 استعلام کد پیگیری: `{tracking_code}`"))
+                            saved_attachments.append((pdf_path, print_caption))
                         else:
-                            await send_document_direct(user_id, pdf_path, caption=f"📄 استعلام کد پیگیری: `{tracking_code}`")
+                            await send_document_direct(user_id, pdf_path, caption=print_caption)
                             os.remove(pdf_path)
 
                             # ── ثبت استعلام در پنل ادمین ──
@@ -2385,6 +2446,15 @@ async def process_task(data, bot: Bot):
                         f"خطا پس از {max_task_attempts} تلاش: {str(task_err)[:200]}")
                     return
 
+                # ⭐ فرصت تکرار رایگان فقط یک‌بار: اگر این job خودش تکرار
+                # رایگان (disrupted یا اصلاح کدرهگیری) بوده، دیگر فرصت جدید
+                # داده نمی‌شود تا روند بی‌پایان تکرار نشود.
+                if data.get("disrupted_retry_used") or data.get("free_retry_used"):
+                    await _inquiry_final_not_found(
+                        bot, user_id, data, tracking_code or "", doc_name or "",
+                        f"تکرار رایگان هم ناموفق بود: {str(task_err)[:200]}")
+                    return
+
                 # ── ذخیره در disrupted_users (فرصت تکرار بدون پرداخت) ──
                 import datetime
                 from handlers import DISRUPTED_RETRY_MINUTES, SAMANEH_WRONG_TYPE_ERROR
@@ -2396,7 +2466,9 @@ async def process_task(data, bot: Bot):
                 }
 
                 # ── اطلاع‌رسانی به کاربر با دکمه‌ی تلاش مجدد ──
-                from keyboards import disrupted_retry_kb
+                from keyboards import disrupted_retry_kb, disrupted_retry_fix_kb
+                if query_type == "کد رهگیری":
+                    disrupted_retry_kb = disrupted_retry_fix_kb
                 try:
                     error_detail = SAMANEH_WRONG_TYPE_ERROR if ('کد دفتر' in str(task_err) or 'مبلغ پرونده' in str(task_err)) else 'عملیات استعلام موفق نبود.'
                     await bot.send_message(

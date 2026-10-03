@@ -18,6 +18,7 @@
 """
 import asyncio
 import logging
+from bug_reporter import notify_admin_step_error, notify_step_popup
 import time
 import html as html_lib
 
@@ -1493,6 +1494,7 @@ async def _click_preparation_with_retry(page, bot: Bot, user_id: int, max_retrie
             return True
 
         # اگر خطا بود، ببندیم و retry کنیم
+        await notify_step_popup(page, "آماده‌سازی", bot=bot, user_id=user_id, where="EALAM")
         await _close_error_popup(page)
         await asyncio.sleep(30)
         await _close_success_popup(page)
