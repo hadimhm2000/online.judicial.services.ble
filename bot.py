@@ -47,6 +47,9 @@ from history_handlers import history_router
 dp.include_router(history_router)
 import wallet
 wallet.setup_wallet(dp)
+# ⭐ PDF «راهنمای جامع ربات» — ارسال در اولین /start + ارسال همگانی با دستور مدیر
+import guide_handlers
+guide_handlers.setup_guide(dp)
 # ⭐ نظرسنجی پس از تحویل + گزارش شبانهٔ مدیر (/report)
 from feedback import feedback_router, feedback_loop
 from daily_report import report_router, daily_report_loop
@@ -508,6 +511,15 @@ async def main():
     # (در حالت dev پنل، اولین درخواست هر مسیر باعث کامپایل ۱۰-۳۰ ثانیه‌ای می‌شود)
     from panel_sync import warmup_panel
     asyncio.create_task(warmup_panel())
+    # ⭐ فهرست کاربران راهنما: کاربران قدیمی (فایل‌های ربات + پنل) ثبت می‌شوند تا
+    # راهنمای خوش‌آمد فقط برای کاربران واقعاً جدید خودکار ارسال شود
+    import user_registry
+    user_registry.stats()
+
+    async def _seed_guide_users():
+        await asyncio.sleep(20)   # پس از گرم شدن پنل
+        await guide_handlers.seed_from_panel()
+    asyncio.create_task(_seed_guide_users())
     # ⭐ یادآور کارت‌به‌کارت: ۲۰ دقیقه پس از فاکتور پرداخت‌نشده
     asyncio.create_task(card_payment.card_payment_loop(bot))
 

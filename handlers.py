@@ -70,7 +70,7 @@ DISRUPTED_RETRY_MINUTES = 45  # فرصت تکرار بدون پرداخت (دق�
 # نمایش پیام تایید آیین‌نامه بعد از /start — اگر False باشد، این مرحله
 # کاملاً حذف می‌شود و کاربر مستقیماً وارد انتخاب نوع فلو می‌شود.
 # برای فعال کردن دوباره، فقط این مقدار را True کنید.
-SHOW_RULES_CONFIRMATION = False
+SHOW_RULES_CONFIRMATION = True
 
 # پیام خطایی که سامانه قضایی نمایش می‌دهد وقتی نوع سند اشتباه انتخاب شود
 SAMANEH_WRONG_TYPE_ERROR = "کد دفتر، مبلغ پرونده یا دسترسی تقویم مربوط به این شعبه و قاضی نیست."
@@ -1027,6 +1027,10 @@ async def cmd_start(message: types.Message, state: FSMContext):
             # حذف از لیست بازیابی تا پیام تکرار نشود
             runtime_state._crash_recovered_users.pop(user_id, None)
 
+    # ⭐ اولین /start کاربر جدید: PDF «راهنمای جامع ربات» یک‌بار ارسال می‌شود (guide_handlers.py)
+    from guide_handlers import send_welcome_guide_if_new
+    await send_welcome_guide_if_new(message)
+
     if not SHOW_RULES_CONFIRMATION:
         # پیام آیین‌نامه غیرفعال است — مستقیم به انتخاب نوع فلو می‌رویم
         await message.answer("❓ *لطفاً نحوه ثبت درخواست خود را انتخاب فرمایید:*", reply_markup=get_flow_type_kb(message.from_user.id))
@@ -1139,6 +1143,11 @@ async def process_disrupted_retry(message: types.Message, state: FSMContext, bot
 async def rules_accepted(message: types.Message, state: FSMContext):
     await message.answer("❓ *لطفاً نحوه ثبت درخواست خود را انتخاب فرمایید:*", reply_markup=get_flow_type_kb(message.from_user.id))
     await state.set_state(Form.waiting_for_flow_type)
+
+@router.message(Form.waiting_for_rule_acceptance, F.from_user.id != ADMIN_ID)
+async def rules_not_accepted(message: types.Message, state: FSMContext):
+    # تا آیین‌نامه تأیید نشود، همان پرسش تأیید دوباره نمایش داده می‌شود
+    await message.answer("👇 برای ادامه، لطفاً ابتدا قوانین و مقررات را تایید فرمایید:", reply_markup=accept_rules_kb)
 
 @router.message(Form.waiting_for_flow_type)
 async def process_flow_type(message: types.Message, state: FSMContext):
