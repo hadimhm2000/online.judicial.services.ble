@@ -2892,8 +2892,12 @@ async def bulk_prepay_successful_payment(message: Message, state: FSMContext, bo
     """پرداخت موفق پیش‌پرداخت دسته‌جمعی — ارسال به مدیر"""
     user_id = message.from_user.id
     data = await state.get_data()
-    tracking_code = data.get("bulk_prepay_tracking_code", "")
     payment = message.successful_payment
+    try:
+        _payload = _json.loads(payment.invoice_payload or "{}")
+    except Exception:
+        _payload = {}
+    tracking_code = _payload.get("tracking_code") or data.get("bulk_prepay_tracking_code", "")
     
     if not tracking_code or tracking_code not in BULK_TASKS:
         logging.error(f"[BULK-PREPAY] tracking_code یافت نشد: {tracking_code}")
@@ -2987,9 +2991,15 @@ async def bulk_settlement_successful_payment(message: Message, state: FSMContext
     except Exception as e:
         logging.error(f"[BULK-SETTLE-PAY] خطا در اطلاع‌رسانی ادمین: {e}", exc_info=True)
 
-    # یافتن batch_tracking_code از BULK_TASKS بر اساس user_id
+    # یافتن batch_tracking_code — اول از payload فاکتور، بعد بر اساس user_id
     batch_tc = None
-    for tc, td in BULK_TASKS.items():
+    try:
+        _payload_tc = _json.loads(payment.invoice_payload or "{}").get("tracking_code")
+    except Exception:
+        _payload_tc = None
+    if _payload_tc in BULK_TASKS:
+        batch_tc = _payload_tc
+    for tc, td in ([] if batch_tc else BULK_TASKS.items()):
         if td.get("user_id") == user_id and td.get("status") in ("queued", "processing"):
             batch_tc = tc
             break

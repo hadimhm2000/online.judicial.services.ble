@@ -555,11 +555,25 @@ async def global_successful_payment_handler(message: types.Message, state: FSMCo
         await _tn_pay(message, state, bot)
         return
 
+    # ── پیش‌پرداخت و تسویهٔ دسته‌جمعی — پردازش مستقیم ──
+    # (هندلرهای decorated این دو در lavayeh_router از مسیر روتر مادر
+    #  unreachable بودند و این پرداخت‌ها بی‌صدا رها می‌شدند.)
+    if current_state == Form.bulk_prepay_wait or _pl.get("type") == "bulk_prepay":
+        if _pl.get("svc") == "check":
+            from check_bulk_handlers import check_bulk_prepay_successful_payment as _ckb_pay
+            await _ckb_pay(message, state, bot)
+        else:
+            from lavayeh_handlers import bulk_prepay_successful_payment as _bulk_pay
+            await _bulk_pay(message, state, bot)
+        return
+    if current_state == Form.bulk_settlement_wait or _pl.get("type") == "bulk_settlement":
+        from lavayeh_handlers import bulk_settlement_successful_payment as _settle_pay
+        await _settle_pay(message, state, bot)
+        return
+
     # ── سایر حالت‌های اختصاصی — بدون مداخله ──
     if current_state in (Form.waiting_for_ealam_payment_receipt,
-                         Form.stamp_calc_waiting_payment,
-                         Form.bulk_prepay_wait,
-                         Form.bulk_settlement_wait):
+                         Form.stamp_calc_waiting_payment):
         return
 
     # ── پرداخت اشتراک ماهیانه ──

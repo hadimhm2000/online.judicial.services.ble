@@ -10,8 +10,9 @@ check_bulk_handlers.py
   • برای هر ردیف دقیقاً ۳ تصویر (روی چک، پشت چک، گواهی عدم پرداخت) گرفته
     می‌شود؛ بدون ۳ تصویر امکان رفتن به ردیف بعد نیست.
   • بعد از ۳ تصویر، کاربر می‌تواند مدرک اضافی (عنوان + تصاویر) هم بفرستد.
-  • پس از آخرین ردیف، همهٔ ردیف‌ها با یک کد پیگیری دسته‌جمعی در
-    BULK_TASKS ثبت و در job_queue قرار می‌گیرند؛ check_scenario نتیجهٔ هر
+  • پس از آخرین ردیف، یک فاکتور پیش‌پرداخت برای همهٔ ردیف‌ها (هر ردیف به
+    اندازهٔ پیش‌پرداخت ثبت تکی چک) صادر می‌شود. پس از پرداخت، ردیف‌ها با یک
+    کد پیگیری دسته‌جمعی در BULK_TASKS ثبت و در job_queue قرار می‌گیرند؛ check_scenario نتیجهٔ هر
     ردیف را با send_bulk_item_result / mark_bulk_item_done گزارش می‌کند و
     finalize_bulk_batch در پایان گزارش مالی، فاکتور تسویه و منوی امضا را
     یک‌جا می‌فرستد (مثل لایحه/اظهارنامهٔ دسته‌جمعی).
@@ -24,7 +25,7 @@ import logging
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
 import runtime_state
 from states import Form
@@ -332,9 +333,28 @@ def build_check_bulk_job(item: dict, user_id: int, tracking_code: str, row_index
     return job
 
 
+async def _send_invoice(invoice_data: dict):
+    from config import BALE_API_BASE, BOT_TOKEN, BALE_SSL_CONTEXT
+    import aiohttp
+    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
+        async with session.post(f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice", json=invoice_data) as resp:
+            result = await resp.json()
+            if not result.get("ok"):
+                raise Exception(result.get("description", "خطا در ارسال فاکتور"))
+
+
+def _prepay_per_row_rial() -> int:
+    """پیش‌پرداخت هر ردیف = همان پیش‌پرداخت ثبت تکی چک (تنظیم پنل / config)."""
+    from prepay_registration import get_prepay_amount_rial
+    return get_prepay_amount_rial("check")
+
+
 async def _finalize_check_bulk(message: Message, state: FSMContext):
+    """بعد از آخرین ردیف: یک فاکتور پیش‌پرداخت برای همهٔ ردیف‌ها؛ پس از پرداخت
+    (check_bulk_prepay_successful_payment) ردیف‌ها به صف می‌روند."""
     _, items, _ = await _current(state)
-    user_id = message.from_user.id
+    user = message.from_user
+    user_id = user.id
 
     missing = [i for i, it in enumerate(items) if len(it.get("check_images", [])) < MAX_CHECK_IMAGES]
     if missing:
@@ -345,18 +365,144 @@ async def _finalize_check_bulk(message: Message, state: FSMContext):
 
     tracking_code = generate_tracking_code("CHK")
     total = len(items)
-    # بدون پیش‌پرداخت: کل هزینهٔ سامانه در پایان بچ با یک فاکتور تسویه گرفته می‌شود
+
+    try:
+        from exempt_users import is_exempt_user
+        exempt = await is_exempt_user(user_id)
+    except Exception as e:
+        logger.warning(f"[CHECK-BULK] بررسی معافیت ناموفق (فرض: معاف نیست): {e}")
+        exempt = False
+
+    prepay_rial = 0 if exempt else total * _prepay_per_row_rial()
     BULK_TASKS[tracking_code] = {
+        "user_id": user_id,
+        "username": user.username or user.first_name,
         "items": items,
         "service_type": "CHECK",
-        "status": "processing",
+        "status": "awaiting_prepay",
         "signable_items": [],
         "failures": [],
         "queued_count": 0,
         "completed_count": 0,
-        "prepaid_total_rial": 0,
+        # در پایان بچ از هزینهٔ واقعی سامانه کسر می‌شود (finalize_bulk_batch)
+        "prepaid_total_rial": prepay_rial,
     }
     await state.clear()
+
+    if exempt:
+        await queue_check_bulk(message.bot, user_id, tracking_code)
+        return
+
+    from config import BALE_WALLET_TOKEN
+    import json as _json
+
+    per_row_toman = _prepay_per_row_rial() // 10
+    invoice_data = {
+        "chat_id": user_id,
+        "title": "پیش‌پرداخت ثبت دسته‌جمعی چک",
+        "description": (f"پیش‌پرداخت {total} ردیف چک ({per_row_toman:,} تومان برای هر ردیف)\n"
+                        f"مبلغ: {prepay_rial // 10:,} تومان ({prepay_rial:,} ریال)"),
+        "payload": _json.dumps({"type": "bulk_prepay", "svc": "check", "uid": user_id,
+                                "tracking_code": tracking_code}),
+        "provider_token": BALE_WALLET_TOKEN,
+        "currency": "IRR",
+        "prices": [{"label": f"پیش‌پرداخت {total} ردیف چک", "amount": prepay_rial}],
+    }
+    try:
+        await _send_invoice(invoice_data)
+        logger.info(f"[CHECK-BULK-PREPAY] فاکتور: user={user_id}, {total} ردیف, {prepay_rial:,} ریال, {tracking_code}")
+    except Exception as e:
+        logger.error(f"[CHECK-BULK-PREPAY] خطا در صدور فاکتور: {e}", exc_info=True)
+        BULK_TASKS.pop(tracking_code, None)
+        from keyboards import flow_type_kb
+        await message.answer(
+            "⚠️ خطا در ساخت فاکتور پیش‌پرداخت. هیچ ردیفی ثبت نشد؛ لطفاً کمی بعد دوباره فایل را بفرستید.",
+            reply_markup=flow_type_kb)
+        return
+
+    await state.set_state(Form.bulk_prepay_wait)
+    await state.update_data(bulk_prepay_tracking_code=tracking_code)
+    try:
+        from card_payment import track_invoice as _cp_track
+        _cp_track(invoice_data)   # کارت‌به‌کارت و پیشنهاد کیف پول
+    except Exception as e:
+        logger.warning(f"[CHECK-BULK-PREPAY] track_invoice ناموفق: {e}")
+
+    await message.answer(
+        f"🧾 *فاکتور پیش‌پرداخت ارسال شد.*\n\n"
+        f"📦 تعداد ردیف: *{total}*\n"
+        f"💰 مبلغ: *{prepay_rial // 10:,} تومان* ({per_row_toman:,} تومان برای هر ردیف)\n"
+        f"🔹 کد پیگیری: `{tracking_code}`\n\n"
+        f"پس از پرداخت، ثبت ردیف‌ها شروع می‌شود. این مبلغ در پایان از هزینهٔ سامانه کسر می‌شود.",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+
+async def check_bulk_prepay_successful_payment(message: Message, state: FSMContext, bot):
+    """پرداخت پیش‌پرداخت دسته‌جمعی چک (از global_successful_payment_handler)."""
+    import json as _json
+    user_id = message.from_user.id
+    payment = message.successful_payment
+    try:
+        payload = _json.loads(payment.invoice_payload or "{}")
+    except Exception:
+        payload = {}
+    data = await state.get_data()
+    tracking_code = payload.get("tracking_code") or data.get("bulk_prepay_tracking_code", "")
+    task = BULK_TASKS.get(tracking_code)
+
+    from config import ADMIN_ID
+    if not task or task.get("user_id") != user_id or task.get("status") != "awaiting_prepay":
+        logger.error(f"[CHECK-BULK-PREPAY] بچ معتبر یافت نشد: user={user_id}, tc={tracking_code}, "
+                     f"status={(task or {}).get('status')}")
+        await message.answer("✅ پرداخت شما دریافت شد.\n⚠️ اطلاعات این دسته پیدا نشد؛ به مدیریت اطلاع داده شد.")
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"⚠️ [CHECK-BULK-PREPAY] پرداخت بدون بچ معتبر — user={user_id}, کد={tracking_code}, "
+                f"مبلغ={payment.total_amount:,} ریال, payment_id={payment.telegram_payment_charge_id}")
+        except Exception:
+            pass
+        await state.clear()
+        return
+
+    await state.clear()
+    task["prepaid_total_rial"] = int(payment.total_amount or task.get("prepaid_total_rial", 0))
+    total = len(task.get("items", []))
+    await message.answer(
+        f"✅ *پرداخت پیش‌پرداخت تایید شد* ({task['prepaid_total_rial'] // 10:,} تومان).",
+        parse_mode="Markdown")
+
+    try:
+        from sheets import log_event
+        await log_event(
+            "پرداخت", "پیش‌پرداخت دسته‌جمعی چک", message.from_user.full_name, user_id,
+            doc_name=f"پیش‌پرداخت دسته‌جمعی {total} ردیف چک", payment_status="پرداخت شده",
+            note=f"مبلغ: {task['prepaid_total_rial']:,} ریال | tracking: {tracking_code} | "
+                 f"payment_id: {payment.telegram_payment_charge_id}")
+    except Exception as e:
+        logger.warning(f"[CHECK-BULK-PREPAY] log_event ناموفق: {e}")
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"💰 پیش‌پرداخت دسته‌جمعی چک پرداخت شد\n\n"
+            f"👤 کاربر: {message.from_user.full_name} ({user_id})\n"
+            f"📦 {total} ردیف | کد: {tracking_code}\n"
+            f"💰 مبلغ: {task['prepaid_total_rial'] // 10:,} تومان\n"
+            f"🎫 payment_id: {payment.telegram_payment_charge_id}")
+    except Exception as e:
+        logger.warning(f"[CHECK-BULK-PREPAY] اطلاع به مدیر ناموفق: {e}")
+
+    await queue_check_bulk(bot, user_id, tracking_code)
+
+
+async def queue_check_bulk(bot, user_id: int, tracking_code: str):
+    """همهٔ ردیف‌های بچ را (با کپی برای ادمین) در صف ثبت می‌گذارد."""
+    task = BULK_TASKS[tracking_code]
+    task["status"] = "processing"
+    items = task["items"]
+    total = len(items)
 
     from config import ADMIN_ID
     from admin_forward import send_check_submission_to_admin
@@ -367,38 +513,32 @@ async def _finalize_check_bulk(message: Message, state: FSMContext):
         try:
             job = build_check_bulk_job(item, user_id, tracking_code, row_index)
             try:
-                await send_check_submission_to_admin(message.bot, ADMIN_ID, user_id, job)
+                await send_check_submission_to_admin(bot, ADMIN_ID, user_id, job)
             except Exception as e:
                 logger.error(f"[CHECK-BULK] خطا در ارسال کپی ردیف {row_index} به ادمین: {e}", exc_info=True)
             await runtime_state.job_queue.put(job)
             queued += 1
         except Exception as e:
             logger.error(f"[CHECK-BULK] خطا در صف‌بندی ردیف {row_index}: {e}", exc_info=True)
-            BULK_TASKS[tracking_code]["failures"].append({
+            task["failures"].append({
                 "row_index": row_index,
                 "title": item.get("check_request_title", "?"),
                 "error": str(e),
             })
 
-    BULK_TASKS[tracking_code]["queued_count"] = queued
+    task["queued_count"] = queued
 
     from keyboards import flow_type_kb
-    await message.answer(
-        f"✅ *{queued} ردیف چک در صف ثبت قرار گرفت.*\n\n"
+    await bot.send_message(
+        user_id,
+        f"✅ *{queued} از {total} ردیف چک در صف ثبت قرار گرفت.*\n\n"
         f"🔒 کد پیگیری دسته‌جمعی: `{tracking_code}`\n\n"
         f"⏳ ردیف‌ها یکی‌یکی ثبت می‌شوند و نتیجهٔ هر ردیف برایتان ارسال می‌شود.\n"
-        f"💳 پس از پایان همهٔ ردیف‌ها، گزارش مالی و یک فاکتور برای کل هزینهٔ سامانه ارسال می‌شود.",
+        f"💳 پس از پایان همهٔ ردیف‌ها، گزارش مالی و فاکتور تسویهٔ باقیماندهٔ هزینهٔ سامانه ارسال می‌شود.",
         parse_mode="Markdown",
         reply_markup=flow_type_kb,
     )
 
-    try:
-        from sheets import log_event
-        log_event(user_id=user_id, event_type="CHECK_BULK_SUBMIT",
-                  details=f"{queued}/{total} items, batch {tracking_code}")
-    except Exception:
-        pass
-
     if queued == 0:
         from bulk_submissions import finalize_bulk_batch
-        await finalize_bulk_batch(message.bot, user_id, tracking_code)
+        await finalize_bulk_batch(bot, user_id, tracking_code)
