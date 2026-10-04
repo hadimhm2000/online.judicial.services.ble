@@ -88,6 +88,7 @@ class Form(StatesGroup):
     ealam_vakalaht_stamp_amount = State()
     ealam_vakalaht_claim_type = State()
     ealam_vakalaht_claim_amount = State()
+    ealam_vakalaht_lawyer_fee_amount = State()  # ⭐ تمبر بر اساس حق‌الوکاله
     ealam_vakalaht_stamp_type = State()
     ealam_vakalaht_text_choice = State()  # انتخاب روش ورود شرح متن (تایپ مستقیم / فایل ورد)
     ealam_vakalaht_text = State()
@@ -103,6 +104,7 @@ class Form(StatesGroup):
     # =========================================================
     stamp_calc_claim_type = State()
     stamp_calc_claim_amount = State()
+    stamp_calc_lawyer_fee_amount = State()  # ⭐ تمبر بر اساس حق‌الوکاله
     stamp_calc_waiting_payment = State()
 
     # =========================================================

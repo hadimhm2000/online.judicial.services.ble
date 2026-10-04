@@ -65,6 +65,7 @@ async def _safe_register_case(**kwargs):
 
 
 from browser_helpers import (
+    is_concurrent_login_text,
     wait_for_sana_inquiry_loading,
     resilient_sleep, check_and_handle_expiry, soft_click_if_exists,
     goto_url_with_retry, human_delay, force_click_by_text,
@@ -1147,7 +1148,8 @@ async def _click_save_temp_with_retry(page, bot: Bot, user_id: int, max_retries:
         error_text = await _get_and_close_error_popup_text(page)
         if error_text:
             # بررسی session expiry در متن خطا
-            if ("منقضی" in error_text or "منقضي" in error_text or
+            if (is_concurrent_login_text(error_text) or
+                "منقضی" in error_text or "منقضي" in error_text or
                 "رایانه ای دیگر" in error_text or "اعتبار ورود" in error_text):
                 logging.warning(f"[EALAM] session expiry in error text after save")
                 await handle_session_expired(bot, user_id, page=page)
@@ -1492,6 +1494,12 @@ async def _click_preparation_with_retry(page, bot: Bot, user_id: int, max_retrie
             }''')
             await asyncio.sleep(2)
             return True
+
+        # ⭐ ورود همزمان (پاپ‌آپ باز یا بسته‌شده) → لاگین مجدد و تکرار همین مرحله
+        if await check_and_handle_expiry(page, bot, user_id):
+            logging.warning(f"[EALAM] نشست در آماده‌سازی تمدید شد (تلاش {attempt+1}) — تکرار مرحله")
+            await asyncio.sleep(3)
+            continue
 
         # اگر خطا بود، ببندیم و retry کنیم
         await notify_step_popup(page, "آماده‌سازی", bot=bot, user_id=user_id, where="EALAM")

@@ -36,6 +36,7 @@ from browser_helpers import SANA_SERVICE_DELAY_MAX_RETRIES
 from config import ADMIN_ID, temp_path
 from sheets import log_event
 from browser_helpers import (
+    is_concurrent_login_text,
     wait_for_sana_inquiry_loading,
     resilient_sleep, check_and_handle_expiry, soft_click_if_exists,
     goto_url_with_retry, human_delay, force_click_by_text,
@@ -1387,7 +1388,8 @@ async def _query_sana(page, ng_click: str, bot: Bot, user_id: int, is_legal: boo
 
         if popup_error:
             # بررسی session expiry در پاپ‌آپ
-            is_session_expired = ("منقضی" in popup_error or "منقضي" in popup_error or
+            is_session_expired = (is_concurrent_login_text(popup_error) or
+                                  "منقضی" in popup_error or "منقضي" in popup_error or
                                   "رایانه ای دیگر" in popup_error or "رایانه اي ديگر" in popup_error or
                                   "اعتبار ورود" in popup_error or "ورود قبلی" in popup_error)
 
@@ -1611,13 +1613,15 @@ async def _click_save_temp(page, bot: Bot, user_id: int, max_retries: int = 5):
             const popup = document.querySelector('.sweet-alert.showSweetAlert');
             if (!popup) return false;
             // بررسی session expiry در popup
+            // ⭐ متن پاپ‌آپ ورود همزمان داخل <p> است (h2 خالی) — هر دو خوانده شوند
             const h2 = popup.querySelector('h2');
-            if (h2) {
-                const text = h2.innerText;
-                if (text.includes("منقضی") || text.includes("منقضي") ||
-                    text.includes("رایانه ای دیگر") || text.includes("اعتبار ورود")) {
-                    return "session_expired";
-                }
+            const pEl = popup.querySelector('p');
+            const text = ((h2 ? h2.innerText : '') + ' ' + (pEl ? pEl.innerText : ''))
+                .replace(/ي/g, 'ی').replace(/ك/g, 'ک').replace(/\u200c/g, '');
+            if ((h2 ? h2.innerText : '').replace(/ي/g, 'ی').includes("منقضی") ||
+                text.includes("رایانه ای دیگر") || text.includes("رایانهای دیگر") ||
+                text.includes("اعتبار ورود") || text.includes("ورود قبلی")) {
+                return "session_expired";
             }
             const icon = popup.querySelector('.sa-icon.sa-success');
             return icon && window.getComputedStyle(icon).display !== 'none';
@@ -1636,7 +1640,8 @@ async def _click_save_temp(page, bot: Bot, user_id: int, max_retries: int = 5):
         error_text = await _get_error_text(page)
         if error_text:
             # بررسی آیا error متن session expiry دارد
-            if ("منقضی" in error_text or "منقضي" in error_text or
+            if (is_concurrent_login_text(error_text) or
+                "منقضی" in error_text or "منقضي" in error_text or
                 "رایانه ای دیگر" in error_text or "اعتبار ورود" in error_text):
                 logging.warning(f"[EZHHAR] session expiry in error text after save")
                 await handle_session_expired(bot, user_id, page=page)
@@ -2385,6 +2390,14 @@ async def _click_preparation(page, bot: Bot, user_id: int, max_retries: int = 3)
 
         if confirm_clicked:
             await asyncio.sleep(5)
+            # ⭐ پاپ‌آپ ورود همزمان معمولاً پس از تایید پاپ‌آپ «آیا اطلاعات...»
+            # ظاهر می‌شود (متن داخل <p>، h2 خالی) — قبلاً این‌جا چک نمی‌شد و
+            # پاپ‌آپ به‌عنوان «خطای دیگر» بسته و مرحله ناموفق اعلام می‌شد.
+            if await detect_concurrent_login_popup(page):
+                logging.warning(f"[EZHHAR] ورود همزمان/انقضای نشست پس از تایید آماده‌سازی (تلاش {attempt+1}) — لاگین مجدد")
+                await handle_session_expired(bot, user_id, page=page)
+                await asyncio.sleep(3)
+                continue
 
         # بررسی پاپ‌آپ موفقیت — «بستن» را بزنیم
         success = await page.evaluate('''() => {
@@ -2408,11 +2421,24 @@ async def _click_preparation(page, bot: Bot, user_id: int, max_retries: int = 3)
             await asyncio.sleep(2)
             return True
 
+        # ⭐ پیش از بستن هر پاپ‌آپ خطای دیگر: ورود همزمان (حتی اگر دیرتر ظاهر شده
+        # یا قبلاً بسته شده باشد) → لاگین مجدد و تکرار همین مرحله
+        if await check_and_handle_expiry(page, bot, user_id):
+            logging.warning(f"[EZHHAR] نشست در آماده‌سازی تمدید شد (تلاش {attempt+1}) — تکرار مرحله")
+            await asyncio.sleep(3)
+            continue
+
         # بستن هر پاپ‌آپ خطای دیگر
         await notify_step_popup(page, "آماده‌سازی", bot=bot, user_id=user_id, where="EZHHAR")
         await _close_popup(page)
         await asyncio.sleep(30)
         await _close_success_popup(page)
+
+    # ⭐ پیش از اعلام شکست نهایی، یک‌بار دیگر ورود همزمان بررسی شود؛ اگر بود
+    # پس از لاگین مجدد یک دور کامل دیگر تلاش می‌شود.
+    if await check_and_handle_expiry(page, bot, user_id):
+        logging.warning("[EZHHAR] نشست پس از آخرین تلاش آماده‌سازی تمدید شد — تلاش مجدد")
+        return await _click_preparation(page, bot, user_id, max_retries=1)
 
     return False
 

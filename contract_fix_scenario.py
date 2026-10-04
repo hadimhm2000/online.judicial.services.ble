@@ -628,6 +628,10 @@ async def _finish_check(page, bill_no: str, branch_code: str,
             await wait_for_horizontal_loading_bar(page, bot, user_id)
             await resilient_sleep(page, 5, bot, user_id)
             continue
+        # ⭐ ورود همزمان (متن داخل <p>، یا پاپ‌آپ بسته‌شده) → لاگین مجدد و تکرار
+        if await check_and_handle_expiry(page, bot, user_id):
+            await asyncio.sleep(3)
+            continue
         # پاپ‌آپ دیگر (خطا) → بستن و تلاش مجدد
         await notify_admin_step_error("آماده‌سازی", popup_text, bot=bot, user_id=user_id, where="CONTRACT-FIX")
         await page.evaluate('''() => {

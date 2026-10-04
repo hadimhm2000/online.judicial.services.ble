@@ -33,6 +33,109 @@ SESSION_LOGIN_REDIRECT_PREFIXES = [
 ]
 
 
+# ⭐ تشخیص پاپ‌آپ ورود همزمان در همهٔ سرویس‌ها/مراحل:
+# «با این شناسه «…»، در ساعت … ورود به سامانه در صفحه یا رایانه ای دیگر انجام
+# شده و اعتبار ورود قبلی ( ساعت … ) منقضی شده است»
+# در این پاپ‌آپ h2 خالی است و متن داخل <p> است؛ بررسی‌هایی که فقط h2 را
+# می‌خواندند یا املای ی/ک عربی و نیم‌فاصله را پوشش نمی‌دادند آن را از دست
+# می‌دادند. فقط عبارت‌های اختصاصی این پاپ‌آپ (نه «منقضی» تنها) استفاده می‌شوند.
+CONCURRENT_LOGIN_PHRASES = [
+    "رایانه ای دیگر", "رایانهای دیگر", "صفحه یا رایانه",
+    "اعتبار ورود", "ورود قبلی", "خطای دسترسی کاربر",
+]
+
+# تابع JS نرمال‌سازی + تطبیق (هم‌ارز error_catalog.normalize)
+_SANA_SESSION_JS_FN = r'''
+function __sanaNorm(t) {
+    return String(t || "").replace(/ي/g, "ی").replace(/ك/g, "ک")
+        .replace(/[‌‍‎‏]/g, "").replace(/\s+/g, " ").trim();
+}
+function __sanaIsConcurrentText(t) {
+    const n = __sanaNorm(t);
+    const phrases = %s;
+    return phrases.some(p => n.includes(p));
+}
+function __sanaVisiblePopupText() {
+    const popups = Array.from(document.querySelectorAll('.sweet-alert'));
+    for (const popup of popups) {
+        const st = window.getComputedStyle(popup);
+        if (st.display === 'none' || st.visibility === 'hidden') continue;
+        if (!popup.classList.contains('showSweetAlert') && !popup.classList.contains('visible')) continue;
+        const h2 = popup.querySelector('h2');
+        const p = popup.querySelector('p');
+        const txt = [h2 ? h2.innerText : '', p ? p.innerText : ''].filter(Boolean).join(' - ').trim();
+        return txt || (popup.innerText || "");
+    }
+    return "";
+}
+function __sanaErrorIconVisible() {
+    const popup = Array.from(document.querySelectorAll('.sweet-alert.showSweetAlert'))
+        .find(el => window.getComputedStyle(el).display !== 'none');
+    if (!popup) return false;
+    const icon = popup.querySelector('.sa-icon.sa-error');
+    return !!icon && window.getComputedStyle(icon).display !== 'none';
+}
+''' % (repr(CONCURRENT_LOGIN_PHRASES).replace("'", '"'))
+
+# ناظر دائمی صفحه: هر ۷۰۰ میلی‌ثانیه پاپ‌آپ ورود همزمان را بررسی می‌کند و در
+# window.__sanaSessionLost علامت می‌گذارد؛ حتی اگر کد عمومیِ «بستن پاپ‌آپ» آن را
+# پیش از بررسی ببندد، اولین بررسی بعدی (check_and_handle_expiry و ...) آن را
+# می‌بیند و لاگین مجدد انجام می‌شود.
+SANA_SESSION_WATCHER_JS = '''(() => {
+    if (window.__sanaSessionWatcher) return;
+    window.__sanaSessionWatcher = true;
+    %s
+    window.__sanaSessionLost = window.__sanaSessionLost || null;
+    window.__sanaSessionHandledText = window.__sanaSessionHandledText || null;
+    setInterval(() => {
+        try {
+            const txt = __sanaVisiblePopupText();
+            if (!txt) { window.__sanaSessionHandledText = null; return; }
+            if (__sanaIsConcurrentText(txt) && txt !== window.__sanaSessionHandledText) {
+                window.__sanaSessionLost = {text: txt, at: Date.now()};
+            }
+        } catch (e) {}
+    }, 700);
+})();''' % _SANA_SESSION_JS_FN
+
+
+def is_concurrent_login_text(text) -> bool:
+    """آیا متن پاپ‌آپ/خطا، پیام ورود همزمان (انقضای نشست) ثناست؟ (مقاوم به ي/ک و نیم‌فاصله)"""
+    if not text:
+        return False
+    from error_catalog import normalize
+    norm = normalize(text)
+    return any(p in norm for p in CONCURRENT_LOGIN_PHRASES)
+
+
+async def install_session_watcher(context=None, page=None) -> None:
+    """نصب ناظر پاپ‌آپ ورود همزمان روی context (برای ناوبری‌های بعدی) و/یا صفحهٔ فعلی."""
+    if context is not None:
+        try:
+            await context.add_init_script(SANA_SESSION_WATCHER_JS)
+        except Exception as e:
+            logging.warning(f"install_session_watcher: add_init_script failed: {e}")
+    if page is not None:
+        try:
+            await page.evaluate(SANA_SESSION_WATCHER_JS)
+        except Exception:
+            pass
+
+
+async def _consume_session_lost_flag(page) -> Optional[str]:
+    """خواندن و پاک‌کردن علامت ناظر؛ متن پاپ‌آپ را برمی‌گرداند (یا None)."""
+    try:
+        return await page.evaluate('''() => {
+            const f = window.__sanaSessionLost;
+            if (!f) return null;
+            window.__sanaSessionLost = null;
+            window.__sanaSessionHandledText = f.text;
+            return f.text || "ورود همزمان";
+        }''')
+    except Exception:
+        return None
+
+
 # پیام خطای کدملی اشتباه / عدم ثبت‌نام ثنا
 NATIONAL_ID_ERROR_MSG = (
     "❌ *خطا در پردازش کدملی*\n\n"
@@ -354,6 +457,22 @@ async def _restore_main_page_after_login(page):
             except Exception as e:
                 logging.warning(f"handle_session_expired: could not dismiss popup on main page: {e}")
 
+    # ⭐ علامت ناظر پاپ‌آپ ورود همزمان روی همهٔ تب‌ها پاک شود تا همین پاپ‌آپ
+    # (که حالا رسیدگی شده) باعث لاگین مجدد تکراری نشود.
+    pages = []
+    try:
+        if runtime_state.browser_context is not None:
+            pages = list(runtime_state.browser_context.pages)
+    except Exception:
+        pages = []
+    if page is not None and page not in pages:
+        pages.append(page)
+    for pg in pages:
+        try:
+            await _consume_session_lost_flag(pg)
+        except Exception:
+            pass
+
 async def detect_concurrent_login_popup(page) -> bool:
     """
     تشخیص پاپ‌آپ ورود همزمان (concurrent login) در سامانه ثنا.
@@ -371,26 +490,24 @@ async def detect_concurrent_login_popup(page) -> bool:
 
     بازگشت: True اگر پاپ‌آپ ورود همزمان ظاهر شده باشد
     """
-    is_concurrent = await page.evaluate('''() => {
-        const popup = document.querySelector('.sweet-alert.showSweetAlert');
-        if (!popup) return false;
-
-        // بررسی آیکون خطا
-        const errorIcon = popup.querySelector('.sa-icon.sa-error');
-        if (!errorIcon) return false;
-        if (window.getComputedStyle(errorIcon).display === 'none') return false;
-
-        // بررسی متن پاپ‌آپ
-        const popupText = popup.innerText || "";
-        const isConcurrent =
-            popupText.includes("رایانه ای دیگر") ||
-            popupText.includes("رایانه ای ديگر") ||
-            (popupText.includes("اعتبار ورود") && popupText.includes("منقضی")) ||
-            popupText.includes("منقضي شده");
-
-        return isConcurrent;
-    }''')
-    return bool(is_concurrent)
+    try:
+        is_concurrent = await page.evaluate("() => {" + _SANA_SESSION_JS_FN + """
+            const t = __sanaVisiblePopupText();
+            if (__sanaIsConcurrentText(t)) return true;
+            return __sanaErrorIconVisible() && __sanaNorm(t).includes("منقضی شده");
+        }""")
+    except Exception:
+        is_concurrent = False
+    if is_concurrent:
+        # پاپ‌آپ هم‌اکنون باز است؛ علامت ناظر را مصرف می‌کنیم تا تکراری نشود.
+        await _consume_session_lost_flag(page)
+        return True
+    # ⭐ پاپ‌آپ ممکن است پیش‌تر توسط کد عمومی «بستن پاپ‌آپ» بسته شده باشد
+    flagged = await _consume_session_lost_flag(page)
+    if flagged:
+        logging.warning(f"[SESSION] پاپ‌آپ ورود همزمان (بسته‌شده) از ناظر صفحه شناسایی شد: {flagged[:120]}")
+        return True
+    return False
 
 
 class SanaSystemDownError(Exception):
@@ -777,7 +894,14 @@ async def check_and_handle_expiry(page, bot: Bot, user_id: int, check_body_text:
         if (isLoginPage) return "login_redirect";
         return null;
     }''', check_body_text)
-    
+
+    # ⭐ پاپ‌آپ ورود همزمان با متن داخل <p> (h2 خالی) یا املای عربی/نیم‌فاصله،
+    # و پاپ‌آپی که قبل از این بررسی توسط کد دیگری بسته شده (علامت ناظر صفحه).
+    if not is_expired:
+        await install_session_watcher(page=page)
+        if await detect_concurrent_login_popup(page):
+            is_expired = "concurrent_login_popup"
+
     if is_expired:
         logging.warning(f"⚠️ انقضای/اعلان نشست شناسایی شد (نوع: {is_expired}) — شروع فرآیند لاگین مجدد مدیر...")
         await handle_session_expired(bot, user_id, page=page)

@@ -116,6 +116,7 @@ from browser_helpers import SANA_SERVICE_DELAY_MAX_RETRIES
 from config import ADMIN_ID, temp_path
 from sheets import log_event
 from browser_helpers import (
+    is_concurrent_login_text,
     wait_for_sana_inquiry_loading,
     resilient_sleep, check_and_handle_expiry, soft_click_if_exists,
     goto_url_with_retry, human_delay, force_click_by_text,
@@ -1111,6 +1112,11 @@ async def process_check_task(data: dict, bot: Bot):
                     await asyncio.sleep(2)
                     confirm_ok = True
                     break
+
+                # ⭐ ورود همزمان (متن داخل <p>، یا پاپ‌آپ بسته‌شده) → لاگین مجدد و تکرار
+                if await check_and_handle_expiry(sana_page, bot, user_id):
+                    await asyncio.sleep(3)
+                    continue
 
                 # هر پاپ‌آپ دیگری (خطای سامانه غیر از ورود همزمان) → طبق
                 # مشخصات، دوباره «تایید اطلاعات» را انتخاب کن
@@ -2243,7 +2249,8 @@ def _sana_popup_kind(popup_text: str) -> str:
     """دسته‌بندی متن پاپ‌آپ استعلام ثنا."""
     if not popup_text:
         return ""
-    if ("منقضی" in popup_text or "منقضي" in popup_text or
+    if (is_concurrent_login_text(popup_text) or
+            "منقضی" in popup_text or "منقضي" in popup_text or
             "رایانه ای دیگر" in popup_text or "رایانه اي ديگر" in popup_text or
             "اعتبار ورود" in popup_text or "ورود قبلی" in popup_text or "ورود قبلي" in popup_text):
         return "session"
