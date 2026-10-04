@@ -121,8 +121,18 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
     خروجی: True اگر فاکتور با موفقیت ارسال شد (در این صورت فراخواننده
     باید state را روی waiting_for_*_prepay بگذارد)، False در خطا.
     """
-    amount_toman = get_prepay_amount_toman(service_key)
-    amount_rial = amount_toman * 10  # تضمین‌شده ≥ MIN_INVOICE_AMOUNT_RIAL
+    base_toman = get_prepay_amount_toman(service_key)
+    # ⭐ دستور کارفرما: مانده/بستانکاری کاربر از همین فاکتور پیش‌پرداخت هم
+    # کسر می‌شود. رکورد مانده دست‌نخورده می‌ماند و register_prepaid آن را
+    # کنار مبلغ پرداخت‌شده نگه می‌دارد؛ پس در فاکتور نهایی جمعِ «پرداختی +
+    # مانده» (برابر همان پیش‌پرداخت کامل) کسر می‌شود و چیزی دوبار کم نمی‌شود.
+    # (اگر مانده کل پیش‌پرداخت را بپوشاند، cover_prepay_from_credit قبلاً
+    # این مرحله را حذف کرده است.)
+    credit_rial = get_credit_rial(user_id)
+    amount_rial = max(base_toman * 10 - credit_rial, MIN_INVOICE_AMOUNT_RIAL)
+    amount_rial = (amount_rial // 10) * 10
+    amount_toman = amount_rial // 10
+    credit_used_rial = base_toman * 10 - amount_rial if credit_rial > 0 else 0
 
     # ═══ ارسال فاکتور بله (sendInvoice) — الگوی اثبات‌شده پروژه ═══
     try:
@@ -139,10 +149,10 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
                 "title": f"پیش پرداخت {service_label}",
                 "description": (
                     f"این مبلغ پیش پرداخت {service_label} می باشد\n"
-                    f"مبلغ: {amount_toman:,} تومان ({amount_rial:,} ریال)"
-                    + (f"\nمانده/بستانکاری شما: {get_credit_rial(user_id):,} ریال "
-                       f"(در فاکتور نهایی کسر می‌شود)"
-                       if get_credit_rial(user_id) > 0 else "")
+                    + (f"پیش‌پرداخت: {base_toman:,} تومان − مانده/بستانکاری شما: "
+                       f"{credit_used_rial // 10:,} تومان\n"
+                       if credit_used_rial > 0 else "")
+                    + f"مبلغ: {amount_toman:,} تومان ({amount_rial:,} ریال)"
                 ),
                 "payload": invoice_payload,
                 "provider_token": BALE_WALLET_TOKEN,
@@ -174,11 +184,10 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
         return False
 
     # ⭐ مانده/بستانکاری کاربر (مبالغ قابل بازگشت/کسر) در پیام پیش‌پرداخت درج می‌شود
-    credit_rial = get_credit_rial(user_id)
     credit_line = (
-        f"💵 مانده/بستانکاری شما: *{credit_rial:,} ریال* — این مبلغ همراه با "
-        f"پیش‌پرداخت، در فاکتور نهایی از هزینهٔ کل کسر می‌گردد.\n\n"
-        if credit_rial > 0 else "")
+        f"💵 مبلغ پیش‌پرداخت {base_toman:,} تومان است؛ "
+        f"{credit_used_rial // 10:,} تومان از مانده/بستانکاری شما از آن کسر شد.\n\n"
+        if credit_used_rial > 0 else "")
 
     # ═══ پیام راهنما — عیناً متن دستور کارفرما ═══
     try:
@@ -205,8 +214,9 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
             f"🧾 [PREPAY] فاکتور پیش‌پرداخت {service_label} ارسال شد\n"
             f"👤 کاربر: {user_id}\n"
             f"💰 مبلغ: {amount_toman:,} تومان — در انتظار پرداخت"
-            + (f"\n💵 مانده/بستانکاری کاربر: {credit_rial:,} ریال (در فاکتور نهایی کسر می‌شود)"
-               if credit_rial > 0 else ""))
+            + (f"\n💵 {credit_used_rial // 10:,} تومان از مانده/بستانکاری کاربر "
+               f"از پیش‌پرداخت {base_toman:,} تومانی کسر شد"
+               if credit_used_rial > 0 else ""))
     except Exception:
         pass
 
