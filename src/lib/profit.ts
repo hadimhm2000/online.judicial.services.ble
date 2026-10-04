@@ -98,7 +98,13 @@ export function computeCaseProfit(c: ProfitInput): ProfitBreakdown {
   let systemCost = 0;
   let exact = true;
 
-  if (remainingPaid) {
+  // پرونده‌ای که هیچ مبلغی برایش ثبت نشده (کاربر معاف/مدیر با fee=0، یا
+  // تسویهٔ کامل از مانده در پرونده‌های قدیمی) درآمدی در پنل ندارد؛ کسر
+  // هزینهٔ سامانه از آن سود را به‌اشتباه منفی می‌کرد. مثل ADMIN_MANUAL،
+  // این پرونده‌ها در سود لحاظ نمی‌شوند.
+  const noRecordedRevenue = remaining === 0 && prepay === 0;
+
+  if (remainingPaid && !noRecordedRevenue) {
     const est = estimateSystemCost(c.serviceType, remaining + prepay, c.systemCost);
     systemCost = est.cost;
     exact = est.exact;
@@ -113,7 +119,7 @@ export function computeCaseProfit(c: ProfitInput): ProfitBreakdown {
     profit: prepay + remainingProfit,
     systemCost,
     revenue: prepay + (remainingPaid ? remaining : 0),
-    remainingPaid,
+    remainingPaid: remainingPaid && !noRecordedRevenue,
     exactSystemCost: exact,
   };
 }

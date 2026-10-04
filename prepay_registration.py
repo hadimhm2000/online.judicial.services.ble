@@ -321,9 +321,14 @@ def pop_prepaid(user_id: int):
             if not isinstance(stash, dict):
                 stash = {}
                 runtime_state.consumed_prepay_for_panel = stash
-            # مبنای سود پنل فقط پیش‌پرداختِ واقعاً پرداخت‌شده است (نه مانده)
-            amount_rial = _split_record(prepay)[0] if "prepay_paid_rial" in prepay \
-                else int(prepay.get("amount_rial", 0) or 0)
+            # مبنای سود پنل: کل مبلغ رکورد (پیش‌پرداخت + مانده/بستانکاری) — مانده
+            # هم پولی است که قبلاً از کاربر دریافت شده (مثلاً نصف پیش‌پرداختِ
+            # نگه‌داشته‌شده از درخواست قبلی) و روی هیچ پرونده‌ای ثبت نشده؛ اگر
+            # فقط پیش‌پرداخت ثبت می‌شد، پرونده‌ای که با مانده تسویه شده بود
+            # سود منفی (−هزینهٔ سامانه) نشان می‌داد. adjust_final_fee_with_prepay
+            # این مبلغ را به «مقدار واقعاً کسرشده» اصلاح می‌کند تا باقی‌ماندهٔ
+            # مانده که به پروندهٔ بعدی می‌رود دوبار شمرده نشود.
+            amount_rial = int(prepay.get("amount_rial", 0) or 0)
             stash[user_id] = {
                 "amount_toman": amount_rial // 10,
                 "paid_at": prepay.get("paid_at"),
@@ -359,6 +364,13 @@ def adjust_final_fee_with_prepay(user_id: int, final_fee_rial: int):
     prepay["leftover_rial"] = leftover
     # ⭐ رفع باگ: اگر مانده بیشتر از هزینه بود، باقی‌مانده حفظ می‌شود تا در
     # پروندهٔ بعدی کسر گردد (قبلاً کل رکورد حذف و مازاد از بین می‌رفت).
+    # ⭐ مبنای سود پنل = مبلغی که واقعاً از هزینهٔ این پرونده کسر شد
+    try:
+        stash = getattr(runtime_state, "consumed_prepay_for_panel", None)
+        if isinstance(stash, dict) and user_id in stash:
+            stash[user_id]["amount_toman"] = applied // 10
+    except Exception as ex:
+        logging.warning(f"[REG-PREPAY] اصلاح مبلغ پیش‌پرداخت پنل ناموفق: {ex}")
     if leftover > 0:
         runtime_state.prepaid_registrations[user_id] = {
             "amount_toman": leftover // 10,

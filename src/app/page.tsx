@@ -11,7 +11,7 @@ import {
 } from '@/components/ui/select';
 import {
   Search, RefreshCw, Download, Shield, Bell, Filter,
-  LayoutDashboard, FileCheck2, FileWarning, CreditCard, Send, AlertTriangle, ListChecks, XCircle, Activity, Moon, Sun, Play, Pause, Zap, ChevronDown, ChevronLeft, CalendarDays, Maximize2, Minimize2, Trash2, Clock, ArrowUp, Printer, Keyboard, Wifi, WifiOff, FileSpreadsheet, Volume2, VolumeX, MessageSquare, ClipboardCheck, Paperclip, Check, Wallet,
+  LayoutDashboard, FileCheck2, FileWarning, CreditCard, Send, AlertTriangle, ListChecks, XCircle, Activity, Moon, Sun, Play, Pause, Zap, ChevronDown, ChevronLeft, CalendarDays, Maximize2, Minimize2, Trash2, Clock, ArrowUp, Printer, Keyboard, Wifi, WifiOff, FileSpreadsheet, Volume2, VolumeX, MessageSquare, ClipboardCheck, Paperclip, Check, Wallet, Settings2, Users,
 } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
@@ -39,6 +39,12 @@ const CreditsDialog = React.lazy(() => import('@/components/admin/credits-dialog
 // ⭐ v1.8 — پرداخت‌های کارت‌به‌کارت + ریست داده‌ها
 const CardPaymentsDialog = React.lazy(() => import('@/components/admin/card-payments-dialog').then(m => ({ default: m.default })));
 const ResetDataDialog = React.lazy(() => import('@/components/admin/reset-data-dialog').then(m => ({ default: m.default })));
+// ⭐ v1.9 — تنظیمات ربات، رضایت/قیف، ساعات کاری و کاربران معاف
+// (قبلاً فقط به admin-panel.tsx وصل شده بودند که در صفحهٔ زنده رندر نمی‌شود)
+const BotSettingsDialog = React.lazy(() => import('@/components/admin/bot-settings-dialog').then(m => ({ default: m.default })));
+const InsightsDialog = React.lazy(() => import('@/components/admin/insights-dialog').then(m => ({ default: m.default })));
+const WorkingHoursDialog = React.lazy(() => import('@/components/admin/working-hours-dialog').then(m => ({ default: m.default })));
+const ExemptUsersDialog = React.lazy(() => import('@/components/admin/exempt-users-dialog').then(m => ({ default: m.default })));
 
 import { ServicePieChart, StatusOverviewChart, RevenueChart } from '@/components/admin/charts';
 import TrendLineChart from '@/components/admin/trend-line-chart';
@@ -235,6 +241,10 @@ export default function AdminPanel() {
   const [creditsPrefill, setCreditsPrefill] = useState<{ baleUserId?: string; fullName?: string; caseId?: string; trackingCode?: string | null } | null>(null);
   const [cardPaymentsOpen, setCardPaymentsOpen] = useState(false);
   const [resetDataOpen, setResetDataOpen] = useState(false);
+  const [botSettingsOpen, setBotSettingsOpen] = useState(false);
+  const [insightsOpen, setInsightsOpen] = useState(false);
+  const [workingHoursOpen, setWorkingHoursOpen] = useState(false);
+  const [exemptUsersOpen, setExemptUsersOpen] = useState(false);
   const [batchConfirmSending, setBatchConfirmSending] = useState(false);
   const [batchConfirmDone, setBatchConfirmDone] = useState(false);
 
@@ -794,6 +804,46 @@ export default function AdminPanel() {
                     {new Intl.NumberFormat('fa-IR').format(stats?.pendingCardPaymentCount ?? 0)}
                   </span>
                 )}
+              </Button>
+
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-9 w-9 p-0 text-sky-600 hover:text-sky-700 hover:bg-sky-50 dark:hover:bg-sky-900/20"
+                onClick={() => setBotSettingsOpen(true)}
+                title="تنظیمات ربات (تعرفه‌ها و متن‌ها)"
+              >
+                <Settings2 className="h-4 w-4" />
+              </Button>
+
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-9 w-9 p-0 text-teal-600 hover:text-teal-700 hover:bg-teal-50 dark:hover:bg-teal-900/20"
+                onClick={() => setInsightsOpen(true)}
+                title="رضایت کاربران و قیف تبدیل"
+              >
+                <Filter className="h-4 w-4" />
+              </Button>
+
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-9 w-9 p-0 text-amber-600 hover:text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-900/20"
+                onClick={() => setWorkingHoursOpen(true)}
+                title="ساعات کاری"
+              >
+                <Clock className="h-4 w-4" />
+              </Button>
+
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-9 w-9 p-0 text-violet-600 hover:text-violet-700 hover:bg-violet-50 dark:hover:bg-violet-900/20"
+                onClick={() => setExemptUsersOpen(true)}
+                title="کاربران معاف"
+              >
+                <Users className="h-4 w-4" />
               </Button>
 
               <Button
@@ -1566,6 +1616,22 @@ export default function AdminPanel() {
       />
       </Suspense>
 
+      <Suspense fallback={<div className="animate-pulse h-8 w-48 rounded-lg bg-muted" />}>
+      <BotSettingsDialog open={botSettingsOpen} onOpenChange={setBotSettingsOpen} />
+      </Suspense>
+
+      <Suspense fallback={<div className="animate-pulse h-8 w-48 rounded-lg bg-muted" />}>
+      <InsightsDialog open={insightsOpen} onOpenChange={setInsightsOpen} />
+      </Suspense>
+
+      <Suspense fallback={<div className="animate-pulse h-8 w-48 rounded-lg bg-muted" />}>
+      <WorkingHoursDialog open={workingHoursOpen} onOpenChange={setWorkingHoursOpen} />
+      </Suspense>
+
+      <Suspense fallback={<div className="animate-pulse h-8 w-48 rounded-lg bg-muted" />}>
+      <ExemptUsersDialog open={exemptUsersOpen} onOpenChange={setExemptUsersOpen} />
+      </Suspense>
+
       {/* 14. Confirm Send Dialog - dialog-premium, animate-float icon, gradient preview */}
       <Dialog open={confirmSendOpen} onOpenChange={setConfirmSendOpen}>
         <DialogContent className="max-w-sm p-0 dialog-premium" dir="rtl">
@@ -1694,6 +1760,10 @@ export default function AdminPanel() {
         { id: 'google-sheets', label: 'همگام‌سازی گوگل شیت', icon: FileSpreadsheet, group: 'تنظیمات', onSelect: () => setSheetsPanelOpen(true) },
         { id: 'credits', label: 'مبالغ قابل بازگشت / کسر', icon: Wallet, group: 'تنظیمات', onSelect: () => { setCreditsPrefill(null); setCreditsOpen(true); } },
         { id: 'card-payments', label: 'پرداخت‌های کارت به کارت', icon: CreditCard, group: 'تنظیمات', onSelect: () => setCardPaymentsOpen(true) },
+        { id: 'bot-settings', label: 'تنظیمات ربات (تعرفه‌ها و متن‌ها)', icon: Settings2, group: 'تنظیمات', onSelect: () => setBotSettingsOpen(true) },
+        { id: 'insights', label: 'رضایت کاربران و قیف تبدیل', icon: Filter, group: 'تنظیمات', onSelect: () => setInsightsOpen(true) },
+        { id: 'working-hours', label: 'ساعات کاری', icon: Clock, group: 'تنظیمات', onSelect: () => setWorkingHoursOpen(true) },
+        { id: 'exempt-users', label: 'کاربران معاف', icon: Users, group: 'تنظیمات', onSelect: () => setExemptUsersOpen(true) },
         { id: 'reset-data', label: 'ریست داده‌ها (پاک کردن پرونده‌ها و آمار)', icon: Trash2, group: 'تنظیمات', onSelect: () => setResetDataOpen(true) },
       ] as CommandAction[]} />
 
