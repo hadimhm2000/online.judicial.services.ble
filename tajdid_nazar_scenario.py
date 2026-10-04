@@ -56,6 +56,7 @@ from browser_helpers import SANA_SERVICE_DELAY_MAX_RETRIES
 from config import ADMIN_ID, temp_path
 from sheets import log_event
 from browser_helpers import (
+    is_concurrent_login_text,
     wait_for_sana_inquiry_loading,
     resilient_sleep, check_and_handle_expiry,
     goto_url_with_retry, human_delay, safe_click_by_text,
@@ -526,6 +527,8 @@ def _is_session_error_text(text) -> bool:
     """آیا متن خطا نشانه ورود همزمان/انقضای نشست است؟ (مقاوم در برابر ورودی غیرمتنی)"""
     if not text or not isinstance(text, str):
         return False
+    if is_concurrent_login_text(text):
+        return True
     return any(k in text for k in (
         "منقضی", "منقضي",
         "رایانه ای دیگر", "رایانه اي ديگر", "رایانهٔ دیگر",
@@ -2096,8 +2099,13 @@ async def _click_save_temp(page, bot: Bot, user_id: int, max_retries: int = 5):
             if (!popup) return null;
             const h2 = popup.querySelector('h2');
             const h2Text = h2 ? h2.innerText : '';
-            if (h2Text.includes("منقضی") || h2Text.includes("منقضي") ||
-                h2Text.includes("رایانه ای دیگر") || h2Text.includes("اعتبار ورود")) {
+            // ⭐ متن پاپ‌آپ ورود همزمان داخل <p> است (h2 خالی) — هر دو خوانده شوند
+            const pEl = popup.querySelector('p');
+            const sessText = (h2Text + ' ' + (pEl ? pEl.innerText : ''))
+                .replace(/ي/g, 'ی').replace(/ك/g, 'ک').replace(/\u200c/g, '');
+            if (h2Text.replace(/ي/g, 'ی').includes("منقضی") ||
+                sessText.includes("رایانه ای دیگر") || sessText.includes("رایانهای دیگر") ||
+                sessText.includes("اعتبار ورود") || sessText.includes("ورود قبلی")) {
                 return "session_expired";
             }
             const icon = popup.querySelector('.sa-icon.sa-success');

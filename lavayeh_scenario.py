@@ -64,6 +64,7 @@ async def _safe_register_case(
 
 
 from browser_helpers import (
+    is_concurrent_login_text,
     resilient_sleep, check_and_handle_expiry, soft_click_if_exists,
     goto_url_with_retry, human_delay, force_click_by_text,
     safe_click_by_text, safe_type, wait_for_angular_idle,
@@ -2084,7 +2085,8 @@ async def _click_save_temp_with_retry(page, bot: Bot, user_id: int, max_retries:
         if error_text:
             # بررسی session expiry در متن خطا — این مورد واقعاً موقتی است و
             # با تمدید نشست دوباره تلاش می‌کنیم
-            if ("منقضی" in error_text or "منقضي" in error_text or
+            if (is_concurrent_login_text(error_text) or
+                "منقضی" in error_text or "منقضي" in error_text or
                 "رایانه ای دیگر" in error_text or "اعتبار ورود" in error_text):
                 logging.warning(f"[LAVAYEH] session expiry in error text after save")
                 await handle_session_expired(bot, user_id, page=page)
@@ -2805,6 +2807,12 @@ async def _click_preparation_with_retry(page, bot: Bot, user_id: int, max_retrie
                 break  # retry از ابتدا
 
             else:
+                # ⭐ ورود همزمان با h2 خالی (متن در <p>) ممکن است «ناشناخته» دیده شود
+                if await detect_concurrent_login_popup(page):
+                    logging.warning(f"[LAVAYEH] ورود همزمان/انقضای نشست قبل از تأیید آماده‌سازی (تلاش {attempt+1}) — تمدید نشست")
+                    await handle_session_expired(bot, user_id, page=page)
+                    await asyncio.sleep(3)
+                    break
                 # پاپ‌آپ ناشناخته — بستن و تلاش مجدد
                 await notify_step_popup(page, "آماده‌سازی", bot=bot, user_id=user_id, where="LAVAYEH")
                 logging.warning(f"[LAVAYEH] پاپ‌آپ ناشناخته: {popup_info['h2']} (تلاش {attempt+1})")

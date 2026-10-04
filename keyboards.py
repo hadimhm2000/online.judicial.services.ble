@@ -20,6 +20,9 @@ WALLET_MENU_TEXT = "👛 کیف پول"
 BACK_TO_MAIN_TEXT = "🔙 بازگشت به منوی اصلی"
 # ⭐ محاسبه هزینه دادرسی (رایگان — ۱۴۰۵/۰۷)
 COURT_FEE_MENU_TEXT = "🧾 محاسبه هزینه دادرسی"
+# ⭐ محاسبه تمبر بر اساس حق‌الوکاله (۱۴۰۵/۰۷) — بخش محاسبه تمبر و اعلام وکالت
+STAMP_BY_LAWYER_FEE_TEXT = "3️⃣ محاسبه تمبر بر اساس حق‌الوکاله"
+STAMP_BY_LAWYER_FEE_EALAM_TEXT = "4️⃣ محاسبه تمبر بر اساس حق‌الوکاله"
 
 
 def get_flow_type_kb(user_id: int) -> ReplyKeyboardMarkup:
@@ -36,8 +39,9 @@ def get_flow_type_kb(user_id: int) -> ReplyKeyboardMarkup:
         [KeyboardButton(text="✍️ ثبت لایحه"), KeyboardButton(text="📄 ثبت اظهارنامه")],
         [KeyboardButton(text=_tn), KeyboardButton(text=_chk)],
         [KeyboardButton(text="💰 محاسبه تمبر"), KeyboardButton(text="🗺️ ارزش منطقه‌ای")],
-        [KeyboardButton(text="🔧 ابزار فایل"), KeyboardButton(text=DAMAGES_MENU_TEXT)],
-        [KeyboardButton(text=COURT_FEE_MENU_TEXT)],
+        # ⭐ جای «ابزار فایل» و «محاسبه هزینه دادرسی» جابه‌جا شد (۱۴۰۵/۰۷)
+        [KeyboardButton(text=COURT_FEE_MENU_TEXT), KeyboardButton(text=DAMAGES_MENU_TEXT)],
+        [KeyboardButton(text="🔧 ابزار فایل")],
         [KeyboardButton(text=HISTORY_MENU_TEXT), KeyboardButton(text=WALLET_MENU_TEXT)],
         # ⭐ گزینهٔ «شروع مجدد» (۱۴۰۵/۰۶) — صرفاً کاربر را به منوی اصلی برمی‌گرداند
         # (از هر مرحله‌ای از هر فلوی — هندلر سراسری در handlers.py)
@@ -69,8 +73,8 @@ flow_type_kb = ReplyKeyboardMarkup(
         [KeyboardButton(text="🔍 استعلام"), KeyboardButton(text="📦 استعلام (چند مورد همزمان)")],
         [KeyboardButton(text="✍️ ثبت لایحه"), KeyboardButton(text="📄 ثبت اظهارنامه")],
         [KeyboardButton(text="⚖️ دعاوی اعتراضی"), KeyboardButton(text="🏦 ثبت دادخواست")],
-        [KeyboardButton(text="💰 محاسبه تمبر"), KeyboardButton(text="🔧 ابزار فایل")],
-        [KeyboardButton(text=DAMAGES_MENU_TEXT), KeyboardButton(text=COURT_FEE_MENU_TEXT)],
+        [KeyboardButton(text="💰 محاسبه تمبر"), KeyboardButton(text=COURT_FEE_MENU_TEXT)],
+        [KeyboardButton(text=DAMAGES_MENU_TEXT), KeyboardButton(text="🔧 ابزار فایل")],
         [KeyboardButton(text=HISTORY_MENU_TEXT), KeyboardButton(text=WALLET_MENU_TEXT)],
         # ⭐ گزینهٔ «شروع مجدد» — بازگشت صرف به منوی اصلی (۱۴۰۵/۰۶)
         [KeyboardButton(text="🔄 شروع مجدد")],
@@ -452,6 +456,7 @@ ealam_claim_type_kb = ReplyKeyboardMarkup(
         [KeyboardButton(text="1️⃣ دعوی مالی است و مبلغ خواسته را می‌دانم")],
         [KeyboardButton(text="2️⃣ دعوی غیر مالی است")],
         [KeyboardButton(text="3️⃣ عدم نیاز به تمبر")],
+        [KeyboardButton(text=STAMP_BY_LAWYER_FEE_EALAM_TEXT)],
         [KeyboardButton(text="🔙 بازگشت")]
     ],
     resize_keyboard=True
@@ -489,7 +494,8 @@ ealam_confirm_kb = ReplyKeyboardMarkup(
 stamp_calc_claim_type_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="1️⃣ دعوی مالی است و مبلغ خواسته را می‌دانم")],
-        [KeyboardButton(text="2️⃣ دعوی غیر مالی است")]
+        [KeyboardButton(text="2️⃣ دعوی غیر مالی است")],
+        [KeyboardButton(text=STAMP_BY_LAWYER_FEE_TEXT)],
     ],
     resize_keyboard=True
 )

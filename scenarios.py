@@ -70,6 +70,7 @@ from keyboards import admin_login_kb, confirm_single_kb, confirm_cart_kb
 from browser_helpers import (
     human_delay, force_click_by_text, soft_click_if_exists, human_type,
     handle_session_expired, wait_for_angular_idle, check_and_handle_expiry,
+    install_session_watcher,
     check_and_handle_load_error, resilient_sleep, goto_url_with_retry,
     safe_click_by_text, safe_type, NavigationResetError, NationalIdError,
     wait_for_horizontal_loading_bar, is_login_redirect_url,
@@ -2933,6 +2934,8 @@ async def _launch_fresh_browser(bot: Bot, wait_login: bool = True):
     runtime_state.browser_context = await browser.new_context(
         viewport={'width': 1366, 'height': 768}
     )
+    # ⭐ ناظر پاپ‌آپ ورود همزمان روی همهٔ تب‌ها/ناوبری‌ها
+    await install_session_watcher(context=runtime_state.browser_context)
     runtime_state.sana_page = await runtime_state.browser_context.new_page()
     await _attach_debug_listeners(runtime_state.sana_page)
 

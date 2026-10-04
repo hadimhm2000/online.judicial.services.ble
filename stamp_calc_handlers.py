@@ -17,8 +17,9 @@ from aiogram.types import Message
 
 import runtime_state
 from states import Form
-from keyboards import restart_kb, stamp_calc_claim_type_kb, back_only_kb
-from stamp_duty import calculate_stamp_duty, format_result_fa
+from keyboards import restart_kb, stamp_calc_claim_type_kb, back_only_kb, STAMP_BY_LAWYER_FEE_TEXT
+from stamp_duty import (calculate_stamp_duty, format_result_fa,
+                        calculate_stamp_from_lawyer_fee, format_lawyer_fee_result_fa)
 
 stamp_calc_router = Router()
 
@@ -68,6 +69,14 @@ async def stamp_calc_entry(message: Message, state: FSMContext):
 @stamp_calc_router.message(Form.stamp_calc_claim_type)
 async def stamp_calc_claim_type_handler(message: Message, state: FSMContext):
     text = message.text or ""
+
+    # ⭐ محاسبه تمبر بر اساس حق‌الوکاله (پیش از بررسی «مالی»)
+    if text == STAMP_BY_LAWYER_FEE_TEXT or "حق‌الوکاله" in text or "حق الوکاله" in text:
+        await message.answer(
+            "💵 لطفاً *مبلغ حق‌الوکاله* را به *ریال* وارد فرمایید:\n_(فقط عدد)_",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.stamp_calc_lawyer_fee_amount)
+        return
 
     if "2️⃣" in text or "غیر مالی" in text:
         # دعوی غیر مالی — بدون پرداخت
@@ -124,6 +133,35 @@ async def stamp_calc_amount_handler(message: Message, state: FSMContext, bot: Bo
     await message.answer(
         f"✅ *نتیجه محاسبه تمبر مالیاتی:*\n\n{result_text}",
         reply_markup=restart_kb)
+    await state.clear()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ⭐ دریافت مبلغ حق‌الوکاله → تمبر مالیاتی و سهم صندوق و کانون
+# ══════════════════════════════════════════════════════════════════════════════
+@stamp_calc_router.message(Form.stamp_calc_lawyer_fee_amount)
+async def stamp_calc_lawyer_fee_handler(message: Message, state: FSMContext):
+    if not message.text:
+        return
+    if message.text == "🔙 بازگشت":
+        await message.answer(
+            "🧮 *محاسبه تمبر مالیاتی وکیل*\n\nلطفاً گزینه‌های زیر را انتخاب کنید:",
+            reply_markup=stamp_calc_claim_type_kb)
+        await state.set_state(Form.stamp_calc_claim_type)
+        return
+
+    amount_str = _to_en(message.text).replace(",", "").replace("٬", "")
+    if not amount_str.isdigit() or int(amount_str) <= 0:
+        await message.answer("⚠️ لطفاً مبلغ حق‌الوکاله را به *ریال* وارد کنید (فقط عدد):")
+        return
+
+    lawyer_fee = int(amount_str)
+    result = calculate_stamp_from_lawyer_fee(lawyer_fee)
+
+    # همان قاعدهٔ شمارش/اشتراک محاسبه تمبر
+    runtime_state.increment_usage(message.from_user.id, "stamp")
+
+    await message.answer(format_lawyer_fee_result_fa(lawyer_fee, result), reply_markup=restart_kb)
     await state.clear()
 
 

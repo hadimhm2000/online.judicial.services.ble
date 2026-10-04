@@ -49,7 +49,8 @@ from keyboards import (
     bulk_attachment_all_title_next_kb,
     bulk_attachment_all_more_kb,
     bulk_attachment_all_more_choice_kb)
-from stamp_duty import calculate_stamp_duty, format_result_fa
+from stamp_duty import (calculate_stamp_duty, format_result_fa,
+                        calculate_stamp_from_lawyer_fee, format_lawyer_fee_result_fa)
 from bulk_excel_v2 import send_error_workbook
 from bulk_submissions import (
     parse_excel_file,
@@ -1830,6 +1831,14 @@ async def ealam_in_lavayeh_stamp_amount(message: Message, state: FSMContext):
 async def ealam_in_lavayeh_claim_type(message: Message, state: FSMContext):
     text = message.text or ""
 
+    # ⭐ محاسبه تمبر بر اساس حق‌الوکاله
+    if "حق‌الوکاله" in text or "حق الوکاله" in text:
+        await message.answer(
+            "💵 لطفاً *مبلغ حق‌الوکاله* را به *ریال* وارد فرمایید:\n_(فقط عدد)_",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.ealam_vakalaht_lawyer_fee_amount)
+        return
+
     if "3️⃣" in text or "عدم نیاز" in text:
         await state.update_data(ealam_stamp_amount=0, ealam_stamp_type="بدون تمبر")
         await _ask_lavayeh_text_ealam(message, state)
@@ -1891,7 +1900,8 @@ async def ealam_in_lavayeh_claim_amount(message: Message, state: FSMContext):
         return
 
     result_text = format_result_fa(claim_amount, result)
-    await state.update_data(ealam_claim_amount=claim_amount, ealam_stamp_result=result)
+    await state.update_data(ealam_claim_amount=claim_amount, ealam_stamp_result=result,
+                            ealam_stamp_calc_mode="claim")
 
     await message.answer(
         f"📊 *نتیجه محاسبه تمبر:*\n\n{result_text}\n\n"
@@ -1916,6 +1926,12 @@ async def ealam_in_lavayeh_stamp_type(message: Message, state: FSMContext):
         stamp_amount = result.get("tamber_kolli", 0)
         stamp_type = "کلی"
     elif text == "🔙 بازگشت":
+        if data.get("ealam_stamp_calc_mode") == "lawyer_fee":
+            await message.answer(
+                "💵 لطفاً *مبلغ حق‌الوکاله* را به *ریال* وارد فرمایید:\n_(فقط عدد)_",
+                reply_markup=back_only_kb)
+            await state.set_state(Form.ealam_vakalaht_lawyer_fee_amount)
+            return
         await message.answer(
             "💵 لطفاً *مبلغ خواسته* را به *ریال* وارد فرمایید:\n_(فقط عدد)_",
             reply_markup=back_only_kb)
@@ -1929,6 +1945,39 @@ async def ealam_in_lavayeh_stamp_type(message: Message, state: FSMContext):
     await message.answer(
         f"✅ *تمبر {stamp_type}* به مبلغ *{_fmt(stamp_amount)} ریال* انتخاب شد.")
     await _ask_lavayeh_text_ealam(message, state)
+
+
+@lavayeh_router.message(Form.ealam_vakalaht_lawyer_fee_amount)
+async def ealam_in_lavayeh_lawyer_fee_amount(message: Message, state: FSMContext):
+    """⭐ اعلام وکالت: محاسبه تمبر بر اساس حق‌الوکاله و انتخاب تمبر نخستین/تجدیدنظر/کلی."""
+    if not message.text:
+        return
+
+    if message.text == "🔙 بازگشت":
+        await message.answer(
+            "🔍 *محاسبه تمبر:*\n\n"
+            "لطفاً گزینه‌های زیر را انتخاب کنید.\n"
+            "اگر گزینه‌های زیر کمکی نکرد، «عدم نیاز به تمبر» را انتخاب کنید "
+            "(بعداً در شعبه قابلیت پرداخت تمبر را خواهید داشت) :",
+            reply_markup=ealam_claim_type_kb)
+        await state.set_state(Form.ealam_vakalaht_claim_type)
+        return
+
+    amount_str = _to_en(message.text).replace(",", "").replace("٬", "")
+    if not amount_str.isdigit() or int(amount_str) <= 0:
+        await message.answer("⚠️ لطفاً مبلغ حق‌الوکاله را به *ریال* وارد کنید (فقط عدد):")
+        return
+
+    lawyer_fee = int(amount_str)
+    result = calculate_stamp_from_lawyer_fee(lawyer_fee)
+    await state.update_data(ealam_lawyer_fee=lawyer_fee, ealam_stamp_result=result,
+                            ealam_stamp_calc_mode="lawyer_fee")
+    await message.answer(format_lawyer_fee_result_fa(lawyer_fee, result))
+    await message.answer(
+        "لطفاً انتخاب کنید *کدام نوع تمبر* در پرونده قرار داده شود:\n"
+        "_(تمبر بدوی = تمبر نخستین)_",
+        reply_markup=ealam_stamp_type_kb)
+    await state.set_state(Form.ealam_vakalaht_stamp_type)
 
 
 async def _ask_lavayeh_text_ealam(message: Message, state: FSMContext):
