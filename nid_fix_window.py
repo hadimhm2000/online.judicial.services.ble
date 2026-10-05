@@ -71,6 +71,29 @@ def nid_fix_deadline_text() -> str:
     )
 
 
+# ── ⭐ خطای «طبق اطلاعات ثبت احوال ... فوت کرده است» (اصلاحیه ۱۴۰۵/۰۷) ──
+# در تمام بخش‌ها: متن خطا + درخواست کدملی جدید (۴۵ دقیقه) + گزینهٔ انصراف؛
+# در صورت انصراف (یا پایان مهلت) ۵۰٪ مبلغ پیش‌پرداخت به کیف پول کاربر
+# بازگردانده می‌شود (نه نگه‌داری برای موارد بعدی).
+KIND_DECEASED = "deceased"
+DECEASED_FIX_BUTTON = "✏️ وارد کردن کدملی جدید"
+DECEASED_CANCEL_BUTTON = "❌ انصراف"
+
+
+def is_deceased_kind(kind) -> bool:
+    return kind == KIND_DECEASED
+
+
+def deceased_message(error_text: str) -> str:
+    """پیام استاندارد خطای «فوت کرده است» برای کاربر — در همهٔ بخش‌ها."""
+    return (
+        f"⚠️ *خطای استعلام ثنا:*\n\n«{(error_text or '').strip()[:300]}»\n\n"
+        "لطفاً *شماره کدملی جدید* را وارد کنید.\n\n"
+        f"⏰ شما *{NID_FIX_WINDOW_MINUTES} دقیقه* فرصت دارید کدملی جدید را وارد کنید. "
+        "در صورت انصراف (یا پایان مهلت)، *۵۰ درصد مبلغ پیش‌پرداخت* به کیف پول "
+        "شما بازگردانده می‌شود.")
+
+
 def penalty_line(new_rial: int) -> str:
     """یک خط پیام جریمه (نصف پیش‌پرداخت برای موارد بعدی) — خالی اگر مبلغی نبود."""
     if new_rial <= 0:
@@ -85,7 +108,7 @@ def penalty_line(new_rial: int) -> str:
 
 def start_window(user_id: int, flow: str, task_data: dict, error_text: str,
                  national_id: str = "", person_role: str = "",
-                 person_index: int = -1) -> dict:
+                 person_index: int = -1, kind: str = "") -> dict:
     """شروع پنجرهٔ ۳۰ دقیقه‌ای برای کاربر و بازگرداندن رکورد پنجره.
 
     رکوردِ بازگشتی همان دیکشنری‌ای است که می‌توان به‌عنوان مقدار
@@ -103,6 +126,7 @@ def start_window(user_id: int, flow: str, task_data: dict, error_text: str,
         "national_id": national_id or "",
         "person_role": person_role or "",
         "person_index": person_index if isinstance(person_index, int) else -1,
+        "kind": kind or "",
         "deadline": now + datetime.timedelta(minutes=NID_FIX_WINDOW_MINUTES),
         "penalty_applied": False,
     }
@@ -157,6 +181,62 @@ def halve_prepaid(user_id: int) -> int:
         f"[NID-FIX] جریمه: پیش‌پرداخت کاربر {user_id} نصف شد: "
         f"{old_rial:,} → {new_rial:,} ریال")
     return new_rial
+
+
+async def refund_half_prepay_to_wallet(user_id: int) -> int:
+    """⭐ خطای «فوت کرده است»: بازگرداندن ۵۰٪ پیش‌پرداختِ همین درخواست به
+    کیف پول کاربر. نیمهٔ دیگر کسر می‌شود؛ ماندهٔ قبلی (بستانکاری) کاربر
+    دست‌نخورده در رکورد باقی می‌ماند.
+
+    خروجی: مبلغ بازگردانده‌شده (تومان) — ۰ اگر پیش‌پرداختی نبود.
+    """
+    rec = runtime_state.prepaid_registrations.get(user_id)
+    if not rec:
+        return 0
+    try:
+        from prepay_registration import _split_record
+        paid_rial, credit_rial = _split_record(rec)
+    except Exception:
+        paid_rial, credit_rial = int(rec.get("amount_rial", 0) or 0), 0
+    if paid_rial <= 0:
+        return 0
+    refund_toman = (paid_rial // 2) // 10
+    if credit_rial > 0:
+        rec["amount_rial"] = credit_rial
+        rec["amount_toman"] = credit_rial // 10
+        rec["prepay_paid_rial"] = 0
+    else:
+        runtime_state.prepaid_registrations.pop(user_id, None)
+    if refund_toman > 0:
+        try:
+            import wallet
+            await wallet.credit(user_id, refund_toman, "refund",
+                                "بازگشت ۵۰٪ پیش‌پرداخت (خطای فوت ثبت احوال)")
+        except Exception as e:
+            logger.error(f"[NID-FIX] خطا در واریز به کیف پول کاربر {user_id}: {e}")
+            return 0
+    logger.info(
+        f"[NID-FIX] خطای فوت: {refund_toman:,} تومان (۵۰٪ پیش‌پرداخت) به کیف پول "
+        f"کاربر {user_id} بازگشت؛ مانده قبلی={credit_rial:,} ریال")
+    return refund_toman
+
+
+def refund_line(refund_toman: int) -> str:
+    if refund_toman <= 0:
+        return ""
+    return (f"💰 ۵۰ درصد مبلغ پیش‌پرداخت ({refund_toman:,} تومان) به کیف پول "
+            "شما بازگردانده شد.\n")
+
+
+async def settle_cancel(user_id: int, win) -> str:
+    """تسویهٔ پیش‌پرداخت پس از «حذف درخواست/انصراف» در پنجرهٔ ویرایش کدملی.
+
+    خطای «فوت کرده است» → ۵۰٪ به کیف پول؛ سایر خطاها → روند قبلی (نصف
+    پیش‌پرداخت برای موارد بعدی). خروجی: یک خط پیام برای کاربر (یا خالی).
+    """
+    if is_deceased_kind((win or {}).get("kind")):
+        return refund_line(await refund_half_prepay_to_wallet(user_id))
+    return penalty_line(halve_prepaid(user_id))
 
 
 def _cleanup_aliases(user_id: int):
@@ -276,14 +356,21 @@ async def sweep_expired(bot) -> int:
             _cleanup_aliases(uid)
 
             label = flow_label(flow)
-            new_rial = halve_prepaid(uid)  # جریمه — نصف پیش‌پرداخت برای موارد بعدی
-            penalty_line = penalty_line(new_rial)
+            deceased = is_deceased_kind(win.get("kind"))
+            if deceased:
+                # ⭐ خطای فوت — ۵۰٪ پیش‌پرداخت به کیف پول
+                refund_toman = await refund_half_prepay_to_wallet(uid)
+                new_rial = 0
+                settle_text = refund_line(refund_toman)
+            else:
+                new_rial = halve_prepaid(uid)  # جریمه — نصف پیش‌پرداخت برای موارد بعدی
+                settle_text = penalty_line(new_rial)
             try:
                 await bot.send_message(
                     uid,
                     f"⌛ *مهلت {NID_FIX_WINDOW_MINUTES} دقیقه‌ای ویرایش کدملی به پایان رسید.*\n\n"
                     f"درخواست {label} حذف شد.\n"
-                    f"{penalty_line}\n"
+                    f"{settle_text}\n"
                     "در صورت تمایل می‌توانید از منوی اصلی مجدداً اقدام فرمایید.",
                     parse_mode="Markdown")
             except Exception as e:
@@ -292,9 +379,12 @@ async def sweep_expired(bot) -> int:
             try:
                 await bot.send_message(
                     ADMIN_ID,
-                    f"⌛ [NID-FIX] مهلت ویرایش کدملی کاربر {uid} ({label}) به پایان "
-                    f"رسید و جریمهٔ نصف پیش‌پرداخت اعمال شد "
-                    f"({new_rial:,} ریال باقی‌مانده).")
+                    (f"⌛ [NID-FIX] مهلت ورود کدملی جدید کاربر {uid} ({label}، خطای فوت) "
+                     f"به پایان رسید؛ ۵۰٪ پیش‌پرداخت به کیف پول بازگشت.")
+                    if deceased else
+                    (f"⌛ [NID-FIX] مهلت ویرایش کدملی کاربر {uid} ({label}) به پایان "
+                     f"رسید و جریمهٔ نصف پیش‌پرداخت اعمال شد "
+                     f"({new_rial:,} ریال باقی‌مانده)."))
             except Exception:
                 pass
             closed += 1

@@ -3090,11 +3090,11 @@ async def tn_delete_request_callback(callback: CallbackQuery, state: FSMContext,
     # ⭐ بستن پنجرهٔ ۳۰ دقیقه‌ای + جریمهٔ نصف پیش‌پرداخت (حذف صریح درخواست)
     try:
         import nid_fix_window
-        nid_fix_window.pop_window(target_user_id)
-        _new_rial = nid_fix_window.halve_prepaid(target_user_id)
-        if _new_rial > 0:
-            await bot.send_message(
-                target_user_id, nid_fix_window.penalty_line(_new_rial).strip())
+        _win = nid_fix_window.pop_window(target_user_id)
+        # ⭐ خطای «فوت کرده است»: ۵۰٪ پیش‌پرداخت به کیف پول (settle_cancel)
+        _settle_line = await nid_fix_window.settle_cancel(target_user_id, _win)
+        if _settle_line:
+            await bot.send_message(target_user_id, _settle_line.strip())
     except Exception as _pen_err:
         logging.error(f"[TN] خطا در اعمال جریمه پس از حذف درخواست: {_pen_err}")
 

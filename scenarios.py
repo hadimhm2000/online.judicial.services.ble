@@ -92,8 +92,15 @@ async def _close_extra_tabs(browser_context, keep_page=None):
     تا تب‌های تلنبارشده حافظه/منابع مرورگر را اشغال نکنند و باعث کندی یا
     خطای تب جدید نشوند. تب اصلی (sana_page) هرگز بسته نمی‌شود."""
     main_page = keep_page if keep_page is not None else getattr(runtime_state, "sana_page", None)
+    try:
+        from org_unit_picker import is_parked_page
+    except Exception:
+        is_parked_page = lambda _p: False  # noqa: E731
     for p in list(browser_context.pages):
         if p is main_page:
+            continue
+        # ⭐ تب تسکی که منتظر انتخاب «واحد زیر مجموعه» کاربر است بسته نشود
+        if is_parked_page(p):
             continue
         try:
             await p.close()
@@ -3232,7 +3239,12 @@ async def browser_worker(bot: Bot):
                         # (مثل PRE_CHECK)؛ نوبت‌دهی داخل sign_tab انجام می‌شود.
                         asyncio.create_task(_run_sign_task(data, bot))
                     else:
-                        await process_task(data, bot)
+                        # ⭐ قابل جداشدن: اگر تسک منتظر انتخاب کاربر شد (مثل
+                        # «واحد زیر مجموعه شخص حقوقی» — org_unit_picker)، تب
+                        # فعلی برای همان تسک می‌ماند و حلقه با تب جدید ادامه
+                        # می‌دهد؛ در غیر این صورت دقیقاً مثل await مستقیم است.
+                        from org_unit_picker import run_detachable
+                        await run_detachable(process_task(data, bot))
                 except Exception as task_err:
                     if _looks_like_browser_closed_error(task_err):
                         logging.warning(

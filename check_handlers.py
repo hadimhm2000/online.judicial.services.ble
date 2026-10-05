@@ -4403,12 +4403,12 @@ async def chk_nid_cancel_callback(callback: CallbackQuery, state: FSMContext, bo
         await callback.answer("⚠️ این دکمه مربوط به شما نیست.")
         return
 
-    _chk_nfw.pop_window(target_user_id)
+    _win = _chk_nfw.pop_window(target_user_id)
     await callback.answer("درخواست حذف شد.")
 
     # جریمه — نصف مبلغ پیش‌پرداخت برای موارد بعدی (عین دستور کارفرما)
-    new_rial = _chk_nfw.halve_prepaid(target_user_id)
-    penalty_line = _chk_nfw.penalty_line(new_rial)
+    # ⭐ خطای «فوت کرده است»: ۵۰٪ پیش‌پرداخت به کیف پول (settle_cancel)
+    penalty_line = await _chk_nfw.settle_cancel(target_user_id, _win)
 
     try:
         await callback.message.edit_text(

@@ -1364,7 +1364,8 @@ async def process_check_task(data: dict, bot: Bot):
                 _win = nid_fix_window.start_window(
                     user_id, flow=nid_fix_window.FLOW_CHECK,
                     task_data=task_data_snapshot, error_text=str(sana_err),
-                    national_id=sana_err.national_id)
+                    national_id=sana_err.national_id,
+                    kind=getattr(sana_err, "kind", ""))
             except Exception as _win_err:
                 logging.error(f"[CHECK] خطا در شروع پنجرهٔ ویرایش کدملی: {_win_err}")
                 _win = None
@@ -1381,7 +1382,19 @@ async def process_check_task(data: dict, bot: Bot):
             # ⭐ اصلاحیهٔ کارفرما (۱۴۰۵/۰۶/۲۸): عین روند لایحه — اگر خطای
             # «شخص ... در فهرست اشخاص پرونده نیست» باشد، پیام به سبک
             # «خطای ثبت دادخواست در سامانه» ارسال می‌شود.
-            if getattr(sana_err, "kind", "") == "person_not_in_case":
+            if getattr(sana_err, "kind", "") == "deceased":
+                # ⭐ خطای «فوت کرده است»: متن خطا + کدملی جدید (۴۵ دقیقه) + انصراف
+                import nid_fix_window as _nfw_dec
+                chk_kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text=_nfw_dec.DECEASED_FIX_BUTTON,
+                        callback_data=f"chk_nid_fix:{user_id}")],
+                    [InlineKeyboardButton(
+                        text=_nfw_dec.DECEASED_CANCEL_BUTTON,
+                        callback_data=f"chk_nid_cancel:{user_id}")],
+                ])
+                chk_sana_msg = _nfw_dec.deceased_message(str(sana_err))
+            elif getattr(sana_err, "kind", "") == "person_not_in_case":
                 chk_sana_msg = (
                     f"⚠️ *خطای ثبت دادخواست در سامانه:*\n\n«{str(sana_err)[:300]}»\n\n"
                     f"شخص ({sana_err.role or 'شخص'}) در فهرست اشخاص پرونده نیست و امکان ثبت دادخواست وجود ندارد.\n\n"
@@ -2264,8 +2277,8 @@ def _sana_popup_kind(popup_text: str) -> str:
         _cat_kind = error_catalog.classify_sana_popup(popup_text)
     except Exception:
         _cat_kind = "other"
-    if _cat_kind == "person_not_in_case":
-        return "person_not_in_case"
+    if _cat_kind in ("person_not_in_case", "deceased"):
+        return _cat_kind
     if ("اطلاعاتی با این شناسه ملی ثبت نشده است" in popup_text or
             "اطلاعاتي با اين شناسه ملي ثبت نشده است" in popup_text):
         return "not_registered"
@@ -2356,9 +2369,11 @@ async def _query_sana_check(page, ng_click: str, bot: Bot, user_id: int,
 
             # ⭐ «تاریخ تولد ارسالی مربوط به شماره ملی ... اشتباه است» = کدملی
             # اشتباه → بدون تکرار، پنجرهٔ ویرایش کدملی برای کاربر
-            if kind == "birthdate":
+            # ⭐ «... فوت کرده است و قابل انتخاب نمی باشد» → همین روند:
+            # درخواست کدملی جدید (۴۵ دقیقه) + انصراف با بازگشت ۵۰٪ پیش‌پرداخت
+            if kind in ("birthdate", "deceased"):
                 logging.warning(
-                    f"[CHECK][{role}] خطای تاریخ تولد ثنا (کدملی اشتباه) برای "
+                    f"[CHECK][{role}] خطای ثنا ({kind}) برای "
                     f"{national_id}: {popup_text!r}")
                 raise CheckSanaDataError(
                     popup_text, kind=kind, national_id=national_id, role=role)
@@ -2660,6 +2675,13 @@ async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
     # ⭐ کد اقتصادی شخص حقوقی — طبق دستور کارفرما بعد از استعلام شناسه ملی،
     # عدد 1 در فیلد #txtLegalIrECode (EconomicCode) وارد می‌شود.
     await _set_legal_economic_code_one_check(page)
+
+    # ⭐ «واحد زیر مجموعه شخص حقوقی» (در صورت نمایش) — انتخاب کاربر
+    import org_unit_picker
+    await org_unit_picker.handle_if_present(
+        page, bot, user_id, company_id=company_id,
+        fatal_exc=lambda m: CheckAbortError(m, step="ORG_UNIT", user_msg=f"⚠️ {m}"),
+        prefix="CHECK")
 
     if not nat_id:
         # بدون کدملی نماینده — فقط ثبت شناسه ملی شرکت کافی است

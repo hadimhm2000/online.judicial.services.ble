@@ -83,9 +83,10 @@ class EalamFatalError(Exception):
 class EalamNidError(EalamFatalError):
     """⭐ خطای «تاریخ تولد ارسالی مربوط به شماره ملی ... اشتباه است» = کدملی
     وکیل اشتباه → پنجرهٔ ۴۵ دقیقه‌ای ویرایش کدملی (nid_fix_window)."""
-    def __init__(self, message: str, national_id: str = ""):
+    def __init__(self, message: str, national_id: str = "", kind: str = "birthdate"):
         super().__init__(message)
         self.national_id = national_id or ""
+        self.kind = kind or "birthdate"     # birthdate | deceased
 
 
 async def process_ealam_vakalaht_task(data: dict, bot: Bot):
@@ -490,7 +491,8 @@ async def process_ealam_vakalaht_task(data: dict, bot: Bot):
                 nid_fix_window.start_window(
                     user_id, flow=nid_fix_window.FLOW_EALAM, task_data=dict(data),
                     error_text=str(e), national_id=e.national_id,
-                    person_role="وکیل", person_index=person_index)
+                    person_role="وکیل", person_index=person_index,
+                    kind=getattr(e, "kind", ""))
                 deadline_text = nid_fix_window.nid_fix_deadline_text()
             except Exception as _win_err:
                 logging.error(f"[EALAM] خطا در شروع پنجرهٔ ویرایش کدملی: {_win_err}")
@@ -502,13 +504,25 @@ async def process_ealam_vakalaht_task(data: dict, bot: Bot):
                 [InlineKeyboardButton(text="🗑 حذف درخواست",
                                       callback_data=f"eal_nid_cancel:{user_id}")],
             ])
-            await bot.send_message(
-                user_id,
-                f"⚠️ *خطای استعلام ثنا*\n\n"
-                f"کدملی وکیل `{e.national_id or '—'}` اشتباه است.\n\n"
-                f"{deadline_text}\n"
-                f"✅ پس از ویرایش، ثبت با همان اطلاعات سیو شده ادامه می‌یابد.",
-                reply_markup=fix_kb)
+            if getattr(e, "kind", "") == "deceased":
+                # ⭐ خطای «فوت کرده است»: متن خطا + کدملی جدید (۴۵ دقیقه) + انصراف
+                import nid_fix_window as _nfw_dec
+                fix_kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text=_nfw_dec.DECEASED_FIX_BUTTON,
+                                          callback_data=f"eal_nid_fix:{user_id}")],
+                    [InlineKeyboardButton(text=_nfw_dec.DECEASED_CANCEL_BUTTON,
+                                          callback_data=f"eal_nid_cancel:{user_id}")],
+                ])
+                await bot.send_message(
+                    user_id, _nfw_dec.deceased_message(str(e)), reply_markup=fix_kb)
+            else:
+                await bot.send_message(
+                    user_id,
+                    f"⚠️ *خطای استعلام ثنا*\n\n"
+                    f"کدملی وکیل `{e.national_id or '—'}` اشتباه است.\n\n"
+                    f"{deadline_text}\n"
+                    f"✅ پس از ویرایش، ثبت با همان اطلاعات سیو شده ادامه می‌یابد.",
+                    reply_markup=fix_kb)
             await log_event(
                 "خطای سامانه", "اعلام وکالت", str(user_id), user_id,
                 tracking_code=tracking_code, doc_name="اعلام وکالت",
@@ -960,8 +974,23 @@ async def _click_sana_query(page, ng_click: str, bot: Bot, user_id: int,
             try:
                 import error_catalog as _ec0
                 _is_bd = _ec0.is_birthdate_error(popup_text_ealam)
+                _is_dec = _ec0.is_deceased_error(popup_text_ealam)
             except Exception:
                 _is_bd = ("تاریخ تولد" in popup_text_ealam and "اشتباه" in popup_text_ealam)
+                _is_dec = "فوت کرده" in popup_text_ealam
+            # ⭐ «... فوت کرده است و قابل انتخاب نمی باشد» → بدون تکرار،
+            # درخواست کدملی جدید (۴۵ دقیقه) + انصراف با بازگشت ۵۰٪ پیش‌پرداخت
+            if _is_dec:
+                await dismiss_sana_error_popup(page)
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"⚠️ [EALAM] خطای فوت (ثبت احوال) کاربر {user_id} — "
+                        f"شناسه {national_id or '—'}: «{popup_text_ealam[:200]}»")
+                except Exception:
+                    pass
+                raise EalamNidError(popup_text_ealam, national_id=national_id,
+                                    kind="deceased")
             if _is_bd:
                 await dismiss_sana_error_popup(page)
                 try:

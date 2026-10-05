@@ -549,6 +549,12 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                             break
                         await resilient_sleep(sana_page, 1, bot, user_id)
 
+                    # ⭐ «واحد زیر مجموعه شخص حقوقی» (در صورت نمایش) — انتخاب کاربر
+                    import org_unit_picker
+                    await org_unit_picker.handle_if_present(
+                        sana_page, bot, user_id, company_id=person.get("company_id", ""),
+                        fatal_exc=LavayehFatalError, prefix="LAVAYEH")
+
                     # ══════════════════════════════════════════════════════
                     # ⭐ اصلاحیه ۱۴۰۵/۰۶ (باگ ۴) — درج مدیرعامل/نماینده شخص حقوقی:
                     # طبق دستور کارفرما، پس از اتمام مراحل شخص حقوقی، برای
@@ -1135,7 +1141,8 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                 _win = nid_fix_window.start_window(
                     user_id, flow=nid_fix_window.FLOW_LAVAYEH,
                     task_data=task_data_snapshot, error_text=str(e),
-                    national_id=e.national_id, person_index=e.person_index)
+                    national_id=e.national_id, person_index=e.person_index,
+                    kind=e.kind)
             except Exception as _win_err:
                 logging.error(f"[LAVAYEH] خطا در شروع پنجرهٔ ویرایش کدملی: {_win_err}")
                 _win = None
@@ -1160,11 +1167,24 @@ async def process_lavayeh_task(data: dict, bot: Bot):
             fix_kb.inline_keyboard.append([InlineKeyboardButton(
                 text="🗑 حذف درخواست",
                 callback_data=f"lav_nid_cancel:{user_id}")])
-            await bot.send_message(
-                user_id,
-                f"📝 برای ادامه، کدملی شخص را ویرایش کنید — اطلاعات سیو شده "
-                f"حفظ می‌شود و ثبت با همان اطلاعات ادامه می‌یابد:",
-                reply_markup=fix_kb)
+            if e.kind == "deceased":
+                # ⭐ خطای «فوت کرده است»: متن خطا + کدملی جدید (۴۵ دقیقه) + انصراف
+                import nid_fix_window as _nfw_dec
+                fix_kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text=_nfw_dec.DECEASED_FIX_BUTTON,
+                        callback_data=f"lav_nid_fix:{user_id}")],
+                    [InlineKeyboardButton(
+                        text=_nfw_dec.DECEASED_CANCEL_BUTTON,
+                        callback_data=f"lav_nid_cancel:{user_id}")]])
+                await bot.send_message(
+                    user_id, _nfw_dec.deceased_message(str(e)), reply_markup=fix_kb)
+            else:
+                await bot.send_message(
+                    user_id,
+                    f"📝 برای ادامه، کدملی شخص را ویرایش کنید — اطلاعات سیو شده "
+                    f"حفظ می‌شود و ثبت با همان اطلاعات ادامه می‌یابد:",
+                    reply_markup=fix_kb)
 
             runtime_state.active_lavayeh_users.discard(user_id)
             await log_event(
@@ -1819,20 +1839,22 @@ async def _click_sana_query_with_retry(
             _kind = _classify_lavayeh_sana_popup(popup_text)
 
             # ⭐ تاریخ تولد اشتباه = کدملی اشتباه → فوراً پنجرهٔ ویرایش کدملی
-            if _kind == "birthdate":
+            # ⭐ «... فوت کرده است و قابل انتخاب نمی باشد» → فوراً درخواست
+            # کدملی جدید (۴۵ دقیقه) + انصراف با بازگشت ۵۰٪ پیش‌پرداخت
+            if _kind in ("birthdate", "deceased"):
                 await _close_error_popup(page)
                 logging.warning(
-                    f"[LAVAYEH] خطای تاریخ تولد ثنا (کدملی اشتباه) برای شناسه "
+                    f"[LAVAYEH] خطای ثنا ({_kind}) برای شناسه "
                     f"{current_national_id}: {popup_text[:150]}")
                 try:
                     await bot.send_message(
                         ADMIN_ID,
-                        f"⚠️ [LAVAYEH] کدملی اشتباه (خطای تاریخ تولد ثنا) کاربر {user_id} — "
+                        f"⚠️ [LAVAYEH] کدملی اشتباه/فوت‌شده ({_kind}) کاربر {user_id} — "
                         f"شناسه {current_national_id}: «{popup_text[:200]}»")
                 except Exception:
                     pass
                 raise LavayehSanaDataError(
-                    popup_text, kind="birthdate",
+                    popup_text, kind=_kind,
                     national_id=current_national_id or _extract_lavayeh_nid(popup_text),
                     person_index=person_index)
 
@@ -1907,11 +1929,13 @@ async def _click_sana_query_with_retry(
 
 def _classify_lavayeh_sana_popup(text: str) -> str:
     """دسته‌بندی پاپ‌آپ خطای ثنا لایحه (نرمال‌سازی‌شده):
-    person_not_in_case | birthdate | other"""
+    deceased | person_not_in_case | birthdate | other"""
     if not text or not isinstance(text, str):
         return "other"
     try:
         import error_catalog
+        if error_catalog.is_deceased_error(text):
+            return "deceased"
         if error_catalog.is_person_not_in_case(text):
             return "person_not_in_case"
         if error_catalog.is_birthdate_error(text):
@@ -1919,6 +1943,8 @@ def _classify_lavayeh_sana_popup(text: str) -> str:
         return "other"
     except Exception:
         t = str(text).replace("ي", "ی").replace("ك", "ک").replace("‌", "")
+        if "فوت کرده" in t:
+            return "deceased"
         if "در فهرست اشخاص پرونده نیست" in t:
             return "person_not_in_case"
         if "تاریخ تولد" in t and "اشتباه" in t:

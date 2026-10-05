@@ -232,6 +232,16 @@ def is_birthdate_error(text) -> bool:
     return "تاریخ تولد" in norm and "اشتباه" in norm
 
 
+def is_deceased_error(text) -> bool:
+    """⭐ آیا متن، خطای «طبق اطلاعات ثبت احوال ... فوت کرده است و قابل
+    انتخاب نمی باشد» است؟ (نرمال‌سازی‌شده — مقاوم به ي/ک عربی و نیم‌فاصله)"""
+    norm = normalize(text)
+    if not norm:
+        return False
+    return "فوت کرده" in norm or (
+        "ثبت احوال" in norm and "قابل انتخاب نمی باشد" in norm)
+
+
 def extract_national_id(text) -> str:
     """استخراج شماره ملی از متن خطای سامانه (مثل «... مربوط به شماره ملی
     4420910144 اشتباه است») — ۱۰ رقمی؛ خالی اگر یافت نشد."""
@@ -244,13 +254,15 @@ def extract_national_id(text) -> str:
 def classify_sana_popup(text) -> str:
     """⭐ اصلاحیهٔ کارفرما (۱۴۰۵/۰۶/۲۸) — دسته‌بندی پاپ‌آپ پس از کلیک
     دکمهٔ «استعلام ثنا» در کلیهٔ فلوها (لایحه/اظهارنامه/دادخواست/اعتراضی):
-      "person_not_in_case" | "birthdate" | "not_registered" | "other"
+      "deceased" | "person_not_in_case" | "birthdate" | "not_registered" | "other"
 
     انقضای نشست قبل از این تابع و جداگانه مدیریت می‌شود.
     نرمال‌سازی‌شده — مقاوم به ي/ک عربی و نیم‌فاصله.
     """
     if not text or not isinstance(text, str):
         return "other"
+    if is_deceased_error(text):
+        return "deceased"
     if is_person_not_in_case(text):
         return "person_not_in_case"
     if is_birthdate_error(text):

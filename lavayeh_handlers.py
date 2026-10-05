@@ -2711,13 +2711,13 @@ async def lav_nid_cancel_callback(callback: CallbackQuery, state: FSMContext, bo
         await callback.answer("⚠️ این دکمه مربوط به شما نیست.")
         return
 
-    _nfw.pop_window(target_user_id)
+    _win = _nfw.pop_window(target_user_id)
     runtime_state.pending_lavayeh_sana_fix.pop(target_user_id, None)
     await callback.answer("درخواست حذف شد.")
 
     # جریمه — نصف مبلغ پیش‌پرداخت برای موارد بعدی (عین دستور کارفرما)
-    new_rial = _nfw.halve_prepaid(target_user_id)
-    penalty_line = _nfw.penalty_line(new_rial)
+    # ⭐ خطای «فوت کرده است»: ۵۰٪ پیش‌پرداخت به کیف پول (settle_cancel)
+    penalty_line = await _nfw.settle_cancel(target_user_id, _win)
 
     try:
         await callback.message.edit_text(
@@ -2849,9 +2849,9 @@ async def eal_nid_cancel_callback(callback: CallbackQuery, state: FSMContext, bo
     if callback.from_user.id != target_user_id:
         await callback.answer("⚠️ این دکمه مربوط به شما نیست.")
         return
-    _nfw.pop_window(target_user_id)
+    _win = _nfw.pop_window(target_user_id)
     await callback.answer("درخواست حذف شد.")
-    new_rial = _nfw.halve_prepaid(target_user_id)
+    _settle_line = await _nfw.settle_cancel(target_user_id, _win)
     try:
         await callback.message.edit_text(
             (callback.message.text or "") + "\n\n🗑 _درخواست حذف شد._")
@@ -2860,7 +2860,7 @@ async def eal_nid_cancel_callback(callback: CallbackQuery, state: FSMContext, bo
     await bot.send_message(
         target_user_id,
         "🗑 *درخواست اعلام وکالت حذف شد.*\n\n"
-        f"{_nfw.penalty_line(new_rial)}\n"
+        f"{_settle_line}\n"
         "در صورت نیاز، از منوی اصلی مجدداً اقدام فرمایید.",
         reply_markup=restart_kb)
     await state.clear()

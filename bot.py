@@ -61,6 +61,9 @@ dp.include_router(report_router)
 # ⭐ دستورات مدیر برای صف خارج از ساعت کاری / قطعی سامانه (sana_gate.py)
 import sana_gate
 dp.include_router(sana_gate.gate_router)
+# ⭐ انتخاب «واحد زیر مجموعه شخص حقوقی» (دکمه‌های شیشه‌ای orgu:) — همهٔ بخش‌ها
+from org_unit_picker import org_unit_router
+dp.include_router(org_unit_router)
 dp.include_router(router)
 dp.include_router(admin_relay_router)
 # ⭐ اصلاحیه: fallback_router باید همیشه *آخرین* روتر ثبت‌شده باشد تا فقط
