@@ -919,3 +919,16 @@ async def get_bot_users() -> list | None:
         logger.warning(f"[PANEL_SYNC] دریافت فهرست کاربران ناموفق: {err}")
         return None
     return data.get("users", [])
+
+
+async def expire_stale_cases(hours: int, notify_window_hours: int,
+                             exclude_user_ids: list) -> dict | None:
+    """لغو پرونده‌های باز بدون پیشرفت در پنل (stale_requests.py)؛ در خطا None."""
+    data, err = await _panel_request(
+        "POST", f"{ADMIN_API_BASE}/admin/cases/expire-stale",
+        max_retries=_WAIT_RETRIES, timeout=aiohttp.ClientTimeout(total=60, connect=5),
+        json={"hours": hours, "notifyWindowHours": notify_window_hours,
+              "excludeUserIds": [str(u) for u in exclude_user_ids]})
+    if data is None:
+        logger.warning(f"[PANEL_SYNC] لغو پرونده‌های بی‌پیشرفت ناموفق: {err}")
+    return data
