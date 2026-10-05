@@ -991,11 +991,17 @@ tn_amount_confirm_kb = ReplyKeyboardMarkup(
 )
 
 
+# انواع دعوایی که بخش اول (معترض ثالث / متقاضی اعاده / محکوم‌علیه) همیشه
+# با ورود دستی کدملی پر می‌شود — گزینهٔ «استعلام افراد موجود در پرونده» فقط
+# در بخش طرف مقابل نمایش داده می‌شود.
+TN_APPELLANT_MANUAL_ONLY_CASES = ("اعتراض ثالث", "اعاده دادرسی مدنی", "اعاده دادرسی کیفری")
+
+
 def create_tn_appellant_person_type_kb(exclude: list = None, case_type: str = None):
     """کیبورد نوع شخص تجدیدنظرخواه — همان قوانین اظهارکننده اظهارنامه
 
-    ⚠ برای «اعتراض ثالث»، گزینه «استعلام افراد موجود در پرونده» در بخش
-    «معترض ثالث» حذف می‌شود — معترض ثالث باید همیشه کدملی را دستی وارد کند
+    ⚠ برای «اعتراض ثالث» و «اعاده دادرسی مدنی/کیفری»، گزینه «استعلام افراد
+    موجود در پرونده» در بخش اول (معترض ثالث / متقاضی اعاده / محکوم‌علیه) حذف می‌شود — معترض ثالث باید همیشه کدملی را دستی وارد کند
     (طبق دستور کارفرما). این محدودیت فقط شامل این نوع دعوی/بخش است.
 
     ⭐ گزینه «وکیل» حذف شد — ثبت به وکالت از سوال قبلی (tn_appellant_vakalat_ask)
@@ -1009,7 +1015,7 @@ def create_tn_appellant_person_type_kb(exclude: list = None, case_type: str = No
         if i + 1 < len(available):
             row.append(KeyboardButton(text=available[i + 1]))
         keyboard.append(row)
-    if case_type != "اعتراض ثالث":
+    if case_type not in TN_APPELLANT_MANUAL_ONLY_CASES:
         keyboard.append([KeyboardButton(text="🔍 استعلام افراد موجود در پرونده")])
     keyboard.append([KeyboardButton(text="✅ اتمام و ادامه")])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
