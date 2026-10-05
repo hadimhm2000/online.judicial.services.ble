@@ -43,9 +43,9 @@ def get_flow_type_kb(user_id: int) -> ReplyKeyboardMarkup:
         [KeyboardButton(text="💰 محاسبه تمبر"), KeyboardButton(text="🗺️ ارزش منطقه‌ای")],
         # ⭐ جای «ابزار فایل» و «محاسبه هزینه دادرسی» جابه‌جا شد (۱۴۰۵/۰۷)
         [KeyboardButton(text=COURT_FEE_MENU_TEXT), KeyboardButton(text=DAMAGES_MENU_TEXT)],
-        [KeyboardButton(text="🔧 ابزار فایل")],
-        # ⭐ درخواست گواهی عدم سوءپیشینه (۱۴۰۵/۰۷)
+        # ⭐ درخواست گواهی عدم سوءپیشینه (۱۴۰۵/۰۷) — جایش با «ابزار فایل» عوض شد
         [KeyboardButton(text=CLEARANCE_MENU_TEXT)],
+        [KeyboardButton(text="🔧 ابزار فایل")],
         [KeyboardButton(text=HISTORY_MENU_TEXT), KeyboardButton(text=WALLET_MENU_TEXT)],
         # ⭐ گزینهٔ «شروع مجدد» (۱۴۰۵/۰۶) — صرفاً کاربر را به منوی اصلی برمی‌گرداند
         # (از هر مرحله‌ای از هر فلوی — هندلر سراسری در handlers.py)
@@ -78,8 +78,8 @@ flow_type_kb = ReplyKeyboardMarkup(
         [KeyboardButton(text="✍️ ثبت لایحه"), KeyboardButton(text="📄 ثبت اظهارنامه")],
         [KeyboardButton(text="⚖️ دعاوی اعتراضی"), KeyboardButton(text="🏦 ثبت دادخواست")],
         [KeyboardButton(text="💰 محاسبه تمبر"), KeyboardButton(text=COURT_FEE_MENU_TEXT)],
-        [KeyboardButton(text=DAMAGES_MENU_TEXT), KeyboardButton(text="🔧 ابزار فایل")],
-        [KeyboardButton(text=CLEARANCE_MENU_TEXT)],
+        [KeyboardButton(text=DAMAGES_MENU_TEXT), KeyboardButton(text=CLEARANCE_MENU_TEXT)],
+        [KeyboardButton(text="🔧 ابزار فایل")],
         [KeyboardButton(text=HISTORY_MENU_TEXT), KeyboardButton(text=WALLET_MENU_TEXT)],
         # ⭐ گزینهٔ «شروع مجدد» — بازگشت صرف به منوی اصلی (۱۴۰۵/۰۶)
         [KeyboardButton(text="🔄 شروع مجدد")],

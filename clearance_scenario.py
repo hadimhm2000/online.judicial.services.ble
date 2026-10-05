@@ -58,6 +58,8 @@ SEL_TEMP_SAVE = "button[ng-click='actions.setClearanceData()']"
 SEL_CALC_CASH = "#btnCalculateCash"
 SEL_SEARCH = "#btnGetClearanceCertRequestData"
 
+# مرحلهٔ اول پس از کلیک منو: «ثبت درخواست گواهی عدم سوء پیشینه» (۱۴۰۵/۰۷)
+STEP_REGISTER = "ثبت درخواست گواهی عدم سو"
 STEP_COST = "محاسبه هزینه"
 STEP_FINAL = "تایید نهایی گواهی عدم سو"
 STEP_PRINT = "چاپ رسید درخواست گواهی"
@@ -304,6 +306,13 @@ async def _open_form(page, nid: str, birth: str) -> bool:
     await wait_for_angular_idle(page)
     if not await click_sana_main_menu(page, MENU_TEXT, timeout_sec=25, prefix="CLEARANCE"):
         return False
+    await _settle(page)
+    # ⭐ گزینهٔ «ثبت درخواست گواهی عدم سوء پیشینه» و سپس ادامهٔ همان مراحل
+    if not await _wait_step_box(page, STEP_REGISTER, 25):
+        logger.warning("[CLEARANCE] گزینهٔ «ثبت درخواست گواهی عدم سوء پیشینه» پیدا نشد")
+        return False
+    await _step_box(page, STEP_REGISTER, click=True)
+    await _settle(page)
     try:
         await page.wait_for_selector(SEL_NID, state="visible", timeout=30000)
     except Exception:
