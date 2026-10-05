@@ -25,6 +25,8 @@
   </a>
 </div>
 
+<div id="stepRegister" class="box hidden" onclick="showForm()"><div class="heading"><h5>ثبت درخواست گواهی عدم سوء پیشینه</h5></div><div class="body"><p>ثبت و ویرایش  درخواست گواهی عدم سوء پیشینه در این قسمت انجام میشود.</p></div></div>
+
 <div id="form" class="hidden">
   <input name="txtNationalityCode" id="txtNationalityCode" type="text" maxlength="10">
   <input type="text" name="txtpersonBirthDate" maxlength="10">
@@ -76,7 +78,8 @@
     l.classList.remove('hidden');
     setTimeout(() => { l.classList.add('hidden'); then(); }, ms);
   }
-  function openForm() { setTimeout(() => document.getElementById('form').classList.remove('hidden'), 300); }
+  function openForm() { setTimeout(() => document.getElementById('stepRegister').classList.remove('hidden'), 300); }
+  function showForm() { window.__stepRegisterClicked = true; setTimeout(() => document.getElementById('form').classList.remove('hidden'), 300); }
 
   function sendTemp() {
     window.__calls.send++;

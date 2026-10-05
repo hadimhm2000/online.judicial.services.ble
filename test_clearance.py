@@ -108,6 +108,8 @@ def test_menu_has_clearance_button_and_states():
     import keyboards as kb
     rows = [[b.text for b in r] for r in kb.get_flow_type_kb(99).keyboard]
     assert [kb.CLEARANCE_MENU_TEXT] in rows
+    # ⭐ جای «ابزار فایل» و «گواهی عدم سوءپیشینه» جابه‌جا شد
+    assert rows.index([kb.CLEARANCE_MENU_TEXT]) < rows.index(["🔧 ابزار فایل"])
     assert Form.clr_waiting_code.state == "Form:clr_waiting_code"
 
 
@@ -270,6 +272,7 @@ def test_full_flow_on_mock_site(monkeypatch):
         kind, txt = await cs.send_code(rid, req, bot)
         assert kind == cs.OK, txt
         page = cs._tabs[rid]
+        assert await page.evaluate("window.__stepRegisterClicked") is True
         assert await page.evaluate("window.__nid") == "0012345679"
         assert await page.evaluate("window.__birth") == "1370/05/12"
         kind, txt = await cs.submit_code(rid, req, "12345", bot)
