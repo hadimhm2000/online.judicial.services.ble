@@ -276,6 +276,26 @@ def save_runtime_state():
         prepaid_regs[str(uid)] = info
     data["prepaid_registrations"] = prepaid_regs
 
+    # 11-د. ⭐ دسته‌های جمع‌بندی‌شده (لیست کدهای رهگیری برای امضای دسته‌جمعی)
+    # تا ری‌استارت ربات منوی امضا و وضعیت امضای کدها را پاک نکند.
+    bulk_tasks = {}
+    try:
+        from bulk_submissions import BULK_TASKS
+        for tc, td in BULK_TASKS.items():
+            if not td.get("finalized"):
+                continue
+            # دسته‌ای که همهٔ کدهایش امضا شده دیگر لازم نیست
+            if not any(i.get("status") == "awaiting_sign" for i in td.get("signable_items", [])):
+                continue
+            try:
+                json.dumps(td, ensure_ascii=False, default=_serialize_datetime)
+            except Exception:
+                continue
+            bulk_tasks[tc] = td
+    except Exception as e:
+        logger.warning(f"[PERSIST] ذخیرهٔ دسته‌های دسته‌جمعی ناموفق: {e}")
+    data["bulk_tasks"] = bulk_tasks
+
     # 12. علامت کرش — برای تشخیص ری‌استارت غیرعادی
     data["crash_flag"] = False
     data["last_save_time"] = datetime.datetime.now().isoformat()
@@ -414,6 +434,14 @@ def load_into_runtime_state():
         uid = int(uid_str)
         info = _deserialize_all_datetimes(info, ["paid_at"])
         runtime_state.prepaid_registrations[uid] = info
+
+    # 11-د. ⭐ دسته‌های جمع‌بندی‌شدهٔ دسته‌جمعی (منوی امضا)
+    try:
+        from bulk_submissions import BULK_TASKS
+        for tc, td in data.get("bulk_tasks", {}).items():
+            BULK_TASKS.setdefault(tc, td)
+    except Exception as e:
+        logger.warning(f"[PERSIST] بازیابی دسته‌های دسته‌جمعی ناموفق: {e}")
 
     # حذف فایل‌های حالت پس از بارگذاری موفق
     for fp in [STATE_FILE, STATE_FILE_BACKUP]:
