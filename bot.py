@@ -219,6 +219,9 @@ def cleanup_expired_pending_entries():
         ("pending_tn_sign", getattr(runtime_state, "pending_tn_sign", None)),
         ("pending_ezhhar_sana_fix", getattr(runtime_state, "pending_ezhhar_sana_fix", None)),
         ("pending_lavayeh_payments", getattr(runtime_state, "pending_lavayeh_payments", None)),
+        # ⭐ فاکتورهای دعوی اعتراضی و «هزینه دستی مدیر» هم پس از ۲۴ ساعت بی‌اقدامی حذف می‌شوند
+        ("pending_tn_payments", getattr(runtime_state, "pending_tn_payments", None)),
+        ("pending_admin_fee_payments", getattr(runtime_state, "pending_admin_fee_payments", None)),
         ("invalid_tracking_retry", getattr(runtime_state, "invalid_tracking_retry", None)),
     )
     removed = 0
@@ -549,6 +552,9 @@ async def main():
     asyncio.create_task(feedback_loop(bot))
     asyncio.create_task(funnel.flush_loop())
     asyncio.create_task(daily_report_loop(bot))
+    # ⭐ لغو درخواست‌های بی‌پیشرفت پس از ۲۴ ساعت + پیام پشتیبانی به پرداخت‌کنندگان
+    from stale_requests import stale_requests_loop
+    asyncio.create_task(stale_requests_loop(bot))
 
     # ⭐ آزادسازی صف خارج از ساعت کاری / پس از رفع قطعی سامانه
     asyncio.create_task(sana_gate.gate_loop(bot))

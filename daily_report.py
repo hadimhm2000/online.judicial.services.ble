@@ -34,6 +34,7 @@ SERVICE_LABELS = {
     "INQUIRY": "استعلام", "LAVAYEH": "لایحه", "EZHHARNAMEH": "اظهارنامه",
     "EALAM_VAKALAHT": "اعلام وکالت", "TAJDID_NAZAR": "دعاوی اعتراضی", "CHECK": "دادخواست",
     "STAMP_CALC": "محاسبه تمبر", "REGIONAL_VALUE": "ارزش منطقه‌ای",
+    "CLEARANCE_CERT": "گواهی عدم سوءپیشینه",
 }
 
 
@@ -45,10 +46,13 @@ def format_report(r: dict) -> str:
         lines.append(f"   • {SERVICE_LABELS.get(svc, svc)}: {n}")
     lines.append(f"✅ انجام‌شده: {r.get('completed', 0)}   ❌ ناموفق: {r.get('failed', 0)}")
     stuck = r.get("stuck") or []
-    lines.append(f"⏳ گیرکرده (بیش از ۳ ساعت در حال ثبت): {len(stuck)}")
+    # stuckCount تعداد واقعی است (فهرست stuck در پنل حداکثر ۲۰ مورد دارد)
+    lines.append(f"⏳ گیرکرده (بیش از ۳ ساعت در حال ثبت): {r.get('stuckCount', len(stuck))}")
     for c in stuck[:5]:
         lines.append(f"   • {SERVICE_LABELS.get(c.get('serviceType'), c.get('serviceType'))} — "
                      f"{c.get('trackingCode') or c.get('baleUserId')}")
+    if r.get("autoExpired"):
+        lines.append(f"🧹 لغو خودکار (۲۴ ساعت بدون پیشرفت): {r['autoExpired']}")
     lines.append(f"💰 دریافتی امروز: {int(r.get('revenueToman', 0)):,} تومان")
     fb = r.get("feedback") or {}
     if fb.get("count"):

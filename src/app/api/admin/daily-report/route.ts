@@ -18,18 +18,25 @@ export async function GET(request: NextRequest) {
     const end = new Date(start.getTime() + 86400_000);
     const range = { gte: start, lt: end };
 
-    const [cases, paidCases, stuck, feedback] = await Promise.all([
+    // ⭐ v1.10 — قبلاً فهرست گیرکرده‌ها با take: 20 بریده می‌شد و len همان فهرست
+    // به‌عنوان «تعداد» گزارش می‌شد (همیشه حداکثر ۲۰، از همهٔ روزها). حالا تعداد
+    // واقعی جدا شمرده می‌شود؛ پرونده‌های بالای ۲۴ ساعت را هم ربات خودکار لغو
+    // می‌کند (expire-stale) و تعدادشان در autoExpired می‌آید.
+    const stuckWhere = { status: 'PROCESSING', updatedAt: { lt: new Date(Date.now() - STUCK_HOURS * 3600_000) } };
+    const [cases, paidCases, stuck, stuckCount, autoExpired, feedback] = await Promise.all([
       db.case.findMany({ where: { createdAt: range }, select: { serviceType: true, status: true } }),
       db.case.findMany({
         where: { feeStatus: { in: ['PAID', 'MANUAL_APPROVED'] }, updatedAt: range },
         select: { fee: true, prepayAmount: true },
       }),
       db.case.findMany({
-        where: { status: 'PROCESSING', updatedAt: { lt: new Date(Date.now() - STUCK_HOURS * 3600_000) } },
+        where: stuckWhere,
         select: { id: true, serviceType: true, trackingCode: true, baleUserId: true },
         orderBy: { updatedAt: 'asc' },
         take: 20,
       }),
+      db.case.count({ where: stuckWhere }),
+      db.activityLog.count({ where: { action: 'AUTO_EXPIRED', createdAt: range } }),
       db.feedback.findMany({ where: { createdAt: range }, select: { rating: true } }),
     ]);
 
@@ -43,6 +50,8 @@ export async function GET(request: NextRequest) {
       completed: cases.filter((c) => c.status === 'COMPLETED').length,
       failed: cases.filter((c) => c.status === 'FAILED').length,
       stuck,
+      stuckCount,
+      autoExpired,
       revenueToman: paidCases.reduce((s, c) => s + (c.fee || 0) + (c.prepayAmount || 0), 0),
       feedback: {
         count: feedback.length,
