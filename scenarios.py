@@ -1221,6 +1221,15 @@ async def process_task(data, bot: Bot):
         finally:
             # پاکسازی وضعیت فعال حتی در صورت خطا
             runtime_state.active_lavayeh_users.discard(user_id)
+            # ردیف دسته‌جمعی که بدون اعلام پایان خارج شد (مثلاً منتظر اصلاح
+            # کدملی/قرارداد یا خطای آماده‌سازی) هم باید شمرده شود تا فاکتور
+            # کلی و منوی امضای دسته معلق نماند.
+            if data.get("_is_bulk") and data.get("batch_tracking_code"):
+                try:
+                    from bulk_submissions import ensure_bulk_row_done
+                    await ensure_bulk_row_done(bot, user_id, data)
+                except Exception as e:
+                    logging.error(f"[LAVAYEH_SUBMIT] خطا در ensure_bulk_row_done: {e}", exc_info=True)
         return
 
     # ── سناریوی اعلام وکالت ────────────────────────────────────────────────

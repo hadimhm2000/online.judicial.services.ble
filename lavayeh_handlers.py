@@ -4,6 +4,7 @@
 """
 import asyncio
 import datetime
+import uuid
 import logging
 import os
 import re
@@ -2502,6 +2503,8 @@ async def _send_lavayeh_task_to_queue(data: dict, user_id: int, title: str, bot:
             "lavayeh_branch_code": data.get("lavayeh_branch_code", ""),
             "_is_bulk": data.get("_is_bulk", False),
             "batch_tracking_code": data.get("batch_tracking_code", ""),
+            "_bulk_row_index": data.get("_bulk_row_index"),
+            "_bulk_row_key": data.get("_bulk_row_key", ""),
         })
 
 
@@ -3104,6 +3107,8 @@ async def bulk_sign_select_callback(callback: CallbackQuery, bot: Bot):
         return
     
     task_data = BULK_TASKS[batch_tc]
+    from bulk_submissions import _release_stale_sign_lock
+    _release_stale_sign_lock(user_id, task_data)
     
     # بررسی قفل هم‌زمانی
     if task_data.get("signing_in_progress"):
@@ -3144,7 +3149,9 @@ async def bulk_sign_select_callback(callback: CallbackQuery, bot: Bot):
             title, province, row_number, persons,
             sign_tracking_code, national_ids, court_total,
             service_type=item_service_type,
-            sign_menu_path=item_sign_menu_path
+            sign_menu_path=item_sign_menu_path,
+            bulk_batch_tc=batch_tc,
+            bulk_item_tc=selected_tc,
         )
     except Exception as e:
         logging.error(f"[BULK-SIGN] خطا در شروع امضا: {e}", exc_info=True)
@@ -3309,6 +3316,8 @@ async def _go_to_sign_flow_after_prepaid(
     court_total: int,
     service_type: str | None = None,
     sign_menu_path: list | None = None,
+    bulk_batch_tc: str | None = None,
+    bulk_item_tc: str | None = None,
 ):
     """انتقال مستقیم به فلوی امضای الکترونیک بدون نیاز به پرداخت.
 
@@ -3347,6 +3356,10 @@ async def _go_to_sign_flow_after_prepaid(
             "code_sent_announce_time": None,
             "resend_notified": False,
             "total_no_action_start": datetime.datetime.now(),
+            # امضای دسته‌جمعی: پس از پایان، لیست کدهای باقی‌مانده دوباره نمایش داده می‌شود
+            "bulk_batch_tc": bulk_batch_tc,
+            "bulk_item_tc": bulk_item_tc,
+            "sign_session_id": uuid.uuid4().hex,
         }
         from keyboards import ezhhar_sign_ready_kb
         await bot.send_message(
@@ -3373,6 +3386,10 @@ async def _go_to_sign_flow_after_prepaid(
             "code_sent_announce_time": None,
             "resend_notified": False,
             "total_no_action_start": None,
+            # امضای دسته‌جمعی: پس از پایان، لیست کدهای باقی‌مانده دوباره نمایش داده می‌شود
+            "bulk_batch_tc": bulk_batch_tc,
+            "bulk_item_tc": bulk_item_tc,
+            "sign_session_id": uuid.uuid4().hex,
         }
         await bot.send_message(
             user_id,
@@ -3453,6 +3470,7 @@ async def send_bulk_item_result(
     lavayeh_bill_no: str = "",
     service_type: str | None = None,
     sign_menu_path: list = None,
+    bulk_row_key: str = "",
 ):
     """نتیجه ثبت یک ردیف دسته‌جمعی — بدون فاکتور و بدون امضا.
 
@@ -3466,6 +3484,12 @@ async def send_bulk_item_result(
         lavayeh_persons = []
     if service_type is None:
         service_type = "EZHHARNAMEH" if is_ezhharnameh else "LAVAYEH"
+
+    # ⭐ رفع باگ دسته‌جمعی لایحه: tracking_code در لایحه «شماره پرونده/بایگانی»
+    # اکسل است، نه کد رهگیری سامانه. کد رهگیری واقعی (lavayeh_bill_no) برای
+    # چاپ نهایی روز بعد، پنل، نمایش به کاربر و منوی امضا استفاده می‌شود.
+    case_ref = tracking_code
+    tracking_code = lavayeh_bill_no or tracking_code
 
     # ⭐ ثبت برای «چاپ نهایی» روز بعد ساعت ۱۵:۴۵ (به‌جز استعلامات) — final_print.py
     try:
@@ -3511,13 +3535,18 @@ async def send_bulk_item_result(
     try:
         await bot.send_message(user_id, msg, parse_mode="Markdown")
     except Exception:
-        await bot.send_message(user_id, msg)
+        try:
+            await bot.send_message(user_id, msg)
+        except Exception as send_err:
+            logging.warning(f"[BULK-ITEM] ارسال پیام ثبت ردیف {row_index} ناموفق: {send_err}")
     
     # اضافه به signable_items در BULK_TASKS
+    late_item = None
     if batch_tracking_code and batch_tracking_code in BULK_TASKS:
         nat_id_list = [p.get("national_id", "") for p in lavayeh_persons if p.get("national_id")]
-        BULK_TASKS[batch_tracking_code].setdefault("signable_items", []).append({
+        late_item = {
             "tracking_code": tracking_code,
+            "case_ref": case_ref,
             "lavayeh_bill_no": lavayeh_bill_no,
             "court_total": court_total,
             "title": lavayeh_title,
@@ -3533,10 +3562,27 @@ async def send_bulk_item_result(
             "status": "awaiting_sign",
             "disabled_until": None,
             "sign_menu_path": sign_menu_path,
-        })
+        }
+        BULK_TASKS[batch_tracking_code].setdefault("signable_items", []).append(late_item)
+        # ردیفی که قبلاً «ناتمام» شمرده شده بود (منتظر اصلاح) و حالا ثبت شد
+        if bulk_row_key and bulk_row_key in BULK_TASKS[batch_tracking_code].get("done_rows", []):
+            BULK_TASKS[batch_tracking_code]["failures"] = [
+                f for f in BULK_TASKS[batch_tracking_code].get("failures", [])
+                if str(f.get("row_index")) != str(row_index)
+            ]
         logging.info(f"[BULK-ITEM] ردیف {row_index} اضافه به signable_items: {tracking_code} (بچ: {batch_tracking_code})")
     else:
         logging.warning(f"[BULK-ITEM] batch_tracking_code یافت نشد: {batch_tracking_code}")
+
+    # ردیفی که پس از بسته‌شدن بچ (مثلاً بعد از اصلاح کدملی/قرارداد) ثبت شد:
+    # فاکتور و منوی امضای جداگانه برای همان ردیف
+    if late_item is not None and BULK_TASKS[batch_tracking_code].get("finalized"):
+        try:
+            from bulk_submissions import handle_late_bulk_item
+            await handle_late_bulk_item(bot, user_id, batch_tracking_code, late_item)
+        except Exception as e:
+            logging.error(f"[BULK-ITEM] خطا در رسیدگی به ردیف دیرهنگام: {e}", exc_info=True)
+        return
 
     # ══════════════════════════════════════════════════════════════
     # اطلاع به bulk_submissions که یک ردیف دیگر (این یکی با موفقیت) تمام
@@ -3546,7 +3592,7 @@ async def send_bulk_item_result(
     if batch_tracking_code:
         try:
             from bulk_submissions import mark_bulk_item_done
-            await mark_bulk_item_done(bot, user_id, batch_tracking_code)
+            await mark_bulk_item_done(bot, user_id, batch_tracking_code, row_key=bulk_row_key)
         except Exception as e:
             logging.error(f"[BULK-ITEM] خطا در mark_bulk_item_done: {e}")
 

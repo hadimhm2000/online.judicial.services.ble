@@ -521,20 +521,21 @@ def _transform_ezhhar_addressees(addressees: list) -> list:
     return result
 
 
-def _safe_send(bot, user_id: int, text: str, parse_mode: str = None):
-    """ارسال امن پیام بدون خطای یونیکد."""
+async def _safe_send(bot, user_id: int, text: str, parse_mode: str = None):
+    """ارسال امن پیام بدون خطای یونیکد.
+
+    قبلاً تابع همگام بود و bot.bot.session را صدا می‌زد که وجود ندارد؛ هر
+    `await _safe_send(...)` با TypeError شکست می‌خورد و پیام ارسال نمی‌شد.
+    """
     try:
-        kwargs = {"chat_id": user_id, "text": _sanitize_text(text)}
-        if parse_mode:
-            kwargs["parse_mode"] = parse_mode
-        return bot.bot.session.coro_make_request('sendMessage', kwargs)
+        await bot.send_message(user_id, _sanitize_text(text), parse_mode=parse_mode)
     except Exception as e:
         logger.error(f"خطا در ارسال پیام: {e}")
-        try:
-            kwargs = {"chat_id": user_id, "text": _sanitize_text(text)}
-            return bot.bot.session.coro_make_request('sendMessage', kwargs)
-        except Exception as e2:
-            logger.error(f"خطا مجدد در ارسال پیام: {e2}")
+        if parse_mode:
+            try:
+                await bot.send_message(user_id, _sanitize_text(text))
+            except Exception as e2:
+                logger.error(f"خطا مجدد در ارسال پیام: {e2}")
 
 
 def count_processable_items(items: list, service_type: str) -> int:
@@ -618,8 +619,30 @@ def format_bulk_tracking_list(batch_tracking_code: str) -> str:
     return "\n".join(lines)
 
 
+def _release_stale_sign_lock(user_id: int, task_data: dict) -> None:
+    """اگر قفل امضا روی کدی مانده که دیگر روند امضای فعالی ندارد (مثلاً پس از
+    ری‌استارت ربات)، آزاد شود تا کاربر بتواند کد دیگری انتخاب کند."""
+    locked_tc = task_data.get("signing_in_progress")
+    if not locked_tc:
+        return
+    try:
+        import runtime_state
+        for store in (runtime_state.pending_lavayeh_sign, runtime_state.pending_ezhhar_sign):
+            info = store.get(user_id) or {}
+            if info.get("bulk_item_tc") == locked_tc:
+                return
+    except Exception:
+        return
+    logger.info(f"[BULK-SIGN] قفل امضای بی‌صاحب آزاد شد: {locked_tc}")
+    task_data["signing_in_progress"] = None
+
+
 async def _show_bulk_sign_menu(bot, user_id: int, batch_tracking_code: str):
-    """نمایش منوی انتخاب کد رهگیری برای امضای دسته‌جمعی."""
+    """نمایش لیست کدهای رهگیری ثبت‌شده برای امضای دسته‌جمعی.
+
+    فقط کدهای در انتظار امضا نمایش داده می‌شوند؛ هر کدی که امضایش درج شد از
+    لیست حذف می‌شود. کاربر با انتخاب هر کد وارد روند امضای همان کد می‌شود.
+    """
     task_data = BULK_TASKS.get(batch_tracking_code)
     if not task_data:
         await _safe_send(bot, user_id, "\u26a0\ufe0f اطلاعات دسته جمعی یافت نشد.")
@@ -629,85 +652,57 @@ async def _show_bulk_sign_menu(bot, user_id: int, batch_tracking_code: str):
     if not items:
         await _safe_send(bot, user_id, "\U0001f4c1 لیست کدی برای امضا وجود ندارد.")
         return
+
+    _release_stale_sign_lock(user_id, task_data)
     
     # بررسی قفل امضای هم‌زمان
     if task_data.get("signing_in_progress"):
         await _safe_send(bot, user_id,
-            f"\u23f3 در حال امضای کد `{task_data['signing_in_progress']}` هستید.\n"
+            f"\u23f3 در حال امضای کد {task_data['signing_in_progress']} هستید.\n"
             "لطفاً ابتدا امضای جاری را تکمیل کنید.")
         return
-    
-    from datetime import datetime
-    now = datetime.now()
-    
-    # ساخت inline keyboard
+
+    awaiting_items = [i for i in items if i.get("status") == "awaiting_sign"]
+    signed_count = sum(1 for i in items if i.get("status") == "signed")
+
+    if not awaiting_items:
+        from final_print import FINAL_PRINT_NOTICE
+        await _safe_send(bot, user_id,
+            f"\u2705 امضای همهٔ کدهای رهگیری دسته‌جمعی ({signed_count} مورد) انجام شد.\n\n"
+            f"{FINAL_PRINT_NOTICE}")
+        return
+
     buttons = []
-    for item in items:
-        status = item.get("status", "")
+    for item in awaiting_items:
         tc = item.get("tracking_code", "")
         title = item.get("title", "?")
-        
-        if status == "awaiting_sign":
-            # بررسی disabled_until منقضی شده
-            disabled_until = item.get("disabled_until")
-            if disabled_until:
-                if isinstance(disabled_until, str):
-                    try:
-                        disabled_until = datetime.fromisoformat(disabled_until)
-                    except Exception:
-                        disabled_until = None
-                if disabled_until and now < disabled_until:
-                    mins = int((disabled_until - now).total_seconds() // 60)
-                    buttons.append([InlineKeyboardButton(
-                text=f"\u23f3 {tc} — {title} (غیرفعال تا {mins} دقیقه)",
-                callback_data=f"bulk_sign_disabled"
-            )])
-            continue
-        
-        if status == "signed":
-            buttons.append([InlineKeyboardButton(
-                text=f"\u2705 {tc} — {title} (امضا شده)",
-                callback_data=f"bulk_sign_disabled"
-            )])
-            continue
-        
-        if status == "failed":
-            buttons.append([InlineKeyboardButton(
-                text=f"\u274c {tc} — {title} (ناموفق)",
-                callback_data=f"bulk_sign_disabled"
-            )])
-            continue
-        
-        # awaiting_sign بدون disabled_until منقضی
         buttons.append([InlineKeyboardButton(
             text=f"\U0001f514 {tc} — {title}",
             callback_data=f"bulk_sign_select:{tc}"
         )])
-    
-    # دکمه نمایش لیست کامل
-    buttons.append([InlineKeyboardButton(
-        text=f"\U0001f4cb نمایش کامل لیست",
-        callback_data=f"bulk_sign_list:{batch_tracking_code}"
-    )])
-    
+
     from aiogram.types import InlineKeyboardMarkup
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    
-    awaiting_count = sum(1 for i in items if i.get("status") == "awaiting_sign")
-    signed_count = sum(1 for i in items if i.get("status") == "signed")
-    
+
+    code_lines = "\n".join(
+        f"\u2022 `{i.get('tracking_code', '')}` — {i.get('title', '?')}" for i in awaiting_items)
     msg = (
         f"\U0001f4cb *منوی امضای دسته‌جمعی*\n\n"
-        f"\U0001f514 در انتظار امضا: *{awaiting_count}*\n"
+        f"\U0001f514 در انتظار امضا: *{len(awaiting_items)}*\n"
         f"\u2705 امضا شده: *{signed_count}*\n\n"
-        f"\U0001f4a1 یک کد رهگیری را برای ارسال کد امضا انتخاب کنید:\n"
-        f"_(هر امضا = یک کد پیامکی جداگانه روی موبایل ثبت‌شده)_"
+        f"{code_lines}\n\n"
+        f"\U0001f4a1 یک کد رهگیری را برای ورود به روند امضا انتخاب کنید.\n"
+        f"(هر امضا = یک کد پیامکی جداگانه روی موبایل ثبت‌شده)"
     )
-    
+
     try:
         await bot.send_message(user_id, msg, parse_mode="Markdown", reply_markup=kb)
     except Exception as e:
         logger.error(f"خطا در ارسال منوی امضا: {e}")
+        try:
+            await bot.send_message(user_id, msg.replace("*", "").replace("`", ""), reply_markup=kb)
+        except Exception as e2:
+            logger.error(f"خطا مجدد در ارسال منوی امضا: {e2}")
 
 
 async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
@@ -752,11 +747,24 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
 
     # ── مجموعه جلوگیری از ثبت تکراری در سطح صف ──
     _queued_bulk_keys = set()
+    # شمارنده‌ها قبل از صف‌بندی مقداردهی می‌شوند (نه بعد از حلقه) تا ردیفی
+    # که حین صف‌بندی تمام شود، شمارش‌شده از دست نرود.
+    task_data["queued_count"] = 0
+    task_data.setdefault("completed_count", 0)
+    task_data.setdefault("done_rows", [])
+    task_data["enqueuing"] = True
 
     queued = 0
+    tracked_queued = 0
     skipped_duplicates = 0
     errors = 0
     for idx, item in enumerate(items, start=1):
+        # فقط ردیف‌هایی در شمارش پایان دسته حساب می‌شوند که پیش‌پرداخت
+        # برایشان گرفته شده (همان count_processable_items). «اعلام وکالت» در
+        # لایحهٔ دسته‌جمعی به سناریوی جداگانه‌ای می‌رود که پایان ردیف را به
+        # دسته اعلام نمی‌کند؛ قبلاً شمرده می‌شد و فاکتور کلی/منوی امضا هرگز
+        # نمایش داده نمی‌شد.
+        tracked = count_processable_items([item], service_type) > 0
         try:
             if service_type == "ezhharnameh":
                 # ساخت داده‌ها دقیقاً مشابه FSM state فلوی ثبت تکی اظهارنامه
@@ -860,6 +868,8 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
                     # شمارهٔ ردیف واقعی اکسل (نه sub_row) — برای اینکه در پیام
                     # خطا مشخص باشد این مورد دقیقاً برای کدام ردیف/پرونده است
                     "_bulk_row_index": item.get("row_index", idx),
+                    # کلید یکتای ردیف — هر ردیف دقیقاً یک‌بار «تمام‌شده» شمرده شود
+                    "_bulk_row_key": f"{tracking_code}#{idx}",
                 }
 
                 if _send_lavayeh_fn:
@@ -895,6 +905,9 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
 
             item["status"] = "queued"
             queued += 1
+            if tracked:
+                tracked_queued += 1
+                task_data["queued_count"] = tracked_queued
             logger.info(f"[BULK-QUEUE] مورد {idx}/{total} در صف قرار گرفت (کد: {tracking_code})")
 
             if queued % 5 == 0 or queued == total:
@@ -913,12 +926,13 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
             errors += 1
 
     task_data["status"] = "queued"
+    task_data["enqueuing"] = False
     task_data["queued_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    task_data["queued_count"] = queued
+    task_data["queued_count"] = tracked_queued
     # شمارندهٔ ردیف‌های واقعاً تمام‌شده (موفق یا ناموفق) — گزارش مالی و
     # فاکتور تسویه فقط وقتی صدا زده می‌شوند که این عدد به queued برسد،
     # نه بلافاصله بعد از اینکه همهٔ ردیف‌ها فقط «در صف» قرار گرفتند.
-    task_data["completed_count"] = 0
+    task_data.setdefault("completed_count", 0)
 
     dup_note = f"\n⚠️ {skipped_duplicates} مورد تکراری رد شد." if skipped_duplicates else ""
     error_note = f"\n⚠️ {errors} مورد خطا داشت." if errors else ""
@@ -933,6 +947,10 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
             parse_mode="Markdown")
     except Exception as e:
         logger.error(f"خطا در ارسال پیام پایان: {e}")
+
+    # اگر همهٔ ردیف‌ها حین صف‌بندی تمام شدند، همین‌جا جمع‌بندی شود
+    if tracked_queued and task_data.get("completed_count", 0) >= tracked_queued:
+        await finalize_bulk_batch(bot, user_id, tracking_code)
 
     # ══════════════════════════════════════════════════════════════
     # ⚠️ توجه مهم: اینجا فقط صف‌بندی (enqueue) همهٔ ردیف‌ها تمام شده،
@@ -949,7 +967,7 @@ async def run_bulk_processing_task(bot, user_id: int, tracking_code: str):
     # ══════════════════════════════════════════════════════════════
 
 
-async def mark_bulk_item_done(bot, user_id: int, tracking_code: str):
+async def mark_bulk_item_done(bot, user_id: int, tracking_code: str, row_key: str = ""):
     """
     باید دقیقاً یک‌بار برای هر ردیف دسته‌جمعی (چه موفق چه ناموفق) صدا زده
     شود — چه از send_bulk_item_result (موفقیت) و چه از except
@@ -960,13 +978,46 @@ async def mark_bulk_item_done(bot, user_id: int, tracking_code: str):
     task_data = BULK_TASKS.get(tracking_code)
     if not task_data:
         return
+    if row_key:
+        done_rows = task_data.setdefault("done_rows", [])
+        if row_key in done_rows:
+            logger.info(f"[BULK] ردیف {row_key} قبلاً تمام‌شده شمرده شده بود")
+            return
+        done_rows.append(row_key)
     task_data["completed_count"] = task_data.get("completed_count", 0) + 1
     queued_count = task_data.get("queued_count", 0)
     logger.info(
         f"[BULK] بچ {tracking_code}: {task_data['completed_count']}/{queued_count} ردیف تمام شد"
     )
-    if queued_count and task_data["completed_count"] >= queued_count:
+    # تا وقتی صف‌بندی تمام نشده جمع‌بندی نمی‌شود؛
+    # run_bulk_processing_task پس از صف‌بندی خودش بررسی می‌کند.
+    if (queued_count and task_data["completed_count"] >= queued_count
+            and not task_data.get("enqueuing")):
         await finalize_bulk_batch(bot, user_id, tracking_code)
+
+
+async def ensure_bulk_row_done(bot, user_id: int, data: dict):
+    """پس از پایان پردازش هر ردیف دسته‌جمعی لایحه صدا زده می‌شود (finally در
+    scenarios). اگر ردیف از مسیری خارج شده که پایانش را اعلام نکرده (پنجرهٔ
+    اصلاح کدملی/قرارداد، شکست آماده‌سازی، خطای ناوبری و…)، به‌عنوان «ناتمام»
+    در گزارش ثبت و شمرده می‌شود تا فاکتور کلی و منوی امضا معلق نماند.
+    اگر این ردیف بعداً (پس از اصلاح) ثبت شود، handle_late_bulk_item به آن
+    رسیدگی می‌کند.
+    """
+    batch_tc = data.get("batch_tracking_code", "")
+    row_key = data.get("_bulk_row_key", "")
+    task_data = BULK_TASKS.get(batch_tc)
+    if not task_data or not row_key:
+        return
+    if row_key in task_data.get("done_rows", []):
+        return
+    task_data.setdefault("failures", []).append({
+        "row_index": data.get("_bulk_row_index") or data.get("lavayeh_row_number", "?"),
+        "tracking_code": data.get("lavayeh_tracking_code", ""),
+        "title": data.get("lavayeh_title", ""),
+        "error": "ثبت این ردیف کامل نشد (در انتظار اصلاح اطلاعات یا پیگیری پشتیبانی)",
+    })
+    await mark_bulk_item_done(bot, user_id, batch_tc, row_key=row_key)
 
 
 async def _mark_bulk_items_paid_and_ready(bot, user_id: int, tracking_code: str):
@@ -1061,6 +1112,103 @@ async def _mark_bulk_items_paid_and_ready(bot, user_id: int, tracking_code: str)
             logger.warning(f"[BULK-PANEL] خطا در اطلاع‌رسانی ادمین: {ex}")
 
 
+async def _send_bulk_settlement_invoice(bot, user_id: int, tracking_code: str, amount_rial: int):
+    """صدور فاکتور تسویهٔ دسته‌جمعی؛ پس از پرداخت، منوی امضا نمایش داده می‌شود
+    (bulk_settlement_successful_payment در lavayeh_handlers)."""
+    task_data = BULK_TASKS.get(tracking_code) or {}
+    try:
+        from config import BALE_WALLET_TOKEN, BALE_API_BASE, BOT_TOKEN, BALE_SSL_CONTEXT
+        import aiohttp
+        import json as _json
+
+        invoice_payload = _json.dumps({"type": "bulk_settlement", "uid": user_id, "tracking_code": tracking_code})
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
+            invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
+            invoice_data = {
+                "chat_id": user_id,
+                "title": f"تسویه هزینه سامانه ({tracking_code})",
+                "description": f"مابه‌التفاوه هزینه سامانه قضایی\nمبلغ: {amount_rial // 10:,} تومان ({amount_rial:,} ریال)",
+                "payload": invoice_payload,
+                "provider_token": BALE_WALLET_TOKEN,
+                "currency": "IRR",
+                "prices": [{"label": f"تسویه {tracking_code}", "amount": amount_rial}],
+            }
+            async with session.post(invoice_url, json=invoice_data) as resp:
+                result = await resp.json()
+                if not result.get("ok"):
+                    logger.error(f"[BULK-SETTLE] خطای sendInvoice: {result}")
+                    raise Exception(result.get("description", "خطا در ارسال فاکتور"))
+                from card_payment import track_invoice as _cp_track; _cp_track(invoice_data)  # ⭐ کارت‌به‌کارت پس از ۲۰ دقیقه
+
+        from aiogram.types import ReplyKeyboardRemove
+        await bot.send_message(user_id,
+            "\u23f3 فاکتور مابه‌التفاوه هزینه سامانه ارسال شد.\n"
+            "پس از پرداخت، منوی انتخاب کد رهگیری برای امضا نمایش داده می‌شود.",
+            reply_markup=ReplyKeyboardRemove())
+
+        # ذخیره state برای تشخیص پس از پرداخت
+        task_data["settlement_amount_rial"] = amount_rial
+        import runtime_state as _rs
+        if hasattr(_rs, 'dp') and _rs.dp:
+            user_state = _rs.dp.fsm.resolve_context(bot, user_id, user_id)
+            await user_state.set_state(Form.bulk_settlement_wait)
+
+    except Exception as e:
+        logger.error(f"[BULK-SETTLE] خطا در صدور فاکتور تسویه: {e}", exc_info=True)
+        await _safe_send(bot, user_id, f"\u26a0\ufe0f خطا در صدور فاکتور تسویه. لطفاً به مدیریت اطلاع دهید.")
+
+
+async def handle_late_bulk_item(bot, user_id: int, tracking_code: str, item: dict):
+    """ردیفی که پس از جمع‌بندی بچ ثبت شد (مثلاً پس از اصلاح کدملی/قرارداد).
+    هزینهٔ آن ابتدا از مازاد پیش‌پرداخت بچ کسر می‌شود؛ اگر کافی نبود فاکتور
+    تسویهٔ همان مقدار صادر می‌شود، وگرنه مستقیم به منوی امضا می‌رود."""
+    task_data = BULK_TASKS.get(tracking_code)
+    if not task_data:
+        return
+    # از فهرست ناتمام‌ها خارج شود
+    task_data["failures"] = [
+        f for f in task_data.get("failures", [])
+        if str(f.get("row_index")) != str(item.get("row_index"))
+    ]
+    court_total = int(item.get("court_total", 0) or 0)
+    surplus = int(task_data.get("surplus_rial", 0) or 0)
+    covered = min(surplus, court_total)
+    task_data["surplus_rial"] = surplus - covered
+    remaining = court_total - covered
+    logger.info(f"[BULK-LATE] ردیف {item.get('row_index')} بچ {tracking_code}: هزینه {court_total:,} | "
+                f"از مازاد {covered:,} | باقیمانده {remaining:,}")
+    if remaining > 0:
+        await _send_bulk_settlement_invoice(bot, user_id, tracking_code, remaining)
+    else:
+        try:
+            await _mark_bulk_items_paid_and_ready(bot, user_id, tracking_code)
+        except Exception as ex:
+            logger.error(f"[BULK-PANEL] خطا در علامت‌گذاری ردیف‌های بچ {tracking_code}: {ex}")
+        await _show_bulk_sign_menu(bot, user_id, tracking_code)
+
+
+async def on_bulk_item_sign_finished(bot, user_id: int, sign_info: dict, signed: bool):
+    """پایان روند امضای یک کد رهگیری از منوی امضای دسته‌جمعی.
+
+    signed=True  → کد امضا شده و از لیست نمایش حذف می‌شود.
+    signed=False → روند امضا بدون نتیجه بسته شد؛ کد در لیست می‌ماند.
+    در هر دو حالت قفل آزاد و لیست کدهای باقی‌مانده دوباره نمایش داده می‌شود.
+    """
+    batch_tc = (sign_info or {}).get("bulk_batch_tc")
+    item_tc = (sign_info or {}).get("bulk_item_tc")
+    task_data = BULK_TASKS.get(batch_tc) if batch_tc else None
+    if not task_data:
+        return
+    for item in task_data.get("signable_items", []):
+        if item.get("tracking_code") == item_tc:
+            if signed:
+                item["status"] = "signed"
+            break
+    if task_data.get("signing_in_progress") == item_tc:
+        task_data["signing_in_progress"] = None
+    await _show_bulk_sign_menu(bot, user_id, batch_tc)
+
+
 async def finalize_bulk_batch(bot, user_id: int, tracking_code: str):
     """
     گزارش مالی نهایی + صدور فاکتور تسویه (در صورت نیاز) + نمایش منوی
@@ -1070,6 +1218,10 @@ async def finalize_bulk_batch(bot, user_id: int, tracking_code: str):
     task_data = BULK_TASKS.get(tracking_code)
     if not task_data:
         return
+    if task_data.get("finalized"):
+        logger.info(f"[BULK] بچ {tracking_code} قبلاً جمع‌بندی شده بود")
+        return
+    task_data["finalized"] = True
 
     # ══════════════════════════════════════════════════════════
     # گزارش مالی و صدور فاکتور تسویه (در صورت نیاز)
@@ -1081,6 +1233,8 @@ async def finalize_bulk_batch(bot, user_id: int, tracking_code: str):
         total_court_cost = sum(item.get("court_total", 0) for item in signable_items if item.get("status") != "failed")
         prepaid_total = task_data.get("prepaid_total_rial", 0)
         remaining = total_court_cost - prepaid_total
+        # مازاد پیش‌پرداخت برای ردیف‌هایی که بعداً (پس از اصلاح) ثبت شوند
+        task_data["surplus_rial"] = max(0, -remaining)
 
         if remaining > 0:
             diff_line = f"\U0001f4b0 مابه‌التفاوه (باقیمانده): *{remaining:,} ریال*"
@@ -1111,51 +1265,13 @@ async def finalize_bulk_batch(bot, user_id: int, tracking_code: str):
         try:
             await bot.send_message(user_id, report_msg, parse_mode="Markdown")
         except Exception as e:
+            # متن خطای ردیف‌ها ممکن است Markdown را بشکند — ارسال بدون قالب
             logger.error(f"خطا در ارسال گزارش مالی: {e}")
+            await _safe_send(bot, user_id, report_msg.replace("*", "").replace("`", ""))
 
         # صدور فاکتور تسویه فقط اگر باقیمانده > 0
         if remaining > 0:
-            try:
-                from config import BALE_WALLET_TOKEN, BALE_API_BASE, BOT_TOKEN, BALE_SSL_CONTEXT
-                import aiohttp
-                import json as _json
-
-                invoice_payload = _json.dumps({"type": "bulk_settlement", "uid": user_id, "tracking_code": tracking_code})
-                async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
-                    invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
-                    invoice_data = {
-                        "chat_id": user_id,
-                        "title": f"تسویه هزینه سامانه ({tracking_code})",
-                        "description": f"مابه‌التفاوه هزینه سامانه قضایی\nمبلغ: {remaining // 10:,} تومان ({remaining:,} ریال)",
-                        "payload": invoice_payload,
-                        "provider_token": BALE_WALLET_TOKEN,
-                        "currency": "IRR",
-                        "prices": [{"label": f"تسویه {tracking_code}", "amount": remaining}],
-                    }
-                    async with session.post(invoice_url, json=invoice_data) as resp:
-                        result = await resp.json()
-                        if not result.get("ok"):
-                            logger.error(f"[BULK-SETTLE] خطای sendInvoice: {result}")
-                            raise Exception(result.get("description", "خطا در ارسال فاکتور"))
-                        from card_payment import track_invoice as _cp_track; _cp_track(invoice_data)  # ⭐ کارت‌به‌کارت پس از ۲۰ دقیقه
-
-                from aiogram.types import ReplyKeyboardRemove
-                await bot.send_message(user_id,
-                    "\u23f3 فاکتور مابه‌التفاوه هزینه سامانه ارسال شد.\n"
-                    "پس از پرداخت، منوی انتخاب کد رهگیری برای امضا نمایش داده می‌شود.",
-                    reply_markup=ReplyKeyboardRemove())
-
-                # ذخیره state برای تشخیص پس از پرداخت
-                task_data["settlement_amount_rial"] = remaining
-                # در اینجا باید state کاربر تنظیم شود — از طریق runtime_state
-                import runtime_state as _rs
-                if hasattr(_rs, 'dp') and _rs.dp:
-                    user_state = _rs.dp.fsm.resolve_context(bot, user_id, user_id)
-                    await user_state.set_state(Form.bulk_settlement_wait)
-
-            except Exception as e:
-                logger.error(f"[BULK-SETTLE] خطا در صدور فاکتور تسویه: {e}", exc_info=True)
-                await _safe_send(bot, user_id, f"\u26a0\ufe0f خطا در صدور فاکتور تسویه. لطفاً به مدیریت اطلاع دهید.")
+            await _send_bulk_settlement_invoice(bot, user_id, tracking_code, remaining)
         else:
             # remaining <= 0 → مستقیم به منوی امضا
             # ⭐ v1.6 — پیش‌پرداخت کل هزینه را پوشش داده؛ ردیف‌ها «پرداخت‌شده»
@@ -1168,6 +1284,7 @@ async def finalize_bulk_batch(bot, user_id: int, tracking_code: str):
             await _show_bulk_sign_menu(bot, user_id, tracking_code)
     else:
         # هیچ ردیفی موفق نبود
+        task_data["surplus_rial"] = task_data.get("prepaid_total_rial", 0)
         fail_lines = ""
         if failures:
             fail_lines = "\n\n" + "\n".join(

@@ -987,9 +987,10 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                     national_ids=national_ids,
                     lavayeh_title=title,
                     batch_tracking_code=batch_tracking_code,
-                    row_index=row_number,
+                    row_index=data.get("_bulk_row_index") or row_number,
                     lavayeh_persons=persons,
-                    lavayeh_bill_no=lavayeh_bill_no or "")
+                    lavayeh_bill_no=lavayeh_bill_no or "",
+                    bulk_row_key=data.get("_bulk_row_key", ""))
             else:
                 # فلوی تکی: فاکتور + امضای انفرادی
                 # نکته: sign_tracking_code (=lavayeh_bill_no در صورت وجود) به
@@ -1073,7 +1074,7 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                                 "title": title,
                                 "error": str(e),
                             })
-                        await mark_bulk_item_done(bot, user_id, batch_tc_err)
+                        await mark_bulk_item_done(bot, user_id, batch_tc_err, row_key=data.get("_bulk_row_key", ""))
                     except Exception as log_err:
                         logging.error(f"[LAVAYEH] خطا در ثبت گزارش شکست ردیف (قطعی سرویس): {log_err}")
                 await bot.send_message(
@@ -1220,7 +1221,7 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                             )
                         # اطلاع به bulk_submissions که این ردیف (ناموفق) هم
                         # تمام شد — اگر آخرین ردیف بود، گزارش پایانی اجرا شود
-                        await mark_bulk_item_done(bot, user_id, batch_tc_err)
+                        await mark_bulk_item_done(bot, user_id, batch_tc_err, row_key=data.get("_bulk_row_key", ""))
                     except Exception as log_err:
                         logging.error(f"[LAVAYEH] خطا در ثبت گزارش شکست ردیف: {log_err}")
                 # اطلاع فوری به مدیر دربارهٔ همین ردیف ناموفق (طبق تصمیم قبلی
@@ -1315,7 +1316,7 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                                 "title": title,
                                 "error": f"پس از {max_attempts} تلاش ناموفق: {str(e)[:200]}",
                             })
-                        await mark_bulk_item_done(bot, user_id, _batch_tc_generic)
+                        await mark_bulk_item_done(bot, user_id, _batch_tc_generic, row_key=data.get("_bulk_row_key", ""))
                     except Exception as log_err:
                         logging.error(f"[LAVAYEH] خطا در mark_bulk_item_done (شکست عمومی): {log_err}")
 

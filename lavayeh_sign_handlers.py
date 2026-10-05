@@ -44,6 +44,26 @@ LAVAYEH_SIGN_WRONG_CODE_WAIT = 20 * 60  # ۲۰ دقیقه صبر بعد از ک�
 LAVAYEH_SIGN_NO_ACTION_TIMEOUT = 60 * 60  # ۶۰ دقیقه بدون اقدام
 
 
+async def _bulk_sign_finished(bot: Bot, user_id: int, sign_info: dict | None, signed: bool):
+    """اگر این روند امضا از منوی امضای دسته‌جمعی شروع شده بود، وضعیت کد در
+    لیست به‌روز و لیست کدهای باقی‌مانده دوباره نمایش داده می‌شود."""
+    if not sign_info or not sign_info.get("bulk_batch_tc"):
+        return
+    try:
+        from bulk_submissions import on_bulk_item_sign_finished
+        await on_bulk_item_sign_finished(bot, user_id, sign_info, signed)
+    except Exception as e:
+        logging.error(f"[BULK-SIGN] خطا در به‌روزرسانی منوی امضای دسته‌جمعی: {e}", exc_info=True)
+
+
+def _same_sign_session(store: dict, user_id: int, session_id) -> bool:
+    """تایمرها فقط روی همان روند امضایی اثر کنند که شروعشان کرده؛ در امضای
+    دسته‌جمعی هر کد رهگیری روند جداگانه دارد و تایمر کد قبلی نباید کد بعدی
+    را منقضی/لغو کند."""
+    info = store.get(user_id)
+    return bool(info) and info.get("sign_session_id") == session_id
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # مرحله ۱ — آمادگی کاربر برای ارسال کد
 # ══════════════════════════════════════════════════════════════════════════════
@@ -227,7 +247,8 @@ async def on_lavayeh_sign_persons_loaded(bot: Bot, user_id: int, persons: list, 
             "*09306186888* ارسال فرمائید.",
             reply_markup=restart_kb
         )
-        runtime_state.pending_lavayeh_sign.pop(user_id, None)
+        _ended_sign = runtime_state.pending_lavayeh_sign.pop(user_id, None)
+        await _bulk_sign_finished(bot, user_id, _ended_sign, signed=False)
         await state.clear()
         return
 
@@ -310,7 +331,8 @@ async def on_lavayeh_sign_code_sent_failure(bot: Bot, user_id: int, state: FSMCo
         "📲 لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ پیام دهید.",
         reply_markup=restart_kb
     )
-    runtime_state.pending_lavayeh_sign.pop(user_id, None)
+    _ended_sign = runtime_state.pending_lavayeh_sign.pop(user_id, None)
+    await _bulk_sign_finished(bot, user_id, _ended_sign, signed=False)
     await state.clear()
 
 
@@ -337,7 +359,7 @@ async def on_lavayeh_sign_submit_success(bot: Bot, user_id: int, row_idx: int, s
 
     if not persons_awaiting:
         # همه امضا کردند
-        runtime_state.pending_lavayeh_sign.pop(user_id, None)
+        _ended_sign = runtime_state.pending_lavayeh_sign.pop(user_id, None)
         await bot.send_message(
             ADMIN_ID, f"✅ [SIGN] امضای لایحه کاربر {user_id} کامل شد."
         )
@@ -357,6 +379,7 @@ async def on_lavayeh_sign_submit_success(bot: Bot, user_id: int, row_idx: int, s
         except Exception as panel_err:
             logging.warning(f"[SIGN] خطا در ثبت وضعیت امضای پرونده لایحه در پنل: {panel_err}")
         await state.clear()
+        await _bulk_sign_finished(bot, user_id, _ended_sign, signed=True)
     else:
         # اشخاص دیگری هم باید امضا کنند
         all_persons = sign_info.get("sign_persons", [])
@@ -428,7 +451,8 @@ async def on_lavayeh_sign_sana_not_registered(bot: Bot, user_id: int, error_text
         "باتشکر",
         reply_markup=restart_kb
     )
-    runtime_state.pending_lavayeh_sign.pop(user_id, None)
+    _ended_sign = runtime_state.pending_lavayeh_sign.pop(user_id, None)
+    await _bulk_sign_finished(bot, user_id, _ended_sign, signed=False)
     await state.clear()
 
 
@@ -438,11 +462,12 @@ async def on_lavayeh_sign_sana_not_registered(bot: Bot, user_id: int, error_text
 
 async def _lavayeh_code_entry_timeout_watcher(bot: Bot, user_id: int, state: FSMContext):
     """۶ دقیقه از زمان ارسال کد موقت — اگر کاربر کد نفرست، مهلت تمام شده"""
+    _sid = (runtime_state.pending_lavayeh_sign.get(user_id) or {}).get("sign_session_id")
     await asyncio.sleep(LAVAYEH_SIGN_CODE_TIMEOUT)
 
-    sign_info = runtime_state.pending_lavayeh_sign.get(user_id)
-    if not sign_info:
+    if not _same_sign_session(runtime_state.pending_lavayeh_sign, user_id, _sid):
         return
+    sign_info = runtime_state.pending_lavayeh_sign.get(user_id)
 
     current_state = await state.get_state()
     if current_state not in (Form.lavayeh_sign_person_select, Form.lavayeh_sign_code_input):
@@ -463,11 +488,12 @@ async def _lavayeh_code_entry_timeout_watcher(bot: Bot, user_id: int, state: FSM
 
 async def _lavayeh_wrong_code_waiter(bot: Bot, user_id: int, state: FSMContext):
     """۲۰ دقیقه صبر بعد از کد اشتباه یا انقضای مهلت — سپس اجازه ارسال مجدد"""
+    _sid = (runtime_state.pending_lavayeh_sign.get(user_id) or {}).get("sign_session_id")
     await asyncio.sleep(LAVAYEH_SIGN_WRONG_CODE_WAIT)
 
-    sign_info = runtime_state.pending_lavayeh_sign.get(user_id)
-    if not sign_info:
+    if not _same_sign_session(runtime_state.pending_lavayeh_sign, user_id, _sid):
         return
+    sign_info = runtime_state.pending_lavayeh_sign.get(user_id)
 
     current_state = await state.get_state()
     if current_state != Form.lavayeh_sign_wrong_code_wait:
@@ -494,9 +520,12 @@ async def _lavayeh_wrong_code_waiter(bot: Bot, user_id: int, state: FSMContext):
 
             person_select_kb = ReplyKeyboardMarkup(keyboard=person_buttons, resize_keyboard=True)
 
+            bulk_line = (f"🔹 کد رهگیری: `{sign_info['bulk_item_tc']}`\n\n"
+                         if sign_info.get("bulk_item_tc") else "")
             await bot.send_message(
                 user_id,
                 f"⏰ *۲۰ دقیقه گذشت.*\n\n"
+                f"{bulk_line}"
                 "اگر در دسترس می‌باشید، لطفاً گزینه زیر را مجدداً انتخاب کنید تا کد جدید ارسال شود:",
                 reply_markup=person_select_kb)
             await state.set_state(Form.lavayeh_sign_person_select)
@@ -514,11 +543,12 @@ async def _lavayeh_wrong_code_waiter(bot: Bot, user_id: int, state: FSMContext):
 
 async def _lavayeh_no_action_60min_watcher(bot: Bot, user_id: int, state: FSMContext):
     """۶۰ دقیقه بدون هیچ اقدامی — ارسال پیام واتساپ"""
+    _sid = (runtime_state.pending_lavayeh_sign.get(user_id) or {}).get("sign_session_id")
     await asyncio.sleep(LAVAYEH_SIGN_NO_ACTION_TIMEOUT)
 
-    sign_info = runtime_state.pending_lavayeh_sign.get(user_id)
-    if not sign_info:
+    if not _same_sign_session(runtime_state.pending_lavayeh_sign, user_id, _sid):
         return
+    sign_info = runtime_state.pending_lavayeh_sign.get(user_id)
 
     try:
         await bot.send_message(
@@ -534,7 +564,8 @@ async def _lavayeh_no_action_60min_watcher(bot: Bot, user_id: int, state: FSMCon
     except Exception as e:
         logging.error(f"[SIGN] خطا در 60min watcher: {e}")
 
-    runtime_state.pending_lavayeh_sign.pop(user_id, None)
+    _ended_sign = runtime_state.pending_lavayeh_sign.pop(user_id, None)
+    await _bulk_sign_finished(bot, user_id, _ended_sign, signed=False)
     try:
         await state.clear()
     except Exception:
@@ -588,7 +619,8 @@ async def lavayeh_sign_later_yes(message: Message, state: FSMContext):
         "✅ *لایحه ثبتی تا ۲۴ ساعت آینده قابلیت تکمیل شدن را دارد.*\n\n"
         "📲 لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ پیام دهید.",
         reply_markup=restart_kb)
-    runtime_state.pending_lavayeh_sign.pop(message.from_user.id, None)
+    _ended_sign = runtime_state.pending_lavayeh_sign.pop(message.from_user.id, None)
+    await _bulk_sign_finished(message.bot, message.from_user.id, _ended_sign, signed=False)
     await state.clear()
 
 
@@ -597,7 +629,8 @@ async def lavayeh_sign_later_no(message: Message, state: FSMContext):
     await message.answer(
         "📲 لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ پیام دهید.",
         reply_markup=restart_kb)
-    runtime_state.pending_lavayeh_sign.pop(message.from_user.id, None)
+    _ended_sign = runtime_state.pending_lavayeh_sign.pop(message.from_user.id, None)
+    await _bulk_sign_finished(message.bot, message.from_user.id, _ended_sign, signed=False)
     await state.clear()
 
 
@@ -805,7 +838,8 @@ async def on_ezhhar_sign_persons_loaded(bot: Bot, user_id: int, persons: list, s
             "لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ پیام دهید.",
             reply_markup=restart_kb
         )
-        runtime_state.pending_ezhhar_sign.pop(user_id, None)
+        _ended_sign = runtime_state.pending_ezhhar_sign.pop(user_id, None)
+        await _bulk_sign_finished(bot, user_id, _ended_sign, signed=False)
         await state.clear()
         return
 
@@ -884,7 +918,8 @@ async def on_ezhhar_sign_code_sent_failure(bot: Bot, user_id: int, state: FSMCon
         "📲 لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ پیام دهید.",
         reply_markup=restart_kb
     )
-    runtime_state.pending_ezhhar_sign.pop(user_id, None)
+    _ended_sign = runtime_state.pending_ezhhar_sign.pop(user_id, None)
+    await _bulk_sign_finished(bot, user_id, _ended_sign, signed=False)
     await state.clear()
 
 
@@ -901,7 +936,7 @@ async def on_ezhhar_sign_submit_success(bot: Bot, user_id: int, row_idx: int, st
     runtime_state.pending_ezhhar_sign[user_id] = sign_info
 
     if not persons_awaiting:
-        runtime_state.pending_ezhhar_sign.pop(user_id, None)
+        _ended_sign = runtime_state.pending_ezhhar_sign.pop(user_id, None)
         # ⭐ پایان روند امضا → اعلام ارسال چاپ نهایی در روز آینده
         from final_print import FINAL_PRINT_NOTICE
         await bot.send_message(
@@ -926,6 +961,7 @@ async def on_ezhhar_sign_submit_success(bot: Bot, user_id: int, row_idx: int, st
         except Exception as panel_err:
             logging.warning(f"[EZHHAR_SIGN] خطا در ثبت وضعیت امضای پرونده اظهارنامه در پنل: {panel_err}")
         await state.clear()
+        await _bulk_sign_finished(bot, user_id, _ended_sign, signed=True)
     else:
         all_persons = sign_info.get("sign_persons", [])
         remaining_names = []
@@ -987,7 +1023,8 @@ async def on_ezhhar_sign_sana_not_registered(bot: Bot, user_id: int, error_text:
         "باتشکر",
         reply_markup=restart_kb
     )
-    runtime_state.pending_ezhhar_sign.pop(user_id, None)
+    _ended_sign = runtime_state.pending_ezhhar_sign.pop(user_id, None)
+    await _bulk_sign_finished(bot, user_id, _ended_sign, signed=False)
     await state.clear()
 
 
@@ -1007,11 +1044,12 @@ async def on_ezhhar_sign_submit_failure(bot: Bot, user_id: int, state: FSMContex
 
 async def _ezhhar_code_entry_timeout_watcher(bot: Bot, user_id: int, state: FSMContext):
     """۶ دقیقه از زمان ارسال کد موقت — اگر کاربر کد نفرست، مهلت تمام شده"""
+    _sid = (runtime_state.pending_ezhhar_sign.get(user_id) or {}).get("sign_session_id")
     await asyncio.sleep(EZHHAR_CODE_ENTRY_TIMEOUT)
 
-    sign_info = runtime_state.pending_ezhhar_sign.get(user_id)
-    if not sign_info:
+    if not _same_sign_session(runtime_state.pending_ezhhar_sign, user_id, _sid):
         return
+    sign_info = runtime_state.pending_ezhhar_sign.get(user_id)
 
     current_state = await state.get_state()
     if current_state not in (Form.ezhhar_sign_person_select, Form.ezhhar_sign_code_input):
@@ -1030,11 +1068,12 @@ async def _ezhhar_code_entry_timeout_watcher(bot: Bot, user_id: int, state: FSMC
 
 async def _ezhhar_wrong_code_waiter(bot: Bot, user_id: int, state: FSMContext):
     """۲۰ دقیقه صبر بعد از کد اشتباه — سپس اجازه ارسال مجدد"""
+    _sid = (runtime_state.pending_ezhhar_sign.get(user_id) or {}).get("sign_session_id")
     await asyncio.sleep(EZHHAR_SIGN_WRONG_CODE_WAIT)
 
-    sign_info = runtime_state.pending_ezhhar_sign.get(user_id)
-    if not sign_info:
+    if not _same_sign_session(runtime_state.pending_ezhhar_sign, user_id, _sid):
         return
+    sign_info = runtime_state.pending_ezhhar_sign.get(user_id)
 
     current_state = await state.get_state()
     if current_state != Form.ezhhar_sign_wrong_code_wait:
@@ -1080,11 +1119,12 @@ async def _ezhhar_wrong_code_waiter(bot: Bot, user_id: int, state: FSMContext):
 
 async def _ezhhar_no_action_60min_watcher(bot: Bot, user_id: int, state: FSMContext):
     """۶۰ دقیقه بدون هیچ اقدامی — ارسال پیام واتساپ"""
+    _sid = (runtime_state.pending_ezhhar_sign.get(user_id) or {}).get("sign_session_id")
     await asyncio.sleep(EZHHAR_SIGN_NO_ACTION_TIMEOUT)
 
-    sign_info = runtime_state.pending_ezhhar_sign.get(user_id)
-    if not sign_info:
+    if not _same_sign_session(runtime_state.pending_ezhhar_sign, user_id, _sid):
         return
+    sign_info = runtime_state.pending_ezhhar_sign.get(user_id)
 
     try:
         await bot.send_message(
@@ -1100,7 +1140,8 @@ async def _ezhhar_no_action_60min_watcher(bot: Bot, user_id: int, state: FSMCont
     except Exception as e:
         logging.error(f"[EZHHAR_SIGN] خطا در 60min watcher: {e}")
 
-    runtime_state.pending_ezhhar_sign.pop(user_id, None)
+    _ended_sign = runtime_state.pending_ezhhar_sign.pop(user_id, None)
+    await _bulk_sign_finished(bot, user_id, _ended_sign, signed=False)
     try:
         await state.clear()
     except Exception:
@@ -1154,7 +1195,8 @@ async def ezhhar_sign_later_yes(message: Message, state: FSMContext):
         "✅ *اظهارنامه تا ۲۴ ساعت آینده قابلیت تکمیل شدن را دارد.*\n\n"
         "📲 لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ پیام دهید.",
         reply_markup=restart_kb)
-    runtime_state.pending_ezhhar_sign.pop(message.from_user.id, None)
+    _ended_sign = runtime_state.pending_ezhhar_sign.pop(message.from_user.id, None)
+    await _bulk_sign_finished(message.bot, message.from_user.id, _ended_sign, signed=False)
     await state.clear()
 
 
@@ -1163,5 +1205,6 @@ async def ezhhar_sign_later_no(message: Message, state: FSMContext):
     await message.answer(
         "📲 لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ پیام دهید.",
         reply_markup=restart_kb)
-    runtime_state.pending_ezhhar_sign.pop(message.from_user.id, None)
+    _ended_sign = runtime_state.pending_ezhhar_sign.pop(message.from_user.id, None)
+    await _bulk_sign_finished(message.bot, message.from_user.id, _ended_sign, signed=False)
     await state.clear()
