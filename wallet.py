@@ -110,6 +110,12 @@ def _apply(uid, amount_toman: int, kind: str, note: str = ""):
     _save()
 
 
+async def credit(uid, amount_toman: int, kind: str = "refund", note: str = ""):
+    """واریز (یا کسر با عدد منفی) به کیف پول کاربر از سایر ماژول‌ها."""
+    async with _lock:
+        _apply(uid, int(amount_toman), kind, note)
+
+
 def _cleanup_offers():
     now = time.time()
     for oid in [k for k, v in _store["offers"].items() if now - v.get("at", 0) > OFFER_TTL_SECONDS]:

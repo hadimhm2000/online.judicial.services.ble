@@ -714,6 +714,12 @@ async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
     # ⭐ ۴-ب. کد اقتصادی — طبق دستور کارفرما بعد از استعلام شناسه ملی، عدد 1
     await _set_legal_economic_code_one(page)
 
+    # ⭐ ۴-ج. «واحد زیر مجموعه شخص حقوقی» (در صورت نمایش) — انتخاب کاربر
+    import org_unit_picker
+    await org_unit_picker.handle_if_present(
+        page, bot, user_id, company_id=company_id,
+        fatal_exc=TajdidFatalError, prefix="TN")
+
     if not national_id:
         logging.info(f"[TN] شخص حقوقی ({person_role}) بدون کدملی نماینده — فقط شناسه ملی شرکت ثبت شد")
         return
@@ -878,9 +884,13 @@ async def _query_sana(page, ng_click: str, bot: Bot, user_id: int,
             try:
                 import error_catalog as _ec0
                 _is_bd_first = _ec0.is_birthdate_error(popup_error)
+                # ⭐ «... فوت کرده است و قابل انتخاب نمی باشد» → بدون تکرار،
+                # درخواست کدملی جدید (۴۵ دقیقه) + انصراف با بازگشت ۵۰٪
+                _is_dec_first = _ec0.is_deceased_error(popup_error)
             except Exception:
                 _is_bd_first = ("تاریخ تولد" in popup_error and "اشتباه" in popup_error)
-            if _is_bd_first:
+                _is_dec_first = "فوت کرده" in popup_error
+            if _is_bd_first or _is_dec_first:
                 await _close_popup(page)
                 logging.warning(
                     f"[TN] خطای تاریخ تولد ثنا (کدملی اشتباه) برای شناسه "
@@ -898,7 +908,7 @@ async def _query_sana(page, ng_click: str, bot: Bot, user_id: int,
                     national_id=current_national_id,
                     person_role=person_role,
                     person_index=person_index,
-                    kind="birthdate")
+                    kind="deceased" if _is_dec_first else "birthdate")
 
             # ⭐ محافظ بعد از بررسی خطای تاریخ تولد: فیلدهای غیرفعالِ اشخاصِ
             # قبلاً استعلام‌شده (مثلاً خواهان هنگام استعلام خوانده) نباید
@@ -3508,7 +3518,7 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                     user_id, flow=nid_fix_window.FLOW_TN,
                     task_data=pending_task_data, error_text=str(e),
                     national_id=e.national_id, person_role=e.person_role,
-                    person_index=e.person_index)
+                    person_index=e.person_index, kind=getattr(e, "kind", ""))
             except Exception as _win_err:
                 logging.error(f"[TN] خطا در شروع پنجرهٔ ویرایش کدملی: {_win_err}")
                 _win = None
@@ -3535,7 +3545,18 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
             # ⭐ اصلاحیهٔ کارفرما (۱۴۰۵/۰۶/۲۸): عین روند لایحه — اگر خطای
             # «شخص ... در فهرست اشخاص پرونده نیست» باشد، پیام به سبک
             # «خطای ثبت دعوی اعتراضی در سامانه» ارسال می‌شود.
-            if getattr(e, "kind", "") == "person_not_in_case":
+            if getattr(e, "kind", "") == "deceased":
+                # ⭐ خطای «فوت کرده است»: متن خطا + کدملی جدید (۴۵ دقیقه) + انصراف
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text=nid_fix_window.DECEASED_FIX_BUTTON,
+                        callback_data=f"tn_fix_nid:{user_id}")],
+                    [InlineKeyboardButton(
+                        text=nid_fix_window.DECEASED_CANCEL_BUTTON,
+                        callback_data=f"tn_del_req:{user_id}")],
+                ])
+                tn_sana_msg = nid_fix_window.deceased_message(str(e))
+            elif getattr(e, "kind", "") == "person_not_in_case":
                 tn_sana_msg = (
                     f"⚠️ *خطای ثبت دعوی اعتراضی در سامانه:*\n\n"
                     f"«{str(e)[:300]}»\n\n"
