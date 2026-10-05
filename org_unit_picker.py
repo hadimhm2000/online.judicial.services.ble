@@ -499,8 +499,12 @@ async def handle_if_present(page, bot: Bot, user_id: int, company_id: str = "",
     از قبل پر بود). در صورت پایان مهلت ۶۰ دقیقه یا عدم امکان درج،
     fatal_exc(پیام) (خطای قطعی همان بخش) raise می‌شود.
     """
-    st = await _poll(lambda: _visible_empty_field(page), 1.5)
+    st = await _poll(lambda: _visible_empty_field(page), 4)
     if not st:
+        # ⭐ لاگ تشخیصی — تا در صورت عدم نمایش، علت (نبود فیلد / پر بودن /
+        # مخفی بودن) از روی لاگ معلوم شود
+        logger.info(f"[{prefix}] بررسی «واحد زیر مجموعه شخص حقوقی» برای {company_id or '—'}: "
+                    f"{'فیلد در فرم نیست' if not await _field_state(page) else await _field_state(page)}")
         return False
 
     company_id = str(company_id or "")
