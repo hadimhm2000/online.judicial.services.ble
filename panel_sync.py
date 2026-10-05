@@ -315,7 +315,7 @@ async def _register_case_impl(
     tracking_code=None, document_category=None, sub_category=None,
     branch_name=None, branch_code=None, province=None,
     fee=0, fee_status="UNPAID", result_summary=None,
-    error_details=None, error_step=None):
+    error_details=None, error_step=None, system_cost=None):
     """ثبت یک Case در پنل — نسخه داخلی (await کامل با retry)."""
     url = f"{ADMIN_API_BASE}/admin/cases"
 
@@ -335,6 +335,7 @@ async def _register_case_impl(
         "resultSummary": result_summary,
         "errorDetails": error_details,
         "errorStep": error_step,
+        "systemCost": system_cost,
     }
     # ⭐ v1.7 — پیش‌پرداخت مصرف‌شده (در صورت وجود) روی پرونده ثبت شود
     prepay_fields = _take_consumed_prepay(bale_user_id, service_type)
@@ -630,7 +631,8 @@ async def register_case_to_panel(
     result_summary: str | None = None,
     error_details: str | None = None,
     error_step: str | None = None,
-    wait: bool = False):
+    wait: bool = False,
+    system_cost: int | None = None):
     """
     ثبت یک Case در پنل ادمین از طریق API.
 
@@ -645,7 +647,7 @@ async def register_case_to_panel(
         sub_category=sub_category, branch_name=branch_name,
         branch_code=branch_code, province=province,
         fee=fee, fee_status=fee_status, result_summary=result_summary,
-        error_details=error_details, error_step=error_step)
+        error_details=error_details, error_step=error_step, system_cost=system_cost)
     if wait:
         return await coro
     _schedule_panel_job(coro)

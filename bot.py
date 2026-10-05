@@ -46,6 +46,9 @@ dp.include_router(damages_router)
 # ⭐ محاسبه هزینه دادرسی — رایگان، بدون اشتراک و مستقل از ساعت کاری
 from court_fee_handlers import court_fee_router
 dp.include_router(court_fee_router)
+# ⭐ درخواست گواهی عدم سوءپیشینه — دکمهٔ منو، رمز موقت و پرداخت (payload: clearance)
+from clearance_handlers import clearance_router, clearance_loop
+dp.include_router(clearance_router)
 from history_handlers import history_router
 dp.include_router(history_router)
 import wallet
@@ -537,6 +540,8 @@ async def main():
 
     # ⭐ یادآوری ماهانهٔ ثبت شاخص تورم بانک مرکزی (خسارت تأخیر/مهریه)
     asyncio.create_task(cpi_reminder_loop(bot))
+    # ⭐ گواهی عدم سوءپیشینه: پایان مهلت ویرایش کدملی و ارسال مجدد رمز موقت
+    asyncio.create_task(clearance_loop(bot))
 
     # ⭐ تنظیمات قابل ویرایش از پنل، نظرسنجی، قیف تبدیل و گزارش شبانه
     import bot_settings

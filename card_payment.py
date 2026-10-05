@@ -115,7 +115,7 @@ _ACTIVE = (S_INVOICE, S_CARD_SENT, S_REVIEW)
 
 # payloadهایی که هندلر پرداختشان مستقل از state کاربر مسیریابی می‌شود
 # (global_successful_payment_handler در handlers.py از روی payload تصمیم می‌گیرد)
-_PAYLOAD_ROUTED_TYPES = {"admin_fee", "panel_message", "reg_prepay", "single_use"}
+_PAYLOAD_ROUTED_TYPES = {"admin_fee", "panel_message", "reg_prepay", "single_use", "clearance"}
 
 # نوع payload → نام فارسی درخواست (برای پیام مدیر و پنل)
 _TYPE_LABELS = {
@@ -132,6 +132,7 @@ _TYPE_LABELS = {
     "bulk_settlement": "تسویه هزینه سامانه (دسته‌جمعی)",
     "reg_prepay": "پیش‌پرداخت ثبت",
     "single_use": "پرداخت تکی (تمبر / خسارت تأخیر و مهریه)",
+    "clearance": "درخواست گواهی عدم سوءپیشینه",
 }
 _SVC_LABELS = {
     "lavayeh": "لایحه",
@@ -148,6 +149,7 @@ _TYPE_TO_PANEL_SERVICE = {
     "admin_fee": "ADMIN_FEE", "panel_message": "ADMIN_SEND",
     "bulk_prepay": "BULK", "bulk_settlement": "BULK",
     "single_use": "SINGLE_USE",
+    "clearance": "CLEARANCE_CERT",
 }
 _SVC_TO_PANEL_SERVICE = {
     "lavayeh": "LAVAYEH", "ealam": "EALAM_VAKALAHT", "ezhharnameh": "EZHHARNAMEH",
@@ -890,7 +892,7 @@ _PANEL_STATUS = {
 
 # نوع پرداخت برای محاسبهٔ سود در پنل (src/lib/profit.ts → computeCardPaymentProfit)
 _PREPAY_TYPES = {"reg_prepay", "bulk_prepay"}
-_FINAL_TYPES = {"lavayeh", "tajdid_nazar", "bulk_settlement", "admin_fee"}
+_FINAL_TYPES = {"lavayeh", "tajdid_nazar", "bulk_settlement", "admin_fee", "clearance"}
 
 
 def _payment_kind(entry: dict) -> str:

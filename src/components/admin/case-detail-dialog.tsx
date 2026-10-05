@@ -70,6 +70,7 @@ const serviceTypeLabels: Record<string, string> = {
   EZHHARNAMEH: 'اظهارنامه',
   EALAM_VAKALAHT: 'اعلام وکالت',
   STAMP_CALC: 'محاسبه تمبر',
+  CLEARANCE_CERT: 'گواهی عدم سوءپیشینه',
   CHECK: 'دادخواست چک',
   TAJDID_NAZAR: 'دعاوی اعتراضی',
   REGIONAL_VALUE: 'ارزش منطقه‌ای',

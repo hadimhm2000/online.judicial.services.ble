@@ -48,6 +48,7 @@ const serviceTypeLabels: Record<string, string> = {
   EZHHARNAMEH: 'اظهارنامه',
   EALAM_VAKALAHT: 'اعلام وکالت',
   STAMP_CALC: 'محاسبه تمبر',
+  CLEARANCE_CERT: 'گواهی عدم سوءپیشینه',
 };
 
 interface UserHistoryProps {
