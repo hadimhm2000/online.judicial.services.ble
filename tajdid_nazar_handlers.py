@@ -192,18 +192,24 @@ def normalize_jalali_date(raw: str):
     return True, f"{year:04d}/{month:02d}/{day:02d}"
 
 
+def _expected_case_number_len(code: str) -> int:
+    """طول مورد انتظار شماره دادنامه/پرونده.
+
+    ۱۴۰۰ به بعد: سال ۴ رقمی در ابتدا (14xx) → ۱۸ رقم.
+    ۹۹ و قبل‌تر: سال ۲ رقمی در ابتدا (مثلاً 99xx) → ۱۶ رقم.
+    (نسخهٔ قبلی ۴ رقم اول را عدد سال فرض می‌کرد؛ «9909...» ≥ 1400 می‌شد و
+    شمارهٔ ۱۶ رقمی صحیح سال ۹۹ رد می‌شد.)
+    """
+    return 18 if code.startswith("14") else 16
+
+
 def _validate_judge_no(code: str, label: str = "دادنامه"):
     """اعتبارسنجی شماره دادنامه/قرار — ۱۴۰۰ به بعد ۱۸ رقمی، ۹۹ و قبل‌تر ۱۶ رقمی.
 
     label: برچسبی که در پیام خطا نمایش داده می‌شود («دادنامه» یا «قرار»)."""
     if not code.isdigit():
         return False, f"⚠️ شماره {label} باید فقط شامل اعداد باشد."
-    # تعیین سال از ۴ رقم ابتدایی
-    prefix = int(code[:4]) if len(code) >= 4 else 0
-    if prefix >= 1400:
-        expected = 18
-    else:
-        expected = 16
+    expected = _expected_case_number_len(code)
     if len(code) != expected:
         return False, (
             f"⚠️ شماره {label} باید *{expected} رقمی* باشد.\n"
@@ -217,11 +223,7 @@ def _validate_file_no(code: str):
     """اعتبارسنجی شماره پرونده — ۱۴۰۰ به بعد ۱۸ رقمی، ۹۹ و قبل‌تر ۱۶ رقمی."""
     if not code.isdigit():
         return False, "⚠️ شماره پرونده باید فقط شامل اعداد باشد."
-    prefix = int(code[:4]) if len(code) >= 4 else 0
-    if prefix >= 1400:
-        expected = 18
-    else:
-        expected = 16
+    expected = _expected_case_number_len(code)
     if len(code) != expected:
         return False, (
             f"⚠️ شماره پرونده باید *{expected} رقمی* باشد.\n"
