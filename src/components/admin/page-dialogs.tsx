@@ -14,6 +14,7 @@ const SERVICE_LABELS: Record<string, string> = {
   EZHHARNAMEH: 'اظهارنامه',
   EALAM_VAKALAHT: 'اعلام وکالت',
   STAMP_CALC: 'محاسبه تمبر',
+  CLEARANCE_CERT: 'گواهی عدم سوءپیشینه',
   ADMIN_SEND: 'ارسال پیام مدیریت',
 };
 

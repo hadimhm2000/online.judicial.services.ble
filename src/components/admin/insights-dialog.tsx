@@ -15,6 +15,7 @@ const FLOW_LABELS: Record<string, string> = {
   INQUIRY: 'استعلام', LAVAYEH: 'لایحه', EZHHARNAMEH: 'اظهارنامه', TAJDID_NAZAR: 'دعاوی اعتراضی',
   CHECK: 'دادخواست', EALAM_VAKALAHT: 'اعلام وکالت', REGIONAL_VALUE: 'ارزش منطقه‌ای',
   DAMAGES: 'خسارت تأخیر و مهریه', BULK: 'ثبت دسته‌جمعی', CONTRACT_FIX: 'اصلاح قرارداد',
+  CLEARANCE_CERT: 'گواهی عدم سوءپیشینه',
 };
 
 interface FeedbackData {

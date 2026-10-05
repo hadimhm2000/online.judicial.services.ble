@@ -120,3 +120,5 @@ temp_files/
 db/
 .env.*
 !env.example
+# درخواست‌های گواهی عدم سوءپیشینه (کدملی/تاریخ تولد مشتریان)
+data/clearance_requests.json*

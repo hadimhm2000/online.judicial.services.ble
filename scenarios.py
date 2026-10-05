@@ -102,6 +102,13 @@ async def _close_extra_tabs(browser_context, keep_page=None):
         # ⭐ تب تسکی که منتظر انتخاب «واحد زیر مجموعه» کاربر است بسته نشود
         if is_parked_page(p):
             continue
+        # ⭐ تب اختصاصی درخواست گواهی عدم سوءپیشینه تا پایان درخواست باز می‌ماند
+        try:
+            from clearance_scenario import is_clearance_page
+            if is_clearance_page(p):
+                continue
+        except Exception:
+            pass
         try:
             await p.close()
         except Exception as e:
@@ -1214,6 +1221,12 @@ async def process_task(data, bot: Bot):
         set_job_context(bot, data)
     except Exception:
         pass
+
+    # ── ⭐ گواهی عدم سوءپیشینه (تب اختصاصی هر درخواست — clearance_scenario) ──
+    if task_type in ("CLEARANCE_SEND_CODE", "CLEARANCE_FINALIZE"):
+        from clearance_scenario import process_clearance_task
+        await process_clearance_task(data, bot)
+        return
 
     # ── سناریوی لایحه ثبت ─────────────────────────────────────────────────
     if task_type == "LAVAYEH_SUBMIT":

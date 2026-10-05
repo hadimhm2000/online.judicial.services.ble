@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<title>Sana clearance mock</title>
+<style>
+  .hidden { display: none; }
+  .sweet-alert { display: none; position: fixed; top: 30%; left: 30%; background: #fff; border: 1px solid #ccc; padding: 10px; }
+  .sweet-alert.showSweetAlert { display: block; }
+  .box { border: 1px solid #ddd; margin: 4px; padding: 4px; cursor: pointer; }
+  .progress-bar { height: 4px; background: #0072c6; width: 100%; }
+</style>
+</head>
+<body>
+<!-- شبیه‌سازی صفحهٔ «درخواست گواهی عدم سوءپیشینه» سامانه برای test_clearance.py.
+     سناریو با query string تعیین می‌شود: send=ok|recent|wrong|error_once|concurrent_once
+     code=ok|expired|reject  payid=ok|calc_once  final=ok|missing -->
+<div id="loading" class="hidden"><div class="progress-bar progress-bar-striped progress-bar-animated active width-full" role="progressbar"></div></div>
+
+<div id="MainMenu">
+  <a id="menu20Container" class="list-group-item" onclick="void 0">درخواست ها</a>
+  <a id="menu21Container" class="list-group-item" onclick="openForm()">
+    <i class="fa fa-chevron-left"></i>
+    درخواست گواهی عدم سوءپیشینه
+  </a>
+</div>
+
+<div id="form" class="hidden">
+  <input name="txtNationalityCode" id="txtNationalityCode" type="text" maxlength="10">
+  <input type="text" name="txtpersonBirthDate" maxlength="10">
+  <button class="btn btn-warning" ng-click="actions.sendTempPassword()" onclick="sendTemp()">ارسال رمز موقت</button>
+  <input type="text" maxlength="5" ng-model="viewModel.tempPassword" id="tp">
+  <button class="btn btn-info" ng-click="actions.getPersonDataFromSana()" onclick="getSana()">دریافت مشخصات از ثنا</button>
+  <input type="radio" id="person" name="certificationReferenceType" value="false" disabled>
+  <textarea id="txtDescription" disabled></textarea>
+  <button class="btn btn-success" ng-click="actions.setClearanceData()" onclick="saveTemp()">ثبت موقت درخواست</button>
+
+  <div id="stepCost" class="box hidden" onclick="showCost()"><div class="heading"><h5>محاسبه هزینه</h5></div><div class="body"><p>جهت محاسبه هزینه و پرداخت هزینه از این قسمت اقدام نمایید.</p></div></div>
+  <div id="cost" class="hidden">
+    <button name="btnCalculateCash" id="btnCalculateCash" onclick="calcCash()">محاسبه هزینه گواهی عدم سوءپیشینه</button>
+    <table><tr><td id="payid"></td></tr></table>
+  </div>
+  <button class="btn btn-warning" id="btnGetClearanceCertRequestData" onclick="search()">جستجو</button>
+  <div id="stepFinal" class="box hidden" onclick="finalConfirm()"><div class="heading"><h5>تایید نهایی گواهی عدم سوءپیشینه</h5></div></div>
+  <div id="stepPrint" class="box hidden" onclick="printReceipt()"><div class="heading"><h5>چاپ رسید درخواست گواهی سوءپیشینه</h5></div></div>
+</div>
+
+<div class="sweet-alert" id="sa" tabindex="-1">
+  <div class="sa-icon sa-error" style="display:none"></div>
+  <div class="sa-icon sa-success" style="display:none"></div>
+  <div class="sa-icon sa-info" style="display:none"></div>
+  <h2></h2><p></p>
+  <button class="confirm" onclick="closePopup()">بستن</button>
+  <button class="cancel" style="display:none">Cancel</button>
+</div>
+
+<script>
+  const q = new URLSearchParams(location.search);
+  const S = { send: q.get('send') || 'ok', code: q.get('code') || 'ok',
+              payid: q.get('payid') || 'ok', final: q.get('final') || 'ok' };
+  window.__calls = { send: 0, sana: 0, save: 0, calc: 0, search: 0, final: 0, print: 0 };
+  window.__lastDesc = null;
+
+  function popup(icon, h2, p) {
+    const sa = document.getElementById('sa');
+    sa.querySelectorAll('.sa-icon').forEach(e => e.style.display = 'none');
+    sa.querySelector('.sa-' + icon).style.display = 'block';
+    sa.querySelector('h2').innerText = h2 || '';
+    const pe = sa.querySelector('p');
+    pe.innerText = p || ''; pe.style.display = p ? 'block' : 'none';
+    sa.classList.add('showSweetAlert', 'visible');
+  }
+  function closePopup() { document.getElementById('sa').classList.remove('showSweetAlert', 'visible'); }
+  function load(ms, then) {
+    const l = document.getElementById('loading');
+    l.classList.remove('hidden');
+    setTimeout(() => { l.classList.add('hidden'); then(); }, ms);
+  }
+  function openForm() { setTimeout(() => document.getElementById('form').classList.remove('hidden'), 300); }
+
+  function sendTemp() {
+    window.__calls.send++;
+    // شمارندهٔ مشترک بین تب‌ها (هر تلاش در تب جدید انجام می‌شود)
+    const n = Number(localStorage.getItem('sendCount') || 0) + 1;
+    localStorage.setItem('sendCount', String(n));
+    window.__nid = document.getElementById('txtNationalityCode').value;
+    window.__birth = document.querySelector('[name=txtpersonBirthDate]').value;
+    load(800, () => {
+      if (S.send === 'wrong') return popup('error', 'اطلاعاتی بااین شماره ملی وتاریخ تولد پیدا نشد.');
+      if (S.send === 'recent') return popup('error', 'رمز موقت درخواست گواهی عدم سوء پیشینه طی 10 دقیقه گذشته ارسال شده است');
+      if (S.send === 'error_once' && n === 1) return popup('error', 'خطای داخلی سرور');
+      if (S.send === 'concurrent_once' && n === 1)
+        return popup('error', '', 'با این شناسه «2281365549»، در ساعت 15:32 ورود به سامانه در صفحه یا رایانه ای دیگر انجام شده و اعتبار ورود قبلی ( ساعت 15:06 ) منقضی شده است');
+      popup('success', 'رمز موقت به شماره همراه ارسال شد');
+    });
+  }
+  function getSana() {
+    window.__calls.sana++;
+    window.__code = document.getElementById('tp').value;
+    load(800, () => {
+      if (S.code === 'expired') return popup('error', 'زمان اعتبار رمز موقت منقضی شده است. باید رمز جدید اخذ شود');
+      if (S.code === 'reject') return popup('error', 'رمز موقت وارد شده صحیح نمی باشد');
+      document.getElementById('person').disabled = false;
+      document.getElementById('txtDescription').disabled = false;
+    });
+  }
+  function saveTemp() {
+    window.__calls.save++;
+    window.__lastDesc = document.getElementById('txtDescription').value;
+    const checked = document.getElementById('person').checked;
+    load(600, () => {
+      if (!checked || !window.__lastDesc) return popup('error', 'نوع مرجع و توضیحات الزامی است');
+      document.getElementById('stepCost').classList.remove('hidden');
+    });
+  }
+  function showCost() {
+    load(500, () => {
+      document.getElementById('cost').classList.remove('hidden');
+      if (S.payid === 'ok') document.getElementById('payid').innerText = '140520260393634930';
+    });
+  }
+  function calcCash() {
+    window.__calls.calc++;
+    load(500, () => { document.getElementById('payid').innerText = '۱۴۰۵۲۰۲۶۰۳۹۳۶۳۴۹۳۰'; });
+  }
+  function search() {
+    window.__calls.search++;
+    load(600, () => {
+      popup('success', 'بازیابی اطلاعات با موفقیت انجام شد.');
+      document.getElementById('stepFinal').classList.remove('hidden');
+      document.getElementById('stepPrint').classList.remove('hidden');
+    });
+  }
+  function finalConfirm() {
+    window.__calls.final++;
+    load(600, () => {
+      if (S.final === 'missing') return popup('error', 'هزینه پرداخت نشده است');
+      popup('info', '', 'گواهی عدم سوءپیشینه توسط واحد مربوطه مورد بررسی قرار گرفت و در وضعیت سابقه یابی خودکار می‌باشد، بعد از صدور ابلاغیه امکان دریافت نسخه‌ی چاپی آن وجود دارد.');
+    });
+  }
+  function printReceipt() {
+    window.__calls.print++;
+    const w = window.open('', '_blank');
+    w.document.write('<html dir="rtl"><body><h1>رسید درخواست گواهی عدم سوءپیشینه</h1><p>شماره درخواست: 123456</p></body></html>');
+    w.document.close();
+  }
+</script>
+</body>
+</html>

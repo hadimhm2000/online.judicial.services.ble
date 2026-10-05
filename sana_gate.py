@@ -261,6 +261,8 @@ _TASK_LABELS = {
     "CHECK_SUBMIT": "دادخواست",
     "CONTRACT_FIX_SUBMIT": "اصلاح قرارداد",
     "PRE_CHECK": "استعلام",
+    "CLEARANCE_SEND_CODE": "گواهی عدم سوءپیشینه",
+    "CLEARANCE_FINALIZE": "گواهی عدم سوءپیشینه",
 }
 
 

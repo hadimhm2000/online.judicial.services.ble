@@ -19,6 +19,7 @@ const KINDS = new Set(['PREPAY', 'FINAL', 'DIRECT']);
 // سرویس‌هایی که پرونده (Case) در پنل دارند
 const CASE_SERVICES = new Set([
   'INQUIRY', 'LAVAYEH', 'EZHHARNAMEH', 'EALAM_VAKALAHT', 'TAJDID_NAZAR', 'CHECK', 'REGIONAL_VALUE',
+  'CLEARANCE_CERT',
 ]);
 // پنجرهٔ زمانی پیوند: پرونده‌ای که حداکثر ۳۰ دقیقه قبل تا ۶ ساعت بعد از تایید به‌روز شده
 const LINK_BEFORE_MS = 30 * 60 * 1000;

@@ -26,6 +26,9 @@ export const NO_SYSTEM_COST_SERVICES = new Set([
   'UNKNOWN',
 ]);
 
+// هزینهٔ سامانهٔ «گواهی عدم سوءپیشینه» (تومان) — ربات همین را در systemCost ثبت می‌کند
+const CLEARANCE_SYSTEM_COST = 42_000;
+
 // سرویس‌هایی که کاربر دقیقاً هزینهٔ سامانه را می‌پردازد (بدون مارکاپ)
 const PASS_THROUGH_SERVICES = new Set(['CHECK', 'TAJDID_NAZAR']);
 
@@ -59,6 +62,8 @@ export function estimateSystemCost(
   if (serviceType === 'LAVAYEH' || serviceType === 'EALAM_VAKALAHT') {
     return { cost: invertLavayehStyleFormula(totalFee), exact: false };
   }
+  // گواهی عدم سوءپیشینه: ۱۵۰,۰۰۰ تومان = ۴۲,۰۰۰ هزینهٔ سامانه + ۱۰۸,۰۰۰ سود
+  if (serviceType === 'CLEARANCE_CERT') return { cost: CLEARANCE_SYSTEM_COST, exact: false };
   if (serviceType === 'EZHHARNAMEH') {
     const approx = (totalFee - 45_000) / 2;
     return { cost: approx > 0 ? Math.round(approx) : 0, exact: false };

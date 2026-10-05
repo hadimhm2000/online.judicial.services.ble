@@ -53,7 +53,7 @@ OFFER_TTL_SECONDS = 2 * 3600
 MAX_TX_PER_USER = 50
 
 # payloadهایی که هندلرشان مستقل از state کاربر مسیریابی می‌شود (مثل card_payment)
-_PAYLOAD_ROUTED_TYPES = {"admin_fee", "panel_message", "reg_prepay"}
+_PAYLOAD_ROUTED_TYPES = {"admin_fee", "panel_message", "reg_prepay", "clearance"}
 
 _store: dict = {"users": {}, "offers": {}}
 _lock = asyncio.Lock()

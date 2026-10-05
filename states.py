@@ -446,3 +446,15 @@ class Form(StatesGroup):
     dmg_waiting_calc_date = State()        # تاریخ محاسبه (پیش‌فرض: امروز)
     mahr_waiting_amount = State()          # مبلغ مهریه (ریال)
     mahr_waiting_year = State()            # سال وقوع عقد
+
+    # =========================================================
+    # State های بخش درخواست گواهی عدم سوءپیشینه (clearance_handlers.py)
+    # =========================================================
+    clr_waiting_nid = State()              # کدملی متقاضی
+    clr_waiting_birth = State()            # تاریخ تولد
+    clr_waiting_desc = State()             # توضیحات درخواست
+    clr_confirm = State()                  # پیش‌نمایش (تایید و پرداخت / ویرایش)
+    clr_waiting_payment = State()          # منتظر پرداخت فاکتور ۱۵۰,۰۰۰ تومانی
+    clr_waiting_code = State()             # منتظر رمز موقت ۵ رقمی (۷ دقیقه)
+    clr_fix_nid = State()                  # ویرایش کدملی (مهلت ۴۵ دقیقه)
+    clr_fix_birth = State()                # ویرایش تاریخ تولد (مهلت ۴۵ دقیقه)

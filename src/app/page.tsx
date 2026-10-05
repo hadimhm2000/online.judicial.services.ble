@@ -63,6 +63,7 @@ const SERVICE_LABELS: Record<string, string> = {
   EZHHARNAMEH: 'اظهارنامه',
   EALAM_VAKALAHT: 'اعلام وکالت',
   STAMP_CALC: 'محاسبه تمبر',
+  CLEARANCE_CERT: 'گواهی عدم سوءپیشینه',
   ADMIN_SEND: 'ارسال پیام مدیریت',
 };
 
@@ -1114,6 +1115,7 @@ export default function AdminPanel() {
                 <SelectItem value="EZHHARNAMEH">اظهارنامه</SelectItem>
                 <SelectItem value="EALAM_VAKALAHT">اعلام وکالت</SelectItem>
                 <SelectItem value="STAMP_CALC">محاسبه تمبر</SelectItem>
+                <SelectItem value="CLEARANCE_CERT">گواهی عدم سوءپیشینه</SelectItem>
               </SelectContent>
             </Select>
             <Button
