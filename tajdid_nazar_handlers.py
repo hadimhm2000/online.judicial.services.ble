@@ -2164,8 +2164,9 @@ async def _handle_query_persons(message: Message, state: FSMContext, bot: Bot, s
         logger.error(f"[TN] خطای شماره دادنامه/پرونده در استعلام افراد: {e}")
         await message.answer(
             f"⚠️ *خطای سامانه:*\n\n«{str(e)[:250]}»\n\n"
-            "🔄 لطفاً اطلاعات را مجدداً و *از ابتدا* وارد فرمایید.\n"
-            "ربات به منوی اصلی بازگشت — می‌توانید مسیر را دوباره پیش ببرید.",
+            "❌ *شماره پرونده و دادنامه یا تاریخ تنظیم دادنامه اشتباه می‌باشد.*\n\n"
+            "🔄 لطفاً مجدداً شروع به ثبت با اطلاعات درست، اقدام فرمائید.\n"
+            "ربات به منوی اصلی بازگشت.",
             reply_markup=get_main_menu_kb(user_id))
         await state.clear()
         return

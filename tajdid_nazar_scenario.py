@@ -551,6 +551,29 @@ def _is_retrieve_mismatch_error_text(text) -> bool:
         return ("تصمیم نهایی" in t) or ("شماره پرونده اشتباه" in t)
 
 
+async def _raise_if_retrieve_mismatch_popup(page):
+    """⭐ اگر پاپ‌آپ خطای «شماره تصميم نهايي یا شماره پرونده اشتباه می باشد» یا
+    «تصميم نهايي با این تاریخ وجود ندارد» باز است (متن در h2، p خالی)،
+    پاپ‌آپ بسته و TajdidRetrieveDataError پرتاب می‌شود؛ وگرنه کاری نمی‌کند."""
+    try:
+        text = await page.evaluate('''() => {
+            const popup = document.querySelector('.sweet-alert.showSweetAlert');
+            if (!popup) return null;
+            const st = window.getComputedStyle(popup);
+            if (st.display === 'none' || st.visibility === 'hidden') return null;
+            const h2 = popup.querySelector('h2');
+            const p = popup.querySelector('p');
+            return [h2 ? h2.innerText : '', p ? p.innerText : '']
+                .map(s => (s || '').trim()).filter(Boolean).join(' - ') || null;
+        }''')
+    except Exception:
+        return
+    if text and _is_retrieve_mismatch_error_text(text):
+        await _close_popup(page)
+        logging.warning(f"[TN] خطای شماره دادنامه/پرونده/تاریخ: {text[:150]}")
+        raise TajdidRetrieveDataError(text)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # پر کردن اشخاص (عیناً الگوی اظهارنامه/چک)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1230,11 +1253,18 @@ async def _confirm_retrieve_popup(page, wait_sec: float = 1.0, tries: int = 12) 
         confirmed = await page.evaluate('''() => {
             const popup = document.querySelector('.sweet-alert.showSweetAlert');
             if (!popup) return false;
-            // فقط پاپ‌آپ تایید (دارای دکمه confirm) — نه پاپ‌آپ خطا
+            // فقط پاپ‌آپ تایید (دارای دکمه confirm) — نه پاپ‌آپ خطا.
+            // ⭐ پاپ‌آپ خطا (مثل «تصميم نهايي با این تاریخ وجود ندارد») هم دکمهٔ
+            // confirm («بستن») دارد؛ نباید بسته شود تا متنش در مرحلهٔ بعد خوانده شود.
+            const errIcon = popup.querySelector('.sa-icon.sa-error');
+            if (errIcon && window.getComputedStyle(errIcon).display !== 'none') return "error";
             const btn = popup.querySelector('button.confirm');
             if (btn && window.getComputedStyle(btn).display !== 'none') { btn.click(); return true; }
             return false;
         }''')
+        if confirmed == "error":
+            logging.info("[TN] به‌جای پاپ‌آپ تایید بازیابی، پاپ‌آپ خطا ظاهر شد — بسته نمی‌شود")
+            return False
         if confirmed:
             await asyncio.sleep(1)
             return True
@@ -1379,6 +1409,9 @@ async def _retrieve_judgment(page, bot: Bot, user_id: int, max_retries: int = 3)
     """
     for attempt in range(1, max_retries + 1):
         # اطمینان از نبود پاپ‌آپ باز از قبل
+        # ⭐ پاپ‌آپ خطای دادنامه/پرونده/تاریخ (مثلاً پس از ورود تاریخ) بی‌صدا
+        # بسته نمی‌شود — مستقیماً به مسیر ویرایش سه‌گانه می‌رود.
+        await _raise_if_retrieve_mismatch_popup(page)
         await _close_popup(page)
         await asyncio.sleep(1)
 
@@ -1634,6 +1667,8 @@ async def _fill_judge_info_step(page, data: dict, bot: Bot, user_id: int,
     # «در فیلد زیر نیز همان تاریخ دادنامه را وارد کن» (NoticeDateTime)
     await asyncio.sleep(2)
     notice_filled = await _fill_notice_date_time_robust(page, judge_date)
+    # ⭐ خطای «تصميم نهايي با این تاریخ وجود ندارد» ممکن است پس از ورود تاریخ ظاهر شود
+    await _raise_if_retrieve_mismatch_popup(page)
     if not notice_filled:
         # یک نوبت کوتاه صبر و تلاش مجدد — فرم گاهی با تأخیر رندر می‌شود
         await asyncio.sleep(3)
@@ -1690,6 +1725,9 @@ async def _fill_judge_info_step(page, data: dict, bot: Bot, user_id: int,
                 if (rdb && !rdb.disabled) rdb.click();
             }''')
             await asyncio.sleep(1)
+
+    # ⭐ پیش از کار با جدول پرونده‌های مرتبط (که پاپ‌آپ‌ها را می‌بندد)
+    await _raise_if_retrieve_mismatch_popup(page)
 
     # ── جدول پرونده‌های مرتبط (در صورت نمایش) + «انتخاب همه» ──
     await _clear_related_cases(page, bot, user_id)
@@ -2083,6 +2121,9 @@ async def _click_save_temp(page, bot: Bot, user_id: int, max_retries: int = 5):
                 continue
             if await _is_service_delay_and_handle(str(loading_result)):
                 continue
+            if _is_retrieve_mismatch_error_text(str(loading_result)):
+                await _close_popup(page)
+                raise TajdidRetrieveDataError(str(loading_result))
             await _raise_fatal_tn_save_error(bot, user_id, loading_result)
 
         # بررسی session expiry بعد از ثبت
@@ -2143,6 +2184,9 @@ async def _click_save_temp(page, bot: Bot, user_id: int, max_retries: int = 5):
             if await _is_service_delay_and_handle(error_text):
                 await _close_popup(page)
                 continue
+            if _is_retrieve_mismatch_error_text(error_text):
+                await _close_popup(page)
+                raise TajdidRetrieveDataError(error_text)
             await _raise_fatal_tn_save_error(bot, user_id, error_text)
 
         await asyncio.sleep(5)
