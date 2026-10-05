@@ -133,6 +133,14 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
     amount_rial = (amount_rial // 10) * 10
     amount_toman = amount_rial // 10
     credit_used_rial = base_toman * 10 - amount_rial if credit_rial > 0 else 0
+    if credit_used_rial > 0:
+        # ⭐ اگر کارت‌به‌کارت پرداخت شود، کسر در رسید برای مدیر نمایش داده می‌شود
+        try:
+            from card_payment import note_invoice_deduction
+            note_invoice_deduction(user_id, (PREPAY_INVOICE_TYPE,), base_toman * 10,
+                                   credit_used_rial, "مانده/بستانکاری کاربر")
+        except Exception:
+            pass
 
     # ═══ ارسال فاکتور بله (sendInvoice) — الگوی اثبات‌شده پروژه ═══
     try:
@@ -350,6 +358,10 @@ def pop_prepaid(user_id: int):
     return prepay
 
 
+# نوع payload فاکتورهای نهایی که پس از adjust_final_fee_with_prepay ارسال می‌شوند
+_FINAL_INVOICE_TYPES = ("lavayeh", "tajdid_nazar")
+
+
 def adjust_final_fee_with_prepay(user_id: int, final_fee_rial: int):
     """اعمال کسر پیش‌پرداخت از هزینه کل.
 
@@ -391,6 +403,19 @@ def adjust_final_fee_with_prepay(user_id: int, final_fee_rial: int):
             "charge_id": "",
             "paid_at": datetime.datetime.now(),
         }
+    if applied > 0 and adjusted > 0:
+        # ⭐ اگر فاکتور نهایی کارت‌به‌کارت پرداخت شود، کسر برای مدیر نمایش داده می‌شود
+        try:
+            from card_payment import note_invoice_deduction
+            parts = []
+            if paid_rial > 0:
+                parts.append("پیش‌پرداخت")
+            if credit_rial > 0:
+                parts.append("مانده/بستانکاری")
+            note_invoice_deduction(user_id, _FINAL_INVOICE_TYPES, fee, applied,
+                                   " + ".join(parts))
+        except Exception:
+            pass
     logging.info(
         f"[REG-PREPAY] کسر مانده/پیش‌پرداخت: user={user_id}, کل={fee:,}, "
         f"پیش‌پرداخت={paid_rial:,}, مانده={credit_rial:,}, کسرشده={applied:,} → "

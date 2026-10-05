@@ -28,6 +28,12 @@ card_payment.py — پرداخت جایگزین «کارت‌به‌کارت» �
    پرداخت درگاه محاسبه می‌شوند. هیچ فلوی سرویسی تغییر نمی‌کند.
    همزمان یک رکورد CardPayment (با تصویر رسید) در پنل ثبت می‌شود.
 
+۵) اگر مبلغ واریزی کمتر از فاکتور باشد، مدیر «کسری» را می‌زند و مبلغ کمبود
+   (تومان) را تایپ می‌کند → فقط همان کسری از کاربر خواسته می‌شود؛ رسید
+   باقی‌مانده دوباره برای تایید نزد مدیر می‌آید و با تایید، مرحلهٔ ۴ اجرا
+   می‌شود. اگر از مبلغ فاکتور چیزی کسر شده باشد (پیش‌پرداخت/مانده)، در
+   پیام رسید برای مدیر درج می‌شود (note_invoice_deduction).
+
 ایمنی
 -----
 - اگر کاربر در این فاصله از درگاه پرداخت کند، ورودی بسته می‌شود؛ اگر رسید
@@ -111,7 +117,10 @@ S_REJECTED = "rejected"        # (موقت) — بلافاصله به S_CARD_SEN
 S_PAID_GATEWAY = "paid_gateway"
 S_EXPIRED = "expired"
 S_SKIPPED = "skipped"          # کاربر فلوی پرداخت را ترک کرده بود
-_ACTIVE = (S_INVOICE, S_CARD_SENT, S_REVIEW)
+S_SHORTFALL = "shortfall"      # مدیر کسری اعلام کرد، منتظر رسید باقی‌ماندهٔ مبلغ
+_ACTIVE = (S_INVOICE, S_CARD_SENT, S_REVIEW, S_SHORTFALL)
+_SHORTFALL_INPUT_SECONDS = 15 * 60   # مهلت مدیر برای وارد کردن مبلغ کسری
+_DEDUCTION_TTL = 30 * 60             # اعتبار اطلاعات «کسر از فاکتور» تا ارسال فاکتور
 
 # payloadهایی که هندلر پرداختشان مستقل از state کاربر مسیریابی می‌شود
 # (global_successful_payment_handler در handlers.py از روی payload تصمیم می‌گیرد)
@@ -168,6 +177,11 @@ _store: dict[str, dict] = {}
 _lock = asyncio.Lock()
 _dirty = False
 _copy_text_supported: bool | None = None  # None = هنوز امتحان نشده
+# مدیر دکمهٔ «کسری مبلغ» را زده و باید مبلغ کسری را تایپ کند
+_shortfall_wait: dict | None = None
+# کسر از فاکتور (پیش‌پرداخت/مانده) — توسط prepay_registration ثبت و در
+# track_invoice به ورودی همان کاربر چسبانده می‌شود: uid → {...}
+_pending_deductions: dict[int, dict] = {}
 
 
 def _now() -> float:
@@ -275,8 +289,9 @@ def track_invoice(invoice_data: dict) -> None:
             return
         now = _now()
         existing = _find_active(uid, payload)
-        if existing and existing.get("status") == S_REVIEW:
-            # رسید در حال بررسی مدیر است — فاکتور جدید (مثلاً یادآوری) آن را بازنویسی نکند
+        if existing and existing.get("status") in (S_REVIEW, S_SHORTFALL):
+            # رسید در حال بررسی مدیر است (یا کاربر بخشی را واریز کرده و منتظر
+            # رسید باقی‌مانده هستیم) — فاکتور جدید (مثلاً یادآوری) آن را بازنویسی نکند
             logger.info(f"[CARD-PAY] فاکتور تکراری در حین بررسی رسید نادیده گرفته شد: uid={uid}")
             return
         if (existing and existing.get("status") == S_CARD_SENT
@@ -299,6 +314,9 @@ def track_invoice(invoice_data: dict) -> None:
             "status": S_INVOICE,
             "updated_at": now,
         })
+        ded = _take_deduction(uid, entry["payload_obj"].get("type", ""))
+        if ded:
+            entry["deduction"] = ded
         _store[entry["id"]] = entry
         _mark_dirty()
         logger.info(
@@ -306,6 +324,41 @@ def track_invoice(invoice_data: dict) -> None:
             f"— یادآور کارت‌به‌کارت پس از {CARD_PAY_DELAY_MINUTES} دقیقه")
     except Exception as e:
         logger.error(f"[CARD-PAY] track_invoice ناموفق: {e}", exc_info=True)
+
+
+def note_invoice_deduction(uid: int, invoice_types, total_rial: int,
+                           deducted_rial: int, detail: str) -> None:
+    """ثبت «کسر از فاکتور» برای فاکتور بعدیِ همین کاربر (هرگز exception نمی‌دهد).
+
+    prepay_registration پیش از ارسال فاکتوری که مبلغش با پیش‌پرداخت/مانده
+    کم شده صدا می‌زند؛ اگر کاربر آن فاکتور را کارت‌به‌کارت بپردازد، کسر در
+    پیام رسید برای مدیر نمایش داده می‌شود.
+    """
+    try:
+        if int(deducted_rial) <= 0:
+            return
+        _pending_deductions[int(uid)] = {
+            "types": list(invoice_types),
+            "total_rial": int(total_rial),
+            "deducted_rial": int(deducted_rial),
+            "detail": str(detail or ""),
+            "at": _now(),
+        }
+    except Exception as e:
+        logger.error(f"[CARD-PAY] ثبت کسر فاکتور ناموفق: {e}")
+
+
+def _take_deduction(uid: int, ptype: str) -> dict | None:
+    ded = _pending_deductions.get(uid)
+    if not ded:
+        return None
+    if _now() - ded.get("at", 0) > _DEDUCTION_TTL:
+        _pending_deductions.pop(uid, None)
+        return None
+    if ptype not in ded.get("types", ()):
+        return None
+    _pending_deductions.pop(uid, None)
+    return {k: v for k, v in ded.items() if k != "types"}
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -338,13 +391,15 @@ async def _on_gateway_payment(bot: Bot | None, uid: int, payload: str) -> None:
         entry["updated_at"] = _now()
         _mark_dirty()
     logger.info(f"[CARD-PAY] پرداخت درگاه برای id={entry['id']} رسید — ورودی بسته شد (قبلی: {prev})")
-    if prev == S_REVIEW and bot is not None:
+    if prev in (S_REVIEW, S_SHORTFALL) and bot is not None:
+        why = ("منتظر بررسی بود" if prev == S_REVIEW
+               else "بخشی از مبلغ را کارت‌به‌کارت واریز کرده و منتظر رسید باقی‌مانده بودیم")
         try:
             await bot.send_message(
                 ADMIN_ID,
                 f"⚠️ هشدار پرداخت تکراری\n\nکاربر {uid} فاکتور «{entry.get('title')}» را "
                 f"از طریق درگاه بله پرداخت کرد، در حالی که رسید کارت‌به‌کارت او "
-                f"(کد {entry['id']}) منتظر بررسی بود.\n"
+                f"(کد {entry['id']}) {why}.\n"
                 f"❗️ رسید کارت‌به‌کارت را تایید نکنید؛ در صورت واریز، مبلغ را عودت دهید.")
         except Exception:
             pass
@@ -470,12 +525,20 @@ async def _send_card_offer(bot: Bot, entry: dict) -> None:
     logger.info(f"[CARD-PAY] پیام کارت‌به‌کارت برای uid={uid} ارسال شد (id={entry['id']})")
 
 
-def _offer_keyboard(entry: dict, use_copy_text: bool) -> dict:
+def _due_rial(entry: dict) -> int:
+    """مبلغی که کاربر اکنون باید واریز کند — در حالت کسری، فقط باقی‌مانده."""
+    if entry.get("status") == S_SHORTFALL and entry.get("shortfall_rial"):
+        return int(entry["shortfall_rial"])
+    return int(entry["amount_rial"])
+
+
+def _offer_keyboard(entry: dict, use_copy_text: bool, amount_rial: int | None = None) -> dict:
     eid = entry["id"]
     if use_copy_text:
         row1 = [
             {"text": "📋 کپی شماره کارت", "copy_text": {"text": CARD_PAY_NUMBER}},
-            {"text": "💰 کپی مبلغ (ریال)", "copy_text": {"text": str(entry["amount_rial"])}},
+            {"text": "💰 کپی مبلغ (ریال)",
+             "copy_text": {"text": str(amount_rial or entry["amount_rial"])}},
         ]
     else:
         row1 = [
@@ -499,7 +562,8 @@ async def _bale_call(method: str, data: aiohttp.FormData | dict) -> dict:
                 return {"ok": False, "description": f"HTTP {resp.status}"}
 
 
-async def _send_offer_message(uid: int, entry: dict, caption: str, image: bytes | None) -> bool:
+async def _send_offer_message(uid: int, entry: dict, caption: str, image: bytes | None,
+                              amount_rial: int | None = None) -> bool:
     """ارسال پیام کارت‌به‌کارت با API مستقیم بله (برای کنترل دکمه‌ها).
 
     اگر CARD_PAY_COPY_MODE=copy_text باشد اول دکمهٔ کپی مستقیم امتحان
@@ -511,7 +575,7 @@ async def _send_offer_message(uid: int, entry: dict, caption: str, image: bytes 
         modes = [True, False]
 
     for use_copy in modes:
-        kb = json.dumps(_offer_keyboard(entry, use_copy), ensure_ascii=False)
+        kb = json.dumps(_offer_keyboard(entry, use_copy, amount_rial), ensure_ascii=False)
         if image:
             form = aiohttp.FormData()
             form.add_field("chat_id", str(uid))
@@ -550,7 +614,7 @@ async def cb_copy_amount(callback: CallbackQuery):
     if not entry:
         await callback.answer("این فاکتور دیگر معتبر نیست.", show_alert=True)
         return
-    rial = entry["amount_rial"]
+    rial = _due_rial(entry)
     await callback.answer(f"مبلغ: {rial // 10:,} تومان = {rial:,} ریال", show_alert=True)
     await callback.message.answer(
         f"`{rial}`\n☝️ مبلغ به *ریال* ({rial // 10:,} تومان)", parse_mode="Markdown")
@@ -559,7 +623,7 @@ async def cb_copy_amount(callback: CallbackQuery):
 @card_router.callback_query(F.data.startswith("cpay:up:"))
 async def cb_arm_upload(callback: CallbackQuery):
     entry = _store.get(callback.data.split(":", 2)[2])
-    if not entry or entry.get("status") not in (S_CARD_SENT, S_REVIEW):
+    if not entry or entry.get("status") not in (S_CARD_SENT, S_REVIEW, S_SHORTFALL):
         await callback.answer("این فاکتور دیگر در انتظار رسید نیست.", show_alert=True)
         return
     if entry["status"] == S_REVIEW:
@@ -581,7 +645,7 @@ async def _receipt_target(message: Message, state: FSMContext) -> dict | None:
     uid = message.from_user.id if message.from_user else None
     if uid is None:
         return None
-    candidates = [e for e in _entries_for_user(uid, (S_CARD_SENT,))]
+    candidates = [e for e in _entries_for_user(uid, (S_CARD_SENT, S_SHORTFALL))]
     if not candidates:
         return None
     cur = await state.get_state()
@@ -621,13 +685,18 @@ class _HasCardReceiptTarget(Filter):
 async def on_receipt(message: Message, state: FSMContext, bot: Bot, card_entry: dict):
     entry = card_entry
     async with _lock:
-        if entry.get("status") != S_CARD_SENT:
+        if entry.get("status") not in (S_CARD_SENT, S_SHORTFALL):
             await message.answer("ℹ️ این فاکتور دیگر در انتظار رسید نیست.")
             return
+        is_shortfall = entry["status"] == S_SHORTFALL
         if message.photo:
             file_id, kind = message.photo[-1].file_id, "photo"
         else:
             file_id, kind = message.document.file_id, "document"
+        if is_shortfall and entry.get("receipt"):
+            # رسید(های) قبلی نگه داشته می‌شود؛ رسید جدید = رسید باقی‌ماندهٔ مبلغ
+            entry.setdefault("prev_receipts", []).append(entry["receipt"])
+        entry["shortfall_receipt"] = is_shortfall
         entry.update({
             "status": S_REVIEW,
             "receipt": {"file_id": file_id, "kind": kind, "msg_id": message.message_id, "at": _now()},
@@ -645,8 +714,10 @@ async def on_receipt(message: Message, state: FSMContext, bot: Bot, card_entry: 
     _save_store()
 
     await message.answer(
-        "✅ رسید شما دریافت شد و برای بررسی به پشتیبانی ارسال گردید.\n"
-        "⏳ پس از تایید، درخواست شما به‌صورت خودکار ادامه پیدا می‌کند.")
+        ("✅ رسید باقی‌ماندهٔ مبلغ دریافت شد و برای بررسی به پشتیبانی ارسال گردید.\n"
+         if is_shortfall else
+         "✅ رسید شما دریافت شد و برای بررسی به پشتیبانی ارسال گردید.\n")
+        + "⏳ پس از تایید، درخواست شما به‌صورت خودکار ادامه پیدا می‌کند.")
     await _send_to_admin(bot, entry)
     asyncio.create_task(_upload_receipt_and_sync(bot, entry))
 
@@ -661,6 +732,8 @@ def _admin_caption(entry: dict, header: str = "🧾 رسید کارت‌به‌�
         f"📄 نوع درخواست: {_service_label(entry)}\n"
         f"🏷 عنوان فاکتور: {entry.get('title') or '—'}\n"
         f"💰 مبلغ فاکتور: {rial // 10:,} تومان ({rial:,} ریال)\n"
+        + _deduction_line(entry)
+        + _shortfall_line(entry)
         + (f"🔹 کد رهگیری: {tracking}\n" if tracking else "")
         + f"\n👤 کاربر: {entry.get('full_name') or '—'} ({uname})\n"
         f"🆔 شناسه بله: {entry['uid']}\n"
@@ -671,23 +744,62 @@ def _admin_caption(entry: dict, header: str = "🧾 رسید کارت‌به‌�
     )
 
 
+def _deduction_line(entry: dict) -> str:
+    ded = entry.get("deduction") or {}
+    d = int(ded.get("deducted_rial") or 0)
+    if d <= 0:
+        return ""
+    total = int(ded.get("total_rial") or 0)
+    return (f"➖ کسر از فاکتور: {d // 10:,} تومان"
+            + (f" ({ded['detail']})" if ded.get("detail") else "")
+            + (f" — مبلغ اصلی {total // 10:,} تومان" if total > 0 else "")
+            + "\n")
+
+
+def _shortfall_line(entry: dict) -> str:
+    sf = int(entry.get("shortfall_rial") or 0)
+    if sf <= 0:
+        return ""
+    if entry.get("shortfall_receipt"):
+        return f"💸 این رسید «باقی‌ماندهٔ مبلغ» است — کسری اعلام‌شده: {sf // 10:,} تومان\n"
+    return f"💸 کسری اعلام‌شده به کاربر: {sf // 10:,} تومان\n"
+
+
 def _admin_kb(eid: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ تایید پرداخت", callback_data=f"cpay:ok:{eid}"),
-        InlineKeyboardButton(text="❌ رد رسید", callback_data=f"cpay:rj:{eid}"),
-    ]])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ تایید پرداخت", callback_data=f"cpay:ok:{eid}"),
+            InlineKeyboardButton(text="❌ رد رسید", callback_data=f"cpay:rj:{eid}"),
+        ],
+        [InlineKeyboardButton(text="💸 مبلغ واریزی کمتر از فاکتور است (کسری)",
+                              callback_data=f"cpay:sf:{eid}")],
+    ])
+
+
+async def _send_receipt_to_admin(bot: Bot, rc: dict, caption: str, eid: str, extra: dict):
+    if rc.get("kind") == "photo":
+        return await bot.send_photo(ADMIN_ID, rc["file_id"], caption=caption,
+                                    reply_markup=_admin_kb(eid), **extra)
+    return await bot.send_document(ADMIN_ID, rc["file_id"], caption=caption,
+                                   reply_markup=_admin_kb(eid), **extra)
 
 
 async def _send_to_admin(bot: Bot, entry: dict) -> None:
     rc = entry.get("receipt") or {}
-    caption = _admin_caption(entry)
+    if entry.get("shortfall_receipt"):
+        caption = _admin_caption(entry, "🧾 رسید باقی‌ماندهٔ مبلغ (کسری) کارت‌به‌کارت")
+        # پاسخ به پیام رسید اول تا مدیر هر دو رسید را کنار هم ببیند
+        extra = {"reply_to_message_id": entry["admin_msg_id"]} if entry.get("admin_msg_id") else {}
+    else:
+        caption = _admin_caption(entry)
+        extra = {}
     try:
-        if rc.get("kind") == "photo":
-            msg = await bot.send_photo(ADMIN_ID, rc["file_id"], caption=caption,
-                                       reply_markup=_admin_kb(entry["id"]))
-        else:
-            msg = await bot.send_document(ADMIN_ID, rc["file_id"], caption=caption,
-                                          reply_markup=_admin_kb(entry["id"]))
+        try:
+            msg = await _send_receipt_to_admin(bot, rc, caption, entry["id"], extra)
+        except Exception:
+            if not extra:
+                raise
+            msg = await _send_receipt_to_admin(bot, rc, caption, entry["id"], {})
         entry["admin_msg_id"] = msg.message_id
         _mark_dirty()
     except Exception as e:
@@ -751,8 +863,9 @@ async def cb_reject(callback: CallbackQuery, bot: Bot):
         reason = _REJECT_REASONS.get(code, _REJECT_REASONS["oth"])
         entry.setdefault("rejections", []).append({"at": _now(), "reason": reason})
         entry["reject_reason"] = reason
-        # کاربر می‌تواند رسید صحیح را دوباره بفرستد
-        entry["status"] = S_CARD_SENT
+        # کاربر می‌تواند رسید صحیح را دوباره بفرستد (اگر رسید باقی‌ماندهٔ
+        # کسری رد شد، همچنان فقط همان کسری را باید بفرستد)
+        entry["status"] = S_SHORTFALL if entry.get("shortfall_receipt") else S_CARD_SENT
         entry["armed_until"] = _now() + 24 * 3600
         entry["updated_at"] = _now()
         _mark_dirty()
@@ -834,6 +947,155 @@ async def cb_approve(callback: CallbackQuery, bot: Bot):
     _sync_panel(entry)
 
 
+# ── کسری مبلغ: مدیر مبلغ کمبود را وارد می‌کند → فقط همان کسری از کاربر خواسته می‌شود
+_FA_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+
+def _parse_toman(text: str) -> int | None:
+    t = (text or "").translate(_FA_DIGITS)
+    for ch in (",", "،", "٬", " ", "\u200c", "تومان", "ریال"):
+        t = t.replace(ch, "")
+    return int(t) if t.isdigit() else None
+
+
+class _AwaitingShortfallAmount(Filter):
+    """فقط پیام متنی مدیر را وقتی منتظر مبلغ کسری هستیم می‌گیرد (دستورها رد می‌شوند)."""
+
+    async def __call__(self, message: Message) -> bool:
+        global _shortfall_wait
+        if not _shortfall_wait or not message.from_user or message.from_user.id != ADMIN_ID:
+            return False
+        if not message.text:
+            return False
+        if _now() > _shortfall_wait.get("until", 0) or message.text.startswith("/"):
+            # مهلت تمام شده یا مدیر دستور دیگری زد — انتظار لغو، پیام به مسیر عادی برود
+            _shortfall_wait = None
+            return False
+        return True
+
+
+@card_router.callback_query(F.data.startswith("cpay:sf:"))
+async def cb_shortfall_start(callback: CallbackQuery):
+    global _shortfall_wait
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("⛔ فقط مدیر", show_alert=True)
+        return
+    eid = callback.data.split(":", 2)[2]
+    entry = _store.get(eid)
+    if not entry or entry.get("status") != S_REVIEW:
+        await callback.answer("این رسید دیگر در انتظار بررسی نیست.", show_alert=True)
+        return
+    _shortfall_wait = {
+        "eid": eid,
+        "until": _now() + _SHORTFALL_INPUT_SECONDS,
+        "chat_id": callback.message.chat.id,
+        "msg_id": callback.message.message_id,
+        "is_media": bool(callback.message.photo or callback.message.document),
+    }
+    await callback.answer()
+    rial = entry["amount_rial"]
+    await callback.message.answer(
+        f"💸 کسری مبلغ — کد {eid}\n\n"
+        f"مبلغ فاکتور: {rial // 10:,} تومان\n"
+        + _deduction_line(entry)
+        + "\nچه مقدار از مبلغ کم واریز شده است؟\n"
+        "لطفاً مبلغ کسری را به *تومان* و فقط به‌صورت عدد بفرستید (مثلاً 25000).",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="↩️ انصراف", callback_data=f"cpay:sx:{eid}")]]))
+
+
+@card_router.callback_query(F.data.startswith("cpay:sx:"))
+async def cb_shortfall_cancel(callback: CallbackQuery):
+    global _shortfall_wait
+    if callback.from_user.id != ADMIN_ID:
+        return await callback.answer()
+    _shortfall_wait = None
+    await callback.answer("لغو شد")
+    try:
+        await callback.message.edit_text("↩️ ثبت کسری لغو شد؛ رسید همچنان منتظر تصمیم شماست.")
+    except Exception:
+        pass
+
+
+@card_router.message(_AwaitingShortfallAmount())
+async def on_shortfall_amount(message: Message, bot: Bot):
+    global _shortfall_wait
+    wait = _shortfall_wait or {}
+    eid = wait.get("eid")
+    toman = _parse_toman(message.text)
+    async with _lock:
+        entry = _store.get(eid)
+        if not entry or entry.get("status") != S_REVIEW:
+            _shortfall_wait = None
+            await message.answer("ℹ️ این رسید دیگر در انتظار بررسی نیست؛ کسری ثبت نشد.")
+            return
+        invoice_toman = entry["amount_rial"] // 10
+        if toman is None or toman <= 0 or toman >= invoice_toman:
+            await message.answer(
+                f"⚠️ مبلغ نامعتبر است. یک عدد بزرگ‌تر از صفر و کمتر از مبلغ فاکتور "
+                f"({invoice_toman:,} تومان) به تومان بفرستید، یا «انصراف» را بزنید.")
+            return
+        _shortfall_wait = None
+        entry.update({
+            "status": S_SHORTFALL,
+            "shortfall_rial": toman * 10,
+            "shortfall_at": _now(),
+            "armed_until": _now() + 24 * 3600,
+            "updated_at": _now(),
+        })
+        entry.setdefault("shortfalls", []).append({"at": _now(), "rial": toman * 10})
+        _mark_dirty()
+    _save_store()
+
+    sent = await _send_shortfall_offer(entry)
+    await message.answer(
+        f"✅ کسری {toman:,} تومان ثبت شد"
+        + (" و برای کاربر ارسال گردید. پس از ارسال رسید باقی‌مانده، دوباره برای تایید "
+           "به شما نمایش داده می‌شود." if sent else
+           "، ولی ارسال پیام به کاربر ناموفق بود (شاید ربات را مسدود کرده باشد)."))
+    header = f"💸 کسری {toman:,} تومان اعلام شد — منتظر رسید باقی‌مانده"
+    try:
+        if wait.get("is_media"):
+            await bot.edit_message_caption(chat_id=wait["chat_id"], message_id=wait["msg_id"],
+                                           caption=_admin_caption(entry, header), reply_markup=None)
+        else:
+            await bot.edit_message_text(_admin_caption(entry, header), chat_id=wait["chat_id"],
+                                        message_id=wait["msg_id"], reply_markup=None)
+    except Exception:
+        pass
+    _sync_panel(entry)
+
+
+async def _send_shortfall_offer(entry: dict) -> bool:
+    sf_rial = int(entry["shortfall_rial"])
+    sf_toman = sf_rial // 10
+    caption = (
+        "💸 *کسری مبلغ واریزی*\n\n"
+        f"مبلغ واریزی شما برای فاکتور «{entry.get('title') or _service_label(entry)}» "
+        f"با مبلغ فاکتور مطابقت نداشت و *{sf_toman:,} تومان* کمتر واریز شده است.\n\n"
+        "لطفاً باقی‌ماندهٔ مبلغ را به شماره کارت زیر واریز نمایید و *عکس رسید باقی‌مانده "
+        "مبلغ* را همین‌جا ارسال کنید:\n\n"
+        f"🔢 شماره کارت:\n`{CARD_PAY_NUMBER}`\n"
+        f"👤 به نام: *{CARD_PAY_HOLDER}*\n"
+        + (f"🏦 {CARD_PAY_BANK}\n" if CARD_PAY_BANK else "")
+        + f"\n💰 مبلغ باقی‌مانده: *{sf_toman:,} تومان*  (`{sf_rial}` ریال)\n\n"
+        "⏳ پس از تایید پشتیبانی، درخواست شما برای ثبت در سامانه ادامه پیدا می‌کند."
+    )
+    try:
+        from card_payment_image import render_card_image
+        image = await asyncio.to_thread(
+            render_card_image, CARD_PAY_NUMBER, CARD_PAY_HOLDER, sf_toman,
+            CARD_PAY_BANK or None, CARD_PAY_BRAND)
+    except Exception as e:
+        logger.error(f"[CARD-PAY] ساخت تصویر کارت (کسری) ناموفق: {e}", exc_info=True)
+        image = None
+    ok = await _send_offer_message(entry["uid"], entry, caption, image, amount_rial=sf_rial)
+    logger.info(f"[CARD-PAY] کسری {sf_toman:,} تومان برای id={entry['id']} "
+                f"uid={entry['uid']} اعلام شد (ارسال={'موفق' if ok else 'ناموفق'})")
+    return ok
+
+
 async def _restore_state(bot: Bot, entry: dict) -> None:
     dp = getattr(runtime_state, "dp", None)
     if dp is None or not entry.get("state_snapshot"):
@@ -888,6 +1150,7 @@ async def _replay_successful_payment(bot: Bot, entry: dict) -> tuple[bool, str]:
 _PANEL_STATUS = {
     S_REVIEW: "PENDING_REVIEW", S_APPROVED: "APPROVED", S_CARD_SENT: "AWAITING_RECEIPT",
     S_PAID_GATEWAY: "PAID_VIA_GATEWAY", S_EXPIRED: "EXPIRED",
+    S_SHORTFALL: "AWAITING_RECEIPT",
 }
 
 # نوع پرداخت برای محاسبهٔ سود در پنل (src/lib/profit.ts → computeCardPaymentProfit)
