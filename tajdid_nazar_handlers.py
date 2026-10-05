@@ -66,7 +66,7 @@ from keyboards import (
     tn_insolvency_kb, tn_extra_text_kb,
     tn_more_witnesses_kb, tn_confirm_kb, tn_edit_kb,
     tn_reason_more_kb, tn_amount_confirm_kb,
-    create_tn_appellant_person_type_kb,
+    create_tn_appellant_person_type_kb, TN_APPELLANT_MANUAL_ONLY_CASES,
     create_tn_appellee_person_type_kb,
     create_tn_reason_numbers_kb,
     create_tn_edit_kb,
@@ -884,9 +884,10 @@ async def tn_appellant_person_type_handler(message: Message, state: FSMContext, 
         return
 
     # ── گزینه استعلام افراد موجود در پرونده ──────────────────
-    # ⚠ برای «اعتراض ثالث» این گزینه در بخش معترض ثالث غیرفعال است —
+    # ⚠ برای «اعتراض ثالث» و «اعاده دادرسی مدنی/کیفری» این گزینه در بخش اول غیرفعال است —
     # کدملی باید همیشه دستی وارد شود.
-    if text == "🔍 استعلام افراد موجود در پرونده" and data.get("case_type", "") != "اعتراض ثالث":
+    if (text == "🔍 استعلام افراد موجود در پرونده"
+            and data.get("case_type", "") not in TN_APPELLANT_MANUAL_ONLY_CASES):
         await _handle_query_persons(message, state, bot, "appellant")
         return
 
@@ -1084,9 +1085,10 @@ async def tn_appellant_more_handler(message: Message, state: FSMContext, bot: Bo
         return
 
     # ── گزینه استعلام افراد موجود در پرونده ──────────────────
-    # ⚠ برای «اعتراض ثالث» این گزینه در بخش معترض ثالث غیرفعال است —
+    # ⚠ برای «اعتراض ثالث» و «اعاده دادرسی مدنی/کیفری» این گزینه در بخش اول غیرفعال است —
     # کدملی باید همیشه دستی وارد شود.
-    if text == "🔍 استعلام افراد موجود در پرونده" and data.get("case_type", "") != "اعتراض ثالث":
+    if (text == "🔍 استعلام افراد موجود در پرونده"
+            and data.get("case_type", "") not in TN_APPELLANT_MANUAL_ONLY_CASES):
         await _handle_query_persons(message, state, bot, "appellant")
         return
 
