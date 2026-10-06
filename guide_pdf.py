@@ -44,6 +44,15 @@ def _subscription_numbers() -> tuple[int, int, int]:
         return 250_000, 30, 2
 
 
+def _clearance_numbers() -> tuple[int, int]:
+    """(هزینهٔ گواهی عدم سوءپیشینه به تومان، مهلت ارسال رمز موقت به دقیقه)"""
+    try:
+        import clearance_handlers
+        return int(clearance_handlers.FEE_TOMAN), int(clearance_handlers.CODE_WINDOW_MINUTES)
+    except Exception:
+        return 150_000, 7
+
+
 def _fa(n) -> str:
     return f"{n:,}"
 
@@ -54,6 +63,7 @@ def _fa(n) -> str:
 # ══════════════════════════════════════════════════════════════════
 def _sections() -> list:
     sub_fee, sub_days, free_uses = _subscription_numbers()
+    clr_fee, clr_code_min = _clearance_numbers()
     return [
         ("استعلام از سامانهٔ قضایی",
          "از منوی اصلی «استعلام» را بزنید. برای چند استعلام در یک پرداخت، «استعلام (چند مورد همزمان)» را انتخاب کنید.",
@@ -95,6 +105,24 @@ def _sections() -> list:
               ["ثبت دسته‌جمعی چک‌ها با فایل اکسل",
                "انتخاب دادگاه حقوقی یا صلح برای دعاوی اعسار"]),
          ]),
+        ("گواهی عدم سوءپیشینه و خسارت تأخیر تأدیه",
+         "دو خدمت پرکاربرد که مستقیم از منوی اصلی در دسترس‌اند.",
+         [
+             ("گواهی عدم سوءپیشینه",
+              f"ثبت درخواست گواهی عدم سوءپیشینه در سامانهٔ قضایی به نام شما؛ هزینه {_fa(clr_fee)} تومان.",
+              ["کد ملی، تاریخ تولد و توضیحات (مثلاً محل ارائهٔ گواهی) را وارد و تأیید کنید",
+               f"پس از پرداخت، رمز موقت ۵ رقمی برایتان پیامک می‌شود؛ آن را ظرف {_fa(clr_code_min)} دقیقه "
+               "در ربات بفرستید",
+               "چاپ رسید ثبت درخواست برایتان ارسال می‌شود و نتیجه طی روزهای آینده به سامانهٔ ابلاغ "
+               "شما پیامک خواهد شد"]),
+             ("خسارت تأخیر تأدیه و مهریه به نرخ روز",
+              "محاسبهٔ دقیق بر اساس شاخص رسمی بهای کالاها و خدمات بانک مرکزی، همراه با گزارش رسمی PDF.",
+              ["خسارت تأخیر تأدیه: مبلغ دین (چک، سفته یا بدهی)، تاریخ سررسید و تاریخ پرداخت "
+               "(یا «تا امروز») را وارد کنید",
+               "مهریه به نرخ روز: مبلغ مهریهٔ عقدنامه و سال وقوع عقد را وارد کنید",
+               "گزارش شامل شاخص‌های اعمال‌شده، فرمول محاسبه، مبلغ به حروف و مستند قانونی است",
+               f"{_fa(free_uses)} بار رایگان؛ پس از آن با اشتراک ماهانه"]),
+         ]),
         ("محاسبات و ابزارها",
          "نتیجهٔ محاسبات به‌صورت گزارش رسمی PDF ارسال می‌شود.",
          [
@@ -104,8 +132,8 @@ def _sections() -> list:
              ("ارزش منطقه‌ای ملک",
               "استعلام ارزش معاملاتی ملک با انتخاب استان، شهرستان و نشانی، همراه با گزارش PDF.",
               []),
-             ("خسارت تأخیر تأدیه و مهریه",
-              "محاسبهٔ خسارت تأخیر تأدیه و مهریه به نرخ روز بر اساس شاخص رسمی بانک مرکزی.",
+             ("محاسبهٔ هزینهٔ دادرسی",
+              "محاسبهٔ رایگان هزینهٔ دادرسی بر اساس مبلغ خواسته یا محکوم‌به، برای مراحل مختلف دادرسی.",
               []),
              ("ابزار فایل",
               "کاهش حجم عکس و تبدیل PDF چندصفحه‌ای به عکس (هر صفحه یک عکس) برای بارگذاری "
@@ -134,13 +162,15 @@ def _sections() -> list:
     ]
 
 
-# چیدمان دکمه‌های منوی اصلی (keyboards.get_flow_type_kb) — راست، چپ
+# چیدمان دکمه‌های منوی اصلی (keyboards.get_flow_type_kb) — راست، چپ (None = دکمهٔ تمام‌عرض)
 _MENU = [
     ("استعلام", "استعلام (چند مورد همزمان)"),
     ("ثبت لایحه", "ثبت اظهارنامه"),
     ("دعاوی اعتراضی", "ثبت دادخواست"),
     ("محاسبه تمبر", "ارزش منطقه‌ای"),
-    ("ابزار فایل", "خسارت تأخیر و مهریه"),
+    ("محاسبه هزینه دادرسی", "خسارت تأخیر و مهریه"),
+    ("گواهی عدم سوءپیشینه", None),
+    ("ابزار فایل", None),
     ("سوابق و فاکتورهای من", "کیف پول"),
 ]
 
@@ -193,7 +223,7 @@ def _elements(P) -> list:
            "محاسبات حقوقی و گزارش‌های رسمی PDF. در این راهنما همهٔ امکانات ربات و نحوهٔ "
            "استفاده از آن‌ها را می‌بینید.", 9, P["ink"], leading=9 * 1.85),
     ], W, bg=P["accent_soft"], border=P["accent"], radius=6, pad=4.5 * mm, border_w=0.8)
-    el += [intro, Spacer(1, 6 * mm)]
+    el += [intro, Spacer(1, 4 * mm)]
 
     for i, (title, lead, cards) in enumerate(_sections(), 1):
         el.append(CondPageBreak(60 * mm))
@@ -204,28 +234,32 @@ def _elements(P) -> list:
                 pair.append(_p("", 1))
             el.append(_pair_row(pair, card_w, gap))
             el.append(Spacer(1, gap))
-        el.append(Spacer(1, 3 * mm))
+        el.append(Spacer(1, 1 * mm))
 
     n_sec = len(_sections())
     rows = []
-    for a, b in _MENU:
-        rows.append([_p(b, 9, P["accent"], "medium", "center"), "", _p(a, 9, P["accent"], "medium", "center")])
-    mt = Table(rows, colWidths=[card_w, gap, card_w])
     cmds = [("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING", (0, 0), (-1, -1), 2.2 * mm), ("BOTTOMPADDING", (0, 0), (-1, -1), 2.2 * mm)]
-    for r in range(len(rows)):
+            ("TOPPADDING", (0, 0), (-1, -1), 1.3 * mm), ("BOTTOMPADDING", (0, 0), (-1, -1), 1.3 * mm)]
+    for r, (a, b) in enumerate(_MENU):
+        if b is None:   # دکمهٔ تمام‌عرض
+            rows.append([_p(a, 9, P["accent"], "medium", "center"), "", ""])
+            cmds += [("SPAN", (0, r), (2, r)), ("BACKGROUND", (0, r), (2, r), P["accent_soft"]),
+                     ("BOX", (0, r), (2, r), 0.6, P["line"])]
+            continue
+        rows.append([_p(b, 9, P["accent"], "medium", "center"), "", _p(a, 9, P["accent"], "medium", "center")])
         for c in (0, 2):
             cmds += [("BACKGROUND", (c, r), (c, r), P["accent_soft"]), ("BOX", (c, r), (c, r), 0.6, P["line"])]
+    mt = Table(rows, colWidths=[card_w, gap, card_w])
     mt.setStyle(TableStyle(cmds))
     el.append(CondPageBreak(70 * mm))
     el += section(n_sec + 1, "منوی اصلی ربات در یک نگاه",
                   "پس از تأیید آیین‌نامه، این دکمه‌ها را در منوی اصلی می‌بینید:")
-    el += [mt, Spacer(1, 7 * mm)]
+    el += [mt, Spacer(1, 4 * mm)]
 
-    tips = [_p(f"• {t}", 8.6, P["ink"], leading=8.6 * 1.75) for t in _tips()]
+    tips = [_p(f"• {t}", 8.6, P["ink"], leading=8.6 * 1.6) for t in _tips()]
     el.append(KeepTogether(section(n_sec + 2, "نکات مهم", "") + [
-        _box(tips, W, border=P["gold"], radius=5, pad=4 * mm, border_w=0.8)]))
-    el.append(Spacer(1, 6 * mm))
+        _box(tips, W, border=P["gold"], radius=5, pad=3 * mm, border_w=0.8)]))
+    el.append(Spacer(1, 3 * mm))
 
     support = _box([
         _p("پشتیبانی", 10.5, colors.white, "bold"),
@@ -235,7 +269,7 @@ def _elements(P) -> list:
               Paragraph(RULES_URL, ParagraphStyle("guide_url", fontName="Helvetica", fontSize=8.2,
                                                   leading=8.2 * 1.8, textColor=colors.HexColor("#E3C77E")))],
              [24 * mm, W - 24 * mm - 9 * mm]),
-    ], W, bg=P["accent"], radius=6, pad=4.5 * mm)
+    ], W, bg=P["accent"], radius=6, pad=3 * mm)
     el.append(KeepTogether([support]))
     return el
 
