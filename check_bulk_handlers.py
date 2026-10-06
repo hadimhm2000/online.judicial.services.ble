@@ -409,6 +409,7 @@ async def _finalize_check_bulk(message: Message, state: FSMContext):
         "prices": [{"label": f"پیش‌پرداخت {total} ردیف چک", "amount": prepay_rial}],
     }
     try:
+        from wallet import prepare_invoice as _wl_prep; invoice_data = _wl_prep(invoice_data)  # ⭐ کسر خودکار موجودی کیف پول
         await _send_invoice(invoice_data)
         logger.info(f"[CHECK-BULK-PREPAY] فاکتور: user={user_id}, {total} ردیف, {prepay_rial:,} ریال, {tracking_code}")
     except Exception as e:

@@ -371,6 +371,7 @@ async def _finalize_send_fee_invoice(message: Message, state: FSMContext):
             f"[ADMIN-SEND-FEE] ارسال sendInvoice به chat_id={target_user_id}, "
             f"مبلغ={amount:,} ریال, source=send")
         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
+            from wallet import prepare_invoice as _wl_prep; invoice_data = _wl_prep(invoice_data)  # ⭐ کسر خودکار موجودی کیف پول
             async with session.post(url, json=invoice_data, timeout=aiohttp.ClientTimeout(total=20)) as resp:
                 result = await resp.json()
                 if not result.get("ok"):
@@ -894,6 +895,7 @@ async def _finalize_admin_fee_invoice(message: Message, state: FSMContext):
         }
         logger.info(f"[ADMIN-FEE] ارسال sendInvoice به chat_id={target_user_id}, مبلغ={amount:,} ریال, سرویس={svc}")
         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
+            from wallet import prepare_invoice as _wl_prep; invoice_data = _wl_prep(invoice_data)  # ⭐ کسر خودکار موجودی کیف پول
             async with session.post(url, json=invoice_data, timeout=aiohttp.ClientTimeout(total=20)) as resp:
                 result = await resp.json()
                 if not result.get("ok"):

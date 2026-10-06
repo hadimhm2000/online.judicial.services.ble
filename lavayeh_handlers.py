@@ -1153,6 +1153,7 @@ async def bulk_confirm_handler(message: Message, state: FSMContext):
                     "prices": [{"label": f"پیش‌پرداخت {processable_count} {service_fa}", "amount": prepay_rial}],
                 }
                 logging.info(f"[BULK-PREPAY] ارسال sendInvoice پیش‌پرداخت: user={message.from_user.id}, مبلغ={prepay_rial:,} ریال, تعداد={processable_count}")
+                from wallet import prepare_invoice as _wl_prep; invoice_data = _wl_prep(invoice_data)  # ⭐ کسر خودکار موجودی کیف پول
                 async with session.post(invoice_url, json=invoice_data) as resp:
                     result = await resp.json()
                     if not result.get("ok"):
@@ -3855,6 +3856,7 @@ async def send_lavayeh_result(
                 "prices": [{"label": service_label, "amount": final_fee}],
             }
             logging.info(f"[LAVAYEH] ارسال sendInvoice به chat_id={user_id}, مبلغ={final_fee:,} ریال, provider_token={BALE_WALLET_TOKEN[:15]}...")
+            from wallet import prepare_invoice as _wl_prep; invoice_data = _wl_prep(invoice_data)  # ⭐ کسر خودکار موجودی کیف پول
             async with session.post(invoice_url, json=invoice_data) as resp:
                 result = await resp.json()
                 logging.info(f"[LAVAYEH] پاسخ sendInvoice: {result}")
@@ -3957,6 +3959,7 @@ async def _send_lavayeh_invoice(bot: Bot, user_id: int, amount: int, service_lab
                 "prices": [{"label": service_label, "amount": amount}],
             }
             logging.info(f"[LAVAYEH] ارسال sendInvoice (یادآوری/کنسلی) به chat_id={user_id}, مبلغ={amount:,} ریال")
+            from wallet import prepare_invoice as _wl_prep; invoice_data = _wl_prep(invoice_data)  # ⭐ کسر خودکار موجودی کیف پول
             async with session.post(invoice_url, json=invoice_data) as resp:
                 result = await resp.json()
                 logging.info(f"[LAVAYEH] پاسخ sendInvoice (یادآوری/کنسلی): {result}")

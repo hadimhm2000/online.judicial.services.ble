@@ -115,6 +115,7 @@ async def _send_single_invoice(message: Message, state: FSMContext, bot: Bot, se
             "prices": [{"label": f"پرداخت تکی {label}", "amount": fee_rial}],
         }
         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
+            from wallet import prepare_invoice as _wl_prep; invoice_data = _wl_prep(invoice_data)  # ⭐ کسر خودکار موجودی کیف پول
             async with session.post(f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice", json=invoice_data) as resp:
                 result = await resp.json()
         logger.info(f"[SINGLE-USE] sendInvoice user={user_id} svc={service} amount={fee_rial:,}: {result}")

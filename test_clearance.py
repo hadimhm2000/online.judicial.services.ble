@@ -53,7 +53,7 @@ def _isolate(tmp_path, monkeypatch):
     ch._store = {}
     ch._loaded = True
     monkeypatch.setattr(wallet, "STORE_FILE", str(tmp_path / "wallet.json"))
-    wallet._store = {"users": {}, "offers": {}}
+    wallet._store = {"users": {}, "offers": {}, "holds": {}, "autopaid": {}}
     wallet._lock = asyncio.Lock()
     monkeypatch.setattr(ch, "_panel_update", AsyncMock())
     monkeypatch.setattr(ch, "_panel_register", AsyncMock())

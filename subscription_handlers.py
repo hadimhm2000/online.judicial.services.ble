@@ -118,6 +118,7 @@ async def subscription_online_payment(message: Message, state: FSMContext, bot: 
                 "prices": [{"label": "اشتراک ماهیانه", "amount": fee_rial}],
             }
             logging.info(f"[SUB-PAY] ارسال sendInvoice به chat_id={user_id}, مبلغ={fee_rial:,} ریال")
+            from wallet import prepare_invoice as _wl_prep; invoice_data = _wl_prep(invoice_data)  # ⭐ کسر خودکار موجودی کیف پول
             async with session.post(invoice_url, json=invoice_data) as resp:
                 result = await resp.json()
                 logging.info(f"[SUB-PAY] پاسخ sendInvoice: {result}")
