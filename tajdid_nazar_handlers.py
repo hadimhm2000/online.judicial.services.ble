@@ -3535,6 +3535,7 @@ async def send_tajdid_nazar_result(
                 "currency": "IRR",
                 "prices": [{"label": "دعوی اعتراضی", "amount": final_fee}],
             }
+            from wallet import prepare_invoice as _wl_prep; invoice_data = _wl_prep(invoice_data)  # ⭐ کسر خودکار موجودی کیف پول
             async with session.post(invoice_url, json=invoice_data) as resp:
                 result = await resp.json()
                 if not result.get("ok"):

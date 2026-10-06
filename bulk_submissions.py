@@ -1133,6 +1133,7 @@ async def _send_bulk_settlement_invoice(bot, user_id: int, tracking_code: str, a
                 "currency": "IRR",
                 "prices": [{"label": f"تسویه {tracking_code}", "amount": amount_rial}],
             }
+            from wallet import prepare_invoice as _wl_prep; invoice_data = _wl_prep(invoice_data)  # ⭐ کسر خودکار موجودی کیف پول
             async with session.post(invoice_url, json=invoice_data) as resp:
                 result = await resp.json()
                 if not result.get("ok"):
@@ -1175,6 +1176,21 @@ async def handle_late_bulk_item(bot, user_id: int, tracking_code: str, item: dic
     covered = min(surplus, court_total)
     task_data["surplus_rial"] = surplus - covered
     remaining = court_total - covered
+    # ⭐ مازاد بچ اکنون در کیف پول کاربر است — اگر کیف پول کل هزینه را بپوشاند، مثل
+    # قبل بدون فاکتور کسر می‌شود؛ وگرنه فاکتور تسویه (با کسر خودکار کیف پول) صادر می‌شود.
+    if remaining > 0:
+        try:
+            import wallet
+            need_toman = (remaining + 9) // 10
+            if wallet.available(user_id) >= need_toman:
+                wallet.credit_nowait(user_id, -need_toman, "pay",
+                                     f"هزینهٔ ردیف {item.get('row_index')} بچ {tracking_code}")
+                covered += remaining
+                remaining = 0
+                await _safe_send(bot, user_id, f"\U0001f45b هزینهٔ ردیف {item.get('row_index')} "
+                                 f"({need_toman:,} تومان) از کیف پول شما کسر شد.")
+        except Exception as ex:
+            logger.error(f"[BULK-LATE] کسر از کیف پول ناموفق: {ex}")
     logger.info(f"[BULK-LATE] ردیف {item.get('row_index')} بچ {tracking_code}: هزینه {court_total:,} | "
                 f"از مازاد {covered:,} | باقیمانده {remaining:,}")
     if remaining > 0:
@@ -1209,6 +1225,24 @@ async def on_bulk_item_sign_finished(bot, user_id: int, sign_info: dict, signed:
     await _show_bulk_sign_menu(bot, user_id, batch_tc)
 
 
+def _surplus_to_wallet(user_id: int, tracking_code: str, surplus_rial: int) -> int:
+    """واریز مازاد پیش‌پرداخت بچ به کیف پول کاربر. خروجی: مبلغ واریزی (تومان).
+    اگر کیف پول در دسترس نباشد، مازاد مثل قبل روی بچ می‌ماند (surplus_rial)."""
+    task_data = BULK_TASKS.get(tracking_code) or {}
+    task_data["surplus_rial"] = surplus_rial
+    if surplus_rial < 10:
+        return 0
+    try:
+        import wallet
+        wallet.credit_nowait(user_id, surplus_rial // 10, "refund",
+                             f"مازاد پیش‌پرداخت دسته‌جمعی {tracking_code}")
+        task_data["surplus_rial"] = 0
+        return surplus_rial // 10
+    except Exception as ex:
+        logger.error(f"[BULK] واریز مازاد بچ {tracking_code} به کیف پول ناموفق: {ex}")
+        return 0
+
+
 async def finalize_bulk_batch(bot, user_id: int, tracking_code: str):
     """
     گزارش مالی نهایی + صدور فاکتور تسویه (در صورت نیاز) + نمایش منوی
@@ -1233,13 +1267,16 @@ async def finalize_bulk_batch(bot, user_id: int, tracking_code: str):
         total_court_cost = sum(item.get("court_total", 0) for item in signable_items if item.get("status") != "failed")
         prepaid_total = task_data.get("prepaid_total_rial", 0)
         remaining = total_court_cost - prepaid_total
-        # مازاد پیش‌پرداخت برای ردیف‌هایی که بعداً (پس از اصلاح) ثبت شوند
-        task_data["surplus_rial"] = max(0, -remaining)
+        # ⭐ مازاد پیش‌پرداخت به کیف پول کاربر می‌رود (قابل مشاهده و کسر خودکار از
+        # هزینه‌های بعدی — از جمله ردیف‌هایی که بعداً پس از اصلاح ثبت شوند)
+        surplus_to_wallet = _surplus_to_wallet(user_id, tracking_code, max(0, -remaining))
 
         if remaining > 0:
             diff_line = f"\U0001f4b0 مابه‌التفاوه (باقیمانده): *{remaining:,} ریال*"
         elif remaining < 0:
             diff_line = f"\u2705 پیش‌پرداخت پوشش داده (مازاد: {abs(remaining):,} ریال)"
+            if surplus_to_wallet:
+                diff_line += f"\n\U0001f45b مازاد ({surplus_to_wallet:,} تومان) به کیف پول شما واریز شد."
         else:
             diff_line = "\u2705 پیش‌پرداخت دقیقاً برابر هزینه سامانه"
 
@@ -1284,7 +1321,8 @@ async def finalize_bulk_batch(bot, user_id: int, tracking_code: str):
             await _show_bulk_sign_menu(bot, user_id, tracking_code)
     else:
         # هیچ ردیفی موفق نبود
-        task_data["surplus_rial"] = task_data.get("prepaid_total_rial", 0)
+        surplus_to_wallet = _surplus_to_wallet(user_id, tracking_code,
+                                               int(task_data.get("prepaid_total_rial", 0) or 0))
         fail_lines = ""
         if failures:
             fail_lines = "\n\n" + "\n".join(
@@ -1292,4 +1330,6 @@ async def finalize_bulk_batch(bot, user_id: int, tracking_code: str):
                 for fi in failures
             )
         await _safe_send(bot, user_id,
-            f"\u274c هیچ ردیفی با موفقیت ثبت نشد. لطفاً خطاهای گزارش‌شده را برطرف و مجدداً تلاش فرمایید.{fail_lines}")
+            f"\u274c هیچ ردیفی با موفقیت ثبت نشد. لطفاً خطاهای گزارش‌شده را برطرف و مجدداً تلاش فرمایید.{fail_lines}"
+            + (f"\n\n\U0001f45b پیش‌پرداخت ({surplus_to_wallet:,} تومان) به کیف پول شما واریز شد و از "
+               f"هزینه‌های بعدی به‌صورت خودکار کسر می‌شود." if surplus_to_wallet else ""))

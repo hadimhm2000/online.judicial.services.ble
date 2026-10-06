@@ -31,7 +31,7 @@ def run(coro):
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(wallet, "STORE_FILE", str(tmp_path / "wallet.json"))
-    wallet._store = {"users": {}, "offers": {}}
+    wallet._store = {"users": {}, "offers": {}, "holds": {}, "autopaid": {}}
     wallet._lock = asyncio.Lock()
     runtime_state.prepaid_registrations.clear()
     runtime_state.pending_nid_fix_windows.clear()
@@ -74,20 +74,25 @@ def test_cancel_deceased_refunds_half_prepay_to_wallet():
     assert "100,000" in line
 
 
-def test_cancel_deceased_keeps_previous_credit():
+def test_cancel_deceased_moves_previous_credit_to_wallet():
     _prepay(8, 2_000_000, credit_rial=300_000)
     run(nid_fix_window.settle_cancel(8, {"kind": "deceased"}))
-    assert wallet.balance(8) == 100_000
-    assert runtime_state.prepaid_registrations[8]["amount_rial"] == 300_000
-    assert runtime_state.prepaid_registrations[8]["prepay_paid_rial"] == 0
+    assert wallet.balance(8) == 100_000 + 30_000
+    assert 8 not in runtime_state.prepaid_registrations
 
 
-def test_cancel_other_errors_keep_old_behavior():
+def test_cancel_other_errors_keep_half_in_wallet():
     _prepay(9, 2_000_000)
     line = run(nid_fix_window.settle_cancel(9, {"kind": "birthdate"}))
-    assert wallet.balance(9) == 0
-    assert runtime_state.prepaid_registrations[9]["amount_rial"] == 1_000_000
-    assert "100,000" in line
+    assert wallet.balance(9) == 100_000
+    assert 9 not in runtime_state.prepaid_registrations
+    assert "100,000" in line and "کیف پول" in line
+
+
+def test_penalty_halves_only_prepay_not_previous_credit():
+    _prepay(12, 2_000_000, credit_rial=300_000)
+    run(nid_fix_window.settle_cancel(12, {"kind": "birthdate"}))
+    assert wallet.balance(12) == 100_000 + 30_000
 
 
 def test_sweep_expired_deceased_and_normal_windows():
@@ -102,7 +107,8 @@ def test_sweep_expired_deceased_and_normal_windows():
     closed = run(nid_fix_window.sweep_expired(bot))
     assert closed == 2
     assert wallet.balance(10) == 100_000
-    assert runtime_state.prepaid_registrations[11]["amount_rial"] == 1_000_000
+    assert wallet.balance(11) == 100_000
+    assert 11 not in runtime_state.prepaid_registrations
     user_texts = [c.args[1] for c in bot.send_message.call_args_list if c.args[0] in (10, 11)]
     assert len(user_texts) == 2
 

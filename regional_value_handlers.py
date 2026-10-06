@@ -1495,6 +1495,7 @@ async def _rv_start_payment(message: Message, state: FSMContext, bot: Bot):
                 "prices": [{"label": "استعلام ارزش منطقه‌ای", "amount": fee_rial}],
             }
             logging.info(f"[RV-PAY] ارسال sendInvoice به chat_id={message.from_user.id}, مبلغ={fee_rial:,} ریال")
+            from wallet import prepare_invoice as _wl_prep; invoice_data = _wl_prep(invoice_data)  # ⭐ کسر خودکار موجودی کیف پول
             async with session.post(invoice_url, json=invoice_data) as resp:
                 result = await resp.json()
                 logging.info(f"[RV-PAY] پاسخ sendInvoice: {result}")

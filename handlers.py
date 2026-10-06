@@ -867,22 +867,20 @@ async def admin_set_prepaid(message: types.Message):
     prepaid = getattr(runtime_state, "prepaid_registrations", {})
     existing = prepaid.get(target_uid)
     if not existing:
-        prepaid[target_uid] = {
-            "amount_toman": new_rial // 10,
-            "amount_rial": new_rial,
-            "service": "manual",
-            "service_label": "ثبت دستی مدیر",
-            "charge_id": "",
-            "paid_at": datetime.datetime.now(),
-            "manual": True,
-        }
+        # ⭐ (۱۴۰۵/۰۷) مانده/بستانکاری جدید به کیف پول کاربر می‌رود تا قابل مشاهده
+        # باشد و به‌صورت خودکار از همهٔ فاکتورهای بعدی کسر شود.
+        import wallet
+        await wallet.credit(target_uid, new_rial // 10, "admin", "مانده/بستانکاری (ثبت دستی مدیر)")
         await message.answer(
-            f"✅ مبلغ ماندهٔ جدید برای کاربر `{target_uid}` ثبت شد: {new_rial:,} ریال.")
+            f"✅ {new_rial // 10:,} تومان به کیف پول کاربر `{target_uid}` واریز شد "
+            f"(موجودی: {wallet.balance(target_uid):,} تومان).")
     else:
+        # ویرایش پیش‌پرداخت پروندهٔ در جریان (در فاکتور نهایی همان پرونده کسر می‌شود)
         old_rial = int(existing.get("amount_rial", 0) or 0)
         existing["amount_rial"] = new_rial
         existing["amount_toman"] = new_rial // 10
-        existing["manual"] = True
+        existing["prepay_paid_rial"] = new_rial
+        existing.pop("manual", None)
         await message.answer(
             f"✅ مبلغ ماندهٔ کاربر `{target_uid}` ویرایش شد: "
             f"{old_rial:,} → {new_rial:,} ریال.")
@@ -1396,6 +1394,7 @@ async def process_main_menu(message: types.Message, state: FSMContext):
                     "prices": [{"label": f"{len(cart)} استعلام", "amount": total_rial}],
                 }
                 logging.info(f"[CART-PAY] ارسال sendInvoice به chat_id={message.from_user.id}, مبلغ={total_rial:,} ریال")
+                from wallet import prepare_invoice as _wl_prep; invoice_data = _wl_prep(invoice_data)  # ⭐ کسر خودکار موجودی کیف پول
                 async with session.post(invoice_url, json=invoice_data) as resp:
                     result = await resp.json()
                     logging.info(f"[CART-PAY] پاسخ sendInvoice: {result}")
@@ -1992,6 +1991,7 @@ async def confirm_opt_process(message: types.Message, state: FSMContext, bot: Bo
                     "prices": [{"label": data.get('query_type', 'استعلام'), "amount": fee_rial}],
                 }
                 logging.info(f"[SINGLE-PAY] ارسال sendInvoice به chat_id={message.from_user.id}, مبلغ={fee_rial:,} ریال")
+                from wallet import prepare_invoice as _wl_prep; invoice_data = _wl_prep(invoice_data)  # ⭐ کسر خودکار موجودی کیف پول
                 async with session.post(invoice_url, json=invoice_data) as resp:
                     result = await resp.json()
                     logging.info(f"[SINGLE-PAY] پاسخ sendInvoice: {result}")
@@ -3005,6 +3005,7 @@ async def bulk_inquiry_confirm_handler(message: types.Message, state: FSMContext
                 "prices": [{"label": f"{len(items)} استعلام دسته‌جمعی", "amount": total_rial}],
             }
             logging.info(f"[BULK-INQ-PAY] sendInvoice chat_id={message.from_user.id}, amount={total_rial:,}")
+            from wallet import prepare_invoice as _wl_prep; invoice_data = _wl_prep(invoice_data)  # ⭐ کسر خودکار موجودی کیف پول
             async with session.post(invoice_url, json=invoice_data) as resp:
                 result = await resp.json()
                 if not result.get("ok"):

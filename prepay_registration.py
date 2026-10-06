@@ -173,6 +173,7 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
             logging.info(
                 f"[REG-PREPAY] ارسال فاکتور پیش‌پرداخت: user={user_id}, "
                 f"svc={service_key}, مبلغ={amount_rial:,} ریال")
+            from wallet import prepare_invoice as _wl_prep; invoice_data = _wl_prep(invoice_data)  # ⭐ کسر خودکار موجودی کیف پول
             async with session.post(invoice_url, json=invoice_data) as resp:
                 result = await resp.json()
                 if not result.get("ok"):
@@ -394,15 +395,22 @@ def adjust_final_fee_with_prepay(user_id: int, final_fee_rial: int):
     except Exception as ex:
         logging.warning(f"[REG-PREPAY] اصلاح مبلغ پیش‌پرداخت پنل ناموفق: {ex}")
     if leftover > 0:
-        runtime_state.prepaid_registrations[user_id] = {
-            "amount_toman": leftover // 10,
-            "amount_rial": leftover,
-            "prepay_paid_rial": 0,
-            "service": "leftover",
-            "service_label": "باقی‌ماندهٔ مانده از پروندهٔ قبلی",
-            "charge_id": "",
-            "paid_at": datetime.datetime.now(),
-        }
+        # ⭐ مازاد به کیف پول کاربر می‌رود (قابل مشاهده و کسر خودکار از هزینه‌های بعدی)
+        try:
+            import wallet
+            wallet.credit_nowait(user_id, leftover // 10, "refund",
+                                 f"مازاد پیش‌پرداخت {prepay.get('service_label') or ''}".strip())
+        except Exception as ex:
+            logging.error(f"[REG-PREPAY] واریز مازاد به کیف پول ناموفق — رکورد مانده حفظ شد: {ex}")
+            runtime_state.prepaid_registrations[user_id] = {
+                "amount_toman": leftover // 10,
+                "amount_rial": leftover,
+                "prepay_paid_rial": 0,
+                "service": "leftover",
+                "service_label": "باقی‌ماندهٔ مانده از پروندهٔ قبلی",
+                "charge_id": "",
+                "paid_at": datetime.datetime.now(),
+            }
     if applied > 0 and adjusted > 0:
         # ⭐ اگر فاکتور نهایی کارت‌به‌کارت پرداخت شود، کسر برای مدیر نمایش داده می‌شود
         try:
@@ -450,6 +458,6 @@ def build_prepay_fee_text(final_fee_rial: int, prepay_info: dict,
     lines.append(f"💳 *مبلغ قابل پرداخت شما: {final_fee_rial:,} ریال*")
     if leftover > 0:
         lines.append(
-            f"ℹ️ مبلغ *{leftover:,} ریال* از مانده/بستانکاری شما باقی ماند و در "
-            f"پروندهٔ بعدی کسر خواهد شد.")
+            f"👛 مبلغ *{leftover:,} ریال* باقی ماند و به کیف پول شما واریز شد؛ "
+            f"به‌صورت خودکار از هزینه‌های بعدی شما کسر خواهد شد.")
     return "\n".join(lines)

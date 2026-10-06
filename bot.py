@@ -420,6 +420,12 @@ async def main():
     # ── بررسی کرش قبلی و بارگذاری حالت ──
     crashed, crash_data = was_crash()
     active_submitted, active_unsubmitted = load_into_runtime_state()
+    # ⭐ مانده/بستانکاری‌های قدیمی و مازاد بچ‌های تمام‌شده → کیف پول کاربر (یک‌بار؛ تکرار بی‌اثر)
+    try:
+        if wallet.migrate_legacy_credits():
+            save_runtime_state()
+    except Exception as _e:
+        logging.error(f"[WALLET] انتقال مبالغ قدیمی به کیف پول ناموفق: {_e}")
     # ⭐ پیشنهاد تکمیلی: پاکسازی entryهای منقضی (TTL) بلافاصله پس از بارگذاری،
     # تا پرونده‌های ماه‌ها-گذشته نه تنها پیام نگیرند، بلکه از صف‌ها هم پاک شوند.
     cleanup_expired_pending_entries()

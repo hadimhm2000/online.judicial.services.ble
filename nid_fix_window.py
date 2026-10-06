@@ -12,8 +12,8 @@
      - متن خطا برای کاربر ارسال می‌شود
      - کاربر ۴۵ دقیقه فرصت دارد کدملی شخص را ویرایش کند
      - اگر ظرف ۴۵ دقیقه اقدام نکند → «نصف مبلغ پیش‌پرداخت» برای موارد بعدی
-       او از هزینه کسر می‌گردد (مبلغ رکورد prepaid_registrations نصف می‌شود
-       و در پایان کارِ درخواست بعدی به‌صورت خودکار اعمال می‌گردد)
+       او نگه داشته می‌شود: به کیف پول کاربر واریز و به‌صورت خودکار از
+       هزینهٔ موارد بعدی کسر می‌گردد (۱۴۰۵/۰۷)
      - ⚠️ همه‌چیز در فایل ماندگار (persistence.py) ذخیره می‌شود؛ بنابراین
        حتی پس از کرش یا قطعی ربات، جریمه برای هر درخواست بعدیِ همان کاربر
        مورد محاسبه قرار می‌گیرد.
@@ -95,11 +95,11 @@ def deceased_message(error_text: str) -> str:
 
 
 def penalty_line(new_rial: int) -> str:
-    """یک خط پیام جریمه (نصف پیش‌پرداخت برای موارد بعدی) — خالی اگر مبلغی نبود."""
+    """یک خط پیام جریمه (نصف پیش‌پرداخت به کیف پول برای موارد بعدی) — خالی اگر مبلغی نبود."""
     if new_rial <= 0:
         return ""
-    return (f"💰 نصف مبلغ پیش‌پرداخت شما ({new_rial // 10:,} تومان) برای موارد بعدی "
-            "شما لحاظ شد و از هزینه کسر می‌گردد.\n")
+    return (f"💰 نصف مبلغ پیش‌پرداخت شما ({new_rial // 10:,} تومان) به کیف پول شما واریز شد "
+            "و به‌صورت خودکار از هزینهٔ موارد بعدی کسر می‌گردد.\n")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -158,35 +158,52 @@ def is_expired(win: dict, now: datetime.datetime = None) -> bool:
 
 
 def halve_prepaid(user_id: int) -> int:
-    """نصف کردن مبلغ پیش‌پرداختِ باقی‌ماندهٔ کاربر (جریمه).
+    """جریمه: نصف پیش‌پرداختِ همین درخواست کسر و نیمهٔ دیگر برای موارد بعدی نگه داشته می‌شود.
 
-    خروجی: مبلغ جدید (ریال) — ۰ اگر پیش‌پرداختی وجود نداشت یا قبلاً مصرف شده.
-    رکورد prepaid_registrations دست‌نخورده می‌ماند (فقط مبلغ نصف می‌شود) تا
-    در پایان کارِ درخواست بعدی از طریق adjust_final_fee_with_prepay به‌صورت
-    خودکار از هزینه کسر گردد. ماندگاری آن هم قبلاً در persistence تضمین شده.
+    ⭐ (۱۴۰۵/۰۷) نیمهٔ نگه‌داشته‌شده به کیف پول کاربر واریز می‌شود تا قابل
+    مشاهده باشد و به‌صورت خودکار از هزینهٔ موارد بعدی کسر گردد (قبلاً در رکورد
+    prepaid_registrations می‌ماند و فقط در پایان کارِ درخواست بعدی کسر می‌شد).
+    ماندهٔ قبلی (بستانکاری) کاربر کامل به کیف پول می‌رود و جریمه نمی‌شود.
+
+    خروجی: مبلغ نگه‌داشته‌شدهٔ پیش‌پرداخت (ریال) — ۰ اگر پیش‌پرداختی نبود.
     """
     prepaid = runtime_state.prepaid_registrations.get(user_id)
     if not prepaid:
         return 0
-    old_rial = int(prepaid.get("amount_rial", 0) or 0)
-    if old_rial <= 0:
+    try:
+        from prepay_registration import _split_record
+        paid_rial, credit_rial = _split_record(prepaid)
+    except Exception:
+        paid_rial, credit_rial = int(prepaid.get("amount_rial", 0) or 0), 0
+    if paid_rial + credit_rial <= 0:
         return 0
-    new_rial = old_rial // 2
-    prepaid["amount_rial"] = new_rial
-    prepaid["amount_toman"] = new_rial // 10
-    # ⭐ هم‌راستا با تفکیک پیش‌پرداخت/مانده در prepay_registration
-    if "prepay_paid_rial" in prepaid:
-        prepaid["prepay_paid_rial"] = int(prepaid.get("prepay_paid_rial", 0) or 0) // 2
+    new_rial = paid_rial // 2
+    try:
+        import wallet
+        if new_rial >= 10:
+            wallet.credit_nowait(user_id, new_rial // 10, "refund",
+                                 "نصف پیش‌پرداخت (جریمهٔ عدم ویرایش کدملی)")
+        if credit_rial >= 10:
+            wallet.credit_nowait(user_id, credit_rial // 10, "refund",
+                                 "مانده/بستانکاری قبلی")
+    except Exception as e:
+        # کیف پول در دسترس نیست → رفتار قبلی (نصف رکورد برای موارد بعدی)
+        logger.error(f"[NID-FIX] واریز جریمه به کیف پول کاربر {user_id} ناموفق: {e}")
+        prepaid["amount_rial"] = new_rial + credit_rial
+        prepaid["amount_toman"] = prepaid["amount_rial"] // 10
+        prepaid["prepay_paid_rial"] = new_rial
+        return new_rial
+    runtime_state.prepaid_registrations.pop(user_id, None)
     logger.info(
-        f"[NID-FIX] جریمه: پیش‌پرداخت کاربر {user_id} نصف شد: "
-        f"{old_rial:,} → {new_rial:,} ریال")
+        f"[NID-FIX] جریمه: پیش‌پرداخت کاربر {user_id}: {paid_rial:,} ریال → "
+        f"{new_rial:,} ریال به کیف پول؛ مانده قبلی {credit_rial:,} ریال هم به کیف پول")
     return new_rial
 
 
 async def refund_half_prepay_to_wallet(user_id: int) -> int:
     """⭐ خطای «فوت کرده است»: بازگرداندن ۵۰٪ پیش‌پرداختِ همین درخواست به
     کیف پول کاربر. نیمهٔ دیگر کسر می‌شود؛ ماندهٔ قبلی (بستانکاری) کاربر
-    دست‌نخورده در رکورد باقی می‌ماند.
+    کامل به کیف پول منتقل می‌شود.
 
     خروجی: مبلغ بازگردانده‌شده (تومان) — ۰ اگر پیش‌پرداختی نبود.
     """
@@ -201,20 +218,18 @@ async def refund_half_prepay_to_wallet(user_id: int) -> int:
     if paid_rial <= 0:
         return 0
     refund_toman = (paid_rial // 2) // 10
-    if credit_rial > 0:
-        rec["amount_rial"] = credit_rial
-        rec["amount_toman"] = credit_rial // 10
-        rec["prepay_paid_rial"] = 0
-    else:
-        runtime_state.prepaid_registrations.pop(user_id, None)
-    if refund_toman > 0:
-        try:
-            import wallet
+    try:
+        import wallet
+        if refund_toman > 0:
             await wallet.credit(user_id, refund_toman, "refund",
                                 "بازگشت ۵۰٪ پیش‌پرداخت (خطای فوت ثبت احوال)")
-        except Exception as e:
-            logger.error(f"[NID-FIX] خطا در واریز به کیف پول کاربر {user_id}: {e}")
-            return 0
+        # ⭐ ماندهٔ قبلی (بستانکاری) هم به کیف پول می‌رود
+        if credit_rial >= 10:
+            await wallet.credit(user_id, credit_rial // 10, "refund", "مانده/بستانکاری قبلی")
+    except Exception as e:
+        logger.error(f"[NID-FIX] خطا در واریز به کیف پول کاربر {user_id}: {e}")
+        return 0
+    runtime_state.prepaid_registrations.pop(user_id, None)
     logger.info(
         f"[NID-FIX] خطای فوت: {refund_toman:,} تومان (۵۰٪ پیش‌پرداخت) به کیف پول "
         f"کاربر {user_id} بازگشت؛ مانده قبلی={credit_rial:,} ریال")
@@ -384,7 +399,7 @@ async def sweep_expired(bot) -> int:
                     if deceased else
                     (f"⌛ [NID-FIX] مهلت ویرایش کدملی کاربر {uid} ({label}) به پایان "
                      f"رسید و جریمهٔ نصف پیش‌پرداخت اعمال شد "
-                     f"({new_rial:,} ریال باقی‌مانده)."))
+                     f"({new_rial // 10:,} تومان به کیف پول کاربر رفت)."))
             except Exception:
                 pass
             closed += 1

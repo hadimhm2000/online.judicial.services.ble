@@ -21,7 +21,10 @@ BATCH = "LYH-TEST1"
 
 
 @pytest.fixture
-def env(monkeypatch):
+def env(monkeypatch, tmp_path):
+    import wallet
+    monkeypatch.setattr(wallet, "STORE_FILE", str(tmp_path / "wallet.json"))
+    monkeypatch.setattr(wallet, "_store", {"users": {}, "offers": {}, "holds": {}, "autopaid": {}})
     bot = AsyncMock()
     recorded = []
     import final_print
@@ -147,6 +150,7 @@ def test_stale_lock_released_after_restart(env):
 
 
 def test_late_row_uses_surplus_then_sign_menu(env):
+    import wallet
     bot, _, invoice = env
 
     async def scenario():
@@ -154,14 +158,15 @@ def test_late_row_uses_surplus_then_sign_menu(env):
         data = {"_is_bulk": True, "batch_tracking_code": BATCH, "_bulk_row_key": f"{BATCH}#2",
                 "_bulk_row_index": 2, "lavayeh_title": "لایحه دفاعیه"}
         await bulk_submissions.ensure_bulk_row_done(bot, UID, data)
-        assert BULK_TASKS[BATCH]["surplus_rial"] == 70_000
+        # مازاد پیش‌پرداخت به کیف پول کاربر رفت
+        assert BULK_TASKS[BATCH]["surplus_rial"] == 0 and wallet.balance(UID) == 7_000
         bot.send_message.reset_mock()
         # پس از اصلاح، ردیف ۲ ثبت می‌شود
         await _register(bot, 2, "222", "a2", cost=50_000)
 
     asyncio.run(scenario())
     task = BULK_TASKS[BATCH]
-    assert task["surplus_rial"] == 20_000 and task["failures"] == []
+    assert wallet.balance(UID) == 2_000 and task["failures"] == []
     invoice.assert_not_awaited()
     kb = bot.send_message.await_args.kwargs["reply_markup"]
     assert [r[0].callback_data for r in kb.inline_keyboard] == [
