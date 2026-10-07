@@ -1,10 +1,10 @@
 """
-پرداخت تکی بخش‌های «محاسبه تمبر» و «خسارت تأخیر تأدیه / مهریه» (۱۴۰۵/۰۷).
+پرداخت تکی بخش‌های «محاسبه تمبر»، «خسارت تأخیر تأدیه / مهریه» و «دیه / سهم‌الارث» (۱۴۰۵/۰۷).
 
 وقتی ۲ استفادهٔ رایگان کاربر در یکی از این دو بخش تمام شده و اشتراک فعال
 ندارد، دو گزینه نمایش داده می‌شود:
   ۱. دریافت اشتراک ماهیانه (همان فلوی subscription_handlers)
-  ۲. پرداخت تکی همین مورد — تمبر ۲۰,۰۰۰ تومان، خسارت تأخیر/مهریه ۴۵,۰۰۰ تومان
+  ۲. پرداخت تکی همین مورد — تمبر ۲۰,۰۰۰ تومان، خسارت تأخیر/مهریه و دیه/سهم‌الارث ۴۵,۰۰۰ تومان
 
 پس از پرداخت موفق فاکتور تکی (payload: {"type": "single_use", "svc": ...})
 یک اعتبار برای همان بخش ثبت می‌شود (runtime_state.add_single_use_credit) و
@@ -33,6 +33,7 @@ SUBSCRIBE_CHOICE_TEXT = "💳 دریافت اشتراک ماهیانه"
 SERVICE_LABELS = {
     "stamp": "محاسبه تمبر",
     "damages": "محاسبهٔ خسارت تأخیر تأدیه / مهریه",
+    "legal": "محاسبهٔ دیه / سهم‌الارث",
 }
 
 
@@ -169,6 +170,9 @@ async def single_use_successful_payment(message: Message, state: FSMContext, bot
     if service == "stamp":
         from stamp_calc_handlers import stamp_calc_entry
         await stamp_calc_entry(message, state)
+    elif service == "legal":
+        from legal_tools_handlers import legal_entry
+        await legal_entry(message, state)
     else:
         from damages_handlers import damages_entry
         await damages_entry(message, state)
