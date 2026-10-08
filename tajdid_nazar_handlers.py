@@ -63,6 +63,7 @@ from keyboards import (
     text_input_method_kb,
     vakalat_ask_kb,
     tn_case_type_kb, tn_doc_type_kb, tn_amount_type_kb,
+    tn_protested_doc_kb, TN_PROTESTED_DOC_OPTIONS,
     tn_insolvency_kb, tn_extra_text_kb,
     tn_more_witnesses_kb, tn_confirm_kb, tn_edit_kb,
     tn_reason_more_kb, tn_amount_confirm_kb,
@@ -514,17 +515,14 @@ async def tn_province_handler(message: Message, state: FSMContext):
         # توجه: شماره قرار همان ابتدا (مرحله ۱) از کاربر گرفته شده است؛
         # اینجا دیگر نباید دوباره پرسیده شود (قبلاً این تکرار باعث سردرگمی
         # می‌شد: یک‌بار «شماره دادنامه» و یک‌بار «شماره قرار» پرسیده می‌شد).
-        # برای این نوع دعوی، حکم/قرار، مبلغ و اعسار هم معنا ندارد —
-        # مستقیماً به انتخاب نوع شخصیت درخواست‌دهنده می‌رویم.
-        if data.get("_tn_editing", False):
-            await state.update_data(_tn_editing=False)
-            await _go_to_tn_preview(message, state)
-            return
-
-        labels = data.get("tn_labels", {})
-        appellant_label = labels.get("appellant", "درخواست دهنده")
-        # ⭐ سوال وکالت پیش از بخش {appellant_label} (طبق دستور کارفرما)
-        await _ask_tn_vakalat(message, state, appellant_label)
+        # برای این نوع دعوی، حکم/قرار، مبلغ و اعسار هم معنا ندارد.
+        # ⭐ دستور کارفرما (۱۴۰۵/۰۷): پیش از اطلاعات درخواست‌دهنده پرسیده
+        # می‌شود اعتراض نسبت به کدام سند است (رادیوی documentInfo سامانه).
+        await message.answer(
+            f"✅ استان *{matched_province}* ثبت شد.\n\n"
+            f"*مرحله ۵:* اعتراض نسبت به کدام یک از موارد زیر است؟",
+            reply_markup=tn_protested_doc_kb)
+        await state.set_state(Form.tn_protested_doc)
     else:
         labels = data.get("tn_labels", {})
         await message.answer(
@@ -532,6 +530,43 @@ async def tn_province_handler(message: Message, state: FSMContext):
             f"*مرحله ۵:* آیا دادنامه *حکم* صادر شده است یا *قرار*؟",
             reply_markup=tn_doc_type_kb)
         await state.set_state(Form.tn_doc_type)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# مرحله ۵ — نوع سند مورد اعتراض (فقط اعتراض به قرار دادسرا)
+# ══════════════════════════════════════════════════════════════════════════════
+@tajdid_nazar_router.message(Form.tn_protested_doc)
+async def tn_protested_doc_handler(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if not text:
+        return
+    if text == "🔙 بازگشت":
+        await message.answer(
+            "لطفاً *نام استان* را انتخاب فرمایید:",
+            reply_markup=create_province_kb())
+        await state.set_state(Form.tn_province)
+        return
+
+    normalized = text.replace("ي", "ی").replace("ك", "ک")
+    matched = next((o for o in TN_PROTESTED_DOC_OPTIONS if o == normalized), None)
+    if not matched:
+        await message.answer(
+            "⚠️ لطفاً یکی از گزینه‌های زیر را انتخاب فرمایید:",
+            reply_markup=tn_protested_doc_kb)
+        return
+
+    await state.update_data(tn_protested_doc=matched)
+    data = await state.get_data()
+    if data.get("_tn_editing", False):
+        await state.update_data(_tn_editing=False)
+        await _go_to_tn_preview(message, state)
+        return
+
+    labels = data.get("tn_labels", {})
+    appellant_label = labels.get("appellant", "درخواست دهنده")
+    await message.answer(f"✅ اعتراض نسبت به *{matched}* ثبت شد.")
+    # ⭐ سوال وکالت پیش از بخش {appellant_label} (طبق دستور کارفرما)
+    await _ask_tn_vakalat(message, state, appellant_label)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2114,6 +2149,7 @@ async def _handle_query_persons(message: Message, state: FSMContext, bot: Bot, s
             # ⭐ فرم بعد از بازیابی (قرار/مبلغ/اعسار) باید مانند ثبت اصلی پر شود
             # تا حالت فرم معتبر بماند و step اشخاص قابل پیمایش باشد.
             "tn_doc_type": data.get("tn_doc_type", "حکم"),
+            "tn_protested_doc": data.get("tn_protested_doc", ""),
             "tn_amount": data.get("tn_amount", 0),
             "tn_insolvency": data.get("tn_insolvency", False),
             "user_id": user_id,
@@ -2643,6 +2679,7 @@ def build_tn_preview(data: dict) -> str:
             f"  شماره پرونده: `{file_no}`\n"
             f"  تاریخ: `{judge_date}`\n"
             f"  استان: {province}\n"
+            f"  اعتراض نسبت به: *{data.get('tn_protested_doc', '') or '-'}*\n"
         )
     else:
         info_section = (
@@ -2736,6 +2773,7 @@ async def _submit_tn_request(message: Message, state: FSMContext, bot: Bot,
         "tn_judge_date": data.get("tn_judge_date", ""),
         "tn_province": data.get("tn_province", ""),
         "tn_doc_type": data.get("tn_doc_type", ""),
+        "tn_protested_doc": data.get("tn_protested_doc", ""),
         "tn_amount": data.get("tn_amount", 0),
         "tn_insolvency": data.get("tn_insolvency", False),
         "tn_appellants": data.get("tn_appellants", []),

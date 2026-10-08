@@ -201,6 +201,7 @@ class Form(StatesGroup):
     tn_file_no = State()
     # tn_file_no_row حذف شد
     tn_order_no = State()  # شماره قرار (فقط اعتراض به قرار دادسرا)
+    tn_protested_doc = State()  # نوع سند مورد اعتراض: تصمیم نهایی / قرار تامین کیفری / قرار اعدادی (فقط اعتراض به قرار دادسرا)
     tn_judge_date = State()
     tn_province = State()
     tn_doc_type = State()

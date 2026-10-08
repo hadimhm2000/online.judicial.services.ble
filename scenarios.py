@@ -1202,6 +1202,47 @@ async def _handle_wrong_form_tracking_code(bot: Bot, user_id: int, data: dict, t
     await _start_free_retry_window(bot, user_id, notice_text, data, tracking_code, doc_name)
 
 
+async def _reopen_attachment_row(sana_page, row_idx: int, bot: Bot, user_id: int):
+    """بازگرداندن صفحهٔ اصلی به دیالوگ پیوست‌های یک ردیف «منضمات» پس از لاگین مجدد.
+
+    پس از انقضای نشست وسط چاپ پیوست، پاپ‌آپ خطای صفحهٔ اصلی بسته و اگر
+    دکمه‌های «نمایش و چاپ» دیگر در صفحه نبودند، دکمهٔ ویرایش همان ردیف دوباره
+    زده می‌شود تا همان پیوست قابل چاپ مجدد باشد.
+    """
+    try:
+        await check_and_handle_expiry(sana_page, bot, user_id, check_body_text=False)
+    except Exception as e:
+        logging.warning(f"[ATTACHMENT] بررسی نشست صفحه اصلی پس از لاگین مجدد: {e}")
+    try:
+        from browser_helpers import dismiss_expiry_popup
+        await dismiss_expiry_popup(sana_page)
+    except Exception:
+        pass
+    try:
+        has_print_btns = await sana_page.evaluate('''() => {
+            const btns = Array.from(document.querySelectorAll('button'));
+            return btns.some(b => b.innerText && b.innerText.includes("نمایش و چاپ"));
+        }''')
+        if has_print_btns:
+            return
+        logging.info(f"[ATTACHMENT] دیالوگ ردیف {row_idx} بسته شده — باز کردن مجدد")
+        await sana_page.evaluate('window.scrollTo(0, 0)')
+        await resilient_sleep(sana_page, 2, bot, user_id)
+        await sana_page.evaluate('''(idx) => {
+            const tbody = document.querySelector('tbody');
+            if (tbody) {
+                const trs = tbody.querySelectorAll('tr');
+                if (trs.length > idx) {
+                    const btn = trs[idx].querySelector('button[ng-click*="editDocument"]');
+                    if (btn) btn.click();
+                }
+            }
+        }''', row_idx)
+        await resilient_sleep(sana_page, 5, bot, user_id)
+    except Exception as e:
+        logging.warning(f"[ATTACHMENT] بازگرداندن دیالوگ ردیف {row_idx} ناموفق: {e}")
+
+
 async def process_task(data, bot: Bot):
     sana_page = runtime_state.sana_page
     browser_context = runtime_state.browser_context
@@ -2339,9 +2380,24 @@ async def process_task(data, bot: Bot):
                                     else:
                                         for btn_idx in range(btn_count):
                                             btn_success = False
-                                            for attempt in range(4):
+                                            # ⭐ اگر وسط چاپ یک پیوست نشست منقضی شود، پس از لاگین
+                                            # مجدد «همان» پیوست دوباره چاپ می‌شود. تلاش‌هایی که به‌خاطر
+                                            # انقضای نشست از دست رفته‌اند جزو ۴ تلاش عادی شمرده نمی‌شوند
+                                            # (حداکثر ۳ تلاش اضافه). قبلاً پس از لاگین مجدد، تب پیوست
+                                            # بسته شده بود و ربات بدون بازگرداندن دیالوگ ردیف از آن
+                                            # پیوست رد می‌شد.
+                                            attempt = 0
+                                            expiry_retries = 0
+                                            while attempt < 4:
+                                                attempt += 1
                                                 att_page = None
+                                                session_hit = False
                                                 try:
+                                                    # نشست صفحهٔ اصلی پیش از کلیک «نمایش و چاپ»
+                                                    if await check_and_handle_expiry(sana_page, bot, user_id, check_body_text=False):
+                                                        session_hit = True
+                                                        raise Exception("انقضای نشست روی صفحه اصلی پیش از چاپ پیوست")
+
                                                     async with browser_context.expect_page(timeout=20000) as att_page_info:
                                                         await sana_page.evaluate(f'''(b_idx) => {{
                                                             const btns = Array.from(document.querySelectorAll('button'));
@@ -2350,8 +2406,12 @@ async def process_task(data, bot: Bot):
                                                         }}''', btn_idx)
 
                                                     att_page = await att_page_info.value
-                                                    await resilient_sleep(att_page, 5, bot, user_id)
-                                                    await check_and_handle_expiry(att_page, bot, user_id)
+                                                    if await resilient_sleep(att_page, 5, bot, user_id):
+                                                        session_hit = True
+                                                        raise Exception("انقضای نشست هنگام بارگذاری تب پیوست")
+                                                    if await check_and_handle_expiry(att_page, bot, user_id):
+                                                        session_hit = True
+                                                        raise Exception("انقضای نشست روی تب پیوست")
 
                                                     import base64
                                                     pdf_data_base64 = await att_page.evaluate('''async () => {
@@ -2378,11 +2438,18 @@ async def process_task(data, bot: Bot):
                                                     }''')
 
                                                     att_pdf_path = temp_path(f"attachment_{tracking_code}_{row_idx}_{btn_idx}.pdf")
-                                                    if pdf_data_base64:
+                                                    pdf_bytes = base64.b64decode(pdf_data_base64) if pdf_data_base64 else b""
+                                                    if pdf_bytes and b"%PDF" not in pdf_bytes[:1024]:
+                                                        # پاسخ غیر PDF (مثلاً صفحهٔ خطا) — مثل حالت بدون embed از خود صفحه PDF گرفته می‌شود
+                                                        logging.warning(f"[ATTACHMENT] محتوای پیوست {btn_idx} از ردیف {row_idx} PDF نیست — چاپ از صفحه")
+                                                        pdf_bytes = b""
+                                                    if pdf_bytes:
                                                         with open(att_pdf_path, 'wb') as pdf_file:
-                                                            pdf_file.write(base64.b64decode(pdf_data_base64))
+                                                            pdf_file.write(pdf_bytes)
                                                     else:
-                                                        await resilient_sleep(att_page, 8, bot, user_id)
+                                                        if await resilient_sleep(att_page, 8, bot, user_id):
+                                                            session_hit = True
+                                                            raise Exception("انقضای نشست پیش از ذخیره PDF پیوست")
                                                         await att_page.pdf(path=att_pdf_path, format="A4")
 
                                                     await att_page.close()
@@ -2395,11 +2462,21 @@ async def process_task(data, bot: Bot):
                                                 except Exception as att_err:
                                                     if "Session expired" in str(att_err):
                                                         raise att_err
-                                                    logging.error(f"خطا در پیوست {btn_idx}: {att_err}")
+                                                    # بسته‌شدن تب پیوست وسط کار معمولاً نتیجهٔ انقضای نشست است
+                                                    if "has been closed" in str(att_err):
+                                                        session_hit = True
+                                                    logging.error(f"خطا در پیوست {btn_idx} از ردیف {row_idx} (تلاش {attempt}): {att_err}")
                                                     try:
-                                                        await att_page.close()
+                                                        if att_page is not None:
+                                                            await att_page.close()
                                                     except Exception:
                                                         pass
+                                                    if session_hit and expiry_retries < 3:
+                                                        expiry_retries += 1
+                                                        attempt -= 1
+                                                        logging.info(
+                                                            f"[ATTACHMENT] پیوست {btn_idx} از ردیف {row_idx} پس از لاگین مجدد دوباره چاپ می‌شود")
+                                                        await _reopen_attachment_row(sana_page, row_idx, bot, user_id)
                                                     await asyncio.sleep(3)
 
                                             if not btn_success:
