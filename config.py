@@ -109,6 +109,11 @@ CARD_PAY_COPY_MODE = os.environ.get("CARD_PAY_COPY_MODE", "callback").strip().lo
 # ================= تنظیمات ارزش منطقه‌ای =================
 # کلید API نشان برای جستجوی مکان (نوشته شود در .env)
 NESHAN_API_KEY = os.environ.get("NESHAN_API_KEY", "")
+# تصویر نقشهٔ محل ملک در PDF ارزش منطقه‌ای (سرویس نقشهٔ ایستای نشان) — map_image.py
+# NESHAN_STATIC_MAP=0 غیرفعال می‌کند. اگر کلید اصلی سرویس نقشهٔ ایستا را ندارد،
+# کلید جداگانه در NESHAN_STATIC_MAP_KEY قرار گیرد (پیش‌فرض: همان NESHAN_API_KEY).
+NESHAN_STATIC_MAP = os.environ.get("NESHAN_STATIC_MAP", "1").strip() not in ("0", "false", "no", "")
+NESHAN_STATIC_MAP_KEY = os.environ.get("NESHAN_STATIC_MAP_KEY", "") or NESHAN_API_KEY
 
 # هزینه استعلام ارزش منطقه‌ای (تومان)
 REGIONAL_VALUE_FEE = 200000

@@ -120,3 +120,54 @@ def test_share_chain_previous_result_button():
     assert rv._chain_so_far(wip).endswith("سهم")
     assert rv._prev_share_button({"links": [{"k": osh.KIND_DANG, "n": "3"}]}) is None
     assert rv._prev_share_button({"links": []}) is None
+
+
+# ── کد رهگیری و نقشه روی PDF ──────────────────────────────────────────────
+
+def test_report_code_format_and_unique():
+    import re
+    codes = {rv.new_report_code() for _ in range(500)}
+    assert len(codes) == 500
+    assert all(re.fullmatch(r"RV-[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}", c) for c in codes)
+
+
+def _calc():
+    import ayani_calc as ac
+    land = ac.compute_land_value(200, "مسکونی", {"مسکونی": 5_000_000, "تجاری": None, "اداری": None})
+    return ac.compute_all(land, None)
+
+
+def test_pdf_has_code_and_map(tmp_path, monkeypatch):
+    import fitz
+    import ayani_pdf
+    import map_image
+    from PIL import Image
+    png = tmp_path / "map.png"
+    Image.new("RGB", (800, 420), (200, 220, 200)).save(png)
+    calls = []
+
+    def fake_fetch(lat, lng, **kw):
+        calls.append((lat, lng))
+        p = tmp_path / f"m{len(calls)}.png"
+        p.write_bytes(png.read_bytes())
+        return str(p)
+
+    monkeypatch.setattr(map_image, "fetch_to_file", fake_fetch)
+    out = tmp_path / "r.pdf"
+    assert ayani_pdf.build_ayani_pdf(str(out), province="تهران", county="تهران", address="-", tax_result={},
+                                     result=_calc(), report_no="RV-ABCD-EFGH", map_center=(35.7, 51.4))
+    assert calls == [(35.7, 51.4)]
+    with fitz.open(str(out)) as d:
+        assert "RV-ABCD-EFGH" in d[0].get_text()
+        assert sum(len(pg.get_images()) for pg in d) >= 1
+    assert not (tmp_path / "m1.png").exists()          # فایل موقت نقشه پاک شد
+
+
+def test_pdf_without_map_when_service_off(tmp_path, monkeypatch):
+    import ayani_pdf
+    import map_image
+    monkeypatch.setattr(map_image, "_config", lambda: (False, ""))
+    out = tmp_path / "r.pdf"
+    assert ayani_pdf.build_ayani_pdf(str(out), province="تهران", county="تهران", address="-", tax_result={},
+                                     result=_calc(), report_no="RV-ABCD-EFGH", map_center=(35.7, 51.4))
+    assert out.stat().st_size > 0

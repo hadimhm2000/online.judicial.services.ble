@@ -29,10 +29,12 @@ import copy
 import logging
 import os
 import re
+import secrets
 import time
 
 import aiohttp
 from aiogram import Bot, F, Router
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     Message, ReplyKeyboardRemove, ReplyKeyboardMarkup, KeyboardButton,
@@ -1933,12 +1935,16 @@ async def _process_query_result(bot: Bot, user_id: int, full_name: str, data: di
         if county_info["method"] != "name" and county_info.get("hint"):
             county_label = county_info["hint"].replace("شهرستان ", "").strip()
 
+        # ⭐ ۱۴۰۵/۰۷: هر گزارش یک کد رهگیری یکتا دارد (روی PDF، کپشن، پیام نتیجه و پنل)
+        code = new_report_code()
+
         # خطای لحظه‌ای ارسال این پیام نباید مانع ساخت/ارسال PDF شود (کپشن PDF هم مقادیر را دارد)
         await _safe_send(
             bot, user_id,
             f"📊 *نتیجهٔ محاسبهٔ ارزش منطقه‌ای*\n\n"
             f"📍 {province} — {county_label}\n\n"
-            f"{_result_values_text(calc, bold=True)}",
+            f"{_result_values_text(calc, bold=True)}\n\n"
+            f"🔖 کد رهگیری: {code}",
             reply_markup=get_main_menu_kb(user_id),
         )
 
@@ -1955,6 +1961,9 @@ async def _process_query_result(bot: Bot, user_id: int, full_name: str, data: di
             "has_building": has_building,
             "inputs_summary": _inputs_summary(data),
             "full_name": full_name,
+            "code": code,
+            # ⭐ تصویر نقشهٔ نقطهٔ مکانی ملک در PDF (map_image.py — نقشهٔ ایستای نشان)
+            "map_center": (g_lat, g_lng) if g_lat is not None and g_lng is not None else None,
         }
         if not await _build_and_send_pdf(bot, job):
             _schedule_pdf_retry(bot, job)
@@ -1975,6 +1984,7 @@ async def _process_query_result(bot: Bot, user_id: int, full_name: str, data: di
             await bot.send_message(
                 ADMIN_ID,
                 f"{title}:\n"
+                f"🔖 کد رهگیری: {code}\n"
                 f"👤 کاربر: {full_name} ({user_id})\n"
                 f"🏙 شهرستان مبنای اعیانی: {county_info['county']} ({county_info['method']})\n"
                 f"{_inputs_summary(data)}\n"
@@ -1991,6 +2001,7 @@ async def _process_query_result(bot: Bot, user_id: int, full_name: str, data: di
                 panel_case_id,
                 status="COMPLETED",
                 resultSummary=(
+                    f"کد {code} | "
                     f"عرصه: {land_value:,} | "
                     f"اعیانی: {f'{building_value:,}' if has_building else 'ندارد'} | "
                     f"کل: {total_value:,} ریال ({county_info['county']})"
@@ -2015,11 +2026,21 @@ async def _process_query_result(bot: Bot, user_id: int, full_name: str, data: di
 # ══════════════════════════════════════════════════════════════════
 # ساخت/ارسال PDF + تلاش مجدد خودکار در پس‌زمینه (هر یک دقیقه، با همان اطلاعات)
 # ══════════════════════════════════════════════════════════════════
-def _build_pdf_sync(pdf_path, province, county, address, tax_result, calc, plak=None):
+_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"   # بدون حروف/ارقام مشابه (O/0، I/1، L)
+
+
+def new_report_code() -> str:
+    """کد رهگیری یکتای گزارش، مثل RV-7K3M-X9PQ."""
+    part = lambda: "".join(secrets.choice(_CODE_ALPHABET) for _ in range(4))  # noqa: E731
+    return f"RV-{part()}-{part()}"
+
+
+def _build_pdf_sync(pdf_path, province, county, address, tax_result, calc, plak=None, code=None,
+                    map_center=None):
     from ayani_pdf import build_ayani_pdf
     return build_ayani_pdf(
         pdf_path, province=province, county=county, address=address,
-        tax_result=tax_result, result=calc, plak=plak,
+        tax_result=tax_result, result=calc, plak=plak, report_no=code, map_center=map_center,
     )
 
 
@@ -2038,6 +2059,7 @@ async def _build_and_send_pdf(bot: Bot, job: dict) -> bool:
                         lambda: _build_pdf_sync(
                             pdf_path, job["province"], job["county"], job["address"],
                             job["tax_result"], job["calc"], plak=job["plak"],
+                            code=job.get("code"), map_center=job.get("map_center"),
                         ),
                     ),
                     timeout=_STEP_TIMEOUT_SECONDS,
@@ -2056,10 +2078,12 @@ async def _build_and_send_pdf(bot: Bot, job: dict) -> bool:
 
         sent = await send_document_direct(
             user_id, pdf_path,
-            filename=f"ارزش_منطقه_ای_{job['province']}.pdf",
+            filename=f"ارزش_منطقه_ای_{job['province']}"
+                     + (f"_{job['code']}" if job.get("code") else "") + ".pdf",
             caption=(
                 f"📄 گزارش ارزش منطقه‌ای ملک ({'عرصه و اعیانی' if job['has_building'] else 'عرصه'})\n\n"
                 f"{_result_values_text(job['calc'], bold=False)}"
+                + (f"\n\n🔖 کد رهگیری: {job['code']}" if job.get("code") else "")
             ),
         )
         if not sent:
@@ -2122,3 +2146,31 @@ async def _pdf_retry_worker(bot: Bot, job: dict) -> None:
         "موضوع به پشتیبانی اطلاع داده شد.",
         reply_markup=get_main_menu_kb(user_id),
     )
+
+
+# ══════════════════════════════════════════════════════════════════
+# /maptest (فقط مدیر) — آزمایش سرویس نقشهٔ ایستای نشان برای PDF
+# ══════════════════════════════════════════════════════════════════
+@regional_value_router.message(Command("maptest"), F.from_user.id == ADMIN_ID)
+async def cmd_maptest(message: Message):
+    import map_image
+    from bale_file_sender import send_photo_direct
+    loop = asyncio.get_running_loop()
+    png = await loop.run_in_executor(None, lambda: map_image.fetch_png(35.6997, 51.3380, force=True))
+    if not png:
+        await message.answer(f"🔴 سرویس نقشهٔ ایستای نشان پاسخ نداد:\n{map_image.last_error}\n\n"
+                             "اگر کلید فعلی به این سرویس دسترسی ندارد، در پنل نشان سرویس «نقشهٔ ایستا» را به کلید "
+                             "اضافه کنید یا کلید جدا را در NESHAN_STATIC_MAP_KEY قرار دهید. تا آن زمان گزارش‌ها بدون "
+                             "نقشه ساخته می‌شوند.")
+        return
+    path = temp_path(f"maptest_{message.message_id}.png")
+    try:
+        with open(path, "wb") as f:
+            f.write(png)
+        await send_photo_direct(message.chat.id, path,
+                                caption="🟢 سرویس نقشهٔ نشان کار می‌کند؛ نقشه در گزارش‌ها چاپ می‌شود.")
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
