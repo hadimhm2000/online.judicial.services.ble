@@ -22,6 +22,8 @@ BACK_TO_MAIN_TEXT = "🔙 بازگشت به منوی اصلی"
 COURT_FEE_MENU_TEXT = "🧾 محاسبه هزینه دادرسی"
 # ⭐ درخواست گواهی عدم سوءپیشینه (۱۴۰۵/۰۷) — clearance_handlers.py
 CLEARANCE_MENU_TEXT = "📜 گواهی عدم سوءپیشینه"
+# ⭐ محاسبه دیه و سهم‌الارث (۱۴۰۵/۰۷) — legal_tools_handlers.py
+LEGAL_MENU_TEXT = "⚖️ محاسبه دیه و ارث"
 # ⭐ محاسبه تمبر بر اساس حق‌الوکاله (۱۴۰۵/۰۷) — بخش محاسبه تمبر و اعلام وکالت
 STAMP_BY_LAWYER_FEE_TEXT = "3️⃣ محاسبه تمبر بر اساس حق‌الوکاله"
 STAMP_BY_LAWYER_FEE_EALAM_TEXT = "4️⃣ محاسبه تمبر بر اساس حق‌الوکاله"
@@ -45,6 +47,8 @@ def get_flow_type_kb(user_id: int) -> ReplyKeyboardMarkup:
         [KeyboardButton(text=COURT_FEE_MENU_TEXT), KeyboardButton(text=DAMAGES_MENU_TEXT)],
         # ⭐ درخواست گواهی عدم سوءپیشینه (۱۴۰۵/۰۷) — جایش با «ابزار فایل» عوض شد
         [KeyboardButton(text=CLEARANCE_MENU_TEXT)],
+        # ⭐ محاسبه دیه و ارث (۱۴۰۵/۰۷) — بین «گواهی عدم سوءپیشینه» و «ابزار فایل»
+        [KeyboardButton(text=LEGAL_MENU_TEXT)],
         [KeyboardButton(text="🔧 ابزار فایل")],
         [KeyboardButton(text=HISTORY_MENU_TEXT), KeyboardButton(text=WALLET_MENU_TEXT)],
         # ⭐ گزینهٔ «شروع مجدد» (۱۴۰۵/۰۶) — صرفاً کاربر را به منوی اصلی برمی‌گرداند
@@ -79,6 +83,7 @@ flow_type_kb = ReplyKeyboardMarkup(
         [KeyboardButton(text="⚖️ دعاوی اعتراضی"), KeyboardButton(text="🏦 ثبت دادخواست")],
         [KeyboardButton(text="💰 محاسبه تمبر"), KeyboardButton(text=COURT_FEE_MENU_TEXT)],
         [KeyboardButton(text=DAMAGES_MENU_TEXT), KeyboardButton(text=CLEARANCE_MENU_TEXT)],
+        [KeyboardButton(text=LEGAL_MENU_TEXT)],
         [KeyboardButton(text="🔧 ابزار فایل")],
         [KeyboardButton(text=HISTORY_MENU_TEXT), KeyboardButton(text=WALLET_MENU_TEXT)],
         # ⭐ گزینهٔ «شروع مجدد» — بازگشت صرف به منوی اصلی (۱۴۰۵/۰۶)

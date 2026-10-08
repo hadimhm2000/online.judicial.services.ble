@@ -29,9 +29,12 @@ import copy
 import logging
 import os
 import re
+import secrets
+import time
 
 import aiohttp
 from aiogram import Bot, F, Router
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     Message, ReplyKeyboardRemove, ReplyKeyboardMarkup, KeyboardButton,
@@ -715,6 +718,26 @@ _scope_kb = ReplyKeyboardMarkup(
 )
 
 
+def _chain_so_far(wip: dict) -> str:
+    """«۲۳۰ سهم از ۲۸۱۶ سهم» — زنجیرهٔ واردشده تا این لحظه (بدون «از ششدانگ»)."""
+    return osh.describe_chain(wip["links"]).replace(" از ششدانگ", "")
+
+
+def _prev_sahm_total(wip: dict):
+    """تعداد کل سهام حلقهٔ قبلی (مثلاً ۲۸۱۶ در «۲۳۰ سهم از ۲۸۱۶ سهم») یا None."""
+    if wip.get("links") and wip["links"][-1]["k"] == osh.KIND_SAHM:
+        return osh.frac_from_str(wip["links"][-1]["d"])
+    return None
+
+
+def _prev_share_button(wip: dict):
+    """دکمهٔ «همان سهم قبلی» برای عدد اولِ حلقهٔ بعدیِ «سهم از سهم»."""
+    prev = _prev_sahm_total(wip)
+    if prev is None:
+        return None
+    return f"↩️ همان {osh.fmt_frac(prev)} سهم قبلی"
+
+
 def _share_kinds(wip: dict) -> list:
     return _SHARE_KINDS_FIRST if not wip["links"] else _SHARE_KINDS_NEXT
 
@@ -750,8 +773,13 @@ async def _ask_share(message: Message, state: FSMContext, target: str):
                 f"(۶۰ سهم از ۷۲ سهم)."
             )
         else:
+            prev = _prev_sahm_total(wip)
             text = (
-                f"📎 تا اینجا: «{osh.describe_chain(wip['links']).replace(' از ششدانگ', '')}»\n\n"
+                f"📎 تا اینجا: «{_chain_so_far(wip)}»\n"
+                + (f"🧮 نتیجهٔ سهم قبلی: *{osh.fmt_frac(prev)} سهم* — اگر این {osh.fmt_frac(prev)} سهم "
+                   f"خودش از تعداد سهام دیگری است (مثلاً «از ۱۹۶۰۰ سهم»)، گزینهٔ «سهم از سهم» را بزنید.\n"
+                   if prev is not None else "")
+                + "\n"
                 f"این مقدار از *چه بخشی* از ملک است؟ نوع آن را انتخاب کنید:\n"
                 f"(مثلاً در «۲ سهم از ۴۸ سهم از ۳ دانگ»، بخش دوم «۳ دانگ» است)\n\n"
                 f"{_numbered([t for t, _ in kinds])}"
@@ -767,6 +795,35 @@ async def _ask_share(message: Message, state: FSMContext, target: str):
                     "مثال: ۳ — ۱٫۵ — ۲ و نیم")
         elif kind == osh.KIND_PERCENT:
             text = "🔢 *درصد* مالکیت را وارد کنید (بیشتر از ۰ و حداکثر ۱۰۰):\nمثال: ۲۵ — ۱۲٫۵"
+        elif wip["links"]:
+            # حلقهٔ دوم به بعد: نتیجهٔ سهم قبلی اعلام می‌شود تا کاربر همان را (یا عدد دیگری) وارد کند
+            chain = _chain_so_far(wip)
+            prev = _prev_sahm_total(wip)
+            btn = _prev_share_button(wip)
+            if prev is not None:
+                prev_txt = osh.fmt_frac(prev)
+                text = (
+                    f"📎 تا اینجا: «{chain}»\n"
+                    f"🧮 نتیجهٔ سهم قبلی: *{prev_txt} سهم*\n\n"
+                    f"🔢 حالا *عدد اولِ* بخش بعدی را وارد کنید (سهمی که از تعداد کلِ بعدی است):\n"
+                    f"• اگر در سند نوشته «{chain} از …… سهم» یعنی همین {prev_txt} سهم از کل، "
+                    f"دکمهٔ «{btn}» را بزنید.\n"
+                    f"• اگر منظورتان سهم دیگری است، عدد آن را تایپ کنید.\n\n"
+                    f"در مرحلهٔ بعد *تعداد کل سهام* (عدد آخر، مثلاً ۱۹۶۰۰) پرسیده می‌شود."
+                )
+            else:
+                text = (
+                    f"📎 تا اینجا: «{chain}»\n\n"
+                    f"🔢 *تعداد سهم* بخش بعدی را وارد کنید (عدد اول):\n"
+                    f"مثال: در «… از ۱۲٫۵ سهم از ۷۲ سهم» عدد *۱۲٫۵*"
+                )
+            kb = back_only_kb
+            if btn:
+                kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=btn)], [KeyboardButton(text=_BACK)]],
+                                         resize_keyboard=True)
+            await message.answer(text, reply_markup=kb)
+            await state.set_state(Form.rv_waiting_share_amount)
+            return
         else:
             text = ("🔢 *تعداد سهم مالک* را وارد کنید (عدد اول):\n"
                     "مثال: در «۱۲٫۵ سهم مشاع از ۷۲ سهم» عدد *۱۲٫۵*")
@@ -775,10 +832,17 @@ async def _ask_share(message: Message, state: FSMContext, target: str):
         return
 
     if stage == "den":
+        num_txt = osh.fmt_frac(wip["num"])
+        if wip["links"]:
+            text = (f"🔢 *تعداد کل سهام* را وارد کنید (عدد آخر):\n"
+                    f"یعنی {num_txt} سهم از چند سهم است؟ مثال: در «… از {num_txt} سهم از ۱۹۶۰۰ سهم» عدد *۱۹۶۰۰*\n\n"
+                    f"📎 تا اینجا: «{_chain_so_far(wip)}، از {num_txt} سهم از …… سهم»")
+        else:
+            text = (f"🔢 *تعداد کل سهام* را وارد کنید (عدد دوم):\n"
+                    f"مثال: در «۱۲٫۵ سهم مشاع از ۷۲ سهم» عدد *۷۲*\n\n"
+                    f"(سهم مالک: {num_txt} سهم)")
         await message.answer(
-            f"🔢 *تعداد کل سهام* را وارد کنید (عدد دوم):\n"
-            f"مثال: در «۱۲٫۵ سهم مشاع از ۷۲ سهم» عدد *۷۲*\n\n"
-            f"(سهم مالک: {osh.fmt_frac(wip['num'])} سهم)",
+            text,
             reply_markup=back_only_kb,
         )
         await state.set_state(Form.rv_waiting_share_den)
@@ -874,7 +938,11 @@ async def process_share(message: Message, state: FSMContext):
 
     # ── ورود عدد (مقدار / صورت / مخرج)
     if stage in ("amount", "den"):
-        value, err = osh.parse_amount(text)
+        btn = _prev_share_button(wip) if stage == "amount" and wip["kind"] == osh.KIND_SAHM else None
+        if btn and text == btn:
+            value, err = _prev_sahm_total(wip), None
+        else:
+            value, err = osh.parse_amount(text)
         if err:
             await message.answer(f"⚠️ {osh.ERROR_HINTS[err]}")
             return
@@ -1575,13 +1643,6 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
     """پردازش پس از پرداخت موفق: استعلام + PDF + ارسال به کاربر."""
     user_id = message.from_user.id
     data = await state.get_data()
-
-    province = data.get("rv_province", "")
-    address = data.get("rv_address", "")
-    rv_lat = data.get("rv_lat")
-    rv_lng = data.get("rv_lng")
-    area = data.get("rv_area", 0)
-    land_use = data.get("rv_land_use", "مسکونی")
     panel_case_id = data.get("rv_panel_case_id")
     is_admin_exempt_early = await is_exempt_user(user_id)
 
@@ -1599,51 +1660,188 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
 
     await message.answer("⏳ در حال استعلام ارزش منطقه‌ای... لطفاً چند لحظه صبر کنید.")
 
+    # ⭐ ۱۴۰۵/۰۷ (از ربات مستقل ارزش منطقه‌ای): اگر سامانهٔ مالیاتی پاسخ نداد، به‌جای
+    # «چند دقیقه دیگر تلاش کنید»، استعلام با همین اطلاعات هر یک دقیقه خودکار تکرار
+    # می‌شود؛ ساخت/ارسال PDF هم در صورت شکست هر یک دقیقه با همان نتیجه تکرار می‌شود.
+    data = copy.deepcopy(data)
+    full_name = message.from_user.full_name
     try:
-        # ── اجرای پایپ‌لاین استعلام (در thread جدا) ──
-        loop = asyncio.get_running_loop()
+        result, last_error = await _run_query_attempts(user_id, data, attempts=2)
+        if isinstance(last_error, ValueError):
+            # خطای داده (آدرس/استان) — تکرار با همان اطلاعات فایده ندارد
+            await _query_value_error(bot, user_id, panel_case_id, last_error)
+        elif last_error is None:
+            await _process_query_result(bot, user_id, full_name, data, result, panel_case_id)
+        else:
+            _schedule_query_retry(bot, user_id, full_name, data, panel_case_id, last_error)
+            await _safe_send(
+                bot, user_id,
+                "⏳ سامانهٔ استعلام مالیاتی در حال حاضر پاسخ نمی‌دهد.\n"
+                "🔄 *تا یک دقیقهٔ دیگر* استعلام با همین اطلاعات به‌صورت خودکار تکرار و نتیجه و فایل PDF "
+                "برای شما ارسال می‌شود؛ نیازی به ثبت دوبارهٔ اطلاعات یا پرداخت مجدد نیست.",
+                reply_markup=get_main_menu_kb(user_id),
+            )
+    finally:
+        await state.clear()
 
-        def _do_query():
-            if rv_lat is not None and rv_lng is not None:
-                # کاربر موقعیت را مستقیماً روی نقشه انتخاب کرده — Geocoding
-                # نشان کاملاً حذف می‌شود و استعلام روی همان مختصات انجام می‌شود.
-                from geocode_and_query import query_by_coordinates
-                return query_by_coordinates(rv_lat, rv_lng, province_hint=province)
-            from geocode_and_query import full_pipeline
-            return full_pipeline(address=address, province_hint=province)
 
-        result = await loop.run_in_executor(None, _do_query)
+# ══════════════════════════════════════════════════════════════════
+# استعلام با تلاش مجدد + پردازش نتیجه (مستقل از message/state تا از
+# تلاش پس‌زمینه هم قابل اجرا باشد)
+# ══════════════════════════════════════════════════════════════════
+_STEP_TIMEOUT_SECONDS = 45
+_QUERY_RETRY_DELAY_SECONDS = 60
+_QUERY_RETRY_MAX_ATTEMPTS = 10  # حداکثر ~۱۰ دقیقه
+_PDF_RETRY_DELAY_SECONDS = 60
+_PDF_RETRY_MAX_ATTEMPTS = 10    # حداکثر ~۱۰ دقیقه
+_pending_tasks: set = set()     # نگه‌داشتن ارجاع تا task توسط GC حذف نشود
 
+
+async def _safe_send(bot: Bot, chat_id: int, text: str, **kwargs) -> bool:
+    """ارسال پیام بدون این‌که خطای شبکه جریان اصلی را بشکند."""
+    try:
+        await bot.send_message(chat_id, text, **kwargs)
+        return True
+    except Exception as e:
+        logger.warning(f"[RV] ارسال پیام به {chat_id} ناموفق: {type(e).__name__}: {e}")
+        return False
+
+
+async def _panel_failed(panel_case_id, details: str, step: str):
+    try:
+        await update_case_in_panel(panel_case_id, status="FAILED", errorDetails=details, errorStep=step)
+    except Exception as panel_err:
+        logger.warning(f"[RV] خطا در آپدیت شکست پرونده در پنل: {panel_err}")
+
+
+def _do_query_sync(province: str, address: str, lat, lng):
+    """نسخهٔ synchronous برای اجرا در executor (بدون event loop تودرتو)."""
+    if lat is not None and lng is not None:
+        # کاربر موقعیت را مستقیماً روی نقشه انتخاب کرده — Geocoding
+        # نشان کاملاً حذف می‌شود و استعلام روی همان مختصات انجام می‌شود.
+        from geocode_and_query import query_by_coordinates
+        return query_by_coordinates(lat, lng, province_hint=province)
+    from geocode_and_query import full_pipeline
+    return full_pipeline(address=address, province_hint=province)
+
+
+async def _run_query_attempts(user_id: int, data: dict, attempts: int):
+    """استعلام از سامانه با تلاش مجدد؛ خروجی (result, last_error).
+    ValueError (خطای داده) تکرار نمی‌شود و بلافاصله برگردانده می‌شود."""
+    loop = asyncio.get_running_loop()
+    province = data.get("rv_province", "")
+    address = data.get("rv_address", "")
+    rv_lat, rv_lng = data.get("rv_lat"), data.get("rv_lng")
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, _do_query_sync, province, address, rv_lat, rv_lng),
+                timeout=_STEP_TIMEOUT_SECONDS,
+            )
+            return result, None
+        except ValueError as e:
+            return None, e
+        except Exception as e:
+            last_error = e
+            logger.error(f"[RV] خطا در تلاش {attempt} استعلام برای کاربر {user_id}: "
+                         f"{type(e).__name__}: {e}", exc_info=True)
+            if attempt < attempts:
+                await asyncio.sleep(2)
+    return None, last_error
+
+
+async def _query_value_error(bot: Bot, user_id: int, panel_case_id, e: ValueError):
+    await _safe_send(
+        bot, user_id,
+        f"⚠️ خطا در استعلام: {e}\n\n"
+        f"لطفاً آدرس و استان را بررسی و از ابتدا تلاش کنید.",
+        reply_markup=get_main_menu_kb(user_id),
+    )
+    await _panel_failed(panel_case_id, str(e), "value_error")
+
+
+def _schedule_query_retry(bot: Bot, user_id: int, full_name: str, data: dict, panel_case_id, last_error) -> None:
+    task = asyncio.create_task(_query_retry_worker(bot, user_id, full_name, data, panel_case_id, last_error))
+    _pending_tasks.add(task)
+    task.add_done_callback(_pending_tasks.discard)
+    logger.info(f"[RV] استعلام کاربر {user_id} برای یک دقیقهٔ بعد زمان‌بندی شد ({last_error})")
+
+
+async def _query_retry_worker(bot: Bot, user_id: int, full_name: str, data: dict, panel_case_id,
+                              last_error) -> None:
+    try:
+        for attempt in range(1, _QUERY_RETRY_MAX_ATTEMPTS + 1):
+            await asyncio.sleep(_QUERY_RETRY_DELAY_SECONDS)
+            logger.info(f"[RV] تلاش مجدد {attempt}/{_QUERY_RETRY_MAX_ATTEMPTS} استعلام برای کاربر {user_id}")
+            result, err = await _run_query_attempts(user_id, data, attempts=1)
+            if isinstance(err, ValueError):
+                await _query_value_error(bot, user_id, panel_case_id, err)
+                return
+            if err is None:
+                logger.info(f"[RV] استعلام کاربر {user_id} در تلاش پس‌زمینهٔ {attempt} موفق شد")
+                await _process_query_result(bot, user_id, full_name, data, result, panel_case_id)
+                return
+            last_error = err
+    except asyncio.CancelledError:
+        return
+    except Exception as e:
+        last_error = e
+        logger.error(f"[RV] خطای غیرمنتظره در تلاش پس‌زمینهٔ استعلام برای {user_id}: {e}", exc_info=True)
+
+    # ── همهٔ تلاش‌ها شکست خورد: اطلاع ادمین + پیام به کاربر ──
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"🛑 استعلام ارزش منطقه‌ای برای کاربر {full_name} ({user_id}) پس از "
+            f"{_QUERY_RETRY_MAX_ATTEMPTS} تلاش (هر یک دقیقه) شکست خورد.\n"
+            f"خطا: {last_error}\n{_inputs_summary(data)}",
+        )
+    except Exception as e:
+        logger.error(f"[RV] خطا در ارسال اطلاع به ادمین: {e}")
+    await _safe_send(
+        bot, user_id,
+        "⚠️ متأسفانه سامانهٔ استعلام مالیاتی پس از چند بار تلاش همچنان پاسخ نمی‌دهد و موضوع به "
+        "پشتیبانی اطلاع داده شد.\nاگر مشکل ادامه داشت، با پشتیبانی تماس بگیرید.",
+        reply_markup=get_main_menu_kb(user_id),
+    )
+    await _panel_failed(panel_case_id, str(last_error), "unhandled_exception")
+
+
+async def _process_query_result(bot: Bot, user_id: int, full_name: str, data: dict, result,
+                                panel_case_id) -> None:
+    """محاسبهٔ عرصه/اعیانی از نتیجهٔ استعلام و ارسال پیام و PDF به کاربر."""
+    province = data.get("rv_province", "")
+    address = data.get("rv_address", "")
+    rv_lat = data.get("rv_lat")
+    rv_lng = data.get("rv_lng")
+    area = data.get("rv_area", 0)
+    land_use = data.get("rv_land_use", "مسکونی")
+    loop = asyncio.get_running_loop()
+
+    try:
         # tax_info حالا دیکشنری ساختاریافته است:
         # {"سال": "1405", "فیلدهای_ساختاریافته": {...}, "همه_فیلدهای_خام_صفحه": {...}, "فیلدهای_پیدا_نشده": [...]}
-        tax_result = result.get("tax_info", {})
+        tax_result = (result or {}).get("tax_info", {})
 
         if not tax_result.get("فیلدهای_ساختاریافته"):
-            await message.answer(
+            await _safe_send(
+                bot, user_id,
                 "⚠️ متاسفانه نتیجه‌ای از سامانه مالیاتی دریافت نشد.\n\n"
                 "ممکن است آدرس دقیق نباشد یا مختصات خارج از محدوده تعریف‌شده باشد.\n"
                 "لطفاً از ابتدا تلاش کنید.",
                 reply_markup=get_main_menu_kb(user_id),
             )
-            try:
-                await update_case_in_panel(
-                    panel_case_id, status="FAILED",
-                    errorDetails="نتیجه‌ای از سامانه مالیاتی دریافت نشد",
-                    errorStep="tax_query",
-                )
-            except Exception as panel_err:
-                logger.warning(f"[RV] خطا در آپدیت شکست پرونده در پنل: {panel_err}")
-            await state.clear()
+            await _panel_failed(panel_case_id, "نتیجه‌ای از سامانه مالیاتی دریافت نشد", "tax_query")
             return
 
         # ── استخراج هر ۳ ارزش معاملاتی ──
         all_lu_values = extract_all_land_use_values(tax_result)
 
         # ── بررسی: آیا اصلاً هیچ ارزشی ثبت نشده؟ ──
-        any_value_found = any(v is not None for v in all_lu_values.values())
-
-        if not any_value_found:
-            await message.answer(
+        if not any(v is not None for v in all_lu_values.values()):
+            await _safe_send(
+                bot, user_id,
                 "\U0001f6d1 منطقه مورد نظر شما در سایت اداره امور مالیاتی، ارزش منطقه‌ای ثبت نشده است.\n\n"
                 "لطفاً برای اخذ گواهی ارزش منطقه‌ای به یکی از دفاتر خدمات قضائی منطقه خود "
                 "یا اداره مالیات مراجعه فرمائید.\n\n"
@@ -1652,15 +1850,7 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
                 "\n\U0001f4de 09306186888",
                 reply_markup=get_main_menu_kb(user_id),
             )
-            try:
-                await update_case_in_panel(
-                    panel_case_id, status="FAILED",
-                    errorDetails="هیچ ارزش منطقه‌ای برای این موقعیت ثبت نشده",
-                    errorStep="no_value_found",
-                )
-            except Exception as panel_err:
-                logger.warning(f"[RV] خطا در آپدیت شکست پرونده در پنل: {panel_err}")
-            await state.clear()
+            await _panel_failed(panel_case_id, "هیچ ارزش منطقه‌ای برای این موقعیت ثبت نشده", "no_value_found")
             return
 
         # ── عرصه: ارزش واحد از سامانه (برای «سایر» مبنای مسکونی × ضریب تعدیل) ──
@@ -1676,21 +1866,15 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
                     available.append(f"{lu}: {v:,} ریال")
             avail_text = "\n".join(available) if available else "هیچ مقداری یافت نشد"
 
-            await message.answer(
+            await _safe_send(
+                bot, user_id,
                 f"⚠️ کاربری *{land_use}* برای این موقعیت در سامانه تعریف نشده است.\n\n"
                 f"ارزش‌های موجود:\n{avail_text}\n\n"
                 f"لطفاً از ابتدا با کاربری متفاوت تلاش کنید.",
                 reply_markup=get_main_menu_kb(user_id),
             )
-            try:
-                await update_case_in_panel(
-                    panel_case_id, status="FAILED",
-                    errorDetails=f"کاربری {land_use} برای این موقعیت تعریف نشده",
-                    errorStep="land_use_not_found",
-                )
-            except Exception as panel_err:
-                logger.warning(f"[RV] خطا در آپدیت شکست پرونده در پنل: {panel_err}")
-            await state.clear()
+            await _panel_failed(panel_case_id, f"کاربری {land_use} برای این موقعیت تعریف نشده",
+                                "land_use_not_found")
             return
 
         # ── وجود اعیانی و سهم مالکانه ──
@@ -1751,50 +1935,43 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
         if county_info["method"] != "name" and county_info.get("hint"):
             county_label = county_info["hint"].replace("شهرستان ", "").strip()
 
-        values_text = _result_values_text(calc, bold=True)
+        # ⭐ ۱۴۰۵/۰۷: هر گزارش یک کد رهگیری یکتا دارد (روی PDF، کپشن، پیام نتیجه و پنل)
+        code = new_report_code()
 
-        # ── تولید PDF (صفحهٔ ۱ خلاصه، صفحهٔ ۲ نحوهٔ محاسبه) ──
-        def _build_pdf():
-            from ayani_pdf import build_ayani_pdf
-            pdf_path = temp_path(f"regional_value_{user_id}_{message.message_id}.pdf")
-            ok = build_ayani_pdf(
-                pdf_path, province=province, county=county_label, address=address,
-                tax_result=tax_result, result=calc, plak=data.get("rv_plak_text") or None,
-            )
-            return pdf_path, ok
-
-        pdf_path, pdf_ok = await loop.run_in_executor(None, _build_pdf)
-
-        await message.answer(
+        # خطای لحظه‌ای ارسال این پیام نباید مانع ساخت/ارسال PDF شود (کپشن PDF هم مقادیر را دارد)
+        await _safe_send(
+            bot, user_id,
             f"📊 *نتیجهٔ محاسبهٔ ارزش منطقه‌ای*\n\n"
             f"📍 {province} — {county_label}\n\n"
-            f"{values_text}",
+            f"{_result_values_text(calc, bold=True)}\n\n"
+            f"🔖 کد رهگیری: {code}",
             reply_markup=get_main_menu_kb(user_id),
         )
 
-        if pdf_ok and os.path.exists(pdf_path):
-            await send_document_direct(
-                user_id, pdf_path,
-                filename=f"ارزش_منطقه_ای_{province}.pdf",
-                caption=(
-                    f"📄 گزارش ارزش منطقه‌ای ملک ({'عرصه و اعیانی' if has_building else 'عرصه'})\n\n"
-                    f"{_result_values_text(calc, bold=False)}"
-                ),
-            )
-            try:
-                os.remove(pdf_path)
-            except Exception:
-                pass
-        else:
-            # فال‌بک متنی — نحوهٔ محاسبه به‌صورت متن
-            steps = ayani_calc.explain_steps(calc)
-            steps_text = "\n".join(
-                f"• {t}: {f'{a:,} ریال' if a is not None else ''}" + (f"\n   {f}" if f else "")
-                for t, f, a in steps
-            )
-            await message.answer(
-                f"🧮 *نحوهٔ محاسبه*\n\n{steps_text}\n\n"
-                f"⚠️ خطا در ساخت PDF. نتایج به صورت متنی ارسال شد.",
+        # ── ساخت و ارسال PDF (صفحهٔ ۱ خلاصه، صفحهٔ ۲ نحوهٔ محاسبه)؛
+        #    در صورت شکست، با همان نتیجه هر یک دقیقه دوباره ──
+        job = {
+            "user_id": user_id,
+            "province": province,
+            "county": county_label,
+            "address": address,
+            "tax_result": copy.deepcopy(tax_result),
+            "calc": copy.deepcopy(calc),
+            "plak": data.get("rv_plak_text") or None,
+            "has_building": has_building,
+            "inputs_summary": _inputs_summary(data),
+            "full_name": full_name,
+            "code": code,
+            # ⭐ تصویر نقشهٔ نقطهٔ مکانی ملک در PDF (map_image.py — نقشهٔ ایستای نشان)
+            "map_center": (g_lat, g_lng) if g_lat is not None and g_lng is not None else None,
+        }
+        if not await _build_and_send_pdf(bot, job):
+            _schedule_pdf_retry(bot, job)
+            await _safe_send(
+                bot, user_id,
+                "⏳ فایل PDF گزارش به‌دلیل اختلال لحظه‌ای آماده نشد.\n"
+                "📄 *تا یک دقیقهٔ دیگر* فایل با همین اطلاعات به‌صورت خودکار برای شما ارسال می‌شود؛ "
+                "نیازی به استعلام مجدد نیست.",
                 reply_markup=get_main_menu_kb(user_id),
             )
 
@@ -1807,7 +1984,8 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
             await bot.send_message(
                 ADMIN_ID,
                 f"{title}:\n"
-                f"👤 کاربر: {message.from_user.full_name} ({user_id})\n"
+                f"🔖 کد رهگیری: {code}\n"
+                f"👤 کاربر: {full_name} ({user_id})\n"
                 f"🏙 شهرستان مبنای اعیانی: {county_info['county']} ({county_info['method']})\n"
                 f"{_inputs_summary(data)}\n"
                 f"💰 عرصه: {land_value:,} | اعیانی: {f'{building_value:,}' if has_building else 'ندارد'} | "
@@ -1823,6 +2001,7 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
                 panel_case_id,
                 status="COMPLETED",
                 resultSummary=(
+                    f"کد {code} | "
                     f"عرصه: {land_value:,} | "
                     f"اعیانی: {f'{building_value:,}' if has_building else 'ندارد'} | "
                     f"کل: {total_value:,} ریال ({county_info['county']})"
@@ -1833,32 +2012,165 @@ async def regional_value_successful_payment(message: Message, state: FSMContext,
         except Exception as panel_err:
             logger.warning(f"[RV] خطا در آپدیت موفقیت پرونده در پنل: {panel_err}")
 
-    except ValueError as e:
-        await message.answer(
-            f"⚠️ خطا در استعلام: {e}\n\n"
-            f"لطفاً آدرس و استان را بررسی و از ابتدا تلاش کنید.",
-            reply_markup=get_main_menu_kb(user_id),
-        )
-        try:
-            await update_case_in_panel(
-                panel_case_id, status="FAILED",
-                errorDetails=str(e), errorStep="value_error",
-            )
-        except Exception as panel_err:
-            logger.warning(f"[RV] خطا در آپدیت شکست پرونده در پنل: {panel_err}")
     except Exception as e:
         logging.error(f"[RV] خطا در پردازش استعلام ارزش منطقه‌ای: {e}", exc_info=True)
-        await message.answer(
+        await _safe_send(
+            bot, user_id,
             "⚠️ خطایی در پردازش استعلام رخ داد. لطفاً چند دقیقه دیگر تلاش کنید.\n"
             "اگر مشکل ادامه داشت، با پشتیبانی تماس بگیرید.",
             reply_markup=get_main_menu_kb(user_id),
         )
-        try:
-            await update_case_in_panel(
-                panel_case_id, status="FAILED",
-                errorDetails=str(e), errorStep="unhandled_exception",
-            )
-        except Exception as panel_err:
-            logger.warning(f"[RV] خطا در آپدیت شکست پرونده در پنل: {panel_err}")
+        await _panel_failed(panel_case_id, str(e), "unhandled_exception")
 
-    await state.clear()
+
+# ══════════════════════════════════════════════════════════════════
+# ساخت/ارسال PDF + تلاش مجدد خودکار در پس‌زمینه (هر یک دقیقه، با همان اطلاعات)
+# ══════════════════════════════════════════════════════════════════
+_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"   # بدون حروف/ارقام مشابه (O/0، I/1، L)
+
+
+def new_report_code() -> str:
+    """کد رهگیری یکتای گزارش، مثل RV-7K3M-X9PQ."""
+    part = lambda: "".join(secrets.choice(_CODE_ALPHABET) for _ in range(4))  # noqa: E731
+    return f"RV-{part()}-{part()}"
+
+
+def _build_pdf_sync(pdf_path, province, county, address, tax_result, calc, plak=None, code=None,
+                    map_center=None):
+    from ayani_pdf import build_ayani_pdf
+    return build_ayani_pdf(
+        pdf_path, province=province, county=county, address=address,
+        tax_result=tax_result, result=calc, plak=plak, report_no=code, map_center=map_center,
+    )
+
+
+async def _build_and_send_pdf(bot: Bot, job: dict) -> bool:
+    """ساخت PDF (با یک تلاش مجدد) و ارسال آن؛ True فقط وقتی فایل به کاربر رسیده باشد."""
+    user_id = job["user_id"]
+    loop = asyncio.get_running_loop()
+    pdf_path = temp_path(f"regional_value_{user_id}_{time.time_ns()}.pdf")
+    try:
+        pdf_ok = False
+        for attempt in (1, 2):
+            try:
+                pdf_ok = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        lambda: _build_pdf_sync(
+                            pdf_path, job["province"], job["county"], job["address"],
+                            job["tax_result"], job["calc"], plak=job["plak"],
+                            code=job.get("code"), map_center=job.get("map_center"),
+                        ),
+                    ),
+                    timeout=_STEP_TIMEOUT_SECONDS,
+                )
+                if pdf_ok and os.path.exists(pdf_path):
+                    break
+                pdf_ok = False
+            except Exception as e:
+                job["last_error"] = f"ساخت PDF: {type(e).__name__}: {e}"
+                logger.error(f"[RV] خطا در تلاش {attempt} ساخت PDF برای کاربر {user_id}: {e}", exc_info=True)
+            if attempt == 1:
+                await asyncio.sleep(1)
+        if not pdf_ok:
+            job.setdefault("last_error", "ساخت PDF ناموفق بود")
+            return False
+
+        sent = await send_document_direct(
+            user_id, pdf_path,
+            filename=f"ارزش_منطقه_ای_{job['province']}"
+                     + (f"_{job['code']}" if job.get("code") else "") + ".pdf",
+            caption=(
+                f"📄 گزارش ارزش منطقه‌ای ملک ({'عرصه و اعیانی' if job['has_building'] else 'عرصه'})\n\n"
+                f"{_result_values_text(job['calc'], bold=False)}"
+                + (f"\n\n🔖 کد رهگیری: {job['code']}" if job.get("code") else "")
+            ),
+        )
+        if not sent:
+            job["last_error"] = "ارسال فایل به بله ناموفق بود"
+        return bool(sent)
+    finally:
+        try:
+            os.remove(pdf_path)
+        except Exception:
+            pass
+
+
+def _schedule_pdf_retry(bot: Bot, job: dict) -> None:
+    task = asyncio.create_task(_pdf_retry_worker(bot, job))
+    _pending_tasks.add(task)
+    task.add_done_callback(_pending_tasks.discard)
+    logger.info(f"[RV] ارسال PDF کاربر {job['user_id']} برای یک دقیقهٔ بعد زمان‌بندی شد "
+                f"({job.get('last_error', '-')})")
+
+
+async def _pdf_retry_worker(bot: Bot, job: dict) -> None:
+    user_id = job["user_id"]
+    try:
+        for attempt in range(1, _PDF_RETRY_MAX_ATTEMPTS + 1):
+            await asyncio.sleep(_PDF_RETRY_DELAY_SECONDS)
+            logger.info(f"[RV] تلاش مجدد {attempt}/{_PDF_RETRY_MAX_ATTEMPTS} ارسال PDF برای کاربر {user_id}")
+            try:
+                if await _build_and_send_pdf(bot, job):
+                    logger.info(f"[RV] PDF کاربر {user_id} در تلاش پس‌زمینهٔ {attempt} ارسال شد")
+                    return
+            except Exception as e:
+                job["last_error"] = f"{type(e).__name__}: {e}"
+                logger.error(f"[RV] خطا در تلاش پس‌زمینهٔ ارسال PDF برای {user_id}: {e}", exc_info=True)
+    except asyncio.CancelledError:
+        return
+
+    # ── همهٔ تلاش‌ها شکست خورد: نحوهٔ محاسبه به‌صورت متن + اطلاع ادمین ──
+    logger.error(f"[RV] ارسال PDF کاربر {user_id} پس از {_PDF_RETRY_MAX_ATTEMPTS} تلاش پس‌زمینه شکست خورد")
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"🛑 ارسال PDF ارزش منطقه‌ای برای کاربر {job.get('full_name', '')} ({user_id}) پس از "
+            f"{_PDF_RETRY_MAX_ATTEMPTS} تلاش (هر یک دقیقه) شکست خورد.\n"
+            f"آخرین خطا: {job.get('last_error', '-')}\n{job['inputs_summary']}",
+        )
+    except Exception as e:
+        logger.error(f"[RV] خطا در ارسال اطلاع به ادمین: {e}")
+    try:
+        steps = ayani_calc.explain_steps(job["calc"])
+        steps_text = "\n".join(
+            f"• {t}: {f'{a:,} ریال' if a is not None else ''}" + (f"\n   {f}" if f else "")
+            for t, f, a in steps
+        )
+        await _safe_send(bot, user_id, f"🧮 *نحوهٔ محاسبه*\n\n{steps_text}")
+    except Exception as e:
+        logger.error(f"[RV] خطا در ساخت متن نحوهٔ محاسبه برای {user_id}: {e}")
+    await _safe_send(
+        bot, user_id,
+        "⚠️ متأسفانه ارسال فایل PDF گزارش ممکن نشد (نتیجه و نحوهٔ محاسبه به‌صورت متنی ارسال شد). "
+        "موضوع به پشتیبانی اطلاع داده شد.",
+        reply_markup=get_main_menu_kb(user_id),
+    )
+
+
+# ══════════════════════════════════════════════════════════════════
+# /maptest (فقط مدیر) — آزمایش سرویس نقشهٔ ایستای نشان برای PDF
+# ══════════════════════════════════════════════════════════════════
+@regional_value_router.message(Command("maptest"), F.from_user.id == ADMIN_ID)
+async def cmd_maptest(message: Message):
+    import map_image
+    from bale_file_sender import send_photo_direct
+    loop = asyncio.get_running_loop()
+    png = await loop.run_in_executor(None, lambda: map_image.fetch_png(35.6997, 51.3380, force=True))
+    if not png:
+        await message.answer(f"🔴 سرویس نقشهٔ ایستای نشان پاسخ نداد:\n{map_image.last_error}\n\n"
+                             "اگر کلید فعلی به این سرویس دسترسی ندارد، در پنل نشان سرویس «نقشهٔ ایستا» را به کلید "
+                             "اضافه کنید یا کلید جدا را در NESHAN_STATIC_MAP_KEY قرار دهید. تا آن زمان گزارش‌ها بدون "
+                             "نقشه ساخته می‌شوند.")
+        return
+    path = temp_path(f"maptest_{message.message_id}.png")
+    try:
+        with open(path, "wb") as f:
+            f.write(png)
+        await send_photo_direct(message.chat.id, path,
+                                caption="🟢 سرویس نقشهٔ نشان کار می‌کند؛ نقشه در گزارش‌ها چاپ می‌شود.")
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass

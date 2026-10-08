@@ -53,6 +53,8 @@ final_print_queue.json
 final_print_queue.json.tmp
 cpi_index.json
 cpi_index.json.tmp
+diyeh_rates.json
+diyeh_rates.json.tmp
 user_files.json
 user_files.json.tmp
 wallet.json

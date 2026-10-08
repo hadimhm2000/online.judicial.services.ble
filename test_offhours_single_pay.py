@@ -91,7 +91,7 @@ def test_admin_never_limited():
 
 
 def test_single_use_fees():
-    assert runtime_state.SINGLE_USE_FEES == {"stamp": 200_000, "damages": 450_000}
+    assert runtime_state.SINGLE_USE_FEES == {"stamp": 200_000, "damages": 450_000, "legal": 450_000}
 
 
 # ── خارج از ساعت کاری ────────────────────────────────────────────────────
