@@ -914,6 +914,19 @@ tn_doc_type_kb = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# اعتراض به قرار دادسرا — «اعتراض نسبت به کدام یک از موارد زیر است»
+TN_PROTESTED_DOC_OPTIONS = ["تصمیم نهایی", "قرار تامین کیفری", "قرار اعدادی"]
+
+tn_protested_doc_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="تصمیم نهایی")],
+        [KeyboardButton(text="قرار تامین کیفری")],
+        [KeyboardButton(text="قرار اعدادی")],
+        [KeyboardButton(text="🔙 بازگشت")],
+    ],
+    resize_keyboard=True
+)
+
 tn_amount_type_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="❓ مبلغ دقیق را نمی‌دانم")],

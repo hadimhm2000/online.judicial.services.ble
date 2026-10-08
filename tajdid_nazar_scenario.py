@@ -24,7 +24,7 @@
 #      - پس از بازیابی: تاریخ (NoticeDateTime مقاوم)، در صورت «قرار»:
 #        #rdbJudDictum سپس #rdbModifiedByUserOk، مبلغ
 #        (ModifyByUserPenaltyAmount — مبلغ کاربر یا ۱)، اعسار (#rdbIsMoserByPetition)
-#      - جدول «پرونده‌های مرتبط» → «حذف همه» + #chkSelectAll (در صورت نمایش)
+#      - جدول «پرونده‌های مرتبط» → فقط #chkSelectAll (در صورت نمایش، بدون حذف)
 #   ۴. مرحله «تجدیدنظرخواه» — پاک‌سازی کامل nav-list + افزودن اشخاص
 #      (مانند اظهارکننده اظهارنامه) — یا حالت استعلام (حذف انتخاب‌نشده‌ها)
 #   ۵. مرحله «تجدیدنظرخوانده» — همانند بالا + وکیل/نماینده مانند اظهارنامه
@@ -1491,83 +1491,88 @@ async def _retrieve_judgment(page, bot: Bot, user_id: int, max_retries: int = 3)
     return False
 
 
-async def _clear_related_cases(page, bot: Bot, user_id: int, max_deletions: int = 30):
-    """حذف ردیف‌های جدول «پرونده‌های مرتبط» (در صورت نمایش).
+async def _click_select_all_related(page, wait_seconds: int = 3):
+    """جدول «پرونده‌های مرتبط» (در صورت نمایش) — فقط تیک «انتخاب همه» (#chkSelectAll).
 
-    طبق سند راهنما: «ضمنا اگر این جدول نمایش داده شده بود، باید اقدامات
-    بعدی را انجام بدی» — دکمه‌های حذف ردیف (deleteSingleRelatedCase) و
-    «حذف همه» (deleteAllRelatedCase) در جدول وجود دارند.
-    اول «حذف همه» زده می‌شود؛ اگر نبود، ردیف‌ها یکی‌یکی حذف می‌شوند.
+    ⚠ دستور کارفرما (۱۴۰۵/۰۷): در هیچ‌یک از دعاوی اعتراضی پرونده‌های مرتبط
+    نباید حذف شوند (دکمه‌های حذف/حذف همه زده نمی‌شوند)؛ فقط «انتخاب همه»
+    تیک می‌خورد و مراحل ادامه پیدا می‌کند. اگر جدول نمایش داده نشد، این
+    مرحله اسکیپ می‌شود.
     """
-    # آیا جدول پرونده‌های مرتبط ردیف دارد؟
-    row_count = await page.evaluate('''() => {
-        const rows = Array.from(document.querySelectorAll('tr[ng-repeat*="theRelatedCaseList"]'));
-        return rows.length;
-    }''')
-    if row_count == 0:
-        logging.info("[TN] جدول پرونده‌های مرتبط خالی/غیرموجود — رد شد")
-        return 0
-
-    logging.info(f"[TN] جدول پرونده‌های مرتبط {row_count} ردیف دارد — حذف همه")
-
-    # ۱. «حذف همه»
-    deleted_all = await page.evaluate('''() => {
-        const btns = Array.from(document.querySelectorAll('button[ng-click*="deleteAllRelatedCase"]'));
-        const btn = btns.find(b => !b.disabled);
-        if (btn) { btn.click(); return true; }
-        return false;
-    }''')
-    if deleted_all:
-        await asyncio.sleep(3)
-        # بستن پاپ‌آپ احتمالی تایید
-        await _close_popup(page)
-        await asyncio.sleep(1)
-
-    # ۲. فال‌بک: حذف ردیف‌های باقیمانده یکی‌یکی
-    deleted = 0
-    for _ in range(max_deletions):
-        remaining = await page.evaluate('''() => {
-            const rows = Array.from(document.querySelectorAll('tr[ng-repeat*="theRelatedCaseList"]'));
-            return rows.length;
-        }''')
-        if remaining == 0:
-            break
-        clicked = await page.evaluate('''() => {
-            const rows = Array.from(document.querySelectorAll('tr[ng-repeat*="theRelatedCaseList"]'));
-            if (rows.length === 0) return false;
-            const btn = rows[0].querySelector('button[ng-click*="deleteSingleRelatedCase"]');
-            if (btn && !btn.disabled) { btn.click(); return true; }
-            return false;
-        }''')
-        if not clicked:
-            break
-        deleted += 1
-        await asyncio.sleep(1.5)
-
-    logging.info(f"[TN] پرونده‌های مرتبط حذف شدند (حذف‌همه={deleted_all}, تک‌تک={deleted})")
-    return deleted
-
-
-async def _click_select_all_related(page):
-    """کلیک چک‌باکس «انتخاب همه» (#chkSelectAll) — فقط اگر نمایش داده شود.
-
-    طبق سند راهنما: «باید گزینه زیر را بزنی و اگر نمایش نداد، این مرحله
-    را اسکیپ میکنی»
-    """
-    clicked = await page.evaluate('''() => {
+    js = '''() => {
         const chk = document.querySelector('#chkSelectAll');
-        if (chk && chk.offsetParent !== null && !chk.checked) {
-            chk.click();
-            return true;
-        }
-        return false;
-    }''')
-    if clicked:
-        logging.info("[TN] چک‌باکس «انتخاب همه» (#chkSelectAll) کلیک شد")
+        if (!chk || chk.offsetParent === null) return "absent";
+        if (chk.checked) return "checked";
+        chk.click();
+        return chk.checked ? "clicked" : "click_failed";
+    }'''
+    result = "absent"
+    for _ in range(max(1, wait_seconds)):
+        try:
+            result = await page.evaluate(js)
+        except Exception as e:
+            logging.warning(f"[TN] خطا در تیک «انتخاب همه» پرونده‌های مرتبط: {e}")
+            result = "absent"
+        if result != "absent":
+            break
         await asyncio.sleep(1)
-    else:
-        logging.info("[TN] چک‌باکس #chkSelectAll نمایش داده نشد — این مرحله اسکیپ شد")
-    return clicked
+
+    if result in ("clicked", "checked"):
+        logging.info(f"[TN] چک‌باکس «انتخاب همه» (#chkSelectAll) تیک خورد ({result})")
+        await asyncio.sleep(1)
+        return True
+    if result == "click_failed":
+        logging.warning("[TN] کلیک #chkSelectAll انجام شد ولی تیک نخورد")
+        return False
+    logging.info("[TN] جدول پرونده‌های مرتبط / #chkSelectAll نمایش داده نشد — این مرحله اسکیپ شد")
+    return False
+
+
+# ⭐ اعتراض به قرار دادسرا — «اعتراض نسبت به کدام مورد است» (input[name="documentInfo"])
+TN_PROTESTED_DOC_RADIOS = {
+    "تصمیم نهایی": ("rdb1", "1"),
+    "قرار تامین کیفری": ("rdb2", "2"),
+    "قرار اعدادی": ("rdb4", "4"),
+}
+
+
+async def _select_protested_document(page, protested_doc: str, wait_seconds: int = 8) -> bool:
+    """انتخاب رادیوی نوع سند مورد اعتراض (فقط اعتراض به قرار دادسرا).
+
+    رادیوها پس از «بازیابی» غیرفعال می‌شوند
+    (ng-disabled="Model.JudgeInformation.JudgeObjectId.length>0")، پس این
+    انتخاب باید پیش از بازیابی انجام شود. idempotent است.
+    """
+    radio = TN_PROTESTED_DOC_RADIOS.get((protested_doc or "").strip())
+    if not radio:
+        logging.info(f"[TN] نوع سند مورد اعتراض مشخص نیست ({protested_doc!r}) — انتخاب رادیو اسکیپ شد")
+        return False
+    rdb_id, rdb_value = radio
+    js = '''([rdbId, rdbValue]) => {
+        const rdb = document.getElementById(rdbId)
+            || document.querySelector('input[name="documentInfo"][value="' + rdbValue + '"]');
+        if (!rdb) return "absent";
+        if (rdb.checked) return "checked";
+        if (rdb.disabled) return "disabled";
+        rdb.click();
+        return rdb.checked ? "clicked" : "click_failed";
+    }'''
+    result = "absent"
+    for _ in range(max(1, wait_seconds)):
+        try:
+            result = await page.evaluate(js, [rdb_id, rdb_value])
+        except Exception as e:
+            logging.warning(f"[TN] خطا در انتخاب رادیوی {rdb_id}: {e}")
+            result = "absent"
+        if result != "absent":
+            break
+        await asyncio.sleep(1)
+    if result in ("clicked", "checked"):
+        logging.info(f"[TN] نوع سند مورد اعتراض «{protested_doc}» انتخاب شد (#{rdb_id}, {result})")
+        await asyncio.sleep(1)
+        return True
+    logging.warning(f"[TN] انتخاب نوع سند مورد اعتراض «{protested_doc}» (#{rdb_id}) ناموفق: {result}")
+    return False
 
 
 async def _fill_judge_date_field(page, judge_date: str) -> bool:
@@ -1612,7 +1617,7 @@ async def _fill_judge_info_step(page, data: dict, bot: Bot, user_id: int,
        - اگر «قرار»: #rdbJudDictum سپس #rdbModifiedByUserOk
        - مبلغ (ModifyByUserPenaltyAmount) — مبلغ کاربر یا ۱
        - اگر اعسار: #rdbIsMoserByPetition
-       - جدول پرونده‌های مرتبط → حذف همه + #chkSelectAll (در صورت نمایش)
+       - جدول پرونده‌های مرتبط → فقط #chkSelectAll (در صورت نمایش، بدون حذف)
     """
     case_type = data.get("case_type", "")
     judge_no = data.get("tn_judge_no", "")
@@ -1636,6 +1641,12 @@ async def _fill_judge_info_step(page, data: dict, bot: Bot, user_id: int,
         judge_info_step = "اطلاعات دادنامه"
     await _click_step_label(page, judge_info_step, bot, user_id)
     await resilient_sleep(page, 4, bot, user_id)
+
+    # ۰. اعتراض به قرار دادسرا: نوع سند مورد اعتراض (تصمیم نهایی / قرار تامین
+    #    کیفری / قرار اعدادی) — پیش از بازیابی، چون بعد از آن رادیوها غیرفعال‌اند.
+    protested_doc = data.get("tn_protested_doc", "") if is_prosecutor else ""
+    if protested_doc:
+        await _select_protested_document(page, protested_doc)
 
     # ۱. شماره دادنامه
     await _fill_input_value(page, "#txtJudgeNo", judge_no)
@@ -1665,6 +1676,10 @@ async def _fill_judge_info_step(page, data: dict, bot: Bot, user_id: int,
     # کند؛ refilling بی‌ضرر است و جلوی خطای required در بازیابی را می‌گیرد.
     await _fill_judge_date_field(page, judge_date)
     await asyncio.sleep(1)
+
+    # ۴.ج — اطمینان از انتخاب نوع سند مورد اعتراض درست پیش از بازیابی
+    if protested_doc:
+        await _select_protested_document(page, protested_doc, wait_seconds=2)
 
     # ۵. «بازیابی» → «بلی» → لودینگ → مدیریت خطاها
     retrieved = await _retrieve_judgment(page, bot, user_id)
@@ -1739,8 +1754,7 @@ async def _fill_judge_info_step(page, data: dict, bot: Bot, user_id: int,
     # ⭐ پیش از کار با جدول پرونده‌های مرتبط (که پاپ‌آپ‌ها را می‌بندد)
     await _raise_if_retrieve_mismatch_popup(page)
 
-    # ── جدول پرونده‌های مرتبط (در صورت نمایش) + «انتخاب همه» ──
-    await _clear_related_cases(page, bot, user_id)
+    # ── جدول پرونده‌های مرتبط (در صورت نمایش) — فقط «انتخاب همه»، بدون حذف ──
     await _click_select_all_related(page)
 
     return True
