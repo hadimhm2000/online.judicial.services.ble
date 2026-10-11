@@ -452,6 +452,9 @@ async def main():
     ]
     runtime_state._load_persisted_subscriptions()
     sana_gate.load()
+    # ⭐ دفتر ماندگار تسک‌های ثبت — قبل از هر put روی job_queue
+    import pending_jobs
+    pending_jobs.load()
     logging.info(
         f"[START] کرش قبلی: {crashed} | "
         f"کاربران ثبت‌شده: {len(active_submitted)} | "
@@ -518,6 +521,35 @@ async def main():
             logging.info(f"[START] {_closed} پنجرهٔ منقضی ویرایش بسته و جریمه‌ها اعمال شد.")
     except Exception as _sw_err:
         logging.error(f"[START] خطا در اسوئپ اولیهٔ پنجره‌های ویرایش: {_sw_err}")
+
+    # ── ⭐ درخواست‌های ثبت‌نشدهٔ قبل از ری‌استارت — جلوتر از هر درخواست جدید ──
+    # تسک‌های شروع‌نشده به همان ترتیب دوباره وارد صف می‌شوند (خارج از ساعت
+    # کاری به صف ماندگار sana_gate می‌روند)؛ تسک‌های قطع‌شده حین پردازش برای
+    # بررسی مدیر در /pending می‌مانند (اجرای خودکار مجدد = خطر ثبت تکراری).
+    restored, interrupted = pending_jobs.restore()
+    for job in restored:
+        await runtime_state.job_queue.put(job)
+    if restored or interrupted or pending_jobs.failed_items():
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                "🗂 بازیابی درخواست‌های ثبت پس از ری‌استارت:\n"
+                f"• {len(restored)} درخواست ثبت‌نشده دوباره در صف قرار گرفت (اولویت با قدیمی‌ترها)\n"
+                f"• {len(interrupted)} درخواست حین پردازش قطع شده بود\n"
+                f"• مجموع ناموفق/قطع‌شده برای بررسی: {len(pending_jobs.failed_items())}\n\n"
+                "مشاهده و ثبت مجدد: /pending")
+        except Exception as e:
+            logging.error(f"[START] خطا در اطلاع بازیابی درخواست‌ها به مدیر: {e}")
+
+    # ⭐ ساعت کاری از پنل ادمین (قبل از browser_worker تا تصمیم باز کردن مرورگر
+    # در استارت بر اساس برنامهٔ پنل باشد، نه پیش‌فرض)
+    import working_hours
+    try:
+        await asyncio.wait_for(working_hours.refresh(), timeout=15)
+    except Exception as e:
+        logging.warning(f"[START] دریافت ساعت کاری از پنل ناموفق ({e}) — آخرین برنامهٔ ذخیره‌شده استفاده می‌شود.")
+    logging.info(f"[START] ساعت کاری ({working_hours.source()}): {working_hours.describe_week()}")
+    asyncio.create_task(working_hours.refresh_loop())
 
     # ── شروع تسک‌های پس‌زمینه ──
     asyncio.create_task(browser_worker(bot))
@@ -592,6 +624,13 @@ async def main():
             pass
         # لغو تسک ذخیره‌سازی
         persister_task.cancel()
+        # ⭐ ربات خاموش شد → مرورگر هم بسته شود (هیچ درخواستی به سامانه نرود)
+        try:
+            if runtime_state.browser is not None and runtime_state.browser.is_connected():
+                await runtime_state.browser.close()
+                logging.info("[MAIN] مرورگر بسته شد.")
+        except Exception:
+            pass
         logging.info("[MAIN] ربات متوقف شد.")
 
 

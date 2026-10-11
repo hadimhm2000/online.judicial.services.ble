@@ -40,8 +40,11 @@ export async function GET() {
     }));
 
     return NextResponse.json({ schedule });
-  } catch {
-    return NextResponse.json({ schedule: DEFAULT_SCHEDULE });
+  } catch (error) {
+    // خطای دیتابیس نباید بی‌صدا برنامهٔ پیش‌فرض را به ربات تحمیل کند —
+    // ربات با 500 آخرین برنامهٔ ذخیره‌شده‌اش را نگه می‌دارد.
+    console.error('Error reading working hours:', error);
+    return NextResponse.json({ error: 'Failed to read schedule' }, { status: 500 });
   }
 }
 

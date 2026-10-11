@@ -14,6 +14,9 @@ import { NextRequest, NextResponse } from 'next/server';
 //   - recent: پرونده‌هایی که تازه (در notifyWindowHours اخیر) از مرز عبور کرده‌اند؛
 //     ربات فقط به همین‌ها پیام می‌دهد تا با اولین اجرا برای پرونده‌های ماه‌ها
 //     پیش پیام نرود.
+//   - keepPaidProcessing (۱۴۰۵/۰۷): پرونده‌های PROCESSING که پرداخت شده‌اند
+//     منتظر اقدام «ما» (ثبت در سامانه) هستند، نه کاربر — لغو نمی‌شوند تا
+//     درخواست‌های معوق (مثلاً پس از مسدود شدن IP یا انتقال سرور) گم نشوند.
 
 const OPEN_STATUSES = ['PENDING_PAYMENT', 'INCOMPLETE', 'PROCESSING'];
 
@@ -23,12 +26,13 @@ export async function POST(request: NextRequest) {
     const hours = Math.max(1, Number(body?.hours) || 24);
     const notifyWindowHours = Math.max(hours, Number(body?.notifyWindowHours) || hours * 2);
     const exclude: string[] = Array.isArray(body?.excludeUserIds) ? body.excludeUserIds.map(String) : [];
+    const keepPaidProcessing = body?.keepPaidProcessing === true;
 
     const now = Date.now();
     const cutoff = new Date(now - hours * 3600_000);
     const recentFrom = new Date(now - notifyWindowHours * 3600_000);
 
-    const stale = await db.case.findMany({
+    const candidates = await db.case.findMany({
       where: {
         status: { in: OPEN_STATUSES },
         updatedAt: { lt: cutoff },
@@ -40,6 +44,12 @@ export async function POST(request: NextRequest) {
       },
       orderBy: { updatedAt: 'asc' },
     });
+    const isPaid = (c: { fee: number | null; feeStatus: string; prepayAmount: number | null }) =>
+      (c.prepayAmount || 0) > 0
+      || ((c.fee || 0) > 0 && ['PAID', 'MANUAL_APPROVED'].includes(c.feeStatus));
+    const stale = keepPaidProcessing
+      ? candidates.filter((c) => !(c.status === 'PROCESSING' && isPaid(c)))
+      : candidates;
 
     const recent: {
       id: string; baleUserId: string; fullName: string; serviceType: string;
@@ -57,8 +67,7 @@ export async function POST(request: NextRequest) {
         }),
       ]);
       if (c.updatedAt >= recentFrom) {
-        const paid = (c.prepayAmount || 0) > 0
-          || ((c.fee || 0) > 0 && ['PAID', 'MANUAL_APPROVED'].includes(c.feeStatus));
+        const paid = isPaid(c);
         recent.push({
           id: c.id, baleUserId: c.baleUserId, fullName: c.fullName, serviceType: c.serviceType,
           previousStatus: c.status, trackingCode: c.trackingCode, paid,

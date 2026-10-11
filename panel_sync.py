@@ -928,7 +928,21 @@ async def expire_stale_cases(hours: int, notify_window_hours: int,
         "POST", f"{ADMIN_API_BASE}/admin/cases/expire-stale",
         max_retries=_WAIT_RETRIES, timeout=aiohttp.ClientTimeout(total=60, connect=5),
         json={"hours": hours, "notifyWindowHours": notify_window_hours,
-              "excludeUserIds": [str(u) for u in exclude_user_ids]})
+              "excludeUserIds": [str(u) for u in exclude_user_ids],
+              # پرونده‌های پرداخت‌شدهٔ در انتظار ثبت (PROCESSING) لغو نشوند
+              "keepPaidProcessing": True})
     if data is None:
         logger.warning(f"[PANEL_SYNC] لغو پرونده‌های بی‌پیشرفت ناموفق: {err}")
     return data
+
+
+async def get_working_hours() -> list | None:
+    """برنامهٔ ساعت کاری تعریف‌شده در پنل (WorkingHour)؛ در خطا None.
+    هر آیتم: {dayOfWeek (0=شنبه), startHour, startMin, endHour, endMin, enabled}"""
+    data, err = await _panel_request(
+        "GET", f"{ADMIN_API_BASE}/admin/working-hours",
+        max_retries=1, timeout=_WAIT_TIMEOUT, breaker_failure=False)
+    if data is None:
+        return None
+    schedule = data.get("schedule")
+    return schedule if isinstance(schedule, list) else None

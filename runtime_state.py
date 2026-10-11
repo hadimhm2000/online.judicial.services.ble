@@ -35,6 +35,12 @@ class _SignRoutingQueue(asyncio.Queue):
         if isinstance(item, dict) and item.get("task_type") in SIGN_TASK_TYPES:
             sign_job_queue.put_nowait(item)
             return
+        # ⭐ دفتر ماندگار (pending_jobs.py) — ری‌استارت/انتقال سرور تسک ثبت را گم نکند
+        try:
+            import pending_jobs
+            pending_jobs.track(item)
+        except Exception:
+            pass
         super().put_nowait(item)
 
 

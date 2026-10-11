@@ -105,6 +105,11 @@ def _excluded_users() -> set:
     except Exception as e:
         logger.warning(f"[STALE] خواندن صف خارج از ساعت کاری ناموفق: {e}")
     try:
+        import pending_jobs
+        out.update(pending_jobs.user_ids())
+    except Exception as e:
+        logger.warning(f"[STALE] خواندن دفتر درخواست‌های ثبت ناموفق: {e}")
+    try:
         import card_payment
         for e in list(getattr(card_payment, "_store", {}).values()):
             if e.get("status") == getattr(card_payment, "S_REVIEW", "review") and e.get("uid"):

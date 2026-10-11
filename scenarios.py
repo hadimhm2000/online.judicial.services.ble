@@ -10,6 +10,7 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 
 import runtime_state
 import sana_gate
+import pending_jobs
 from browser_helpers import SANA_SERVICE_DELAY_MAX_RETRIES
 import error_catalog
 from sign_tab import SIGN_TASK_TYPES, run_sign_task
@@ -3220,6 +3221,7 @@ _pre_check_concurrency = asyncio.Semaphore(2)
 
 async def _run_pre_check_task(data: dict, bot: Bot):
     async with _pre_check_concurrency:
+        sana_gate.job_started()
         try:
             await _process_pre_check_on_new_page(data, bot)
         except Exception as e:
@@ -3230,6 +3232,8 @@ async def _run_pre_check_task(data: dict, bot: Bot):
                                  user_id=data.get("user_id"))
             except Exception:
                 pass
+        finally:
+            sana_gate.job_finished()
 
 
 _SIGN_HANDLERS = {
@@ -3245,6 +3249,7 @@ _SIGN_HANDLERS = {
 async def _run_sign_task(data: dict, bot: Bot):
     """اجرای هم‌زمان (fire-and-forget) یک تسک امضا در تب اختصاصی کاربر."""
     handler = globals()[_SIGN_HANDLERS[data.get("task_type")]]
+    sana_gate.job_started()
     try:
         await run_sign_task(data, bot, handler)
     except Exception as e:
@@ -3257,6 +3262,8 @@ async def _run_sign_task(data: dict, bot: Bot):
                                       "phase": data.get("phase")})
         except Exception:
             pass
+    finally:
+        sana_gate.job_finished()
 
 
 async def _sign_dispatcher(bot: Bot):
@@ -3266,6 +3273,11 @@ async def _sign_dispatcher(bot: Bot):
     while True:
         data = await runtime_state.sign_job_queue.get()
         try:
+            # ⭐ خارج از ساعت کاری/قطعی: ناوبری و ارسال کد امضا وارد سامانه
+            # نمی‌شود؛ ابتدای ساعت کاری بعدی از مرحلهٔ ناوبری ادامه می‌یابد
+            if sana_gate.sign_should_defer(data):
+                await sana_gate.defer_sign(data, bot)
+                continue
             if not await ensure_browser_alive(bot):
                 # مرورگر فعلاً در دسترس نیست — کمی بعد دوباره
                 await asyncio.sleep(10)
@@ -3281,8 +3293,9 @@ async def _sign_dispatcher(bot: Bot):
 async def browser_worker(bot: Bot):
     runtime_state.playwright_instance = await async_playwright().start()
     try:
-        # ⭐ مرورگری که مدیر خارج از ساعت کاری بسته (/browser_close) در استارت باز نمی‌شود
-        if not sana_gate.browser_closed_by_admin():
+        # ⭐ خارج از ساعت کاری/قطعی، یا مرورگری که مدیر بسته (/browser_close)،
+        # در استارت باز نمی‌شود — ابتدای ساعت کاری sana_gate.gate_loop بازش می‌کند
+        if sana_gate.should_launch_on_startup():
             await _launch_fresh_browser(bot, wait_login=True)
 
         # ── ⭐ دیسپچر اولویت‌دار تسک‌های امضا (تب اختصاصی هر کاربر) ──
@@ -3316,6 +3329,10 @@ async def browser_worker(bot: Bot):
                     await asyncio.sleep(10)
                     continue
 
+                # ⭐ دفتر ماندگار: «در حال اجرا» — اگر حین پردازش ری‌استارت شود،
+                # خودکار تکرار نمی‌شود و برای بررسی مدیر در /pending می‌ماند
+                pending_jobs.mark_running(data)
+                sana_gate.job_started()
                 try:
                     # ⭐ PRE_CHECK هرگز نباید حلقهٔ اصلی را مسدود کند — با
                     # await معمولی پردازش نمی‌شود، بلافاصله به‌صورت هم‌زمان
@@ -3347,13 +3364,22 @@ async def browser_worker(bot: Bot):
                             raise
                     else:
                         raise
+                finally:
+                    sana_gate.job_finished()
 
+                pending_jobs.done(data)
                 source_queue.task_done()
             except KeyboardInterrupt:
                 logging.warning("[WORKER] KeyboardIntercept دریافت شد — خروج.")
                 break
             except Exception as critical_err:
                 logging.critical(f"[WORKER] خطای بحرانی در حلقه‌ی browser_worker: {critical_err}", exc_info=True)
+                # ⭐ تسک ناموفق گم نشود — برای بررسی/ثبت مجدد مدیر در /pending
+                try:
+                    if isinstance(data, dict):
+                        pending_jobs.fail(data, f"خطای بحرانی: {critical_err}")
+                except Exception:
+                    pass
                 # ── گزارش کامل باگ (traceback + اسکرین‌شات + زمینه) به مدیر ──
                 try:
                     from bug_reporter import report_bug
