@@ -79,7 +79,10 @@ from browser_helpers import (
     detect_concurrent_login_popup,
     detect_sana_service_delay_popup, dismiss_sana_error_popup,
     SanaSystemDownError, SANA_SYSTEM_DOWN_MSG,
-    NATIONAL_ID_ERROR_MSG)
+    NATIONAL_ID_ERROR_MSG,
+    open_expert_correspondence_menu, fill_inquiry_tracking_code,
+    open_attachments_and_read_rows, refresh_inquiry_and_reopen_attachments,
+    is_ignored_attachment_title, sum_attachment_pages)
 from sana_profile_report import extract_sana_profile, build_sana_profile_pdf
 
 
@@ -236,7 +239,10 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
             "شورای حل اختلاف": ["شورای حل اختلاف (صلح و سازش)", subcategory],
         }
         steps = nav_map.get(category, [])
-        if not steps:
+        if category == error_catalog.EXPERT_CORRESPONDENCE_CATEGORY:
+            # ⭐ مکاتبات کارشناس: منو با شناسهٔ a#menu21Container انتخاب می‌شود
+            await open_expert_correspondence_menu(page)
+        elif not steps:
             logging.error(f"[PRE_CHECK] دسته نامشخص: {category}")
             return
 
@@ -338,6 +344,9 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
             el.dispatchEvent(new Event('blur', { bubbles: true }));
             return true;
         }''', {"sel": fill_selector, "val": tracking_code})
+        if category == error_catalog.EXPERT_CORRESPONDENCE_CATEGORY:
+            # فرم مکاتبات کارشناس: رادیو (در صورت وجود) + اولین فیلد قابل مشاهده
+            fill_ok = await fill_inquiry_tracking_code(page, tracking_code)
         if not fill_ok:
             logging.warning(f"[PRE_CHECK] fill failed for selector '{fill_selector}'")
         await asyncio.sleep(1.5)
@@ -397,6 +406,26 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
                     await page.locator('.sweet-alert.showSweetAlert button.confirm').click(timeout=5000)
                 except Exception:
                     pass
+                # ⭐ «مربوط به نظريه كارشناس … قابل بازیابی در لايحه دفاعيه نیست»:
+                # همین استعلام از منوی «مکاتبات کارشناس با مراجع قضایی» ادامه می‌یابد
+                switch_target = error_catalog.resolve_wrong_form_target(popup_text)
+                if (
+                    switch_target
+                    and switch_target[0] == error_catalog.EXPERT_CORRESPONDENCE_CATEGORY
+                    and category != error_catalog.EXPERT_CORRESPONDENCE_CATEGORY
+                    and not data.get("auto_switched_from")
+                ):
+                    logging.info(f"[PRE_CHECK] کد {tracking_code} مربوط به نظریه کارشناس — ادامه از منوی مکاتبات کارشناس")
+                    try:
+                        await page.close()
+                    except Exception:
+                        pass
+                    page = None
+                    switched = dict(data)
+                    switched["doc_category"] = error_catalog.EXPERT_CORRESPONDENCE_CATEGORY
+                    switched["doc_subcategory"] = None
+                    switched["auto_switched_from"] = doc_name
+                    return await _process_pre_check_on_new_page(switched, bot, _retry=_retry)
                 await bot.send_message(user_id, f"❌ {popup_text}")
                 return
             if popup_category == error_catalog.VALIDATION:
@@ -466,35 +495,10 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
             total_attachments_count = 0
             logging.info(f"[PRE_CHECK] تب منضمات یافت نشد — تعداد پیوست: 0 (کد: {tracking_code})")
         else:
-            await force_click_by_text(page, "منضمات")
-            await asyncio.sleep(5)
-
-            total_attachments_count = await page.evaluate('''() => {
-                const tbody = document.querySelector('tbody');
-                if (!tbody) return 0;
-                const trs = Array.from(tbody.querySelectorAll('tr'));
-                const isIgnored = (title) => {
-                    const t = title.replace(/\\u200c/g, ' ');
-                    return t.includes("قرارداد الکترونیک") &&
-                           (t.includes("وکالت نامه") || t.includes("وکالتنامه"));
-                };
-                const rows_data = trs.map((tr, index) => {
-                    const tds = tr.querySelectorAll('td');
-                    if (tds.length >= 6) {
-                        const title = tds[2].innerText.trim();
-                        const countText = tds[5].innerText.trim();
-                        const count = parseInt(countText) || 0;
-                        return { index, title, count };
-                    }
-                    return null;
-                }).filter(r => r !== null && !isIgnored(r.title));
-                const has_sig = rows_data.length > 0 &&
-                    (rows_data[0].title.includes("امضا") || rows_data[0].title.includes("امضاء"));
-                const start = has_sig ? 1 : 0;
-                let sum = 0;
-                for (let i = start; i < rows_data.length; i++) { sum += rows_data[i].count; }
-                return sum;
-            }''')
+            # ⭐ اگر پس از انتخاب «منضمات» خطا آمد یا جدول شناسایی نشد، جستجو
+            # (#btnGetJSSPetition) و انتخاب مجدد «منضمات» تکرار می‌شود
+            att_rows = await open_attachments_and_read_rows(page, bot, user_id, log_prefix="PRE_CHECK")
+            total_attachments_count = sum_attachment_pages(att_rows)
 
         # ── ۸. ارسال نتیجه به کاربر ─────────────────────────────────
         calculated_fee = FEES["کد رهگیری با منضمات"] + total_attachments_count * 5000
@@ -508,6 +512,8 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
             need_attachments=True,
             total_attachments=total_attachments_count
         )
+        if data.get("auto_switched_from"):
+            await user_state.update_data(doc_category=category, doc_subcategory=subcategory)
 
         from states import Form
         await user_state.set_state(Form.confirm_opt)
@@ -1911,6 +1917,9 @@ async def process_task(data, bot: Bot):
                     await safe_click_by_text(sana_page, "شورای حل اختلاف (صلح و سازش)", bot, user_id)
                     await resilient_sleep(sana_page, 2, bot, user_id)
                     await safe_click_by_text(sana_page, subcategory, bot, user_id)
+                elif category == error_catalog.EXPERT_CORRESPONDENCE_CATEGORY:
+                    # ⭐ کدرهگیری «نظريه كارشناس» — منوی a#menu21Container
+                    await open_expert_correspondence_menu(sana_page)
                 await resilient_sleep(sana_page, 5, bot, user_id)
 
                 if category == "لایحه" or (
@@ -1948,6 +1957,9 @@ async def process_task(data, bot: Bot):
                     category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
                 ):
                     await safe_type(sana_page, '#billNo', tracking_code, bot, user_id)
+                elif category == error_catalog.EXPERT_CORRESPONDENCE_CATEGORY:
+                    if not await fill_inquiry_tracking_code(sana_page, tracking_code):
+                        raise Exception("فیلد کدرهگیری در «مکاتبات کارشناس» یافت نشد.")
                 else:
                     selector = '#txtPetitionNo, #billNo, input[name="txtPetitionNo"], input[name="billNo"]'
                     await safe_type(sana_page, selector, tracking_code, bot, user_id)
@@ -2290,30 +2302,11 @@ async def process_task(data, bot: Bot):
                             await _bulk_progress_note_result(bot, user_id, tracking_code, doc_name, is_invalid=False)
                             return
 
-                        await safe_click_by_text(sana_page, "منضمات", bot, user_id)
-                        await resilient_sleep(sana_page, 5, bot, user_id)
-
-                        rows_data = await sana_page.evaluate('''() => {
-                            const tbody = document.querySelector('tbody');
-                            if (!tbody) return [];
-                            const trs = Array.from(tbody.querySelectorAll('tr'));
-                            return trs.map((tr, index) => {
-                                const tds = tr.querySelectorAll('td');
-                                if (tds.length >= 6) {
-                                    const title = tds[2].innerText.trim();
-                                    const countText = tds[5].innerText.trim();
-                                    const count = parseInt(countText) || 0;
-                                    return { index, title, count };
-                                }
-                                return null;
-                            }).filter(r => r !== null);
-                        }''')
-
-                        def _is_ignored_attachment(title: str) -> bool:
-                            t = (title or "").replace("\u200c", " ")
-                            return "قرارداد الکترونیک" in t and ("وکالت نامه" in t or "وکالتنامه" in t)
-
-                        rows_data = [r for r in rows_data if not _is_ignored_attachment(r.get('title', ''))]
+                        # ⭐ اگر پس از انتخاب «منضمات» خطا آمد یا جدول پیوست‌ها شناسایی
+                        # نشد، جستجو (#btnGetJSSPetition) و انتخاب مجدد «منضمات» تکرار می‌شود
+                        rows_data = await open_attachments_and_read_rows(
+                            sana_page, bot, user_id, log_prefix="INQUIRY")
+                        rows_data = [r for r in rows_data if not is_ignored_attachment_title(r.get('title', ''))]
 
                         has_signature_row = (
                             len(rows_data) > 0 and
@@ -2373,6 +2366,27 @@ async def process_task(data, bot: Bot):
                                         const btns = Array.from(document.querySelectorAll('button'));
                                         return btns.filter(b => b.innerText && b.innerText.includes("نمایش و چاپ")).length;
                                     }''')
+
+                                    if btn_count == 0 and row_count > 0:
+                                        # ⭐ فیلد پیوست نیامد: جستجوی مجدد، انتخاب دوبارهٔ
+                                        # «منضمات» و باز کردن دوبارهٔ همین ردیف
+                                        logging.warning(f"[INQUIRY] ردیف «{row_title}» فیلد پیوست نیاورد — جستجو و انتخاب مجدد منضمات")
+                                        await refresh_inquiry_and_reopen_attachments(sana_page, "INQUIRY")
+                                        await sana_page.evaluate('''(idx) => {
+                                            const tbody = document.querySelector('tbody');
+                                            if (tbody) {
+                                                const trs = tbody.querySelectorAll('tr');
+                                                if (trs.length > idx) {
+                                                    const btn = trs[idx].querySelector('button[ng-click*="editDocument"]');
+                                                    if (btn) btn.click();
+                                                }
+                                            }
+                                        }''', row_idx)
+                                        await resilient_sleep(sana_page, 5, bot, user_id)
+                                        btn_count = await sana_page.evaluate('''() => {
+                                            const btns = Array.from(document.querySelectorAll('button'));
+                                            return btns.filter(b => b.innerText && b.innerText.includes("نمایش و چاپ")).length;
+                                        }''')
 
                                     if btn_count == 0:
                                         await bot.send_message(

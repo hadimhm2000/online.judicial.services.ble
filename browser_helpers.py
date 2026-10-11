@@ -1566,3 +1566,231 @@ async def click_sana_main_menu(
     logging.warning(f"[{prefix}] آیتم منوی '{text}' پیدا نشد (timeout={timeout_sec}s")
     return False
 
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ⭐ استعلام: منوی «مکاتبات کارشناس با مراجع قضایی» و بازخوانی مطمئن «منضمات»
+# ══════════════════════════════════════════════════════════════════════════════
+async def open_expert_correspondence_menu(page) -> bool:
+    """کلیک منوی «مکاتبات کارشناس با مراجع قضایی» (a#menu21Container).
+
+    وقتی سامانه می‌گوید کدرهگیری مربوط به «نظريه كارشناس» است و در
+    «لايحه دفاعيه» قابل بازیابی نیست، استعلام از این منو ادامه پیدا می‌کند.
+    """
+    clicked = await page.evaluate('''() => {
+        const el = document.querySelector('a#menu21Container');
+        if (!el) return false;
+        el.click();
+        return true;
+    }''')
+    if not clicked:
+        clicked = await click_sana_main_menu(
+            page, "مکاتبات کارشناس با مراجع قضایی", prefix="EXPERT")
+    if clicked:
+        await asyncio.sleep(4)
+    else:
+        logging.warning("[EXPERT] منوی «مکاتبات کارشناس با مراجع قضایی» پیدا نشد")
+    return bool(clicked)
+
+
+async def fill_inquiry_tracking_code(page, tracking_code: str) -> bool:
+    """ورود کدرهگیری در فرم‌هایی که ساختارشان از قبل معلوم نیست (مثل مکاتبات
+    کارشناس): اگر رادیوی «استعلام» (#rdbGetPetition) بود انتخاب می‌شود، سپس
+    اولین فیلد قابل مشاهده از #billNo / #txtPetitionNo پر می‌شود."""
+    has_radio = await page.evaluate('''() => {
+        const radio = document.querySelector('#rdbGetPetition');
+        if (!radio || radio.offsetParent === null) return false;
+        radio.checked = true;
+        radio.click();
+        if (window.angular) {
+            try { const s = angular.element(radio).scope(); if (s) s.$apply(); } catch(e) {}
+        }
+        return true;
+    }''')
+    if has_radio:
+        await asyncio.sleep(3)
+    return await page.evaluate('''(val) => {
+        const el = ['#billNo', '#txtPetitionNo', 'input[name="billNo"]', 'input[name="txtPetitionNo"]']
+            .map(s => document.querySelector(s))
+            .find(e => e && e.offsetParent !== null);
+        if (!el) return false;
+        el.focus();
+        el.value = val;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        try {
+            const scope = angular.element(el).scope();
+            const key = el.getAttribute('ng-model');
+            if (scope && key) {
+                scope.$apply(() => {
+                    const parts = key.split('.');
+                    let obj = scope;
+                    for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
+                    obj[parts[parts.length - 1]] = val;
+                });
+            }
+        } catch(e) {}
+        el.dispatchEvent(new Event('blur', { bubbles: true }));
+        return true;
+    }''', tracking_code)
+
+
+async def click_inquiry_search_button(page) -> bool:
+    """کلیک دکمهٔ «جستجو» فرم استعلام: #btnGetJSSPetition، وگرنه #btnGetJSSBill
+    (هر کدام که قابل مشاهده باشد)."""
+    return await page.evaluate('''() => {
+        for (const sel of ['#btnGetJSSPetition', '#btnGetJSSBill']) {
+            const b = document.querySelector(sel);
+            if (b && b.offsetParent !== null) { b.click(); return true; }
+        }
+        for (const sel of ['#btnGetJSSPetition', '#btnGetJSSBill']) {
+            const b = document.querySelector(sel);
+            if (b) { b.click(); return true; }
+        }
+        return false;
+    }''')
+
+
+async def _wait_page_loaders(page, timeout_sec: int = 45):
+    for _ in range(timeout_sec * 2):
+        try:
+            busy = await page.evaluate('''() => {
+                const loaders = document.querySelectorAll('.blockUI, .blockOverlay, .loading-mask, .ajax-loader, .spinner, .loading, #loading');
+                for (const l of loaders) {
+                    const r = l.getBoundingClientRect();
+                    if (r.width > 0 && r.height > 0 && window.getComputedStyle(l).display !== "none") return true;
+                }
+                return false;
+            }''')
+        except Exception:
+            return
+        if not busy:
+            return
+        await asyncio.sleep(0.5)
+
+
+async def _close_visible_sweet_alert(page) -> Optional[str]:
+    """اگر پاپ‌آپ sweet-alert باز بود متنش را برمی‌گرداند و آن را می‌بندد."""
+    return await page.evaluate('''() => {
+        const popup = document.querySelector('.sweet-alert.showSweetAlert');
+        if (!popup || window.getComputedStyle(popup).display === 'none') return null;
+        const p = popup.querySelector('p');
+        const text = ((p && p.innerText) || popup.innerText || '').trim() || 'popup';
+        const btn = popup.querySelector('button.confirm');
+        if (btn) btn.click();
+        return text;
+    }''')
+
+
+async def click_attachments_step_box(page) -> bool:
+    """کلیک باکس مرحلهٔ «منضمات» (div.box با h5 «منضمات»)؛ در نبودِ آن، کلیک متنی."""
+    clicked = await page.evaluate('''() => {
+        const boxes = Array.from(document.querySelectorAll('div.box'));
+        const box = boxes.find(b => {
+            const h = b.querySelector('.heading h5, h5');
+            if (!h || !h.innerText || h.innerText.trim() !== 'منضمات') return false;
+            const r = b.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+        });
+        if (!box) return false;
+        box.click();
+        return true;
+    }''')
+    if not clicked:
+        try:
+            await force_click_by_text(page, "منضمات")
+            clicked = True
+        except Exception as e:
+            logging.warning(f"[ATTACHMENTS] کلیک «منضمات» ناموفق: {e}")
+    return bool(clicked)
+
+
+async def read_attachment_rows(page) -> list:
+    """ردیف‌های جدول منضمات: [{index, title, count, countText}] (index = شمارهٔ
+    tr در اولین tbody صفحه، همان‌طور که دکمهٔ editDocument هر ردیف پیدا می‌شود)."""
+    return await page.evaluate('''() => {
+        const tbody = document.querySelector('tbody');
+        if (!tbody) return [];
+        return Array.from(tbody.querySelectorAll('tr')).map((tr, index) => {
+            const tds = tr.querySelectorAll('td');
+            if (tds.length < 6) return null;
+            const countText = tds[5].innerText.trim();
+            return { index, title: tds[2].innerText.trim(), count: parseInt(countText) || 0, countText };
+        }).filter(r => r !== null);
+    }''')
+
+
+def is_ignored_attachment_title(title: str) -> bool:
+    t = (title or "").replace("‌", " ")
+    return "قرارداد الکترونیک" in t and ("وکالت نامه" in t or "وکالتنامه" in t)
+
+
+def sum_attachment_pages(rows: list) -> int:
+    """جمع تعداد صفحات پیوست‌ها — بدون ردیف قرارداد الکترونیک وکالت‌نامه و بدون
+    ردیف امضا (اگر اولین ردیف باشد)؛ همان منطق قبلیِ شمارش در جاوااسکریپت."""
+    rows = [r for r in rows if not is_ignored_attachment_title(r.get("title", ""))]
+    if rows and ("امضا" in rows[0]["title"] or "امضاء" in rows[0]["title"]):
+        rows = rows[1:]
+    return sum(r.get("count", 0) for r in rows)
+
+
+async def refresh_inquiry_and_reopen_attachments(page, log_prefix: str = "ATTACHMENTS"):
+    """زدن دوبارهٔ «جستجو» (#btnGetJSSPetition) و انتخاب مجدد مرحلهٔ «منضمات»."""
+    await _close_visible_sweet_alert(page)
+    await page.evaluate('window.scrollTo(0, 0)')
+    clicked = await click_inquiry_search_button(page)
+    logging.info(f"[{log_prefix}] جستجوی مجدد پرونده (کلیک جستجو: {clicked})")
+    await asyncio.sleep(3)
+    await _wait_page_loaders(page)
+    popup = await _close_visible_sweet_alert(page)
+    if popup:
+        logging.warning(f"[{log_prefix}] پاپ‌آپ پس از جستجوی مجدد: {popup}")
+        await asyncio.sleep(2)
+    await click_attachments_step_box(page)
+    await asyncio.sleep(5)
+    await _wait_page_loaders(page)
+
+
+async def open_attachments_and_read_rows(page, bot: Optional[Bot] = None, user_id: Optional[int] = None,
+                                         log_prefix: str = "ATTACHMENTS", max_refresh: int = 2) -> list:
+    """ورود به «منضمات» و خواندن ردیف‌ها با تلاش مجدد.
+
+    گاهی پس از انتخاب «منضمات» پاپ‌آپ خطا می‌آید یا جدول/فیلدهای پیوست
+    شناسایی نمی‌شوند و تعداد منضمات اشتباه شمرده می‌شود. در این حالت دکمهٔ
+    «جستجو» (#btnGetJSSPetition) زده می‌شود، باکس «منضمات» دوباره انتخاب و
+    ردیف‌ها از نو خوانده می‌شوند (حداکثر max_refresh بار).
+    """
+    rows: list = []
+    for attempt in range(max_refresh + 1):
+        if attempt == 0:
+            await _wait_page_loaders(page)
+            if bot is not None and user_id is not None:
+                try:
+                    await check_and_handle_expiry(page, bot, user_id)
+                except Exception as e:
+                    logging.warning(f"[{log_prefix}] بررسی نشست پیش از منضمات: {e}")
+            await click_attachments_step_box(page)
+            await asyncio.sleep(5)
+            await _wait_page_loaders(page)
+        else:
+            await refresh_inquiry_and_reopen_attachments(page, log_prefix)
+
+        popup = await _close_visible_sweet_alert(page)
+        if popup:
+            logging.warning(
+                f"[{log_prefix}] پاپ‌آپ خطا پس از انتخاب «منضمات» ({popup}) — "
+                f"جستجوی مجدد و انتخاب دوبارهٔ منضمات (تلاش {attempt + 1})")
+            await asyncio.sleep(2)
+            continue
+
+        rows = await read_attachment_rows(page)
+        if rows and any(r.get("countText") for r in rows):
+            if attempt:
+                logging.info(f"[{log_prefix}] منضمات پس از {attempt} بار جستجوی مجدد شناسایی شد ({len(rows)} ردیف)")
+            return rows
+        if attempt < max_refresh:
+            logging.warning(
+                f"[{log_prefix}] جدول منضمات شناسایی نشد — جستجوی مجدد و انتخاب "
+                f"دوبارهٔ منضمات ({attempt + 1}/{max_refresh})")
+    logging.warning(f"[{log_prefix}] منضمات پس از {max_refresh} بار جستجوی مجدد هم شناسایی نشد")
+    return rows
