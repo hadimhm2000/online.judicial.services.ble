@@ -58,9 +58,36 @@ def test_resolved_subcategories_exist_in_menu():
     from keyboards import SUB_MENUS, doc_category_kb
     cats = {b.text for row in doc_category_kb.keyboard for b in row}
     for _, cat, sub in error_catalog.WRONG_FORM_TARGETS:
+        if cat == error_catalog.EXPERT_CORRESPONDENCE_CATEGORY:
+            continue  # دستهٔ داخلی؛ فقط با تغییر خودکار از «نظريه كارشناس» استفاده می‌شود
         assert cat in cats
         if sub is not None:
             assert sub in SUB_MENUS[cat]
+
+
+EXPERT_POPUP = ("کد رهگیری « 1405220845136192 » مربوط به « نظريه كارشناس » می باشد "
+                "و قابل بازیابی در « لايحه دفاعيه » نیست .")
+
+
+def test_expert_opinion_popup_switches_to_expert_menu():
+    d = error_catalog.decide(EXPERT_POPUP)
+    assert d["category"] == error_catalog.WRONG_FORM_TRACKING_CODE
+    assert d["action"] == error_catalog.ACTION_SWITCH_CATEGORY
+    assert error_catalog.extract_wrong_form_name(EXPERT_POPUP) == "نظريه كارشناس"
+    assert error_catalog.resolve_wrong_form_target(EXPERT_POPUP) == (
+        error_catalog.EXPERT_CORRESPONDENCE_CATEGORY, None)
+
+
+def test_sum_attachment_pages_skips_signature_and_contract_rows():
+    from browser_helpers import sum_attachment_pages
+    rows = [
+        {"title": "امضاء", "count": 1},
+        {"title": "قرارداد الکترونیک وکالت نامه", "count": 3},
+        {"title": "سند", "count": 2},
+        {"title": "رسید", "count": 4},
+    ]
+    assert sum_attachment_pages(rows) == 6
+    assert sum_attachment_pages([]) == 0
 
 
 def test_generic_words_do_not_resolve():

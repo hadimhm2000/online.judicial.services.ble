@@ -36,6 +36,11 @@ RECOVERY_SUCCESS = "recovery_success"
 # این فرم/بخش قابل بازیابی نیست
 WRONG_FORM_TRACKING_CODE = "wrong_form_tracking_code"
 
+# ⭐ دستهٔ داخلی ربات برای منوی «مکاتبات کارشناس با مراجع قضایی» سامانه
+# (a#menu21Container). در منوی ربات دکمه‌ای ندارد؛ فقط وقتی سامانه بگوید
+# کدرهگیری مربوط به «نظريه كارشناس» است، استعلام خودکار به این بخش می‌رود.
+EXPERT_CORRESPONDENCE_CATEGORY = "مکاتبات کارشناس با مراجع قضایی"
+
 UPLOAD_PAGE_COUNT = "upload_page_count"
 UPLOAD_FILE_SIZE = "upload_file_size"
 UPLOAD_FILE_TYPE = "upload_file_type"
@@ -110,6 +115,9 @@ CATALOG = [
     (WRONG_FORM_TRACKING_CODE, [
         "قابل بازیابی در این فرم نیست",
         "قابل بازیابی در این فرم نمی باشد",
+        # «کد رهگیری «…» مربوط به «نظريه كارشناس» می باشد و قابل بازیابی در
+        # «لايحه دفاعيه» نیست» — نام فرم مقصد به‌جای «این فرم» آمده است
+        "می باشد و قابل بازیابی در",
     ]),
     (RECOVERY_SUCCESS, [
         "بازیابی اظهارنامه با موفقیت", "بازیابی",
@@ -464,6 +472,8 @@ INQUIRY_CATEGORY_SWITCHED_NOTE = (
 # نام زیردسته‌ها دقیقاً مطابق keyboards.SUB_MENUS است.
 # =====================================================================
 WRONG_FORM_TARGETS = [
+    (("نظریه", "کارشناس"), EXPERT_CORRESPONDENCE_CATEGORY, None),
+    (("مکاتبات", "کارشناس"), EXPERT_CORRESPONDENCE_CATEGORY, None),
     (("دیوان", "تجدیدنظر"), "دیوان عدالت اداری", "تجدیدنظرخواهی دیوان عدالت اداری"),
     (("دیوان", "دادخواست"), "دیوان عدالت اداری", "دادخواست بدوی دیوان عدالت اداری"),
     (("شورا", "تجدیدنظر"), "شورای حل اختلاف", "تجدیدنظرخواهی شورا"),
@@ -496,9 +506,14 @@ def extract_wrong_form_name(text) -> str:
     """نام فرم داخل «…» در پیام «این کد رهگیری مربوط به «X» می باشد» — خالی اگر نبود."""
     if not text:
         return ""
-    m = re.search(r"«([^»]+)»", str(text))
+    # «مربوط به «X»» مقدم است؛ چون در برخی پیام‌ها اولین «…» خودِ کدرهگیری است
+    # («کد رهگیری « 1405… » مربوط به « نظريه كارشناس » می باشد …»)
+    m = re.search(r"مربوط\s*به\s*«([^»]+)»", str(text))
     if m:
         return m.group(1).strip()
+    for name in re.findall(r"«([^»]+)»", str(text)):
+        if not re.fullmatch(r"[\s0-9۰-۹]+", name):
+            return name.strip()
     m = re.search(r"مربوط\s*به\s+(.+?)\s+می\s*باشد", normalize(text))
     return m.group(1).strip() if m else ""
 

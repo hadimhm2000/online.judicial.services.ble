@@ -26,7 +26,9 @@ import runtime_state
 import error_catalog
 from browser_helpers import (
     force_click_by_text, is_login_redirect_url,
-    check_and_handle_expiry, retry_step_on_service_delay, SanaSystemDownError)
+    check_and_handle_expiry, retry_step_on_service_delay, SanaSystemDownError,
+    open_expert_correspondence_menu,
+    open_attachments_and_read_rows, sum_attachment_pages)
 from config import FEES
 
 logger = logging.getLogger(__name__)
@@ -117,7 +119,17 @@ async def fast_pre_check(
                 f"[FAST-CHECK] API Direct session-ish response ({e}) "
                 "-> trying page route before declaring expiry")
         try:
-            count = await _do_page_check(tracking_code, category, subcategory, user_id, bot)
+            try:
+                count = await _do_page_check(tracking_code, category, subcategory, user_id, bot)
+            except WrongFormTrackingCodeError as e:
+                # ⭐ «مربوط به نظريه كارشناس … قابل بازیابی در لايحه دفاعيه نیست»:
+                # همین استعلام از منوی «مکاتبات کارشناس با مراجع قضایی» گرفته می‌شود
+                target = error_catalog.resolve_wrong_form_target(str(e))
+                expert = error_catalog.EXPERT_CORRESPONDENCE_CATEGORY
+                if not target or target[0] != expert or category == expert:
+                    raise
+                logger.info(f"[FAST-CHECK] {tracking_code} مربوط به نظریه کارشناس — ادامه از منوی مکاتبات کارشناس")
+                count = await _do_page_check(tracking_code, expert, None, user_id, bot)
             logger.info(f"[FAST-CHECK] Page: {tracking_code} -> {count}")
             return count
         except SessionExpiredError:
@@ -300,10 +312,14 @@ async def _do_page_check(tracking_code, category, subcategory, user_id, bot) -> 
             "شورای حل اختلاف": ["شورای حل اختلاف (صلح و سازش)", subcategory],
         }
         steps = nav_map.get(category, [])
-        if not steps:
+        is_expert = category == error_catalog.EXPERT_CORRESPONDENCE_CATEGORY
+        if not steps and not is_expert:
             raise FastCheckError(f"دسته نامشخص: {category}")
 
         async def _click_nav_steps():
+            if is_expert:
+                # ⭐ مکاتبات کارشناس: منو با شناسهٔ a#menu21Container
+                await open_expert_correspondence_menu(page)
             for i, step in enumerate(steps):
                 if not step:
                     continue
@@ -329,7 +345,7 @@ async def _do_page_check(tracking_code, category, subcategory, user_id, bot) -> 
             step_name=f"ناوبری به «{category}»", log_prefix="FAST-CHECK")
 
         # لایحه: انتخاب رادیو #rdbGetPetition (value=2) و ورود کد رهگیری
-        if category == "لایحه" or (
+        if category in ("لایحه", error_catalog.EXPERT_CORRESPONDENCE_CATEGORY) or (
             category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
         ):
             async def _select_petition_radio_once():
@@ -383,7 +399,7 @@ async def _do_page_check(tracking_code, category, subcategory, user_id, bot) -> 
             raise FastCheckError("صفحه کارتابل لود نشد")
 
         # لایحه: فیلد ورودی کدرهگیری #billNo
-        if (category == "لایحه" or (
+        if (category in ("لایحه", error_catalog.EXPERT_CORRESPONDENCE_CATEGORY) or (
             category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
         )):
             await page.fill('#billNo', tracking_code)
@@ -393,7 +409,7 @@ async def _do_page_check(tracking_code, category, subcategory, user_id, bot) -> 
 
         # ── کلیک جستجو (بدون fallback خطرناک) ───────────────────
         # لایحه: دکمه #btnGetJSSBill  |  سایر: #btnGetJSSPetition
-        if (category == "لایحه" or (
+        if (category in ("لایحه", error_catalog.EXPERT_CORRESPONDENCE_CATEGORY) or (
             category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
         )):
             await page.evaluate('''() => {
@@ -468,34 +484,10 @@ async def _do_page_check(tracking_code, category, subcategory, user_id, bot) -> 
             discovery.analyze_and_save()
             return 0
 
-        await force_click_by_text(page, "منضمات")
-        await asyncio.sleep(4)
-        count = await page.evaluate('''() => {
-            const tbody = document.querySelector('tbody');
-            if (!tbody) return 0;
-            const trs = Array.from(tbody.querySelectorAll('tr'));
-            const isIgnored = (title) => {
-                const t = title.replace(/\\u200c/g, ' ');
-                return t.includes("قرارداد الکترونیک") &&
-                       (t.includes("وکالت نامه") || t.includes("وکالتنامه"));
-            };
-            const rows_data = trs.map((tr, index) => {
-                const tds = tr.querySelectorAll('td');
-                if (tds.length >= 6) {
-                    const title = tds[2].innerText.trim();
-                    const countText = tds[5].innerText.trim();
-                    const count = parseInt(countText) || 0;
-                    return { index, title, count };
-                }
-                return null;
-            }).filter(r => r !== null && !isIgnored(r.title));
-            const has_sig = rows_data.length > 0 &&
-                (rows_data[0].title.includes("امضا") || rows_data[0].title.includes("امضاء"));
-            const start = has_sig ? 1 : 0;
-            let sum = 0;
-            for (let i = start; i < rows_data.length; i++) { sum += rows_data[i].count; }
-            return sum;
-        }''')
+        # ⭐ اگر پس از انتخاب «منضمات» خطا آمد یا جدول شناسایی نشد، جستجو
+        # (#btnGetJSSPetition) و انتخاب مجدد «منضمات» تکرار می‌شود
+        att_rows = await open_attachments_and_read_rows(page, bot, user_id, log_prefix="FAST-CHECK")
+        count = sum_attachment_pages(att_rows)
         discovery.analyze_and_save()
         return count
     finally:
