@@ -80,7 +80,7 @@ from browser_helpers import (
     detect_sana_service_delay_popup, dismiss_sana_error_popup,
     SanaSystemDownError, SANA_SYSTEM_DOWN_MSG,
     NATIONAL_ID_ERROR_MSG,
-    open_expert_correspondence_menu, fill_inquiry_tracking_code,
+    open_expert_correspondence_menu,
     open_attachments_and_read_rows, refresh_inquiry_and_reopen_attachments,
     is_ignored_attachment_title, sum_attachment_pages)
 from sana_profile_report import extract_sana_profile, build_sana_profile_pdf
@@ -273,7 +273,7 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
             return await _process_pre_check_on_new_page(data, bot, _retry=True)
 
         # لایحه: انتخاب رادیو #rdbGetPetition (value=2) به‌جای "جستجوی لایحه"
-        if category == "لایحه" or (
+        if category in ("لایحه", error_catalog.EXPERT_CORRESPONDENCE_CATEGORY) or (
             category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
         ):
             # ابتدا منتظر ظاهر شدن رادیوباتن می‌مانیم — در صورت نبودن،
@@ -311,7 +311,7 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
         # لایحه: فیلد ورودی کدرهگیری #billNo
         # FIX: استفاده از page.evaluate به جای page.fill برای سازگاری کامل با AngularJS
         # و جلوگیری از خطای Frame.fill() missing 'value' در صورت وجود فریم/iframe
-        if category == "لایحه" or (
+        if category in ("لایحه", error_catalog.EXPERT_CORRESPONDENCE_CATEGORY) or (
             category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
         ):
             fill_selector = '#billNo'
@@ -344,16 +344,13 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
             el.dispatchEvent(new Event('blur', { bubbles: true }));
             return true;
         }''', {"sel": fill_selector, "val": tracking_code})
-        if category == error_catalog.EXPERT_CORRESPONDENCE_CATEGORY:
-            # فرم مکاتبات کارشناس: رادیو (در صورت وجود) + اولین فیلد قابل مشاهده
-            fill_ok = await fill_inquiry_tracking_code(page, tracking_code)
         if not fill_ok:
             logging.warning(f"[PRE_CHECK] fill failed for selector '{fill_selector}'")
         await asyncio.sleep(1.5)
 
         # ── ۴. کلیک جستجو ────────────────────────────────────────
         # لایحه: دکمه #btnGetJSSBill  |  سایر: #btnGetJSSPetition
-        if category == "لایحه" or (
+        if category in ("لایحه", error_catalog.EXPERT_CORRESPONDENCE_CATEGORY) or (
             category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
         ):
             await page.evaluate('''() => {
@@ -1922,7 +1919,7 @@ async def process_task(data, bot: Bot):
                     await open_expert_correspondence_menu(sana_page)
                 await resilient_sleep(sana_page, 5, bot, user_id)
 
-                if category == "لایحه" or (
+                if category in ("لایحه", error_catalog.EXPERT_CORRESPONDENCE_CATEGORY) or (
                     category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
                 ):
                     # ابتدا منتظر ظاهر شدن رادیوباتن می‌مانیم
@@ -1953,20 +1950,17 @@ async def process_task(data, bot: Bot):
                     raise Exception("صفحه کارتابل لود نشد.")
 
                 # لایحه: فیلد ورودی کدرهگیری #billNo
-                if category == "لایحه" or (
+                if category in ("لایحه", error_catalog.EXPERT_CORRESPONDENCE_CATEGORY) or (
                     category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
                 ):
                     await safe_type(sana_page, '#billNo', tracking_code, bot, user_id)
-                elif category == error_catalog.EXPERT_CORRESPONDENCE_CATEGORY:
-                    if not await fill_inquiry_tracking_code(sana_page, tracking_code):
-                        raise Exception("فیلد کدرهگیری در «مکاتبات کارشناس» یافت نشد.")
                 else:
                     selector = '#txtPetitionNo, #billNo, input[name="txtPetitionNo"], input[name="billNo"]'
                     await safe_type(sana_page, selector, tracking_code, bot, user_id)
                 await resilient_sleep(sana_page, 2, bot, user_id)
 
                 # لایحه: دکمه جستجو #btnGetJSSBill
-                if category == "لایحه" or (
+                if category in ("لایحه", error_catalog.EXPERT_CORRESPONDENCE_CATEGORY) or (
                     category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
                 ):
                     await sana_page.evaluate('''() => {
@@ -2096,7 +2090,7 @@ async def process_task(data, bot: Bot):
                             pass
                         return
                     await asyncio.sleep(3)
-                    if category == "لایحه" or (
+                    if category in ("لایحه", error_catalog.EXPERT_CORRESPONDENCE_CATEGORY) or (
                         category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
                     ):
                         await sana_page.evaluate('''() => {

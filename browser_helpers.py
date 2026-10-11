@@ -1593,48 +1593,6 @@ async def open_expert_correspondence_menu(page) -> bool:
     return bool(clicked)
 
 
-async def fill_inquiry_tracking_code(page, tracking_code: str) -> bool:
-    """ورود کدرهگیری در فرم‌هایی که ساختارشان از قبل معلوم نیست (مثل مکاتبات
-    کارشناس): اگر رادیوی «استعلام» (#rdbGetPetition) بود انتخاب می‌شود، سپس
-    اولین فیلد قابل مشاهده از #billNo / #txtPetitionNo پر می‌شود."""
-    has_radio = await page.evaluate('''() => {
-        const radio = document.querySelector('#rdbGetPetition');
-        if (!radio || radio.offsetParent === null) return false;
-        radio.checked = true;
-        radio.click();
-        if (window.angular) {
-            try { const s = angular.element(radio).scope(); if (s) s.$apply(); } catch(e) {}
-        }
-        return true;
-    }''')
-    if has_radio:
-        await asyncio.sleep(3)
-    return await page.evaluate('''(val) => {
-        const el = ['#billNo', '#txtPetitionNo', 'input[name="billNo"]', 'input[name="txtPetitionNo"]']
-            .map(s => document.querySelector(s))
-            .find(e => e && e.offsetParent !== null);
-        if (!el) return false;
-        el.focus();
-        el.value = val;
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        try {
-            const scope = angular.element(el).scope();
-            const key = el.getAttribute('ng-model');
-            if (scope && key) {
-                scope.$apply(() => {
-                    const parts = key.split('.');
-                    let obj = scope;
-                    for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
-                    obj[parts[parts.length - 1]] = val;
-                });
-            }
-        } catch(e) {}
-        el.dispatchEvent(new Event('blur', { bubbles: true }));
-        return true;
-    }''', tracking_code)
-
-
 async def click_inquiry_search_button(page) -> bool:
     """کلیک دکمهٔ «جستجو» فرم استعلام: #btnGetJSSPetition، وگرنه #btnGetJSSBill
     (هر کدام که قابل مشاهده باشد)."""

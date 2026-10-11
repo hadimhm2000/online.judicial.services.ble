@@ -27,7 +27,7 @@ import error_catalog
 from browser_helpers import (
     force_click_by_text, is_login_redirect_url,
     check_and_handle_expiry, retry_step_on_service_delay, SanaSystemDownError,
-    open_expert_correspondence_menu, fill_inquiry_tracking_code,
+    open_expert_correspondence_menu,
     open_attachments_and_read_rows, sum_attachment_pages)
 from config import FEES
 
@@ -345,7 +345,7 @@ async def _do_page_check(tracking_code, category, subcategory, user_id, bot) -> 
             step_name=f"ناوبری به «{category}»", log_prefix="FAST-CHECK")
 
         # لایحه: انتخاب رادیو #rdbGetPetition (value=2) و ورود کد رهگیری
-        if category == "لایحه" or (
+        if category in ("لایحه", error_catalog.EXPERT_CORRESPONDENCE_CATEGORY) or (
             category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
         ):
             async def _select_petition_radio_once():
@@ -399,20 +399,17 @@ async def _do_page_check(tracking_code, category, subcategory, user_id, bot) -> 
             raise FastCheckError("صفحه کارتابل لود نشد")
 
         # لایحه: فیلد ورودی کدرهگیری #billNo
-        if (category == "لایحه" or (
+        if (category in ("لایحه", error_catalog.EXPERT_CORRESPONDENCE_CATEGORY) or (
             category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
         )):
             await page.fill('#billNo', tracking_code)
-        elif is_expert:
-            if not await fill_inquiry_tracking_code(page, tracking_code):
-                raise FastCheckError("فیلد کدرهگیری در «مکاتبات کارشناس» یافت نشد")
         else:
             await page.fill('#txtPetitionNo, #billNo', tracking_code)
         await asyncio.sleep(1.5)
 
         # ── کلیک جستجو (بدون fallback خطرناک) ───────────────────
         # لایحه: دکمه #btnGetJSSBill  |  سایر: #btnGetJSSPetition
-        if (category == "لایحه" or (
+        if (category in ("لایحه", error_catalog.EXPERT_CORRESPONDENCE_CATEGORY) or (
             category == "دیوان عدالت اداری" and subcategory == "ارایه و پیگیری لایحه"
         )):
             await page.evaluate('''() => {
