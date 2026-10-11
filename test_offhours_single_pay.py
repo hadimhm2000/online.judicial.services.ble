@@ -128,8 +128,9 @@ def test_offhours_report_and_admin_submit():
 
         text, kb = sana_gate.offhours_report()
         assert "2 کاربر، 3 درخواست" in text
-        assert "`7`" in text and "لایحه" in text and "_" not in text.replace("/offhours_submit", "")
-        assert len(kb.inline_keyboard) == 2
+        assert "`7`" in text and "لایحه" in text and "_" not in text.replace("/offhours_submit_all", "").replace("/offhours_submit", "")
+        assert len(kb.inline_keyboard) == 3   # «ثبت همهٔ صف» + یک دکمه برای هر کاربر
+        assert kb.inline_keyboard[0][0].callback_data == "ohsall"
 
         reply = await sana_gate._submit_and_report("7")
         assert "2 درخواست" in reply
@@ -147,5 +148,32 @@ def test_offhours_report_and_admin_submit():
         sana_gate._state["offhours_log"] = []
         sana_gate.load()
         assert len(sana_gate._state["offhours_log"]) == 3
+
+    asyncio.run(scenario())
+
+
+def test_admin_submit_all():
+    async def scenario():
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+        runtime_state.job_queue = asyncio.Queue()
+        assert "هیچ درخواستی" in await sana_gate._submit_all_and_report()
+
+        await sana_gate.defer({"task_type": "LAVAYEH_SUBMIT", "user_id": 7}, bot)
+        await sana_gate.defer({"task_type": "CHECK_SUBMIT", "user_id": 8}, bot)
+        await sana_gate.defer({"task_type": "EZHHARNAMEH_SUBMIT", "user_id": 7}, bot)
+
+        sana_gate._state["browser_closed"] = True
+        assert "/browser_open" in await sana_gate._submit_all_and_report()
+        assert sana_gate.deferred_count() == 3
+        sana_gate._state["browser_closed"] = False
+
+        reply = await sana_gate._submit_all_and_report()
+        assert "3 درخواست از 2 کاربر" in reply
+        assert sana_gate.deferred_count() == 0
+        jobs = [runtime_state.job_queue.get_nowait() for _ in range(3)]
+        assert [j["user_id"] for j in jobs] == [7, 7, 8]
+        assert all(j["admin_forced"] and not sana_gate.should_defer(j) for j in jobs)
+        assert {e["status"] for e in sana_gate._state["offhours_log"]} == {"admin_submitted"}
 
     asyncio.run(scenario())
