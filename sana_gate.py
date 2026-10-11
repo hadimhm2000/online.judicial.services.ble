@@ -268,7 +268,7 @@ async def defer(job: dict, bot: Bot):
         "reason": reason,
     })
     if reason == "offhours" and job.get("user_id"):
-        _log_offhours(job.get("user_id"), _job_label(job), now_iso)
+        _log_offhours(job.get("user_id"), _job_label(job), now_iso, job.get("_jid"))
     _save()
     _forget_journal(job)
     uid = job.get("user_id")
@@ -378,10 +378,15 @@ def _job_label(job: dict) -> str:
     return str(job.get("query_type") or "نامشخص")
 
 
-def _log_offhours(uid, label: str, at_iso: str):
-    """ثبت در سابقهٔ خارج از ساعت کاری و حذف موارد قدیمی‌تر از OFFHOURS_LOG_DAYS روز."""
+def _log_offhours(uid, label: str, at_iso: str, jid: str | None = None):
+    """ثبت در سابقهٔ خارج از ساعت کاری و حذف موارد قدیمی‌تر از OFFHOURS_LOG_DAYS روز.
+    همان درخواست (همان _jid) که دوباره به صف برگشته، ردیف تازه نمی‌سازد."""
     log = _state.setdefault("offhours_log", [])
-    log.append({"uid": uid, "type": label, "at": at_iso, "status": "queued"})
+    existing = next((e for e in log if jid and e.get("jid") == jid), None)
+    if existing is not None:
+        existing["status"] = "queued"
+    else:
+        log.append({"uid": uid, "type": label, "at": at_iso, "status": "queued", "jid": jid})
     cutoff = datetime.datetime.now(TEHRAN_TZ) - datetime.timedelta(days=OFFHOURS_LOG_DAYS)
     kept = []
     for e in log:
@@ -397,6 +402,24 @@ def _mark_log(uid, status: str):
     for e in _state.get("offhours_log", []):
         if str(e.get("uid")) == str(uid) and e.get("status") == "queued":
             e["status"] = status
+
+
+def log_job_status(jid: str | None, status: str):
+    """⭐ وضعیت واقعی درخواست در سابقهٔ خارج از ساعت کاری (pending_jobs.py صدا می‌زند).
+
+    قبلاً همین که صف آزاد می‌شد (یا مدیر «ثبت در سامانه» می‌زد) درخواست «ثبت‌شده»
+    نمایش داده می‌شد؛ اگر ربات/مرورگر پیش از ثبت واقعی قطع می‌شد، موردی که هرگز
+    ثبت نشده بود ثبت‌شده به نظر می‌رسید. حالا فقط پس از پایان واقعی پردازش
+    «done» و در صورت شکست «failed» می‌شود."""
+    if not jid:
+        return
+    changed = False
+    for e in _state.get("offhours_log", []):
+        if e.get("jid") == jid and e.get("status") != status:
+            e["status"] = status
+            changed = True
+    if changed:
+        _save()
 
 
 def deferred_by_user() -> dict:
@@ -801,7 +824,13 @@ async def browser_open_cmd(message: types.Message, bot: Bot):
 
 # ── ⭐ درخواست‌های خارج از ساعت کاری (۱۴۰۵/۰۷) ─────────────────────────────
 
-_STATUS_FA = {"queued": "در صف", "released": "ثبت‌شده در ساعت کاری", "admin_submitted": "ثبت توسط مدیر"}
+_STATUS_FA = {
+    "queued": "در صف خارج از ساعت کاری",
+    "released": "در صف ثبت (هنوز ثبت نشده)",
+    "admin_submitted": "در صف ثبت به دستور مدیر (هنوز ثبت نشده)",
+    "done": "پردازش شد ✅",
+    "failed": "ناموفق/قطع‌شده — /pending",
+}
 
 
 def _fmt_at(iso: str) -> str:
