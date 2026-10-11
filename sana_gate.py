@@ -34,6 +34,7 @@ import datetime
 import json
 import logging
 import os
+import random
 
 from aiogram import Bot, F, Router, types
 from aiogram.filters import Command
@@ -41,7 +42,8 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 import runtime_state
 from config import ADMIN_ID
-from working_hours import TEHRAN_TZ, START_HOUR, END_HOUR
+import working_hours
+from working_hours import TEHRAN_TZ
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,12 @@ _state = {
     "outage": False,
     "outage_since": None,
     "browser_closed": False,
+    # ⭐ ۱۴۰۵/۰۷: بسته‌شدن خودکار مرورگر خارج از ساعت کاری / حالت قطعی
+    #   browser_closed_reason: "admin" (/browser_close) | "auto" (gate_loop)
+    #   admin_open: مدیر خارج از ساعت کاری /browser_open زده — تا شروع ساعت
+    #   کاری بعدی خودکار بسته نمی‌شود
+    "browser_closed_reason": None,
+    "admin_open": False,
     "deferred": [],   # [{"job": {...}, "deferred_at": iso, "reason": "offhours"|"outage"}]
     # ⭐ سابقهٔ درخواست‌های خارج از ساعت کاری (برای /offhours) — ۷ روز اخیر
     "offhours_log": [],  # [{"uid": int, "type": str, "at": iso, "status": "queued"|"released"|"admin_submitted"}]
@@ -67,14 +75,20 @@ DEFAULT_TEXTS = {
     ),
     "gate.offhours_queued": (
         "🕑 *درخواست شما خارج از ساعت کاری ثبت شد.*\n\n"
-        "موارد شما در نوبت می‌باشد و ابتدای ساعت کاری بعدی (ساعت {start}:00) "
+        "موارد شما در نوبت می‌باشد و ابتدای ساعت کاری بعدی (ساعت {start}) "
         "به‌صورت خودکار در سامانه ثبت می‌گردد.\n"
         "نیازی به ارسال مجدد اطلاعات یا پرداخت نیست. باتشکر"
     ),
     "gate.released": "▶️ ثبت موارد شما در سامانه آغاز شد.",
+    "gate.sign_offhours": (
+        "🕑 *خارج از ساعت کاری*\n\n"
+        "امضای الکترونیک فقط در ساعت کاری انجام می‌شود. روند امضای شما محفوظ "
+        "است و ابتدای ساعت کاری بعدی (ساعت {start}) خودکار ادامه می‌یابد؛ "
+        "آن زمان لطفاً پیام‌های ربات را دنبال کنید. نیازی به ارسال مجدد اطلاعات نیست."
+    ),
     "gate.inquiry_closed_offhours": (
         "⛔️ *خارج از ساعت کاری*\n\n"
-        "استعلام فقط در ساعت کاری ({start}:00 الی {end}:00) انجام می‌شود.\n"
+        "استعلام فقط در ساعت کاری ({start} الی {end}) انجام می‌شود.\n"
         "ثبت لایحه، اظهارنامه، دادخواست و سایر خدمات همچنان فعال است و "
         "ابتدای ساعت کاری بعدی ثبت می‌گردد."
     ),
@@ -166,17 +180,32 @@ def _text(key: str) -> str:
     return DEFAULT_TEXTS[key]
 
 
+def _fmt(key: str, **kw) -> str:
+    """متن با {start}/{end}؛ متن‌های قدیمی پنل که «{start}:00» دارند هم درست می‌شوند
+    (ساعت کاری پنل می‌تواند دقیقه داشته باشد، مثلاً 8:30)."""
+    text = _text(key).replace("{start}:00", "{start}").replace("{end}:00", "{end}")
+    try:
+        return text.format(**kw)
+    except (KeyError, IndexError, ValueError):
+        return text
+
+
 def is_working_hours(now: datetime.datetime | None = None) -> bool:
-    now = now or datetime.datetime.now(TEHRAN_TZ)
-    return START_HOUR <= now.hour < END_HOUR
+    """ساعت کاری تعریف‌شده در پنل ادمین (working_hours.py)."""
+    return working_hours.is_working_hours(now)
 
 
 def is_outage() -> bool:
     return bool(_state["outage"])
 
 
-def browser_closed_by_admin() -> bool:
+def browser_closed() -> bool:
+    """مرورگر عمداً بسته است (توسط مدیر یا خودکار خارج از ساعت کاری) — نباید خودکار باز شود."""
     return bool(_state["browser_closed"])
+
+
+# نام قدیمی (scenarios.py و …)
+browser_closed_by_admin = browser_closed
 
 
 def is_open() -> bool:
@@ -204,7 +233,7 @@ def should_defer(job: dict) -> bool:
     # انتخاب کرده، خارج از ساعت کاری هم ثبت می‌شوند — مگر سامانه قطع باشد یا
     # مدیر مرورگر را بسته باشد (/browser_close).
     if _is_admin_job(job) or job.get("admin_forced"):
-        return is_outage() or browser_closed_by_admin()
+        return is_outage() or browser_closed()
     return True
 
 
@@ -221,7 +250,10 @@ def is_inquiry_context(message: types.Message, raw_state: str | None) -> bool:
 def closed_inquiry_text() -> str:
     if is_outage():
         return _text("gate.inquiry_closed_outage")
-    return _text("gate.inquiry_closed_offhours").format(start=START_HOUR, end=END_HOUR)
+    start, end = working_hours.today_bounds()
+    if start == "—":
+        return _fmt("gate.inquiry_closed_offhours", start=working_hours.next_start_label(), end="—")
+    return _fmt("gate.inquiry_closed_offhours", start=start, end=end)
 
 
 # ── صف ماندگار ────────────────────────────────────────────────────────────
@@ -238,6 +270,7 @@ async def defer(job: dict, bot: Bot):
     if reason == "offhours" and job.get("user_id"):
         _log_offhours(job.get("user_id"), _job_label(job), now_iso)
     _save()
+    _forget_journal(job)
     uid = job.get("user_id")
     logger.info(
         f"[SANA_GATE] تسک {job.get('task_type') or job.get('query_type')} کاربر {uid} "
@@ -247,7 +280,76 @@ async def defer(job: dict, bot: Bot):
     if reason == "outage":
         text = _text("gate.outage_queued")
     else:
-        text = _text("gate.offhours_queued").format(start=START_HOUR, end=END_HOUR)
+        text = _fmt("gate.offhours_queued", start=working_hours.next_start_label())
+    try:
+        await bot.send_message(uid, text)
+    except Exception as e:
+        logger.warning(f"[SANA_GATE] خطا در اطلاع به کاربر {uid}: {e}")
+
+
+def _forget_journal(job: dict):
+    """تسک حالا در sana_gate_state.json نگهداری می‌شود، نه در pending_jobs.json."""
+    try:
+        import pending_jobs
+        pending_jobs.forget(job)
+    except Exception:
+        pass
+
+
+# ── ⭐ تسک‌های امضا خارج از ساعت کاری (۱۴۰۵/۰۷) ────────────────────────────
+#
+# امضا قبلاً همیشه (حتی نیمه‌شب) وارد سامانه می‌شد. حالا وقتی دروازه بسته است:
+#   - *_SUBMIT_SIGN (کاربر کد موقتِ از قبل ارسال‌شده را فرستاده) اگر مرورگر باز
+#     است اجرا می‌شود تا کد هدر نرود؛
+#   - ناوبری/ارسال کد امضا وارد سامانه نمی‌شود: به‌صورت «ناوبری» در صف ماندگار
+#     می‌رود و ابتدای ساعت کاری بعدی روند امضا از همان‌جا ادامه می‌یابد.
+# درخواست‌های خود مدیر و حالتی که مدیر خارج از ساعت کاری /browser_open زده
+# (admin_open) مستثنی‌اند.
+
+_SUBMIT_SIGN_TYPES = frozenset({"LAVAYEH_SUBMIT_SIGN", "TN_SUBMIT_SIGN", "EZHHARNAMEH_SUBMIT_SIGN"})
+
+
+def sign_should_defer(job: dict) -> bool:
+    if not isinstance(job, dict) or job.get("task_type") not in runtime_state.SIGN_TASK_TYPES:
+        return False
+    if is_open():
+        return False
+    if _is_admin_job(job) or job.get("admin_forced"):
+        return is_outage() or browser_closed()
+    if _state.get("admin_open") and not browser_closed():
+        return False
+    if job.get("task_type") in _SUBMIT_SIGN_TYPES and not browser_closed():
+        return False
+    return job.get("task_type") not in _SUBMIT_SIGN_TYPES
+
+
+async def defer_sign(job: dict, bot: Bot):
+    """ناوبری/ارسال کد امضا → صف ماندگار به‌صورت «ناوبری» (ادامه در ساعت کاری)."""
+    nav = {k: v for k, v in job.items() if k not in ("target_row_indices", "code", "row_idx")}
+    nav["phase"] = "navigate"
+    reason = "outage" if is_outage() else "offhours"
+    uid = job.get("user_id")
+    # یک ناوبری امضا برای هر کاربر/پرونده کافی است
+    _state["deferred"] = [
+        it for it in _state["deferred"]
+        if not ((it.get("job") or {}).get("task_type") == nav.get("task_type")
+                and (it.get("job") or {}).get("user_id") == uid
+                and (it.get("job") or {}).get("tracking_code") == nav.get("tracking_code"))
+    ]
+    _state["deferred"].append({
+        "job": nav,
+        "deferred_at": datetime.datetime.now(TEHRAN_TZ).isoformat(),
+        "reason": reason,
+    })
+    _save()
+    logger.info(f"[SANA_GATE] امضای کاربر {uid} ({job.get('task_type')}/{job.get('phase')}) "
+                f"به ساعت کاری بعدی موکول شد ({reason})")
+    if not uid:
+        return
+    if reason == "outage":
+        text = _text("gate.outage_queued")
+    else:
+        text = _fmt("gate.sign_offhours", start=working_hours.next_start_label())
     try:
         await bot.send_message(uid, text)
     except Exception as e:
@@ -261,6 +363,9 @@ _TASK_LABELS = {
     "CHECK_SUBMIT": "دادخواست",
     "CONTRACT_FIX_SUBMIT": "اصلاح قرارداد",
     "PRE_CHECK": "استعلام",
+    "LAVAYEH_SEND_SIGN_CODE": "امضای لایحه",
+    "EZHHARNAMEH_SEND_SIGN_CODE": "امضای اظهارنامه",
+    "TN_SEND_SIGN_CODE": "امضای دعوی اعتراضی",
     "CLEARANCE_SEND_CODE": "گواهی عدم سوءپیشینه",
     "CLEARANCE_FINALIZE": "گواهی عدم سوءپیشینه",
 }
@@ -350,35 +455,179 @@ async def release(bot: Bot) -> int:
     return len(items)
 
 
+# ── ⭐ چرخهٔ عمر خودکار مرورگر (۱۴۰۵/۰۷) ──────────────────────────────────
+#
+# دستور کارفرما پس از مسدود شدن IP سرور توسط سامانه:
+#   - خارج از ساعت کاری یا در حالت قطعی (/outage_on) مرورگر خودکار بسته شود،
+#     مگر مدیر با /browser_open صریحاً بازش کرده باشد (تا شروع ساعت کاری بعدی).
+#   - در ساعت کاری مرورگر حتی وقتی بیکار است باز بماند (لاگین حفظ شود) ولی
+#     هیچ درخواست پس‌زمینه‌ای به سامانه نرود — بستن فقط وقتی هیچ تسکی در جریان
+#     نیست (ثبت، استعلام، امضا، انتخاب واحد) انجام می‌شود.
+
+_busy = 0
+RECENT_SIGN_MINUTES = 10
+
+
+# ⭐ فاصلهٔ تصادفی بین درخواست‌های پشت‌سرهم به سامانه — صف انباشته (ابتدای
+# ساعت کاری، چاپ نهایی، پس از رفع قطعی) یکجا و با الگوی ثابت وارد سامانه
+# نشود. مقدارها از .env قابل تغییرند (ثانیه).
+PACE_MIN_SECONDS = float(os.environ.get("SANA_PACE_MIN_SECONDS", "5"))
+PACE_MAX_SECONDS = float(os.environ.get("SANA_PACE_MAX_SECONDS", "20"))
+_last_task_at = 0.0
+
+
+async def pace():
+    """قبل از شروع هر تسک صف اصلی: اگر تسک قبلی همین الان شروع شده، تا یک فاصلهٔ
+    تصادفی (PACE_MIN..PACE_MAX ثانیه) صبر کن. وقتی صف خالی بوده، صبری نیست."""
+    global _last_task_at
+    loop = asyncio.get_event_loop()
+    gap = random.uniform(PACE_MIN_SECONDS, max(PACE_MIN_SECONDS, PACE_MAX_SECONDS))
+    wait = _last_task_at + gap - loop.time()
+    if wait > 0:
+        await asyncio.sleep(wait)
+    _last_task_at = loop.time()
+
+
+def job_started():
+    global _busy
+    _busy += 1
+
+
+def job_finished():
+    global _busy
+    _busy = max(0, _busy - 1)
+
+
+def _recent_sign_users(minutes: int = RECENT_SIGN_MINUTES) -> set:
+    """کاربرانی که در چند دقیقهٔ اخیر کد امضا برایشان ارسال شده (ممکن است کد بفرستند)."""
+    now = datetime.datetime.now()
+    limit = datetime.timedelta(minutes=minutes)
+    out = set()
+    for name in ("pending_lavayeh_sign", "pending_ezhhar_sign", "pending_tn_sign"):
+        for uid, info in list((getattr(runtime_state, name, None) or {}).items()):
+            if not isinstance(info, dict):
+                continue
+            for f in ("sign_sent_time", "code_sent_announce_time"):
+                ts = info.get(f)
+                if isinstance(ts, datetime.datetime):
+                    ts = ts.replace(tzinfo=None) if ts.tzinfo else ts
+                    if now - ts < limit:
+                        out.add(uid)
+    return out
+
+
+def browser_busy() -> str | None:
+    """دلیل مشغول بودن مرورگر (برای عدم بستن خودکار) یا None."""
+    if _busy:
+        return f"{_busy} تسک در حال پردازش"
+    for qname in ("job_queue", "priority_job_queue", "sign_job_queue"):
+        q = getattr(runtime_state, qname, None)
+        if q is not None and q.qsize():
+            return "تسک در صف"
+    try:
+        import sign_tab
+        if sign_tab._sign_line:
+            return "امضا در جریان"
+    except Exception:
+        pass
+    try:
+        import org_unit_picker
+        if org_unit_picker._parked_pages or org_unit_picker._sessions:
+            return "انتظار انتخاب واحد سازمانی"
+    except Exception:
+        pass
+    if _recent_sign_users():
+        return "کد امضای تازه ارسال‌شده"
+    return None
+
+
+def _browser_is_up() -> bool:
+    browser = runtime_state.browser
+    try:
+        return browser is not None and browser.is_connected()
+    except Exception:
+        return False
+
+
+async def _auto_close_if_idle(bot: Bot):
+    if _state.get("admin_open") or browser_closed():
+        return
+    if not _browser_is_up():
+        # مرورگری باز نیست؛ فقط علامت بزن تا واچ‌داگ آن را باز نکند
+        _state["browser_closed"] = True
+        _state["browser_closed_reason"] = "auto"
+        _save()
+        return
+    reason = browser_busy()
+    if reason:
+        logger.info(f"[SANA_GATE] خارج از ساعت کاری — بستن مرورگر تا پایان کار به تعویق افتاد ({reason})")
+        return
+    await close_browser(reason="auto")
+    why = "حالت قطعی سامانه" if is_outage() else "پایان ساعت کاری"
+    logger.info(f"[SANA_GATE] مرورگر خودکار بسته شد ({why}).")
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"🔒 مرورگر به‌دلیل {why} خودکار بسته شد تا هیچ درخواستی به سامانه نرود.\n"
+            f"باز شدن خودکار: ساعت {working_hours.next_start_label()} — "
+            "باز کردن زودتر (فقط در صورت نیاز): /browser_open")
+    except Exception:
+        pass
+
+
+async def _auto_open(bot: Bot):
+    """شروع ساعت کاری / رفع قطعی: مرورگر بسته (خودکار یا مدیر) دوباره باز می‌شود."""
+    _state["browser_closed"] = False
+    _state["browser_closed_reason"] = None
+    _state["admin_open"] = False
+    _save()
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            "🟢 ساعت کاری شروع شد — مرورگر دوباره باز می‌شود. "
+            "لطفاً منتظر درخواست لاگین بمانید.\n"
+            f"درخواست‌های در صف ({deferred_count()}) پس از لاگین به‌ترتیب ثبت می‌شوند.")
+    except Exception:
+        pass
+    try:
+        from scenarios import ensure_browser_alive
+        # ensure_browser_alive تا لاگین دستی مدیر منتظر می‌ماند — حلقه را معطل نکند
+        asyncio.create_task(ensure_browser_alive(bot, notify_admin=False))
+    except Exception as e:
+        logger.error(f"[SANA_GATE] خطا در باز کردن مرورگر: {e}")
+
+
 async def gate_loop(bot: Bot, interval_seconds: int = 30):
-    """تسک پس‌زمینه: ابتدای ساعت کاری (یا پس از رفع قطعی) صف را آزاد می‌کند."""
+    """تسک پس‌زمینه: بستن/باز کردن خودکار مرورگر و آزادسازی صف ابتدای ساعت کاری."""
     while True:
         try:
             await asyncio.sleep(interval_seconds)
             if not is_open():
+                await _auto_close_if_idle(bot)
                 continue
-            if browser_closed_by_admin():
-                # ساعت کاری شروع شد — مرورگر بستهٔ مدیر دوباره مجاز به باز شدن است
-                _state["browser_closed"] = False
+            if browser_closed():
+                await _auto_open(bot)
+            elif _state.get("admin_open"):
+                _state["admin_open"] = False
                 _save()
-                try:
-                    await bot.send_message(
-                        ADMIN_ID,
-                        "🟢 ساعت کاری شروع شد — مرورگر دوباره باز می‌شود. "
-                        "لطفاً منتظر درخواست لاگین بمانید.")
-                except Exception:
-                    pass
-                try:
-                    from scenarios import ensure_browser_alive
-                    await ensure_browser_alive(bot, notify_admin=False)
-                except Exception as e:
-                    logger.error(f"[SANA_GATE] خطا در باز کردن مرورگر: {e}")
             if _state["deferred"]:
                 await release(bot)
         except asyncio.CancelledError:
             break
         except Exception as e:
             logger.error(f"[SANA_GATE] خطا در gate_loop: {e}")
+
+
+def should_launch_on_startup() -> bool:
+    """browser_worker هنگام استارت مرورگر را باز کند؟ خارج از ساعت کاری خیر."""
+    if browser_closed():
+        return False
+    if not is_open():
+        _state["browser_closed"] = True
+        _state["browser_closed_reason"] = "auto"
+        _save()
+        return False
+    return True
 
 
 # ── بستن مرورگر توسط مدیر ─────────────────────────────────────────────────
@@ -392,11 +641,19 @@ def _pending_sign_users() -> set:
     return users
 
 
-async def close_browser():
+async def close_browser(reason: str = "admin"):
     """مرورگر پلی‌رایت را می‌بندد (بدون ری‌استارت ربات)."""
     async with runtime_state.browser_relaunch_lock:
         _state["browser_closed"] = True
+        _state["browser_closed_reason"] = reason
+        _state["admin_open"] = False
         _save()
+        try:
+            import sign_tab
+            for uid in list(runtime_state.sign_pages.keys()):
+                await sign_tab.close_sign_page(uid)
+        except Exception:
+            pass
         browser = runtime_state.browser
         runtime_state.sana_page = None
         runtime_state.browser_context = None
@@ -418,17 +675,41 @@ def _is_admin(message: types.Message) -> bool:
     return bool(message.from_user and message.from_user.id == ADMIN_ID)
 
 
+def _browser_status_label() -> str:
+    if browser_closed():
+        return ("بسته‌شده توسط مدیر 🔒" if _state.get("browser_closed_reason") == "admin"
+                else "بسته (خودکار، خارج از ساعت کاری/قطعی) 🔒")
+    if _state.get("admin_open"):
+        return "باز به دستور مدیر (تا شروع ساعت کاری بعدی) 🔓"
+    return "فعال" if _browser_is_up() else "در انتظار باز شدن/لاگین"
+
+
+def _journal_status_line() -> str:
+    try:
+        import pending_jobs
+        return (f"درخواست‌های ثبت در دفتر ماندگار: {pending_jobs.queued_count()} — "
+                f"ناموفق/قطع‌شده: {len(pending_jobs.failed_items())}")
+    except Exception:
+        return ""
+
+
 def _status_text() -> str:
     lines = [
         "📟 *وضعیت ورود به سامانه*",
-        f"ساعت کاری: {START_HOUR}:00 الی {END_HOUR}:00 — "
-        + ("داخل ساعت کاری ✅" if is_working_hours() else "خارج از ساعت کاری 🌙"),
+        f"ساعت کاری امروز: {working_hours.today_label()} — "
+        + ("داخل ساعت کاری ✅" if is_working_hours() else
+           f"خارج از ساعت کاری 🌙 (شروع بعدی: {working_hours.next_start_label()})"),
+        "منبع ساعت کاری: " + {"panel": "پنل ادمین ✅", "cache": "آخرین برنامهٔ ذخیره‌شدهٔ پنل",
+                              "default": "پیش‌فرض ۱۴ الی ۲۲ (پنل در دسترس نبود) ⚠️"}.get(
+            working_hours.source(), working_hours.source()),
         "حالت قطعی سامانه: " + ("روشن ⚠️" if is_outage() else "خاموش ✅"),
-        "مرورگر: " + ("بسته‌شده توسط مدیر 🔒" if browser_closed_by_admin() else "فعال"),
-        f"درخواست‌های در صف: {deferred_count()}",
+        "مرورگر: " + _browser_status_label(),
+        f"درخواست‌های در صف خارج از ساعت کاری: {deferred_count()}",
+        _journal_status_line(),
         "",
         "دستورات: /outage_on  /outage_off  /browser_close  /browser_open  /gate",
         "خارج از ساعت کاری: /offhours  /offhours_submit <آیدی کاربر>",
+        "درخواست‌های معوق و ناموفق: /pending",
     ]
     return "\n".join(lines)
 
@@ -470,7 +751,7 @@ async def browser_close_cmd(message: types.Message):
     if is_working_hours():
         await message.answer(
             "⛔️ بستن مرورگر فقط خارج از ساعت کاری مجاز است "
-            f"(ساعت کاری {START_HOUR}:00 الی {END_HOUR}:00).")
+            f"(ساعت کاری امروز {working_hours.today_label()}).")
         return
     force = "force" in (message.text or "")
     signing = _pending_sign_users()
@@ -479,21 +760,31 @@ async def browser_close_cmd(message: types.Message):
             f"⚠️ {len(signing)} کاربر هنوز در مرحلهٔ امضا هستند و با بستن مرورگر "
             "امضایشان ناتمام می‌ماند.\n\nاگر مطمئن هستید: /browser_close force")
         return
-    await close_browser()
+    await close_browser(reason="admin")
     await message.answer(
         "🔒 مرورگر بسته شد. تا ابتدای ساعت کاری بعدی هیچ درخواستی وارد سامانه "
         "نمی‌شود و درخواست‌ها در صف می‌مانند.\n"
-        f"ساعت {START_HOUR}:00 مرورگر خودکار باز می‌شود (یا زودتر: /browser_open).")
+        f"ساعت {working_hours.next_start_label()} مرورگر خودکار باز می‌شود (یا زودتر: /browser_open).")
 
 
 @gate_router.message(Command("browser_open"), _is_admin)
 async def browser_open_cmd(message: types.Message, bot: Bot):
     _state["browser_closed"] = False
+    _state["browser_closed_reason"] = None
+    # خارج از ساعت کاری/قطعی: باز به دستور مدیر تا شروع ساعت کاری بعدی (بستن خودکار نمی‌شود)
+    _state["admin_open"] = not is_open()
     _save()
-    await message.answer("🔓 مرورگر در حال باز شدن است — لطفاً منتظر درخواست لاگین بمانید.")
+    note = ""
+    if _state["admin_open"]:
+        note = ("\n\n⚠️ خارج از ساعت کاری هستیم: مرورگر تا شروع ساعت کاری بعدی باز می‌ماند. "
+                "درخواست‌های کاربران همچنان در صف می‌مانند (برای ثبت یک کاربر: /offhours). "
+                "پس از اتمام کار: /browser_close")
+    await message.answer("🔓 مرورگر در حال باز شدن است — لطفاً منتظر درخواست لاگین بمانید." + note)
     try:
         from scenarios import ensure_browser_alive
-        await ensure_browser_alive(bot, notify_admin=False)
+        ok = await ensure_browser_alive(bot, notify_admin=False)
+        if not ok:
+            await message.answer("❌ باز کردن مرورگر ناموفق بود؛ لاگ ربات را بررسی کنید.")
     except Exception as e:
         await message.answer(f"❌ خطا در باز کردن مرورگر: {str(e)[:200]}")
 
@@ -513,7 +804,7 @@ def _fmt_at(iso: str) -> str:
 def offhours_report() -> tuple:
     """متن گزارش /offhours و کیبورد دکمه‌های «ثبت در سامانه» برای هر کاربر در صف."""
     by_user = deferred_by_user()
-    lines = [f"🌙 *درخواست‌های خارج از ساعت کاری* ({START_HOUR}:00 الی {END_HOUR}:00 ساعت کاری)", ""]
+    lines = [f"🌙 *درخواست‌های خارج از ساعت کاری* (ساعت کاری امروز: {working_hours.today_label()})", ""]
     if by_user:
         lines.append(f"⏳ *در صف ثبت — {len(by_user)} کاربر، {deferred_count()} درخواست:*")
         for uid, items in by_user.items():
@@ -549,7 +840,7 @@ async def _submit_and_report(uid_text: str) -> str:
         return "⚠️ آیدی کاربر نامعتبر است. مثال: /offhours_submit 123456789"
     if is_outage():
         return "⚠️ حالت «قطعی سامانه» روشن است؛ ابتدا /outage_off را بزنید."
-    if browser_closed_by_admin():
+    if browser_closed():
         return "⚠️ مرورگر توسط مدیر بسته شده است؛ ابتدا /browser_open را بزنید."
     count = await submit_user_now(int(uid_text))
     if not count:
@@ -581,3 +872,67 @@ async def offhours_submit_cb(callback: CallbackQuery):
         return
     await callback.answer()
     await callback.message.answer(await _submit_and_report(callback.data.split(":", 1)[1]))
+
+
+
+# ── ⭐ درخواست‌های معوق و ناموفق (pending_jobs.py) ──────────────────────────
+
+def pending_report() -> tuple:
+    import pending_jobs
+    failed = pending_jobs.failed_items()
+    lines = [
+        "🗂 *درخواست‌های ثبت در سامانه*",
+        "",
+        f"⏳ در صف پردازش (دفتر ماندگار): {pending_jobs.queued_count()}",
+        f"🌙 در صف خارج از ساعت کاری/قطعی: {deferred_count()}  (جزئیات: /offhours)",
+        "",
+    ]
+    if failed:
+        lines.append(f"❌ *ناموفق یا قطع‌شده حین پردازش — {len(failed)} مورد* "
+                     "(خودکار تکرار نمی‌شوند تا ثبت تکراری ساخته نشود؛ ابتدا در سامانه "
+                     "بررسی کنید که ثبت نشده باشند):")
+        for it in failed[-30:]:
+            tc = (it.get("job") or {}).get("tracking_code")
+            lines.append(f"• `{it.get('user_id')}` — {it.get('label')}"
+                         + (f" — کد رهگیری `{tc}`" if tc else "")
+                         + f" — {_fmt_at(it.get('failed_at', ''))}\n   علت: {str(it.get('error', ''))[:120]}")
+    else:
+        lines.append("✅ درخواست ناموفق/قطع‌شده‌ای نیست.")
+    rows = []
+    for it in failed[-15:]:
+        jid = it.get("jid")
+        rows.append([
+            InlineKeyboardButton(text=f"🔁 ثبت مجدد {it.get('user_id')} ({it.get('label')})",
+                                 callback_data=f"pjr:{jid}"),
+            InlineKeyboardButton(text="🗑 حذف", callback_data=f"pjd:{jid}"),
+        ])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+    return "\n".join(lines), kb
+
+
+@gate_router.message(Command("pending"), _is_admin)
+async def pending_cmd(message: types.Message):
+    text, kb = pending_report()
+    await message.answer(text, reply_markup=kb)
+
+
+@gate_router.callback_query(F.data.startswith("pjr:") | F.data.startswith("pjd:"))
+async def pending_action_cb(callback: CallbackQuery):
+    if not (callback.from_user and callback.from_user.id == ADMIN_ID):
+        await callback.answer()
+        return
+    import pending_jobs
+    action, jid = callback.data.split(":", 1)
+    job = pending_jobs.pop_failed(jid)
+    await callback.answer()
+    if job is None:
+        await callback.message.answer("ℹ️ این مورد دیگر در فهرست ناموفق نیست.")
+        return
+    if action == "pjd":
+        await callback.message.answer(f"🗑 درخواست کاربر `{job.get('user_id')}` از فهرست ناموفق حذف شد.")
+        return
+    await runtime_state.job_queue.put(job)
+    where = ("وارد صف پردازش شد." if is_open() else
+             "چون خارج از ساعت کاری/قطعی هستیم در صف ماندگار می‌رود "
+             "(ثبت فوری: /offhours_submit " + str(job.get("user_id")) + ").")
+    await callback.message.answer(f"🔁 درخواست کاربر `{job.get('user_id')}` ({pending_jobs.label(job)}) {where}")
