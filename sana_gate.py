@@ -426,6 +426,16 @@ async def submit_user_now(uid) -> int:
     return len(mine)
 
 
+async def submit_all_now() -> tuple:
+    """⭐ دستور مدیر: کل صف خارج از ساعت کاری را (کاربر به کاربر، به‌ترتیب صف)
+    همین الان وارد سامانه می‌کند. (تعداد کاربران، تعداد تسک‌ها) را برمی‌گرداند."""
+    uids = [uid for uid in deferred_by_user() if uid is not None]
+    total = 0
+    for uid in uids:
+        total += await submit_user_now(uid)
+    return len(uids), total
+
+
 async def release(bot: Bot) -> int:
     """همهٔ تسک‌های صف را به‌ترتیب به job_queue برمی‌گرداند."""
     items = list(_state["deferred"])
@@ -708,7 +718,7 @@ def _status_text() -> str:
         _journal_status_line(),
         "",
         "دستورات: /outage_on  /outage_off  /browser_close  /browser_open  /gate",
-        "خارج از ساعت کاری: /offhours  /offhours_submit <آیدی کاربر>",
+        "خارج از ساعت کاری: /offhours  /offhours_submit <آیدی کاربر>  /offhours_submit_all",
         "درخواست‌های معوق و ناموفق: /pending",
     ]
     return "\n".join(lines)
@@ -826,10 +836,14 @@ def offhours_report() -> tuple:
                      f"({_STATUS_FA.get(last.get('status'), last.get('status'))})")
     lines.append("")
     lines.append("برای ثبت فوری درخواست یک کاربر در سامانه: دکمهٔ زیر یا /offhours_submit <آیدی کاربر>")
+    lines.append("برای ثبت فوری همهٔ صف: /offhours_submit_all")
 
     rows = [[InlineKeyboardButton(text=f"▶️ ثبت در سامانه: {uid} ({len(items)})",
                                   callback_data=f"ohs:{uid}")]
             for uid, items in list(by_user.items())[:30] if uid is not None]
+    if rows:
+        rows.insert(0, [InlineKeyboardButton(text=f"⏩ ثبت همهٔ صف ({deferred_count()})",
+                                             callback_data="ohsall")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
     return "\n".join(lines), kb
 
@@ -846,6 +860,17 @@ async def _submit_and_report(uid_text: str) -> str:
     if not count:
         return f"ℹ️ درخواستی از کاربر `{uid_text}` در صف خارج از ساعت کاری نیست."
     return f"▶️ {count} درخواست کاربر `{uid_text}` برای ثبت در سامانه وارد صف پردازش شد."
+
+
+async def _submit_all_and_report() -> str:
+    if is_outage():
+        return "⚠️ حالت «قطعی سامانه» روشن است؛ ابتدا /outage_off را بزنید."
+    if browser_closed():
+        return "⚠️ مرورگر توسط مدیر بسته شده است؛ ابتدا /browser_open را بزنید."
+    users, count = await submit_all_now()
+    if not count:
+        return "ℹ️ هیچ درخواستی در صف خارج از ساعت کاری نیست."
+    return f"▶️ {count} درخواست از {users} کاربر برای ثبت در سامانه وارد صف پردازش شد."
 
 
 @gate_router.message(Command("offhours"), _is_admin)
@@ -872,6 +897,20 @@ async def offhours_submit_cb(callback: CallbackQuery):
         return
     await callback.answer()
     await callback.message.answer(await _submit_and_report(callback.data.split(":", 1)[1]))
+
+
+@gate_router.message(Command("offhours_submit_all"), _is_admin)
+async def offhours_submit_all_cmd(message: types.Message):
+    await message.answer(await _submit_all_and_report())
+
+
+@gate_router.callback_query(F.data == "ohsall")
+async def offhours_submit_all_cb(callback: CallbackQuery):
+    if not (callback.from_user and callback.from_user.id == ADMIN_ID):
+        await callback.answer()
+        return
+    await callback.answer()
+    await callback.message.answer(await _submit_all_and_report())
 
 
 
