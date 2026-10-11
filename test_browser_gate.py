@@ -224,3 +224,17 @@ def test_routing_queue_journals_and_defer_hands_over(monkeypatch):
     asyncio.run(sana_gate.defer(job, bot))
     assert pending_jobs.queued_count() == 0           # حالا در صف ماندگار sana_gate
     assert sana_gate.deferred_count() == 1
+
+
+def test_pace_spaces_back_to_back_tasks(monkeypatch):
+    monkeypatch.setattr(sana_gate, "PACE_MIN_SECONDS", 0.05)
+    monkeypatch.setattr(sana_gate, "PACE_MAX_SECONDS", 0.1)
+    monkeypatch.setattr(sana_gate, "_last_task_at", 0.0)
+
+    async def run():
+        loop = asyncio.get_event_loop()
+        await sana_gate.pace()                 # صف خالی بوده → بدون صبر
+        t0 = loop.time()
+        await sana_gate.pace()
+        assert loop.time() - t0 >= 0.04
+    asyncio.run(run())

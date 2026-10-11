@@ -34,6 +34,7 @@ import datetime
 import json
 import logging
 import os
+import random
 
 from aiogram import Bot, F, Router, types
 from aiogram.filters import Command
@@ -465,6 +466,26 @@ async def release(bot: Bot) -> int:
 
 _busy = 0
 RECENT_SIGN_MINUTES = 10
+
+
+# ⭐ فاصلهٔ تصادفی بین درخواست‌های پشت‌سرهم به سامانه — صف انباشته (ابتدای
+# ساعت کاری، چاپ نهایی، پس از رفع قطعی) یکجا و با الگوی ثابت وارد سامانه
+# نشود. مقدارها از .env قابل تغییرند (ثانیه).
+PACE_MIN_SECONDS = float(os.environ.get("SANA_PACE_MIN_SECONDS", "5"))
+PACE_MAX_SECONDS = float(os.environ.get("SANA_PACE_MAX_SECONDS", "20"))
+_last_task_at = 0.0
+
+
+async def pace():
+    """قبل از شروع هر تسک صف اصلی: اگر تسک قبلی همین الان شروع شده، تا یک فاصلهٔ
+    تصادفی (PACE_MIN..PACE_MAX ثانیه) صبر کن. وقتی صف خالی بوده، صبری نیست."""
+    global _last_task_at
+    loop = asyncio.get_event_loop()
+    gap = random.uniform(PACE_MIN_SECONDS, max(PACE_MIN_SECONDS, PACE_MAX_SECONDS))
+    wait = _last_task_at + gap - loop.time()
+    if wait > 0:
+        await asyncio.sleep(wait)
+    _last_task_at = loop.time()
 
 
 def job_started():

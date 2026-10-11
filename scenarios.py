@@ -2547,7 +2547,7 @@ async def process_task(data, bot: Bot):
                 doc_name = f"{category} - {subcategory}" if subcategory else category
 
                 # ⭐ چاپ نهایی خودکار: بدون پیام «اختلال/تکرار رایگان» به کاربر —
-                # مورد در صف final_print می‌ماند و فردا ساعت ۱۵:۴۵ دوباره تلاش می‌شود
+                # مورد در صف final_print می‌ماند و فردا ساعت ۱۷:۰۰ دوباره تلاش می‌شود
                 if is_final_print:
                     await _fp_report_failure(
                         bot, user_id, tracking_code, doc_name,
@@ -3328,6 +3328,9 @@ async def browser_worker(bot: Bot):
                     source_queue.task_done()
                     await asyncio.sleep(10)
                     continue
+
+                # ⭐ فاصلهٔ تصادفی بین درخواست‌های پشت‌سرهم به سامانه
+                await sana_gate.pace()
 
                 # ⭐ دفتر ماندگار: «در حال اجرا» — اگر حین پردازش ری‌استارت شود،
                 # خودکار تکرار نمی‌شود و برای بررسی مدیر در /pending می‌ماند

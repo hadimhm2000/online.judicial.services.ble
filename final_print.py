@@ -5,14 +5,14 @@ final_print.py — ارسال خودکار «چاپ نهایی» در روز ب�
   ۱. پس از پایان روند امضای هر مورد (به‌جز استعلامات)، در انتهای پیام‌های
      قبلی به کاربر گفته می‌شود: «چاپ نهایی نیز در روز آینده برای شما ارسال
      می‌گردد.» (FINAL_PRINT_NOTICE)
-  ۲. هر موردی (به‌جز استعلامات) که در یک روز ثبت شده، روز بعد ساعت ۱۵:۴۵
+  ۲. هر موردی (به‌جز استعلامات) که در یک روز ثبت شده، روز بعد ساعت ۱۷:۰۰
      (وقت تهران) عیناً مانند بخش «استعلام کد رهگیری» استعلام می‌شود و فقط
      چاپ برای همان کاربر ارسال می‌گردد.
   ۲.۱ هر ارسال ناموفق همان روز (بلافاصله) به مدیر اطلاع داده می‌شود
      (report_failure) و روز بعد دوباره تلاش می‌شود.
   ۳. فهرست موارد روی دیسک (final_print_queue.json) نگه‌داری می‌شود؛ اگر ربات
      قطع شده باشد، پس از راه‌اندازی مجدد همه را به خاطر دارد و اگر ساعت
-     ۱۵:۴۵ امروز را از دست داده باشد، اجرای همان روز را جبران می‌کند.
+     ۱۷:۰۰ امروز را از دست داده باشد، اجرای همان روز را جبران می‌کند.
 
 ثبت مورد: record_registration(...) — از send_lavayeh_result /
 send_bulk_item_result (لایحه، اظهارنامه، چک/اعسار، اعلام وکالت) و
@@ -40,7 +40,7 @@ FINAL_PRINT_NOTICE = "📬 چاپ نهایی نیز در روز آینده بر�
 # ایران از ۱۴۰۱ ساعت تابستانی ندارد — منطقهٔ زمانی ثابت UTC+03:30
 # (بدون وابستگی به پایگاه دادهٔ tzdata که روی ویندوز ممکن است نصب نباشد)
 TEHRAN_TZ = datetime.timezone(datetime.timedelta(hours=3, minutes=30), "Asia/Tehran")
-RUN_HOUR, RUN_MINUTE = 15, 45
+RUN_HOUR, RUN_MINUTE = 17, 0
 
 # حداکثر دفعات تلاش برای یک مورد (هر روز یک تلاش) — پس از آن به مدیر اطلاع
 MAX_ATTEMPTS = 3
@@ -192,7 +192,7 @@ async def report_failure(bot: Bot, user_id: int, tracking_code: str,
                          doc_name: str, reason: str) -> None:
     """⭐ طبق دستور کارفرما: هر ارسال ناموفق چاپ نهایی همان روز (بلافاصله)
     به مدیر اطلاع داده می‌شود. به کاربر پیامی نمی‌رود؛ مورد در صف می‌ماند
-    و روز بعد ساعت ۱۵:۴۵ دوباره تلاش می‌شود (تا MAX_ATTEMPTS روز)."""
+    و روز بعد ساعت ۱۷:۰۰ دوباره تلاش می‌شود (تا MAX_ATTEMPTS روز)."""
     mark_failed(user_id, tracking_code, reason)
     attempts = 0
     try:
@@ -203,7 +203,7 @@ async def report_failure(bot: Bot, user_id: int, tracking_code: str,
     except Exception:
         pass
     retry_note = (
-        "فردا ساعت ۱۵:۴۵ دوباره تلاش می‌شود."
+        "فردا ساعت ۱۷:۰۰ دوباره تلاش می‌شود."
         if attempts < MAX_ATTEMPTS else
         "این آخرین تلاش خودکار بود — لطفاً به‌صورت دستی پیگیری و چاپ را برای کاربر ارسال کنید.")
     try:
@@ -303,7 +303,7 @@ def _next_run_at(now: datetime.datetime) -> datetime.datetime:
 
 
 async def final_print_scheduler(bot: Bot):
-    """حلقهٔ زمان‌بندی: هر روز ساعت ۱۵:۴۵ تهران. اگر ربات هنگام ۱۵:۴۵ امروز
+    """حلقهٔ زمان‌بندی: هر روز ساعت ۱۷:۰۰ تهران. اگر ربات هنگام ۱۷:۰۰ امروز
     خاموش بوده، بلافاصله پس از راه‌اندازی اجرای همان روز جبران می‌شود."""
     await asyncio.sleep(30)  # فرصت برای بالا آمدن مرورگر/لاگین
     while True:
@@ -313,7 +313,7 @@ async def final_print_scheduler(bot: Bot):
             with _lock:
                 last_run = _load().get("last_run_date", "")
             if now >= today_target and last_run != now.date().isoformat():
-                logging.info("[FINAL_PRINT] اجرای ساعت ۱۵:۴۵ امروز انجام نشده — اجرا (جبرانی/به‌موقع)")
+                logging.info("[FINAL_PRINT] اجرای ساعت ۱۷:۰۰ امروز انجام نشده — اجرا (جبرانی/به‌موقع)")
                 await run_daily_batch(bot)
                 continue
             wait_s = (_next_run_at(now) - now).total_seconds()
