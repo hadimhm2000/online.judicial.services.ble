@@ -39,6 +39,10 @@ dp = Dispatcher(storage=MemoryStorage())
 # (فقط عکس‌هایی را می‌گیرد که رسید یک فاکتور کارت‌به‌کارت فعال باشند).
 import card_payment
 card_payment.setup_card_payment(dp)
+# ⭐ ارسال همگانی پیام مدیر (/broadcast) — قبل از سایر روترها تا محتوای ارسالی
+# مدیر در state ارسال همگانی توسط هندلرهای دیگر گرفته نشود.
+from broadcast_handlers import broadcast_router
+dp.include_router(broadcast_router)
 # ⭐ بخش‌های مستقل جدید منوی اصلی (۱۴۰۵/۰۷) — قبل از روتر اصلی تا دکمه‌هایشان
 # از هر state قابل دسترس باشد؛ هیچ‌کدام به سامانهٔ قضایی درخواست نمی‌فرستند.
 from damages_handlers import damages_router, cpi_reminder_loop
