@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pending_jobs.json")
 FAILED_KEEP_DAYS = 7
+# تسکی که با ری‌استارت ربات یا کرش مرورگر نیمه‌کاره ماند، تا این تعداد بار خودکار
+# دوباره در صف قرار می‌گیرد؛ پس از آن برای بررسی مدیر در /pending می‌ماند.
+MAX_AUTO_RETRIES = 2
 
 # این تسک‌ها ماندگاری/بازیابی مخصوص خودشان را دارند یا فوری‌اند
 _SKIP_TASK_TYPES = frozenset({
@@ -138,15 +141,42 @@ def mark_running(job):
         _save()
 
 
+def _gate_log(jid, status: str):
+    try:
+        import sana_gate
+        sana_gate.log_job_status(jid, status)
+    except Exception:
+        pass
+
+
 def done(job):
     """پایان پردازش (موفق یا با خطایی که خود سناریو به کاربر اعلام کرده)."""
     jid = job.get("_jid") if isinstance(job, dict) else None
     if jid and _state["jobs"].pop(jid, None) is not None:
         _save()
+        _gate_log(jid, "done")
 
 
-# به صف ماندگار sana_gate منتقل شد — آن‌جا نگهداری می‌شود
-forget = done
+def forget(job):
+    """به صف ماندگار sana_gate منتقل شد — آن‌جا نگهداری می‌شود (پایان پردازش نیست)."""
+    jid = job.get("_jid") if isinstance(job, dict) else None
+    if jid and _state["jobs"].pop(jid, None) is not None:
+        _save()
+
+
+def retry_interrupted(job, reason: str) -> bool:
+    """تسکی که با کرش مرورگر/ری‌استارت نیمه‌کاره ماند: True یعنی دوباره در صف
+    بگذار (تا MAX_AUTO_RETRIES بار)؛ False یعنی به فهرست ناموفق رفت."""
+    if not is_journaled(job):
+        return False
+    retries = int(job.get("_auto_retries") or 0)
+    if retries >= MAX_AUTO_RETRIES:
+        fail(job, f"{reason} (پس از {retries} تلاش خودکار)")
+        return False
+    job["_auto_retries"] = retries + 1
+    logger.warning(f"[PENDING_JOBS] {label(job)} کاربر {job.get('user_id')} نیمه‌کاره ماند ({reason}) — "
+                   f"تلاش خودکار {retries + 1}/{MAX_AUTO_RETRIES}")
+    return True
 
 
 def fail(job, error: str):
@@ -163,12 +193,15 @@ def fail(job, error: str):
     })
     _prune_failed()
     _save()
+    _gate_log(jid, "failed")
 
 
 def restore() -> tuple[list, list]:
-    """استارت ربات: (تسک‌های شروع‌نشده برای ورود دوباره به صف، تسک‌های قطع‌شده).
+    """استارت ربات: (تسک‌هایی که دوباره وارد صف می‌شوند، تسک‌های قطع‌شده حین پردازش).
 
-    تسک‌های «running» (وسط پردازش قطع شده‌اند) به فهرست ناموفق منتقل می‌شوند.
+    تسک‌های «running» (وسط پردازش قطع شده‌اند) هم — چون ثبتشان کامل نشده —
+    تا MAX_AUTO_RETRIES بار خودکار دوباره در صف قرار می‌گیرند؛ بیش از آن به
+    فهرست ناموفق (/pending) می‌روند.
     """
     queued, interrupted = [], []
     for jid, entry in sorted(_state["jobs"].items(), key=lambda kv: kv[1].get("queued_at") or ""):
@@ -178,9 +211,10 @@ def restore() -> tuple[list, list]:
             interrupted.append(job)
         else:
             queued.append(job)
-    for job in interrupted:
-        fail(job, "ری‌استارت/کرش ربات حین پردازش این درخواست")
-    return queued, interrupted
+    retried = [j for j in interrupted
+               if retry_interrupted(j, "ری‌استارت/کرش ربات حین پردازش این درخواست")]
+    # قطع‌شده‌ها قدیمی‌ترند و جلوتر از بقیه دوباره ثبت می‌شوند
+    return retried + queued, interrupted
 
 
 def failed_items() -> list:

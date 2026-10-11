@@ -3290,6 +3290,33 @@ async def _sign_dispatcher(bot: Bot):
             runtime_state.sign_job_queue.task_done()
 
 
+async def _requeue_interrupted_job(data: dict, bot: Bot) -> bool:
+    """⭐ تسک ثبتی که مرورگر وسطش کرش کرد/بسته شد: ثبت نشده است — دوباره (جلوتر
+    از بقیه) در صف قرار می‌گیرد و به کاربر گفته می‌شود نیازی به اقدام مجدد نیست.
+    False یعنی سقف تلاش خودکار پر شده و مورد برای مدیر در /pending است."""
+    reason = "کرش/بسته‌شدن مرورگر حین ثبت"
+    if not pending_jobs.retry_interrupted(data, reason):
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"❌ درخواست {pending_jobs.label(data)} کاربر {data.get('user_id')} پس از چند "
+                f"تلاش به‌دلیل {reason} ثبت نشد — بررسی و ثبت مجدد: /pending")
+        except Exception:
+            pass
+        return True   # در فهرست ناموفق است؛ «انجام‌شده» حساب نشود
+    logging.warning(f"[WORKER] {reason} — تسک کاربر {data.get('user_id')} دوباره در صف قرار گرفت.")
+    await runtime_state.priority_job_queue.put(data)
+    try:
+        await bot.send_message(
+            data["user_id"],
+            "🔄 ارتباط ربات با سامانه حین ثبت درخواست شما قطع شد و درخواست ثبت نشد.\n\n"
+            "درخواست شما محفوظ است و خودکار دوباره ثبت می‌شود؛ نیازی به ارسال مجدد "
+            "اطلاعات یا پرداخت دوباره نیست. اگر پیام خطای قبلی دریافت کرده‌اید، آن را نادیده بگیرید.")
+    except Exception:
+        pass
+    return True
+
+
 async def browser_worker(bot: Bot):
     runtime_state.playwright_instance = await async_playwright().start()
     try:
@@ -3336,6 +3363,10 @@ async def browser_worker(bot: Bot):
                 # خودکار تکرار نمی‌شود و برای بررسی مدیر در /pending می‌ماند
                 pending_jobs.mark_running(data)
                 sana_gate.job_started()
+                # ⭐ مرورگر حین ثبت کرش کرد/بسته شد؟ (سناریوها خطا را خودشان می‌گیرند
+                # و برمی‌گردند — بدون این بررسی، درخواستِ ثبت‌نشده «انجام‌شده» حساب می‌شد)
+                browser_before = runtime_state.browser
+                browser_lost = False
                 try:
                     # ⭐ PRE_CHECK هرگز نباید حلقهٔ اصلی را مسدود کند — با
                     # await معمولی پردازش نمی‌شود، بلافاصله به‌صورت هم‌زمان
@@ -3362,13 +3393,22 @@ async def browser_worker(bot: Bot):
                         )
                         if await ensure_browser_alive(bot):
                             # یک بار دیگر همین تسک را با مرورگر تازه امتحان کن
+                            browser_before = runtime_state.browser
                             await process_task(data, bot)
+                        elif pending_jobs.is_journaled(data):
+                            browser_lost = True
                         else:
                             raise
                     else:
                         raise
                 finally:
                     sana_gate.job_finished()
+
+                if not browser_lost and pending_jobs.is_journaled(data):
+                    browser_lost = _is_browser_dead() or runtime_state.browser is not browser_before
+                if browser_lost and await _requeue_interrupted_job(data, bot):
+                    source_queue.task_done()
+                    continue
 
                 pending_jobs.done(data)
                 source_queue.task_done()

@@ -203,13 +203,58 @@ def test_journal_survives_restart():
     pending_jobs._state.update({"jobs": {}, "failed": []})
     pending_jobs.load()
     queued, interrupted = pending_jobs.restore()
-    assert [j["user_id"] for j in queued] == [7]
+    # قطع‌شده حین پردازش ثبت نشده → خودکار دوباره در صف، جلوتر از بقیه
+    assert [j["user_id"] for j in queued] == [8, 7]
     assert [j["user_id"] for j in interrupted] == [8]
-    assert [it["user_id"] for it in pending_jobs.failed_items()] == [8]
+    assert queued[0]["_auto_retries"] == 1
+    assert not pending_jobs.failed_items()
     assert pending_jobs.user_ids() == {"7", "8"}
 
+
+def test_interrupted_job_goes_to_pending_after_retry_limit():
+    job = {"task_type": "LAVAYEH_SUBMIT", "user_id": 7}
+    pending_jobs.track(job)
+    for _ in range(pending_jobs.MAX_AUTO_RETRIES):
+        assert pending_jobs.retry_interrupted(job, "کرش مرورگر")
+    assert not pending_jobs.retry_interrupted(job, "کرش مرورگر")
+    assert [it["user_id"] for it in pending_jobs.failed_items()] == [7]
     job = pending_jobs.pop_failed(pending_jobs.failed_items()[0]["jid"])
-    assert job["user_id"] == 8 and not pending_jobs.failed_items()
+    assert job["user_id"] == 7 and not pending_jobs.failed_items()
+
+
+def test_released_job_not_shown_as_submitted_until_done(monkeypatch):
+    """باگ: پس از آزاد شدن صف (یا «ثبت در سامانه» مدیر) مورد «ثبت‌شده» نمایش داده
+    می‌شد، حتی اگر ربات/مرورگر قبل از ثبت واقعی قطع می‌شد."""
+    monkeypatch.setattr(sana_gate, "is_working_hours", lambda now=None: False)
+    sana_gate._state["offhours_log"] = []
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+
+    async def run():
+        runtime_state.job_queue = runtime_state._SignRoutingQueue()
+        job = {"task_type": "LAVAYEH_SUBMIT", "user_id": 7}
+        runtime_state.job_queue.put_nowait(job)
+        job = runtime_state.job_queue.get_nowait()
+        await sana_gate.defer(job, bot)
+        assert [e["status"] for e in sana_gate._state["offhours_log"]] == ["queued"]
+
+        assert await sana_gate.submit_user_now(7) == 1
+        status = sana_gate._state["offhours_log"][0]["status"]
+        assert status == "admin_submitted"
+        assert "هنوز ثبت نشده" in sana_gate._STATUS_FA[status]
+
+        # ری‌استارت پیش از ثبت: دوباره در صف، همان ردیف سابقه
+        queued, _ = pending_jobs.restore()
+        assert [j["user_id"] for j in queued] == [7]
+        await sana_gate.defer(queued[0], bot)
+        assert [e["status"] for e in sana_gate._state["offhours_log"]] == ["queued"]
+
+        # فقط پایان واقعی پردازش «پردازش شد» می‌شود
+        await sana_gate.release(bot)
+        released = runtime_state.job_queue.get_nowait()
+        pending_jobs.done(released)
+        assert [e["status"] for e in sana_gate._state["offhours_log"]] == ["done"]
+    asyncio.run(run())
 
 
 def test_routing_queue_journals_and_defer_hands_over(monkeypatch):
