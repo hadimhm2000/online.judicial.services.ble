@@ -378,6 +378,9 @@ async def on_lavayeh_sign_submit_success(bot: Bot, user_id: int, row_idx: int, s
             await mark_case_signed_by_tracking(user_id, svc_type, tracking_code)
         except Exception as panel_err:
             logging.warning(f"[SIGN] خطا در ثبت وضعیت امضای پرونده لایحه در پنل: {panel_err}")
+        # ⭐ امضا کامل شد → فقط حالا چاپ نهایی روز بعد ارسال می‌شود (final_print.py)
+        from final_print import mark_signed as _fp_mark_signed
+        _fp_mark_signed(user_id, sign_info.get("tracking_code", ""), sign_info.get("bulk_item_tc") or "")
         await state.clear()
         await _bulk_sign_finished(bot, user_id, _ended_sign, signed=True)
     else:
@@ -960,6 +963,9 @@ async def on_ezhhar_sign_submit_success(bot: Bot, user_id: int, row_idx: int, st
             await mark_case_signed_by_tracking(user_id, svc_type, tracking_code)
         except Exception as panel_err:
             logging.warning(f"[EZHHAR_SIGN] خطا در ثبت وضعیت امضای پرونده اظهارنامه در پنل: {panel_err}")
+        # ⭐ امضا کامل شد → فقط حالا چاپ نهایی روز بعد ارسال می‌شود (final_print.py)
+        from final_print import mark_signed as _fp_mark_signed
+        _fp_mark_signed(user_id, sign_info.get("tracking_code", ""), sign_info.get("bulk_item_tc") or "")
         await state.clear()
         await _bulk_sign_finished(bot, user_id, _ended_sign, signed=True)
     else:

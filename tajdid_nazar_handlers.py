@@ -2122,6 +2122,14 @@ async def _handle_query_persons(message: Message, state: FSMContext, bot: Bot, s
             await _show_person_selection_list(bot, user_id, remaining_reindexed, [], section, data)
             return
 
+    # ⭐ ۱۴۰۵/۰۷: استعلام افراد پرونده همان لحظه از سامانه گرفته می‌شود —
+    # فقط ۱۴ الی ۲۲؛ کاربر در همین مرحله می‌ماند و می‌تواند کدملی را دستی وارد کند
+    import sana_gate
+    closed_text = sana_gate.live_inquiry_closed_text(user_id)
+    if closed_text:
+        await message.answer(closed_text)
+        return
+
     # نام step در سامانه
     from tajdid_nazar_scenario import (
         APPELLANT_STEP_MAP, APPELLEE_STEP_MAP,
@@ -3976,6 +3984,9 @@ async def on_tn_sign_submit_success(bot: Bot, user_id: int, row_idx: int, state:
             await mark_case_signed_by_tracking(user_id, "TAJDID_NAZAR", tracking_code)
         except Exception as panel_err:
             logging.warning(f"[TN-SIGN] خطا در ثبت وضعیت امضای پرونده در پنل: {panel_err}")
+        # ⭐ امضا کامل شد → فقط حالا چاپ نهایی روز بعد ارسال می‌شود (final_print.py)
+        from final_print import mark_signed as _fp_mark_signed
+        _fp_mark_signed(user_id, sign_info.get("tracking_code", ""))
         await state.clear()
     else:
         all_persons = sign_info.get("sign_persons", [])

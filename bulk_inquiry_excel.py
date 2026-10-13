@@ -278,6 +278,8 @@ async def enrich_bulk_inquiry_items(valid_items: list, user_id: int = None, bot=
     cart_items = []
     failed_items = []
     session_broken = False
+    import sana_gate
+    live_closed_text = sana_gate.live_inquiry_closed_text(user_id)
 
     for it in valid_items:
         kind = it["kind"]
@@ -313,6 +315,16 @@ async def enrich_bulk_inquiry_items(valid_items: list, user_id: int = None, bot=
                 "doc_category": doc_category, "doc_subcategory": doc_subcategory,
                 "need_attachments": False, "fee": get_fee("کد رهگیری", False),
                 "total_attachments": 0, "row_index": row_idx,
+            })
+            continue
+
+        # ⭐ ۱۴۰۵/۰۷: استعلام تعداد برگ پیوست فقط ۱۴ الی ۲۲ (sana_gate)
+        if live_closed_text:
+            failed_items.append({
+                "row_index": row_idx,
+                "description": f"کدرهگیری {tracking_code} ({doc_category})",
+                "error": "استعلام تعداد برگ پیوست فقط از ساعت ۱۴ الی ۲۲ فعال است "
+                         "(«دریافت پیوست‌ها؟» را خیر بزنید یا در این ساعت ارسال کنید)",
             })
             continue
 
