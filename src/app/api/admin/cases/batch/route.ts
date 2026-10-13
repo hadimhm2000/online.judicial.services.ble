@@ -1,6 +1,7 @@
 import { db } from '@/lib/db';
 import { NextRequest, NextResponse } from 'next/server';
 import { appendNewCase } from '@/lib/google-sheets';
+import { statusChangeData } from '@/lib/admin-case-update';
 
 type BatchAction = 'APPROVE_PAYMENTS' | 'CHANGE_STATUS' | 'MOVE_TO_READY' | 'CONFIRM_SEND_ALL';
 
@@ -71,12 +72,8 @@ export async function POST(request: NextRequest) {
             break;
 
           case 'CHANGE_STATUS':
-            updateData = { status: newStatus! };
-            // Clear error fields when resolving a failed case
-            if (newStatus === 'COMPLETED' && c.status === 'FAILED') {
-              updateData.errorDetails = null;
-              updateData.errorStep = null;
-            }
+            // ⭐ v2.0 — فلگ «آماده ارسال» و خطاها همراه وضعیت هم‌گام می‌شوند
+            updateData = statusChangeData(c, newStatus!);
             adminActionType = 'STATUS_CHANGE';
             activityAction = 'BATCH_STATUS_CHANGE';
             activityDetails = adminNote || `تغییر دسته‌ای وضعیت از ${c.status} به ${newStatus} - ${c.fullName}`;

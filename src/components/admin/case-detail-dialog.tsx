@@ -33,6 +33,7 @@ import {
 import { cn } from '@/lib/utils';
 import type { CaseItem } from './cases-table';
 import { computeCaseProfit } from '@/lib/profit';
+import CaseAdminControls from './case-admin-controls';
 
 export interface AdminAction {
   id: string;
@@ -61,6 +62,8 @@ interface CaseDetailDialogProps {
   onAddCredit?: (c: CaseItem) => void;
   onConfirmSend?: (c: CaseItem) => void;
   onDeleteCase?: (c: CaseItem) => void;
+  /** ⭐ v2.0 — پس از تغییر دستی مدیر (دسته، امضا، پرداخت، مبلغ) */
+  onCaseUpdated?: (c: CaseItem) => void;
   adminActions?: AdminAction[];
 }
 
@@ -125,6 +128,8 @@ const actionTypeLabels: Record<string, string> = {
   STATUS_CHANGE: 'تغییر وضعیت',
   MOVE_TO_READY: 'انتقال به آماده ارسال',
   CONFIRM_SEND: 'تأیید ارسال',
+  SIGNATURE_CHANGE: 'تغییر وضعیت امضا',
+  FEE_ADJUSTMENT: 'اصلاح مبلغ',
 };
 
 function formatToman(n: number): string {
@@ -164,6 +169,7 @@ export default function CaseDetailDialog({
   onAddCredit,
   onConfirmSend,
   onDeleteCase,
+  onCaseUpdated,
   adminActions = [],
 }: CaseDetailDialogProps) {
   const [notes, setNotes] = useState<CaseNote[]>([]);
@@ -377,6 +383,13 @@ export default function CaseDetailDialog({
             )}
 
             <div className="divider-gradient" />
+
+            {onCaseUpdated && (
+              <>
+                <CaseAdminControls caseItem={caseItem} onUpdated={onCaseUpdated} />
+                <div className="divider-gradient" />
+              </>
+            )}
 
             <div>
               <h4 className="text-sm font-semibold mb-3 flex items-center gap-2">
