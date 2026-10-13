@@ -156,14 +156,10 @@ class WorkingHoursMiddleware(BaseMiddleware):
 
         # ⭐ صف خارج از ساعت کاری / قطعی سامانه (sana_gate.py): گرفتن اطلاعات و
         # پرداخت همیشه آزاد است و ورود به سامانه در sana_gate نوبت‌دهی می‌شود.
-        # فقط استعلام (که همان لحظه به سامانه نیاز دارد) وقتی دروازه بسته است
-        # شروع نمی‌شود. پرداخت موفق هرگز مسدود نمی‌شود.
-        if sana_gate.is_open() or event.successful_payment:
-            return await handler(event, data)
-        if not sana_gate.is_inquiry_context(event, data.get("raw_state")):
-            return await handler(event, data)
-        await event.answer(sana_gate.closed_inquiry_text())
-        return
+        # ⭐ ۱۴۰۵/۰۷: استعلام‌ها هم دیگر مسدود نمی‌شوند و به صف ماندگار می‌روند؛
+        # فقط استعلام تعداد برگ پیوست و استعلام افراد پرونده (دعاوی اعتراضی)
+        # خارج از ساعت کاری پنل پیام می‌دهند (sana_gate.live_inquiry_closed_text).
+        return await handler(event, data)
 
 router.message.middleware(WorkingHoursMiddleware())
 
@@ -1705,6 +1701,13 @@ async def process_attachments_opt(message: types.Message, state: FSMContext):
             await state.set_state(Form.waiting_for_doc_category)
         return
     need_attachments = "بله" in message.text
+    # ⭐ ۱۴۰۵/۰۷: استعلام تعداد برگ پیوست همان لحظه از سامانه گرفته می‌شود —
+    # فقط در ساعت کاری پنل؛ کاربر می‌تواند همین‌جا «بدون پیوست» را انتخاب کند
+    if need_attachments:
+        closed_text = sana_gate.live_inquiry_closed_text(message.from_user.id)
+        if closed_text:
+            await message.answer(closed_text, reply_markup=attachments_kb)
+            return
     await state.update_data(need_attachments=need_attachments)
     
     data = await state.get_data()

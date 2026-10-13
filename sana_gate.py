@@ -20,8 +20,10 @@ sana_gate.py — دروازهٔ ورود به سامانهٔ قضایی (صف خ
      رفع قطعی ثبت می‌گردد».
    - /outage_off : صف آزاد می‌شود و ثبت‌ها به‌ترتیب انجام می‌شوند.
 
-استعلام‌ها (که همان لحظه به سامانه نیاز دارند) وقتی دروازه بسته است شروع
-نمی‌شوند — is_inquiry_context را ببینید.
+⭐ ۱۴۰۵/۰۷ — استعلام‌ها هم خارج از ساعت کاری/در قطعی دریافت می‌شوند و مثل ثبت‌ها
+به صف ماندگار می‌روند (پیام gate.inquiry_*_queued). فقط دو بخشی که همان لحظه
+به سامانه نیاز دارند — استعلام تعداد برگ پیوست و استعلام افراد پرونده در دعاوی
+اعتراضی — فقط در ساعت کاری تعریف‌شده در پنل فعال‌اند (live_inquiry_closed_text).
 
 تسک‌های امضا (SIGN_TASK_TYPES) هرگز در صف نمی‌روند: کد امضای موقت مهلت کوتاهی
 دارد و در sign dispatcher جداگانه پردازش می‌شود.
@@ -91,6 +93,23 @@ DEFAULT_TEXTS = {
         "استعلام فقط در ساعت کاری ({start} الی {end}) انجام می‌شود.\n"
         "ثبت لایحه، اظهارنامه، دادخواست و سایر خدمات همچنان فعال است و "
         "ابتدای ساعت کاری بعدی ثبت می‌گردد."
+    ),
+    "gate.inquiry_offhours_queued": (
+        "🕑 *استعلام شما خارج از ساعت کاری دریافت شد.*\n\n"
+        "استعلام شما در نوبت می‌باشد و ابتدای ساعت کاری بعدی (ساعت {start}) "
+        "به‌صورت خودکار انجام و نتیجه برای شما ارسال می‌گردد.\n"
+        "نیازی به ارسال مجدد اطلاعات یا پرداخت نیست. باتشکر"
+    ),
+    "gate.inquiry_outage_queued": (
+        "⚠️ *سامانه قضایی در حال حاضر قطع می‌باشد.*\n\n"
+        "استعلام شما در نوبت می‌باشد و بلافاصله پس از رفع قطعی انجام و نتیجه "
+        "برای شما ارسال می‌گردد.\n"
+        "نیازی به ارسال مجدد اطلاعات یا پرداخت نیست. باتشکر"
+    ),
+    "gate.live_inquiry_window": "⛔️ این بخش از ساعت {start} الی {end} فعال است.",
+    "gate.live_inquiry_closed_today": (
+        "⛔️ این بخش فقط در ساعت کاری فعال است؛ امروز تعطیل است.\n"
+        "شروع ساعت کاری بعدی: {start}"
     ),
     "gate.inquiry_closed_outage": (
         "⚠️ *سامانه قضایی در حال حاضر قطع می‌باشد.*\n\n"
@@ -247,6 +266,25 @@ def is_inquiry_context(message: types.Message, raw_state: str | None) -> bool:
     return raw_state in INQUIRY_STATES
 
 
+# ⭐ ۱۴۰۵/۰۷ — بخش‌هایی که همان لحظه از سامانه استعلام می‌گیرند (تعداد برگ
+# پیوست، افراد پرونده در دعاوی اعتراضی) فقط در ساعت کاری پنل فعال‌اند و پیام
+# همان ساعت‌های تعریف‌شده در پنل را نشان می‌دهد.
+
+def live_inquiry_closed_text(user_id=None, now: datetime.datetime | None = None) -> str | None:
+    """None اگر استعلام لحظه‌ای الان مجاز است؛ وگرنه متن پیام به کاربر.
+    مجاز = دروازه باز (ساعت کاری پنل و بدون قطعی). مدیر همیشه مجاز است."""
+    if ADMIN_ID and user_id is not None and str(user_id) == str(ADMIN_ID):
+        return None
+    if is_outage():
+        return _text("gate.inquiry_closed_outage")
+    if is_working_hours(now):
+        return None
+    start, end = working_hours.today_bounds(now)
+    if start == "—":
+        return _fmt("gate.live_inquiry_closed_today", start=working_hours.next_start_label(now))
+    return _fmt("gate.live_inquiry_window", start=start, end=end)
+
+
 def closed_inquiry_text() -> str:
     if is_outage():
         return _text("gate.inquiry_closed_outage")
@@ -275,9 +313,19 @@ async def defer(job: dict, bot: Bot):
     logger.info(
         f"[SANA_GATE] تسک {job.get('task_type') or job.get('query_type')} کاربر {uid} "
         f"به صف رفت ({reason}) — اندازهٔ صف: {deferred_count()}")
-    if not uid:
-        return
-    if reason == "outage":
+    if not uid or job.get("final_print"):
+        return   # چاپ نهایی خودکار است؛ پیام «در نوبت» به کاربر لازم نیست
+    if _is_inquiry_job(job):
+        # سبد چندتایی: یک پیام برای همهٔ استعلام‌های پشت‌سرهم همان کاربر کافی است
+        now_ts = datetime.datetime.now(TEHRAN_TZ).timestamp()
+        if now_ts - _inquiry_notified_at.get(uid, 0) < INQUIRY_NOTICE_DEDUP_SECONDS:
+            return
+        _inquiry_notified_at[uid] = now_ts
+        if reason == "outage":
+            text = _text("gate.inquiry_outage_queued")
+        else:
+            text = _fmt("gate.inquiry_offhours_queued", start=working_hours.next_start_label())
+    elif reason == "outage":
         text = _text("gate.outage_queued")
     else:
         text = _fmt("gate.offhours_queued", start=working_hours.next_start_label())
@@ -285,6 +333,16 @@ async def defer(job: dict, bot: Bot):
         await bot.send_message(uid, text)
     except Exception as e:
         logger.warning(f"[SANA_GATE] خطا در اطلاع به کاربر {uid}: {e}")
+
+
+INQUIRY_NOTICE_DEDUP_SECONDS = 120
+_inquiry_notified_at: dict = {}
+
+
+def _is_inquiry_job(job: dict) -> bool:
+    """تسک استعلام پولی (کد رهگیری/شماره تماس/کد ملی) — نه ثبت، نه چاپ نهایی."""
+    return (not job.get("task_type") and bool(job.get("query_type"))
+            and not job.get("final_print"))
 
 
 def _forget_journal(job: dict):
