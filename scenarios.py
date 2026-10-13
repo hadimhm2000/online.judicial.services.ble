@@ -2202,6 +2202,9 @@ async def process_task(data, bot: Bot):
                                     pass
                                 if _print_attempt < 2:
                                     continue
+                                # ⭐ پس از لاگین مجدد هم صفحهٔ چاپ منقضی بود؛ صفحهٔ اعلان
+                                # انقضا هرگز به‌عنوان PDF برای کاربر فرستاده نمی‌شود.
+                                raise RuntimeError("صفحهٔ چاپ پس از لاگین مجدد هم انقضای نشست را نشان داد")
                             await print_page.pdf(path=pdf_path, format="A4")
                             await print_page.close()
                             break

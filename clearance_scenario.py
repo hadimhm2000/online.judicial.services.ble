@@ -38,6 +38,7 @@ from aiogram import Bot
 import runtime_state
 from browser_helpers import (
     _consume_session_lost_flag, handle_session_expired, is_concurrent_login_text,
+    print_page_session_expired,
     wait_for_angular_idle, wait_for_sana_inquiry_loading)
 from config import temp_path
 from error_catalog import normalize
@@ -643,6 +644,15 @@ async def _print_receipt(page, rid: str, bot: Bot, user_id: int) -> str:
             txt = await _popup_text(shot_page)
             if await _session_lost(shot_page, txt):
                 await _relogin(shot_page, bot, user_id)
+                continue
+            if target is not None and await print_page_session_expired(target):
+                # ⭐ تب چاپ به‌جای رسید فقط اعلان انقضای نشست را دارد: بستن تب،
+                # لاگین مجدد مدیر و زدن دوبارهٔ «چاپ رسید»
+                try:
+                    await target.close()
+                except Exception:
+                    pass
+                await _relogin(page, bot, user_id)
                 continue
             try:
                 await shot_page.pdf(path=pdf_path, format="A4", print_background=True)

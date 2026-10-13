@@ -108,6 +108,35 @@ def is_concurrent_login_text(text) -> bool:
     return any(p in norm for p in CONCURRENT_LOGIN_PHRASES)
 
 
+# ⭐ صفحهٔ چاپ (مثلاً PetitionPrint.aspx) وقتی نشست منقضی شده باشد، به‌جای سند
+# فقط یک کادر قرمز با همین متن ورود همزمان نشان می‌دهد (پاپ‌آپ نیست، یک div
+# ساده داخل فرم است). چون check_body_text روی صفحات چاپ False است، این صفحه
+# قبلاً تشخیص داده نمی‌شد و همان به‌عنوان PDF برای کاربر فرستاده می‌شد.
+# برای جلوگیری از غلط‌مثبت روی متن اسناد حقوقی، فقط وقتی تشخیص داده می‌شود که
+# کل متن صفحه کوتاه باشد و هم عبارت ورود همزمان و هم «منقضی» را داشته باشد.
+PRINT_SESSION_NOTICE_MAX_CHARS = 600
+
+
+def is_print_session_expired_text(body_text) -> bool:
+    """آیا متن کامل صفحهٔ چاپ، همان اعلان «ورود در صفحه یا رایانه‌ای دیگر … منقضی شده» است؟"""
+    if not body_text:
+        return False
+    from error_catalog import normalize
+    norm = normalize(body_text)
+    if not norm or len(norm) > PRINT_SESSION_NOTICE_MAX_CHARS:
+        return False
+    return is_concurrent_login_text(norm) and "منقضی" in norm
+
+
+async def print_page_session_expired(page) -> bool:
+    """تشخیص اعلان انقضای نشست روی صفحهٔ چاپ (پیش از گرفتن PDF)."""
+    try:
+        body_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
+    except Exception:
+        return False
+    return is_print_session_expired_text(body_text)
+
+
 async def install_session_watcher(context=None, page=None) -> None:
     """نصب ناظر پاپ‌آپ ورود همزمان روی context (برای ناوبری‌های بعدی) و/یا صفحهٔ فعلی."""
     if context is not None:
@@ -901,6 +930,21 @@ async def check_and_handle_expiry(page, bot: Bot, user_id: int, check_body_text:
         await install_session_watcher(page=page)
         if await detect_concurrent_login_popup(page):
             is_expired = "concurrent_login_popup"
+
+    # ⭐ صفحهٔ چاپی که به‌جای سند فقط اعلان «ورود در صفحه یا رایانه‌ای دیگر» را
+    # دارد: این تب بسته می‌شود (هیچ‌وقت از آن PDF گرفته نمی‌شود)، به مدیر برای
+    # لاگین مجدد اطلاع داده می‌شود و فراخوان‌کننده پس از لاگین دوباره «چاپ» را
+    # می‌زند (True برمی‌گردد).
+    if not is_expired and await print_page_session_expired(page):
+        logging.warning(f"⚠️ صفحهٔ چاپ اعلان انقضای نشست را نشان می‌دهد — بستن تب و درخواست لاگین مجدد (URL: {page.url})")
+        if page is not runtime_state.sana_page:
+            try:
+                await page.close()
+            except Exception:
+                pass
+            await handle_session_expired(bot, user_id, page=runtime_state.sana_page)
+            return True
+        is_expired = "print_session_notice"
 
     if is_expired:
         logging.warning(f"⚠️ انقضای/اعلان نشست شناسایی شد (نوع: {is_expired}) — شروع فرآیند لاگین مجدد مدیر...")
