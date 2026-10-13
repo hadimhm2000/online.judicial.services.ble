@@ -105,6 +105,9 @@ if not CARD_PAY_BANK:
 CARD_PAY_BRAND = os.environ.get("CARD_PAY_BRAND", "خدمات قضایی آنلاین")
 # callback (پیش‌فرض، پایدار) | copy_text (دکمهٔ کپی مستقیم؛ اگر بله رد کند خودکار به callback برمی‌گردد)
 CARD_PAY_COPY_MODE = os.environ.get("CARD_PAY_COPY_MODE", "callback").strip().lower()
+# ⭐ فاکتور آخر کار دعاوی اعتراضی و دادخواست (چک): اگر مبلغ از این سقف (تومان)
+# بیشتر باشد، درگاه بله ارسال نمی‌شود و فقط کارت‌به‌کارت فعال است. 0 = غیرفعال
+CARD_ONLY_ABOVE_TOMAN = int(os.environ.get("CARD_ONLY_ABOVE_TOMAN", "1000000"))
 
 # ================= تنظیمات ارزش منطقه‌ای =================
 # کلید API نشان برای جستجوی مکان (نوشته شود در .env)

@@ -3582,12 +3582,20 @@ async def send_tajdid_nazar_result(
                 "prices": [{"label": "دعوی اعتراضی", "amount": final_fee}],
             }
             from wallet import prepare_invoice as _wl_prep; invoice_data = _wl_prep(invoice_data)  # ⭐ کسر خودکار موجودی کیف پول
-            async with session.post(invoice_url, json=invoice_data) as resp:
-                result = await resp.json()
-                if not result.get("ok"):
-                    logging.error(f"[TN-PAYMENT] خطای sendInvoice: {result}")
-                    raise Exception(result.get("description", "خطا در ارسال فاکتور"))
-                from card_payment import track_invoice as _cp_track; _cp_track(invoice_data)  # ⭐ کارت‌به‌کارت پس از ۲۰ دقیقه
+            # ⭐ بالای ۱,۰۰۰,۰۰۰ تومان: درگاه ارسال نمی‌شود، فقط کارت‌به‌کارت
+            from card_payment import card_only_required as _cp_card_only
+            card_only = _cp_card_only(invoice_data)
+            if card_only:
+                from card_payment import track_card_only_invoice as _cp_track_card
+                _cp_track_card(invoice_data)
+                logging.info(f"[TN-PAYMENT] مبلغ بالای سقف — فقط کارت‌به‌کارت (user={user_id})")
+            else:
+                async with session.post(invoice_url, json=invoice_data) as resp:
+                    result = await resp.json()
+                    if not result.get("ok"):
+                        logging.error(f"[TN-PAYMENT] خطای sendInvoice: {result}")
+                        raise Exception(result.get("description", "خطا در ارسال فاکتور"))
+                    from card_payment import track_invoice as _cp_track; _cp_track(invoice_data)  # ⭐ کارت‌به‌کارت پس از ۲۰ دقیقه
     except Exception as e:
         logging.error(f"[TN-PAYMENT] خطا در ارسال فاکتور بله: {e}", exc_info=True)
         await bot.send_message(user_id, "⚠️ خطا در ساخت فاکتور پرداخت. لطفاً کمی بعد دوباره تلاش کنید.")
@@ -3595,6 +3603,9 @@ async def send_tajdid_nazar_result(
 
     await bot.send_message(
         user_id,
+        ("⏳ مشخصات کارت برای واریز ارسال می‌شود.\n\n"
+         "پس از تایید رسید توسط پشتیبانی، مراحل بعدی به‌صورت خودکار آغاز می‌شود.")
+        if card_only else
         "⏳ فاکتور پرداخت ارسال شد.\n\n"
         "پس از پرداخت موفق، ربات به‌صورت خودکار متوجه شده و مراحل بعدی را آغاز می‌کند.",
         reply_markup=ReplyKeyboardRemove()

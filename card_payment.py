@@ -95,6 +95,7 @@ from config import (
     CARD_PAY_EXPIRE_HOURS,
     CARD_PAY_HOLDER,
     CARD_PAY_NUMBER,
+    CARD_ONLY_ABOVE_TOMAN,
     BASE_DIR,
 )
 
@@ -107,6 +108,8 @@ _STORE_FILE = os.path.join(BASE_DIR, "data", "card_payments.json")
 _LOOP_INTERVAL = 30            # ثانیه — فاصلهٔ بررسی سررسید یادآورها
 _ARM_SECONDS = 15 * 60         # اعتبار دکمهٔ «ارسال تصویر رسید»
 _FAKE_CHARGE_PREFIX = "CARD-"  # شناسهٔ پرداخت‌های تاییدشدهٔ کارت‌به‌کارت
+_CARD_ONLY_FIRST_DELAY = 5     # ثانیه — فاکتور فقط‌کارت پس از ست‌شدن state پرداخت ارسال شود
+_CARD_ONLY_STATE_WAIT = 5 * 60  # تا این مدت منتظر state انتظار پرداخت کاربر می‌مانیم
 
 # وضعیت‌ها
 S_INVOICE = "invoice"          # فاکتور ارسال شد، منتظر پرداخت درگاه
@@ -265,12 +268,34 @@ def _entries_for_user(uid: int, statuses=_ACTIVE) -> list[dict]:
 # ═════════════════════════════════════════════════════════════════════════
 # ۱) API عمومی — ثبت فاکتور
 # ═════════════════════════════════════════════════════════════════════════
-def track_invoice(invoice_data: dict) -> None:
+def _invoice_rial(invoice_data: dict) -> int:
+    try:
+        return int(sum(int(p.get("amount", 0)) for p in (invoice_data.get("prices") or [])))
+    except Exception:
+        return 0
+
+
+def card_only_required(invoice_data: dict) -> bool:
+    """⭐ آیا این فاکتور (پس از کسر کیف پول) از سقف CARD_ONLY_ABOVE_TOMAN بیشتر است؟
+    در این صورت درگاه بله ارسال نمی‌شود و فقط کارت‌به‌کارت فعال است."""
+    if not CARD_PAY_ENABLED or CARD_ONLY_ABOVE_TOMAN <= 0:
+        return False
+    return _invoice_rial(invoice_data) > CARD_ONLY_ABOVE_TOMAN * 10
+
+
+def track_card_only_invoice(invoice_data: dict) -> None:
+    """⭐ به‌جای sendInvoice صدا زده می‌شود: کارت‌به‌کارت چند ثانیه بعد (پس از ست‌شدن
+    state انتظار پرداخت توسط فراخوان) ارسال می‌شود، نه پس از ۲۰ دقیقه."""
+    track_invoice(invoice_data, card_only=True)
+
+
+def track_invoice(invoice_data: dict, card_only: bool = False) -> None:
     """پس از هر sendInvoice موفق صدا زده می‌شود. هرگز exception پرتاب نمی‌کند.
 
     Args:
         invoice_data: همان دیکشنری ارسالی به sendInvoice
                       (chat_id, title, description, payload, prices, ...)
+        card_only: فاکتور درگاه ارسال نشده (مبلغ بالای سقف) — کارت‌به‌کارت فوری
     """
     # ⭐ کیف پول: اگر موجودی کافی باشد، دکمهٔ «پرداخت از کیف پول» زیر فاکتور
     try:
@@ -294,7 +319,7 @@ def track_invoice(invoice_data: dict) -> None:
             # رسید باقی‌مانده هستیم) — فاکتور جدید (مثلاً یادآوری) آن را بازنویسی نکند
             logger.info(f"[CARD-PAY] فاکتور تکراری در حین بررسی رسید نادیده گرفته شد: uid={uid}")
             return
-        if (existing and existing.get("status") == S_CARD_SENT
+        if (not card_only and existing and existing.get("status") == S_CARD_SENT
                 and existing.get("amount_rial") == amount_rial):
             # یادآوری همان فاکتور (مثلاً حلقهٔ یادآوری لایحه) — پیام کارت قبلاً
             # ارسال شده و هنوز معتبر است؛ دوباره ارسال نمی‌کنیم تا اسپم نشود.
@@ -313,7 +338,11 @@ def track_invoice(invoice_data: dict) -> None:
             "invoice_at": now,
             "status": S_INVOICE,
             "updated_at": now,
+            "card_only": bool(card_only),
         })
+        if card_only:
+            # سررسید حلقه: invoice_at + delay → چند ثانیه بعد
+            entry["invoice_at"] = now - CARD_PAY_DELAY_MINUTES * 60 + _CARD_ONLY_FIRST_DELAY
         ded = _take_deduction(uid, entry["payload_obj"].get("type", ""))
         if ded:
             entry["deduction"] = ded
@@ -478,6 +507,9 @@ async def _send_card_offer(bot: Bot, entry: dict) -> None:
     # اگر کاربر دیگر در انتظار پرداخت نیست (انصراف/شروع فلوی دیگر)، پیام نده —
     # مگر برای فاکتورهایی که پرداختشان از روی payload مسیریابی می‌شود.
     if ptype not in _PAYLOAD_ROUTED_TYPES and not _is_payment_wait_state(raw_state):
+        if entry.get("card_only") and _now() - entry.get("created_at", 0) < _CARD_ONLY_STATE_WAIT:
+            # فراخوان هنوز state انتظار پرداخت را ست نکرده — دور بعدی حلقه
+            return
         entry["status"] = S_SKIPPED
         entry["updated_at"] = _now()
         _mark_dirty()
@@ -489,19 +521,33 @@ async def _send_card_offer(bot: Bot, entry: dict) -> None:
     entry["data_snapshot"] = json.loads(json.dumps(fsm_data, default=str, ensure_ascii=False))
     amount_toman = entry["amount_rial"] // 10
 
-    caption = (
-        "💳 *پرداخت از طریق کارت به کارت*\n\n"
-        f"فاکتور «{entry.get('title') or _service_label(entry)}» هنوز پرداخت نشده است.\n\n"
-        "⚠️ در صورتی که از طریق درگاه پرداخت، موفق به واریز نشده‌اید، "
-        "لطفاً مبلغ خود را از طریق شماره کارت زیر واریز نمایید:\n\n"
-        f"🔢 شماره کارت:\n`{CARD_PAY_NUMBER}`\n"
-        f"👤 به نام: *{CARD_PAY_HOLDER}*\n"
-        + (f"🏦 {CARD_PAY_BANK}\n" if CARD_PAY_BANK else "")
-        + f"\n💰 مبلغ: *{amount_toman:,} تومان*  (`{entry['amount_rial']}` ریال)\n\n"
-        "📸 پس از واریز، *تصویر رسید* را همین‌جا ارسال کنید تا پس از تایید "
-        "پشتیبانی، درخواست شما ادامه پیدا کند.\n"
-        "_(اگر همچنان مایل به پرداخت از درگاه هستید، همان فاکتور قبلی معتبر است.)_"
-    )
+    if entry.get("card_only"):
+        caption = (
+            "💳 *پرداخت از طریق کارت به کارت*\n\n"
+            f"مبلغ فاکتور «{entry.get('title') or _service_label(entry)}» بیش از "
+            f"{CARD_ONLY_ABOVE_TOMAN:,} تومان است و پرداخت آن از طریق درگاه امکان‌پذیر نیست.\n\n"
+            "لطفاً مبلغ را به شماره کارت زیر واریز نمایید:\n\n"
+            f"🔢 شماره کارت:\n`{CARD_PAY_NUMBER}`\n"
+            f"👤 به نام: *{CARD_PAY_HOLDER}*\n"
+            + (f"🏦 {CARD_PAY_BANK}\n" if CARD_PAY_BANK else "")
+            + f"\n💰 مبلغ: *{amount_toman:,} تومان*  (`{entry['amount_rial']}` ریال)\n\n"
+            "📸 پس از واریز، *تصویر رسید* را همین‌جا ارسال کنید تا پس از تایید "
+            "پشتیبانی، درخواست شما ادامه پیدا کند."
+        )
+    else:
+        caption = (
+            "💳 *پرداخت از طریق کارت به کارت*\n\n"
+            f"فاکتور «{entry.get('title') or _service_label(entry)}» هنوز پرداخت نشده است.\n\n"
+            "⚠️ در صورتی که از طریق درگاه پرداخت، موفق به واریز نشده‌اید، "
+            "لطفاً مبلغ خود را از طریق شماره کارت زیر واریز نمایید:\n\n"
+            f"🔢 شماره کارت:\n`{CARD_PAY_NUMBER}`\n"
+            f"👤 به نام: *{CARD_PAY_HOLDER}*\n"
+            + (f"🏦 {CARD_PAY_BANK}\n" if CARD_PAY_BANK else "")
+            + f"\n💰 مبلغ: *{amount_toman:,} تومان*  (`{entry['amount_rial']}` ریال)\n\n"
+            "📸 پس از واریز، *تصویر رسید* را همین‌جا ارسال کنید تا پس از تایید "
+            "پشتیبانی، درخواست شما ادامه پیدا کند.\n"
+            "_(اگر همچنان مایل به پرداخت از درگاه هستید، همان فاکتور قبلی معتبر است.)_"
+        )
     try:
         from card_payment_image import render_card_image
         image = await asyncio.to_thread(
