@@ -3940,6 +3940,10 @@ async def on_tn_sign_code_sent_success(bot: Bot, user_id: int, persons: list, st
 
 
 async def on_tn_sign_code_sent_failure(bot: Bot, user_id: int, state: FSMContext):
+    # ⭐ ۱۴۰۵/۰۷ — امضای ناموفق: ۲۰ دقیقه بعد درخواست امضای مجدد فعال می‌شود
+    if user_id in runtime_state.pending_tn_sign:
+        await _tn_sign_failed_retry_later(bot, user_id, state)
+        return
     await bot.send_message(
         user_id,
         "⚠️ *سامانه در ارسال کد موقت با مشکل مواجه شد.*\n\n"
@@ -4038,13 +4042,15 @@ async def on_tn_sign_sana_not_registered(bot: Bot, user_id: int, error_text: str
 
 
 async def on_tn_sign_submit_failure(bot: Bot, user_id: int, state: FSMContext):
-    """امضا ناموفق بود — پیشنهاد تلاش مجدد (تک‌دکمه‌ای، طبق tn_sign_try_again_kb)"""
-    await bot.send_message(
-        user_id,
-        "⚠️ *خطا در ثبت امضا.*\n\n"
-        "برای ارسال دوباره کد، دکمه زیر را بزنید:",
-        reply_markup=tn_sign_try_again_kb)
-    await state.set_state(Form.tn_sign_resend_prompt)
+    """امضا ناموفق بود — ۲۰ دقیقه بعد درخواست امضای مجدد فعال می‌شود"""
+    await _tn_sign_failed_retry_later(bot, user_id, state)
+
+
+async def _tn_sign_failed_retry_later(bot: Bot, user_id: int, state: FSMContext):
+    from lavayeh_sign_handlers import SIGN_FAILED_RETRY_TEXT
+    await bot.send_message(user_id, SIGN_FAILED_RETRY_TEXT, reply_markup=ReplyKeyboardRemove())
+    await state.set_state(Form.tn_sign_wrong_code_wait)
+    asyncio.create_task(_tn_wrong_code_waiter(bot, user_id, state))
 
 
 # ══════════════════════════════════════════════════════════════════════════════

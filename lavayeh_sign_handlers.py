@@ -43,6 +43,13 @@ LAVAYEH_SIGN_CODE_TIMEOUT = 6 * 60     # ۶ دقیقه مهلت ارسال کد
 LAVAYEH_SIGN_WRONG_CODE_WAIT = 20 * 60  # ۲۰ دقیقه صبر بعد از کد اشتباه
 LAVAYEH_SIGN_NO_ACTION_TIMEOUT = 60 * 60  # ۶۰ دقیقه بدون اقدام
 
+# ⭐ ۱۴۰۵/۰۷ — دستور کارفرما: امضای ناموفق (خطای ارسال کد یا ثبت امضا) →
+# ۲۰ دقیقه بعد درخواست امضای مجدد فعال می‌شود (همان مسیر «رمز اشتباه»)
+SIGN_FAILED_RETRY_TEXT = (
+    "⚠️ *امضا ناموفق بود.*\n\n"
+    "۲۰ دقیقه دیگر، درخواست امضای مجدد فعال می‌شود و مجدداً درخواست امضای خود را ارسال نمائید."
+)
+
 
 async def _bulk_sign_finished(bot: Bot, user_id: int, sign_info: dict | None, signed: bool):
     """اگر این روند امضا از منوی امضای دسته‌جمعی شروع شده بود، وضعیت کد در
@@ -324,7 +331,10 @@ async def on_lavayeh_sign_code_sent_success(bot: Bot, user_id: int, persons: lis
 
 
 async def on_lavayeh_sign_code_sent_failure(bot: Bot, user_id: int, state: FSMContext):
-    """ارسال کد ناموفق بود"""
+    """ارسال کد ناموفق بود — ۲۰ دقیقه بعد درخواست امضای مجدد فعال می‌شود"""
+    if user_id in runtime_state.pending_lavayeh_sign:
+        await _lavayeh_sign_failed_retry_later(bot, user_id, state)
+        return
     await bot.send_message(
         user_id,
         "⚠️ *سامانه در ارسال کد موقت با مشکل مواجه شد.*\n\n"
@@ -434,13 +444,14 @@ async def on_lavayeh_sign_wrong_code(bot: Bot, user_id: int, row_idx: int, state
 
 
 async def on_lavayeh_sign_submit_failure(bot: Bot, user_id: int, state: FSMContext):
-    """امضا ناموفق بود — سوال ارسال مجدد"""
-    await bot.send_message(
-        user_id,
-        "⚠️ *خطا در ثبت امضا.*\n\n"
-        "آیا می‌خواهید کد جدید ارسال شود؟",
-        reply_markup=lavayeh_sign_try_again_kb)
-    await state.set_state(Form.lavayeh_sign_resend_prompt)
+    """امضا ناموفق بود — ۲۰ دقیقه بعد درخواست امضای مجدد فعال می‌شود"""
+    await _lavayeh_sign_failed_retry_later(bot, user_id, state)
+
+
+async def _lavayeh_sign_failed_retry_later(bot: Bot, user_id: int, state: FSMContext):
+    await bot.send_message(user_id, SIGN_FAILED_RETRY_TEXT, reply_markup=ReplyKeyboardRemove())
+    await state.set_state(Form.lavayeh_sign_wrong_code_wait)
+    asyncio.create_task(_lavayeh_wrong_code_waiter(bot, user_id, state))
 
 
 async def on_lavayeh_sign_sana_not_registered(bot: Bot, user_id: int, error_text: str, state: FSMContext):
@@ -914,7 +925,10 @@ async def on_ezhhar_sign_code_sent_success(bot: Bot, user_id: int, persons: list
 
 
 async def on_ezhhar_sign_code_sent_failure(bot: Bot, user_id: int, state: FSMContext):
-    """ارسال کد ناموفق بود"""
+    """ارسال کد ناموفق بود — ۲۰ دقیقه بعد درخواست امضای مجدد فعال می‌شود"""
+    if user_id in runtime_state.pending_ezhhar_sign:
+        await _ezhhar_sign_failed_retry_later(bot, user_id, state)
+        return
     await bot.send_message(
         user_id,
         "⚠️ *سامانه در ارسال کد موقت با مشکل مواجه شد.*\n\n"
@@ -1035,13 +1049,14 @@ async def on_ezhhar_sign_sana_not_registered(bot: Bot, user_id: int, error_text:
 
 
 async def on_ezhhar_sign_submit_failure(bot: Bot, user_id: int, state: FSMContext):
-    """امضا ناموفق بود — سوال ارسال مجدد"""
-    await bot.send_message(
-        user_id,
-        "⚠️ *خطا در ثبت امضا.*\n\n"
-        "آیا می‌خواهید کد جدید ارسال شود؟",
-        reply_markup=ezhhar_sign_try_again_kb)
-    await state.set_state(Form.ezhhar_sign_resend_prompt)
+    """امضا ناموفق بود — ۲۰ دقیقه بعد درخواست امضای مجدد فعال می‌شود"""
+    await _ezhhar_sign_failed_retry_later(bot, user_id, state)
+
+
+async def _ezhhar_sign_failed_retry_later(bot: Bot, user_id: int, state: FSMContext):
+    await bot.send_message(user_id, SIGN_FAILED_RETRY_TEXT, reply_markup=ReplyKeyboardRemove())
+    await state.set_state(Form.ezhhar_sign_wrong_code_wait)
+    asyncio.create_task(_ezhhar_wrong_code_waiter(bot, user_id, state))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
