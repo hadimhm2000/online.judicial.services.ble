@@ -693,7 +693,7 @@ async def submit_sign_code_for_person(
             logging.warning(f"[SIGN] امضای ردیف {row_idx} ناموفق: {popup_result} (تلاش {attempt+1})")
 
             # بازگشت به مرحله اخذ امضا
-            clicked_sign = await _click_sign_box(sana_page, wait_sec=8)
+            clicked_sign = await _click_sign_box(sana_page)
             if not clicked_sign and not await _check_lavayeh_sign_table_exists(sana_page):
                 try:
                     await safe_click_by_text(sana_page, "اخذ امضا", bot, user_id)
@@ -713,7 +713,7 @@ async def submit_sign_code_for_person(
 # توابع کمکی داخلی
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def _click_sign_box(page, wait_sec: float = 20.0) -> bool:
+async def _click_sign_box(page, wait_sec: float = 10.0) -> bool:
     """⭐ کلیک باکس «اخذ امضاي الكترونيك» (ng-click="navCtrl.onStepSelect(item)").
     قبلاً فقط یک‌بار و بلافاصله جستجو می‌شد؛ اگر انگولار هنوز باکس‌ها را رندر نکرده
     بود، کلیک انجام نمی‌شد. حالا تا wait_sec ثانیه با متن یکسان‌سازی‌شده (ي/ك عربی،
