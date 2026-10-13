@@ -603,6 +603,9 @@ async def main():
 
     # ⭐ آزادسازی صف خارج از ساعت کاری / پس از رفع قطعی سامانه
     asyncio.create_task(sana_gate.gate_loop(bot))
+    # ⭐ فعال‌سازی «روند درج امضا» بدون فاکتور که مدیر از پنل درخواست کرده
+    from admin_relay import free_sign_request_loop
+    asyncio.create_task(free_sign_request_loop(bot))
 
     # ── تسک ذخیره‌سازی دوره‌ی ──
     persister_task = asyncio.create_task(state_persister(bot))

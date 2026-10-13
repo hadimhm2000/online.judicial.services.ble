@@ -57,6 +57,12 @@ const COST_STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   PAID: { label: 'هزینه پرداخت شد', color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' },
 };
 
+// ⭐ v2.0 — «روند امضا بدون فاکتور»
+const FREE_SIGN_STATUS_CONFIG: Record<string, { label: string; color: string }> = {
+  FREE_SIGN_PENDING: { label: 'امضای بدون فاکتور — در انتظار ربات', color: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' },
+  FREE_SIGN_STARTED: { label: 'امضای بدون فاکتور — فعال شد', color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' },
+};
+
 export default function BotMessageSender({ open, onClose, onRefresh }: Props) {
   const [messages, setMessages] = useState<BotMessageItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -199,7 +205,7 @@ export default function BotMessageSender({ open, onClose, onRefresh }: Props) {
           fileUrl: attachedFile?.url || null,
           fileName: attachedFile?.name || null,
           costToman: costTomanClean,
-          serviceType: costTomanClean ? serviceType : 'NONE',
+          serviceType,
           trackingCode: trackingCode.trim() || null,
         }),
       });
@@ -215,7 +221,12 @@ export default function BotMessageSender({ open, onClose, onRefresh }: Props) {
           setSending(null);
 
           if (sendRes.ok) {
-            toast.success(`پیام برای ${fullName || baleUserId} ارسال شد`);
+            const freeSignOpt = getServiceOption(serviceType);
+            toast.success(
+              freeSignOpt?.hasSignFlow
+                ? `پیام برای ${fullName || baleUserId} ارسال شد — ربات «روند درج امضای ${freeSignOpt.label}» را بدون فاکتور فعال می‌کند`
+                : `پیام برای ${fullName || baleUserId} ارسال شد`
+            );
             setMessageText('');
             setAttachedFile(null);
             setServiceType('NONE');
@@ -472,12 +483,14 @@ export default function BotMessageSender({ open, onClose, onRefresh }: Props) {
                 </p>
               </div>
 
-              {/* ⭐ نوع سند — فقط وقتی هزینه وارد شده باشد نمایش داده می‌شود */}
-              {costToman.trim() !== '' && (
+              {/* ⭐ نوع سند — با هزینه: امضا پس از پرداخت؛ بدون هزینه: امضا بدون فاکتور */}
+              {(
                 <div className="space-y-1.5 p-3 rounded-lg border border-sky-200/60 dark:border-sky-800/50 bg-sky-50/40 dark:bg-sky-900/10">
                   <label className="text-[11px] font-medium text-muted-foreground flex items-center gap-1.5">
                     <FileText className="h-3 w-3 text-sky-600" />
-                    {'نوع سند (برای شروع خودکار روند امضا پس از پرداخت)'}
+                    {costToman.trim() !== ''
+                      ? 'نوع سند (برای شروع خودکار روند امضا پس از پرداخت)'
+                      : 'نوع سند (فعال‌سازی روند امضا بدون فاکتور — اختیاری)'}
                   </label>
                   <Select value={serviceType} onValueChange={(v) => setServiceType(v)}>
                     <SelectTrigger className="h-10 text-sm bg-background">
@@ -502,7 +515,9 @@ export default function BotMessageSender({ open, onClose, onRefresh }: Props) {
                         dir="ltr"
                       />
                       <p className="text-[10px] text-muted-foreground leading-relaxed">
-                        پس از پرداخت کاربر، ربات به‌صورت خودکار وارد «مرحلهٔ درج امضای الکترونیک» می‌شود و از کاربر می‌خواهد آماده‌سازی کد امضا را آغاز کند.
+                        {costToman.trim() !== ''
+                          ? 'پس از پرداخت کاربر، ربات به‌صورت خودکار وارد «مرحلهٔ درج امضای الکترونیک» می‌شود و از کاربر می‌خواهد آماده‌سازی کد امضا را آغاز کند.'
+                          : 'هزینه‌ای وارد نشده: فاکتوری ارسال نمی‌شود و بلافاصله پس از ارسال پیام، ربات روند درج امضای الکترونیک را برای این کاربر فعال می‌کند.'}
                         {trackingCode.trim() === '' && ' (اگر کد رهگیری را وارد کنید، جستجوی سند در سامانه خودکار انجام می‌شود)'}
                       </p>
                     </div>
@@ -602,6 +617,11 @@ export default function BotMessageSender({ open, onClose, onRefresh }: Props) {
                                     </Badge>
                                   );
                                 })()}
+                                {msg.costStatus && FREE_SIGN_STATUS_CONFIG[msg.costStatus] && (
+                                  <Badge className={cn('text-[9px] px-1.5 py-0 rounded-full shrink-0', FREE_SIGN_STATUS_CONFIG[msg.costStatus].color)}>
+                                    {FREE_SIGN_STATUS_CONFIG[msg.costStatus].label}
+                                  </Badge>
+                                )}
                                 {(() => {
                                   const svc = getServiceOption(msg.serviceType);
                                   if (!svc || !msg.serviceType || msg.serviceType === 'NONE') return null;
