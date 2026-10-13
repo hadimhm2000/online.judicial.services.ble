@@ -149,3 +149,35 @@ def test_panel_signature_marks_item_signed(monkeypatch):
     items = {it["tracking_code"]: it for it in final_print._load()["items"]}
     assert items["111"]["signed"] and items["111"]["signed_date"] == "2026-10-01"
     assert not items["222"]["signed"]
+
+
+# ── استعلام افراد پرونده در تب جدید (تب اصلی ثبت دست نمی‌خورد) ─────────────
+
+def test_tn_persons_query_runs_in_new_tab(monkeypatch):
+    import scenarios
+    import tajdid_nazar_scenario as tns
+
+    main_page, query_page = MagicMock(name="sana_page"), MagicMock(name="query_page")
+    query_page.close = AsyncMock()
+    ctx = MagicMock()
+    ctx.new_page = AsyncMock(return_value=query_page)
+    ctx.pages = [main_page, query_page]
+    monkeypatch.setattr(runtime_state, "browser_context", ctx, raising=False)
+    monkeypatch.setattr(runtime_state, "sana_page", main_page, raising=False)
+
+    seen = {}
+
+    async def fake_once(page, bot, user_id, case_type, is_prosecutor, step_names, data):
+        seen["page"] = page
+        assert tns.is_tn_query_page(page)
+        await scenarios._close_extra_tabs(ctx)       # PRE_CHECK هم‌زمان نباید این تب را ببندد
+        query_page.close.assert_not_awaited()
+        return [{"index": 0, "name": "x"}]
+
+    monkeypatch.setattr(tns, "_pre_query_tn_persons_once", fake_once)
+    names = asyncio.run(tns.pre_query_tn_persons(
+        {"user_id": 7, "case_type": "تجدیدنظرخواهی"}, MagicMock(), "تجديدنظرخواه"))
+    assert names == [{"index": 0, "name": "x"}]
+    assert seen["page"] is query_page
+    query_page.close.assert_awaited_once()
+    assert not tns.is_tn_query_page(query_page)

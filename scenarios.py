@@ -113,6 +113,13 @@ async def _close_extra_tabs(browser_context, keep_page=None):
                 continue
         except Exception:
             pass
+        # ⭐ تب استعلام افراد پرونده (دعاوی اعتراضی) تا پایان استعلام باز می‌ماند
+        try:
+            from tajdid_nazar_scenario import is_tn_query_page
+            if is_tn_query_page(p):
+                continue
+        except Exception:
+            pass
         try:
             await p.close()
         except Exception as e:

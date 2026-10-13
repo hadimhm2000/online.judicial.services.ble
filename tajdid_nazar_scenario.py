@@ -3728,13 +3728,40 @@ async def pre_query_tn_persons(data: dict, bot: Bot, step_name) -> list:
     Args:
         step_name: نام یک step (str) یا لیستی از step ها برای ادغام نتایج
 
+    ⭐ ۱۴۰۵/۰۷ — استعلام در تب جدید انجام می‌شود (نه sana_page) تا ثبتِ در حال
+    اجرای پرونده‌های دیگر در تب اصلی دست نخورد؛ تب پس از استعلام بسته می‌شود.
+
     Returns: [{"index": int, "name": str}, ...]
     """
-    sana_page = runtime_state.sana_page
     user_id = data["user_id"]
-
-    if not sana_page:
+    browser_context = runtime_state.browser_context
+    if not browser_context:
         raise TajdidFatalError("صفحه مرورگر در دسترس نیست. لطفاً بعداً تلاش کنید.")
+    try:
+        query_page = await browser_context.new_page()
+    except Exception as e:
+        raise TajdidFatalError(f"باز کردن تب استعلام ناموفق بود: {str(e)[:150]}")
+    _tn_query_pages.append(query_page)
+    try:
+        return await _pre_query_tn_persons_with_retry(query_page, data, bot, step_name)
+    finally:
+        _tn_query_pages[:] = [p for p in _tn_query_pages if p is not query_page]
+        try:
+            await query_page.close()
+        except Exception:
+            pass
+
+
+# تب‌های استعلام افراد پرونده — _close_extra_tabs (scenarios.py) نباید ببندد
+_tn_query_pages: list = []
+
+
+def is_tn_query_page(page) -> bool:
+    return page is not None and any(p is page for p in _tn_query_pages)
+
+
+async def _pre_query_tn_persons_with_retry(sana_page, data: dict, bot: Bot, step_name) -> list:
+    user_id = data["user_id"]
 
     case_type = data.get("case_type", "")
     is_prosecutor = case_type == "اعتراض به قرار دادسرا"
