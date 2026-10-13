@@ -3077,7 +3077,11 @@ async def _print_lavayeh(page, browser_context, tracking_code, bot: Bot, user_id
             await print_page.wait_for_load_state("load", timeout=30000)
             await asyncio.sleep(8)
 
-            await check_and_handle_expiry(print_page, bot, user_id, check_body_text=False)
+            # ⭐ اگر صفحهٔ چاپ اعلان انقضای نشست بود، پس از لاگین مجدد مدیر
+            # «چاپ» دوباره زده می‌شود؛ از صفحهٔ منقضی‌شده PDF گرفته نمی‌شود.
+            if await check_and_handle_expiry(print_page, bot, user_id, check_body_text=False):
+                logging.warning(f"[LAVAYEH] نشست حین چاپ منقضی بود — چاپ دوباره پس از لاگین (تلاش {attempt}/2)")
+                continue
             await print_page.pdf(path=pdf_path, format="A4")
         except Exception as e:
             logging.error(f"[LAVAYEH] خطا در چاپ (تلاش {attempt}/2): {e}")

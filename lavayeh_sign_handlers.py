@@ -49,6 +49,11 @@ SIGN_FAILED_RETRY_TEXT = (
     "⚠️ *امضا ناموفق بود.*\n\n"
     "۲۰ دقیقه دیگر، درخواست امضای مجدد فعال می‌شود و مجدداً درخواست امضای خود را ارسال نمائید."
 )
+# ⭐ ورود همزمان (انقضای نشست) هنگام ثبت کد امضا — مدیر لاگین مجدد می‌کند
+SIGN_SANA_DISRUPTED_TEXT = (
+    "⚠️ *سامانه قضایی در حال حاضر دچار اختلال است و امضای شما ثبت نشد.*\n\n"
+    "۲۰ دقیقه دیگر، درخواست امضای مجدد فعال می‌شود و مجدداً درخواست امضای خود را ارسال نمائید."
+)
 
 
 async def _bulk_sign_finished(bot: Bot, user_id: int, sign_info: dict | None, signed: bool):
@@ -443,13 +448,16 @@ async def on_lavayeh_sign_wrong_code(bot: Bot, user_id: int, row_idx: int, state
     asyncio.create_task(_lavayeh_wrong_code_waiter(bot, user_id, state))
 
 
-async def on_lavayeh_sign_submit_failure(bot: Bot, user_id: int, state: FSMContext):
+async def on_lavayeh_sign_submit_failure(bot: Bot, user_id: int, state: FSMContext,
+                                         sana_disrupted: bool = False):
     """امضا ناموفق بود — ۲۰ دقیقه بعد درخواست امضای مجدد فعال می‌شود"""
-    await _lavayeh_sign_failed_retry_later(bot, user_id, state)
+    await _lavayeh_sign_failed_retry_later(bot, user_id, state, sana_disrupted)
 
 
-async def _lavayeh_sign_failed_retry_later(bot: Bot, user_id: int, state: FSMContext):
-    await bot.send_message(user_id, SIGN_FAILED_RETRY_TEXT, reply_markup=ReplyKeyboardRemove())
+async def _lavayeh_sign_failed_retry_later(bot: Bot, user_id: int, state: FSMContext,
+                                           sana_disrupted: bool = False):
+    await bot.send_message(user_id, SIGN_SANA_DISRUPTED_TEXT if sana_disrupted else SIGN_FAILED_RETRY_TEXT,
+                           reply_markup=ReplyKeyboardRemove())
     await state.set_state(Form.lavayeh_sign_wrong_code_wait)
     asyncio.create_task(_lavayeh_wrong_code_waiter(bot, user_id, state))
 
@@ -1048,13 +1056,16 @@ async def on_ezhhar_sign_sana_not_registered(bot: Bot, user_id: int, error_text:
     await state.clear()
 
 
-async def on_ezhhar_sign_submit_failure(bot: Bot, user_id: int, state: FSMContext):
+async def on_ezhhar_sign_submit_failure(bot: Bot, user_id: int, state: FSMContext,
+                                        sana_disrupted: bool = False):
     """امضا ناموفق بود — ۲۰ دقیقه بعد درخواست امضای مجدد فعال می‌شود"""
-    await _ezhhar_sign_failed_retry_later(bot, user_id, state)
+    await _ezhhar_sign_failed_retry_later(bot, user_id, state, sana_disrupted)
 
 
-async def _ezhhar_sign_failed_retry_later(bot: Bot, user_id: int, state: FSMContext):
-    await bot.send_message(user_id, SIGN_FAILED_RETRY_TEXT, reply_markup=ReplyKeyboardRemove())
+async def _ezhhar_sign_failed_retry_later(bot: Bot, user_id: int, state: FSMContext,
+                                          sana_disrupted: bool = False):
+    await bot.send_message(user_id, SIGN_SANA_DISRUPTED_TEXT if sana_disrupted else SIGN_FAILED_RETRY_TEXT,
+                           reply_markup=ReplyKeyboardRemove())
     await state.set_state(Form.ezhhar_sign_wrong_code_wait)
     asyncio.create_task(_ezhhar_wrong_code_waiter(bot, user_id, state))
 

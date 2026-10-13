@@ -3857,13 +3857,21 @@ async def send_lavayeh_result(
             }
             logging.info(f"[LAVAYEH] ارسال sendInvoice به chat_id={user_id}, مبلغ={final_fee:,} ریال, provider_token={BALE_WALLET_TOKEN[:15]}...")
             from wallet import prepare_invoice as _wl_prep; invoice_data = _wl_prep(invoice_data)  # ⭐ کسر خودکار موجودی کیف پول
-            async with session.post(invoice_url, json=invoice_data) as resp:
-                result = await resp.json()
-                logging.info(f"[LAVAYEH] پاسخ sendInvoice: {result}")
-                if not result.get("ok"):
-                    logging.error(f"[LAVAYEH] خطای sendInvoice: {result}")
-                    raise Exception(result.get("description", "خطا در ارسال فاکتور"))
-                from card_payment import track_invoice as _cp_track; _cp_track(invoice_data)  # ⭐ کارت‌به‌کارت پس از ۲۰ دقیقه
+            # ⭐ دادخواست (چک) بالای ۱,۰۰۰,۰۰۰ تومان: درگاه ارسال نمی‌شود، فقط کارت‌به‌کارت
+            from card_payment import card_only_required as _cp_card_only
+            card_only = service_type == "CHECK" and _cp_card_only(invoice_data)
+            if card_only:
+                from card_payment import track_card_only_invoice as _cp_track_card
+                _cp_track_card(invoice_data)
+                logging.info(f"[LAVAYEH] مبلغ بالای سقف — فقط کارت‌به‌کارت (user={user_id})")
+            else:
+                async with session.post(invoice_url, json=invoice_data) as resp:
+                    result = await resp.json()
+                    logging.info(f"[LAVAYEH] پاسخ sendInvoice: {result}")
+                    if not result.get("ok"):
+                        logging.error(f"[LAVAYEH] خطای sendInvoice: {result}")
+                        raise Exception(result.get("description", "خطا در ارسال فاکتور"))
+                    from card_payment import track_invoice as _cp_track; _cp_track(invoice_data)  # ⭐ کارت‌به‌کارت پس از ۲۰ دقیقه
     except Exception as e:
         logging.error(f"[LAVAYEH] خطا در ارسال فاکتور بله: {e}", exc_info=True)
         await bot.send_message(user_id, "⚠️ خطا در ساخت فاکتور پرداخت. لطفاً کمی بعد دوباره تلاش کنید.")
@@ -3873,6 +3881,9 @@ async def send_lavayeh_result(
     # پیام انتظار پرداخت — بدون دکمه دستی (تشخیص خودکار توسط بله)
     await bot.send_message(
         user_id,
+        ("⏳ مشخصات کارت برای واریز ارسال می‌شود.\n\n"
+         "پس از تایید رسید توسط پشتیبانی، مراحل بعدی به‌صورت خودکار آغاز می‌شود.")
+        if card_only else
         "⏳ فاکتور پرداخت ارسال شد.\n\n"
         "پس از پرداخت موفق، ربات به‌صورت خودکار متوجه شده و مراحل بعدی را آغاز می‌کند.",
         reply_markup=ReplyKeyboardRemove()
@@ -3938,7 +3949,8 @@ async def send_lavayeh_result(
 # پرداخت هزینه لایحه
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def _send_lavayeh_invoice(bot: Bot, user_id: int, amount: int, service_label: str) -> bool:
+async def _send_lavayeh_invoice(bot: Bot, user_id: int, amount: int, service_label: str,
+                                service_type: str | None = None) -> bool:
     """
     ارسال فاکتور پرداخت بله (sendInvoice) برای مبلغ مشخص.
     خروجی True یعنی فاکتور با موفقیت ارسال شد و درگاه پرداخت متصل است؛
@@ -3960,6 +3972,12 @@ async def _send_lavayeh_invoice(bot: Bot, user_id: int, amount: int, service_lab
             }
             logging.info(f"[LAVAYEH] ارسال sendInvoice (یادآوری/کنسلی) به chat_id={user_id}, مبلغ={amount:,} ریال")
             from wallet import prepare_invoice as _wl_prep; invoice_data = _wl_prep(invoice_data)  # ⭐ کسر خودکار موجودی کیف پول
+            # ⭐ دادخواست (چک) بالای ۱,۰۰۰,۰۰۰ تومان: فقط کارت‌به‌کارت (بدون درگاه)
+            from card_payment import card_only_required as _cp_card_only
+            if service_type == "CHECK" and _cp_card_only(invoice_data):
+                from card_payment import track_card_only_invoice as _cp_track_card
+                _cp_track_card(invoice_data)
+                return True
             async with session.post(invoice_url, json=invoice_data) as resp:
                 result = await resp.json()
                 logging.info(f"[LAVAYEH] پاسخ sendInvoice (یادآوری/کنسلی): {result}")
@@ -4331,7 +4349,8 @@ async def lavayeh_reminder_no(message: Message, state: FSMContext, bot: Bot):
         return
 
     service_label = "اظهارنامه" if pending.get("is_ezhharnameh") else "لایحه"
-    invoice_sent = await _send_lavayeh_invoice(bot, user_id, pending["final_fee"], service_label)
+    invoice_sent = await _send_lavayeh_invoice(bot, user_id, pending["final_fee"], service_label,
+                                               service_type=pending.get("service_type"))
 
     if invoice_sent:
         await message.answer(
@@ -4362,7 +4381,8 @@ async def lavayeh_reminder_yes(message: Message, state: FSMContext, bot: Bot):
     reduced_amount = pending["final_fee"] - pending["court_total"]
     service_label = "اظهارنامه" if pending.get("is_ezhharnameh") else "لایحه"
 
-    invoice_sent = await _send_lavayeh_invoice(bot, user_id, reduced_amount, service_label)
+    invoice_sent = await _send_lavayeh_invoice(bot, user_id, reduced_amount, service_label,
+                                               service_type=pending.get("service_type"))
 
     if invoice_sent:
         # فقط وقتی فاکتور واقعاً ساخته و ارسال شد، کاربر مسدود می‌شود —
