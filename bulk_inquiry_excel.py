@@ -279,6 +279,7 @@ async def enrich_bulk_inquiry_items(valid_items: list, user_id: int = None, bot=
     failed_items = []
     session_broken = False
     import sana_gate
+    import working_hours
     live_closed_text = sana_gate.live_inquiry_closed_text(user_id)
 
     for it in valid_items:
@@ -318,13 +319,14 @@ async def enrich_bulk_inquiry_items(valid_items: list, user_id: int = None, bot=
             })
             continue
 
-        # ⭐ ۱۴۰۵/۰۷: استعلام تعداد برگ پیوست فقط ۱۴ الی ۲۲ (sana_gate)
+        # ⭐ ۱۴۰۵/۰۷: استعلام تعداد برگ پیوست فقط در ساعت کاری پنل (sana_gate)
         if live_closed_text:
             failed_items.append({
                 "row_index": row_idx,
                 "description": f"کدرهگیری {tracking_code} ({doc_category})",
-                "error": "استعلام تعداد برگ پیوست فقط از ساعت ۱۴ الی ۲۲ فعال است "
-                         "(«دریافت پیوست‌ها؟» را خیر بزنید یا در این ساعت ارسال کنید)",
+                "error": "استعلام تعداد برگ پیوست فقط در ساعت کاری فعال است "
+                         f"(ساعت کاری امروز: {working_hours.today_label()}) — «دریافت "
+                         "پیوست‌ها؟» را خیر بزنید یا در ساعت کاری ارسال کنید",
             })
             continue
 

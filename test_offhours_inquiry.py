@@ -63,13 +63,17 @@ def test_final_print_job_deferred_silently(monkeypatch):
 
 # ── ۲ و ۳) استعلام تعداد برگ پیوست / افراد پرونده: فقط ۱۴ الی ۲۲ ─────────────
 
-def test_live_inquiry_window(monkeypatch):
-    monkeypatch.setattr(sana_gate, "is_working_hours", lambda now=None: True)
-    assert sana_gate.live_inquiry_closed_text(7, _at(14)) is None
-    assert sana_gate.live_inquiry_closed_text(7, _at(21)) is None
-    assert "۱۴ الی ۲۲" in sana_gate.live_inquiry_closed_text(7, _at(13))
-    assert "۱۴ الی ۲۲" in sana_gate.live_inquiry_closed_text(7, _at(22))
+def test_live_inquiry_follows_panel_hours(monkeypatch):
+    import working_hours
+    sched = {d: {"dayOfWeek": d, "startHour": 8, "startMin": 30, "endHour": 13,
+                 "endMin": 0, "enabled": True} for d in range(7)}
+    monkeypatch.setattr(working_hours, "_schedule", sched)
+    assert sana_gate.live_inquiry_closed_text(7, _at(9)) is None
+    closed = sana_gate.live_inquiry_closed_text(7, _at(15))
+    assert "8:30" in closed and "13:00" in closed
     assert sana_gate.live_inquiry_closed_text(1, _at(23)) is None        # مدیر
+    sched[working_hours.panel_dow(_at(15).date())]["enabled"] = False
+    assert "تعطیل" in sana_gate.live_inquiry_closed_text(7, _at(15))
 
 
 def test_live_inquiry_closed_on_outage(monkeypatch):

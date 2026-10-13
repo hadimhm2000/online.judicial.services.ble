@@ -23,7 +23,7 @@ sana_gate.py — دروازهٔ ورود به سامانهٔ قضایی (صف خ
 ⭐ ۱۴۰۵/۰۷ — استعلام‌ها هم خارج از ساعت کاری/در قطعی دریافت می‌شوند و مثل ثبت‌ها
 به صف ماندگار می‌روند (پیام gate.inquiry_*_queued). فقط دو بخشی که همان لحظه
 به سامانه نیاز دارند — استعلام تعداد برگ پیوست و استعلام افراد پرونده در دعاوی
-اعتراضی — فقط از ساعت ۱۴ الی ۲۲ فعال‌اند (live_inquiry_closed_text).
+اعتراضی — فقط در ساعت کاری تعریف‌شده در پنل فعال‌اند (live_inquiry_closed_text).
 
 تسک‌های امضا (SIGN_TASK_TYPES) هرگز در صف نمی‌روند: کد امضای موقت مهلت کوتاهی
 دارد و در sign dispatcher جداگانه پردازش می‌شود.
@@ -106,7 +106,11 @@ DEFAULT_TEXTS = {
         "برای شما ارسال می‌گردد.\n"
         "نیازی به ارسال مجدد اطلاعات یا پرداخت نیست. باتشکر"
     ),
-    "gate.live_inquiry_window": "⛔️ این بخش از ساعت ۱۴ الی ۲۲ فعال است.",
+    "gate.live_inquiry_window": "⛔️ این بخش از ساعت {start} الی {end} فعال است.",
+    "gate.live_inquiry_closed_today": (
+        "⛔️ این بخش فقط در ساعت کاری فعال است؛ امروز تعطیل است.\n"
+        "شروع ساعت کاری بعدی: {start}"
+    ),
     "gate.inquiry_closed_outage": (
         "⚠️ *سامانه قضایی در حال حاضر قطع می‌باشد.*\n\n"
         "استعلام پس از رفع قطعی امکان‌پذیر است.\n"
@@ -262,27 +266,23 @@ def is_inquiry_context(message: types.Message, raw_state: str | None) -> bool:
     return raw_state in INQUIRY_STATES
 
 
-# ⭐ ۱۴۰۵/۰۷ — بازهٔ ثابت بخش‌هایی که همان لحظه از سامانه استعلام می‌گیرند
-# (تعداد برگ پیوست، افراد پرونده در دعاوی اعتراضی). طبق دستور کارفرما ثابت
-# ۱۴ الی ۲۲ است و به ساعت کاری پنل وابسته نیست.
-LIVE_INQUIRY_START_HOUR = 14
-LIVE_INQUIRY_END_HOUR = 22
-
+# ⭐ ۱۴۰۵/۰۷ — بخش‌هایی که همان لحظه از سامانه استعلام می‌گیرند (تعداد برگ
+# پیوست، افراد پرونده در دعاوی اعتراضی) فقط در ساعت کاری پنل فعال‌اند و پیام
+# همان ساعت‌های تعریف‌شده در پنل را نشان می‌دهد.
 
 def live_inquiry_closed_text(user_id=None, now: datetime.datetime | None = None) -> str | None:
     """None اگر استعلام لحظه‌ای الان مجاز است؛ وگرنه متن پیام به کاربر.
-    مجاز = داخل ۱۴ الی ۲۲ + دروازه باز (نه قطعی، نه خارج از ساعت کاری پنل).
-    مدیر همیشه مجاز است."""
+    مجاز = دروازه باز (ساعت کاری پنل و بدون قطعی). مدیر همیشه مجاز است."""
     if ADMIN_ID and user_id is not None and str(user_id) == str(ADMIN_ID):
         return None
     if is_outage():
         return _text("gate.inquiry_closed_outage")
-    now = now or datetime.datetime.now(TEHRAN_TZ)
-    if now.tzinfo is not None:
-        now = now.astimezone(TEHRAN_TZ)
-    if LIVE_INQUIRY_START_HOUR <= now.hour < LIVE_INQUIRY_END_HOUR and is_working_hours(now):
+    if is_working_hours(now):
         return None
-    return _text("gate.live_inquiry_window")
+    start, end = working_hours.today_bounds(now)
+    if start == "—":
+        return _fmt("gate.live_inquiry_closed_today", start=working_hours.next_start_label(now))
+    return _fmt("gate.live_inquiry_window", start=start, end=end)
 
 
 def closed_inquiry_text() -> str:

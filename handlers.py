@@ -158,7 +158,7 @@ class WorkingHoursMiddleware(BaseMiddleware):
         # پرداخت همیشه آزاد است و ورود به سامانه در sana_gate نوبت‌دهی می‌شود.
         # ⭐ ۱۴۰۵/۰۷: استعلام‌ها هم دیگر مسدود نمی‌شوند و به صف ماندگار می‌روند؛
         # فقط استعلام تعداد برگ پیوست و استعلام افراد پرونده (دعاوی اعتراضی)
-        # بیرون از ۱۴ الی ۲۲ پیام می‌دهند (sana_gate.live_inquiry_closed_text).
+        # خارج از ساعت کاری پنل پیام می‌دهند (sana_gate.live_inquiry_closed_text).
         return await handler(event, data)
 
 router.message.middleware(WorkingHoursMiddleware())
@@ -1702,7 +1702,7 @@ async def process_attachments_opt(message: types.Message, state: FSMContext):
         return
     need_attachments = "بله" in message.text
     # ⭐ ۱۴۰۵/۰۷: استعلام تعداد برگ پیوست همان لحظه از سامانه گرفته می‌شود —
-    # فقط ۱۴ الی ۲۲؛ کاربر می‌تواند همین‌جا «بدون پیوست» را انتخاب کند
+    # فقط در ساعت کاری پنل؛ کاربر می‌تواند همین‌جا «بدون پیوست» را انتخاب کند
     if need_attachments:
         closed_text = sana_gate.live_inquiry_closed_text(message.from_user.id)
         if closed_text:

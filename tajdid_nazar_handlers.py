@@ -2123,7 +2123,7 @@ async def _handle_query_persons(message: Message, state: FSMContext, bot: Bot, s
             return
 
     # ⭐ ۱۴۰۵/۰۷: استعلام افراد پرونده همان لحظه از سامانه گرفته می‌شود —
-    # فقط ۱۴ الی ۲۲؛ کاربر در همین مرحله می‌ماند و می‌تواند کدملی را دستی وارد کند
+    # فقط در ساعت کاری پنل؛ کاربر در همین مرحله می‌ماند و می‌تواند کدملی را دستی وارد کند
     import sana_gate
     closed_text = sana_gate.live_inquiry_closed_text(user_id)
     if closed_text:
