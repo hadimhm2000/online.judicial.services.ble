@@ -511,6 +511,21 @@ export default function AdminPanel() {
     }
   };
 
+  // ⭐ v2.0 — پس از تغییر دستی مدیر: جزئیات، تاریخچه، جدول و شمارنده‌ها تازه شوند
+  const handleCaseUpdated = async (updated: CaseItem) => {
+    setDetailCase(updated);
+    fetchCases(); fetchStats(); fetchActivityCount();
+    try {
+      const res = await fetch(`/api/admin/cases/${updated.id}`);
+      if (res.ok) {
+        const data = await res.json();
+        setAdminActions(data.adminActions || []);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   const handleIntervention = (c: CaseItem) => {
     setInterventionCase(c);
     setInterventionOpen(true);
@@ -1544,6 +1559,7 @@ export default function AdminPanel() {
         }}
         onConfirmSend={requestConfirmSend}
         onDeleteCase={(c) => { setDeleteCase(c); setDeleteOpen(true); setDetailOpen(false); }}
+        onCaseUpdated={handleCaseUpdated}
         adminActions={adminActions}
       />
       </Suspense>
