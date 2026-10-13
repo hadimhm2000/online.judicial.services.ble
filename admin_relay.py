@@ -1308,29 +1308,45 @@ async def panel_message_successful_payment(message: Message, state: FSMContext, 
         await state.clear()
         return
 
-    has_sign = svc not in PANEL_MESSAGE_NO_SIGN_SERVICES
-    if has_sign:
-        try:
-            from panel_sync import upsert_case_to_panel, mark_case_ready_to_send_by_tracking
-            await upsert_case_to_panel(
-                bale_user_id=user_id,
-                full_name=message.from_user.full_name,
-                service_type=svc,
-                status="PROCESSING",
-                tracking_code=tracking_code or None,
-                document_category=doc_label or svc,
-                # amount_rial ریال است؛ فیلد fee پنل «تومان» است
-                fee=amount_rial // 10,
-                fee_status="PAID",
-                result_summary="پرداخت فاکتور پیام پنل انجام شد؛ در انتظار امضای الکترونیک",
-            )
-            await mark_case_ready_to_send_by_tracking(user_id, svc, tracking_code)
-        except Exception as panel_err:
-            logger.warning(f"[PANEL-MSG-PAY] خطا در ثبت پرونده پیام پنل در پنل: {panel_err}")
-
     if not has_sign:
         await state.clear()
         return
+
+    await _start_panel_sign_flow(
+        bot, state, user_id, message.from_user.full_name, svc, sign_menu_path,
+        tracking_code, fee_toman=amount_rial // 10, fee_status="PAID",
+        summary="پرداخت فاکتور پیام پنل انجام شد؛ در انتظار امضای الکترونیک")
+
+
+async def _start_panel_sign_flow(bot: Bot, state: FSMContext, user_id: int, full_name: str,
+                                 svc: str, sign_menu_path, tracking_code: str,
+                                 fee_toman: int, fee_status: str, summary: str):
+    """ثبت پرونده در پنل + ورود کاربر به «روند درج امضا» برای نوع سند svc.
+
+    مشترک بین پرداخت فاکتور پیام پنل و «فعال‌سازی امضا بدون فاکتور» مدیر.
+    """
+    import runtime_state
+    from states import Form
+
+    doc_label = PANEL_MESSAGE_SERVICE_LABELS.get(svc, "")
+    # ⭐ v1.6 — پرونده در پنل ثبت و بلافاصله وارد «آماده ارسال» (موارد ارسالی)
+    # می‌شود؛ فلگ امضا بعداً پس از تکمیل «روند درج امضا» زده می‌شود.
+    try:
+        from panel_sync import upsert_case_to_panel, mark_case_ready_to_send_by_tracking
+        await upsert_case_to_panel(
+            bale_user_id=user_id,
+            full_name=full_name,
+            service_type=svc,
+            status="PROCESSING",
+            tracking_code=tracking_code or None,
+            document_category=doc_label or svc,
+            fee=fee_toman,
+            fee_status=fee_status,
+            result_summary=summary,
+        )
+        await mark_case_ready_to_send_by_tracking(user_id, svc, tracking_code)
+    except Exception as panel_err:
+        logger.warning(f"[PANEL-MSG-SIGN] خطا در ثبت پرونده پیام پنل در پنل: {panel_err}")
 
     if svc == "EZHHARNAMEH":
         # فلوی امضای اظهارنامه — دقیقاً مثل /fee و پرداخت خودکار اظهارنامه
@@ -1385,3 +1401,99 @@ async def panel_message_successful_payment(message: Message, state: FSMContext, 
         reply_markup=lavayeh_sign_ready_kb)
     await state.set_state(Form.lavayeh_sign_ready)
 
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ۵) ⭐ فعال‌سازی «روند درج امضا» بدون فاکتور — از پنل ادمین
+# ══════════════════════════════════════════════════════════════════════════
+# مدیر در پنل («ارسال پیام به کاربر») نوع سند امضادار را بدون هزینه انتخاب
+# می‌کند؛ پنل پیام را می‌فرستد و آن را با costStatus=FREE_SIGN_PENDING علامت
+# می‌زند. پنل به FSM ربات دسترسی ندارد، پس ربات هر چند ثانیه درخواست‌های
+# معوق را از پنل می‌خواند، هر کدام را «claim» می‌کند (فقط یک‌بار) و همان
+# روندی را آغاز می‌کند که پس از پرداخت فاکتور پیام پنل اجرا می‌شود.
+
+FREE_SIGN_POLL_SECONDS = 15
+
+
+async def _process_free_sign_request(bot: Bot, req: dict):
+    import runtime_state
+    from panel_sync import _panel_request
+
+    mid = str(req.get("id") or "").strip()
+    svc = str(req.get("serviceType") or "").strip()
+    try:
+        user_id = int(str(req.get("baleUserId") or "").strip())
+    except ValueError:
+        logger.warning(f"[FREE-SIGN] شناسه بله نامعتبر برای پیام {mid}: {req.get('baleUserId')}")
+        return
+    if not mid or svc in PANEL_MESSAGE_NO_SIGN_SERVICES:
+        return
+
+    # claim اتمیک در پنل — جلوی شروع دوبارهٔ روند در تلاش‌های بعدی را می‌گیرد
+    data, err = await _panel_request(
+        "POST", f"{ADMIN_API_BASE.rstrip('/')}/admin/bot-messages/{mid}/sign-started",
+        max_retries=1, json={})
+    if not data or not data.get("claimed"):
+        if err:
+            logger.warning(f"[FREE-SIGN] claim پیام {mid} ناموفق: {err}")
+        return
+
+    sign_menu_path = None
+    try:
+        _smp = req.get("signMenuPath")
+        if _smp:
+            _parsed = json.loads(_smp)
+            if isinstance(_parsed, list):
+                sign_menu_path = _parsed
+    except Exception:
+        sign_menu_path = None
+    tracking_code = str(req.get("trackingCode") or "").strip()
+    full_name = str(req.get("fullName") or "").strip() or str(user_id)
+    doc_label = PANEL_MESSAGE_SERVICE_LABELS.get(svc, svc)
+
+    state = runtime_state.dp.fsm.resolve_context(bot, user_id, user_id)
+    try:
+        await bot.send_message(
+            user_id,
+            f"🖊 روند درج امضای الکترونیک ({doc_label}) توسط مدیریت برای شما فعال شد.",
+            reply_markup=ReplyKeyboardRemove())
+        await _start_panel_sign_flow(
+            bot, state, user_id, full_name, svc, sign_menu_path, tracking_code,
+            fee_toman=0, fee_status="ADMIN_MANUAL",
+            summary="روند امضا بدون فاکتور توسط مدیر فعال شد؛ در انتظار امضای الکترونیک")
+    except Exception as e:
+        logger.error(f"[FREE-SIGN] شروع روند امضا برای کاربر {user_id} ناموفق: {e}", exc_info=True)
+        try:
+            await bot.send_message(
+                ADMIN_ID, f"⚠️ فعال‌سازی روند امضا ({doc_label}) برای کاربر {user_id} ناموفق بود: {e}")
+        except Exception:
+            pass
+        return
+
+    logger.info(f"[FREE-SIGN] روند امضا ({svc}) برای کاربر {user_id} بدون فاکتور فعال شد (پیام {mid})")
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"🖊 روند امضای «{doc_label}» بدون فاکتور برای {full_name} ({user_id}) فعال شد."
+            + (f"\n🔢 کد رهگیری: {tracking_code}" if tracking_code else ""))
+    except Exception:
+        pass
+
+
+async def free_sign_request_loop(bot: Bot):
+    """حلقهٔ دائمی؛ در bot.py با asyncio.create_task اجرا می‌شود."""
+    import asyncio
+    from panel_sync import _panel_request
+
+    while True:
+        try:
+            data, _err = await _panel_request(
+                "GET", f"{ADMIN_API_BASE.rstrip('/')}/admin/bot-messages/sign-requests",
+                max_retries=1, breaker_failure=False)
+            for req in (data or {}).get("requests", []):
+                await _process_free_sign_request(bot, req)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"[FREE-SIGN] خطا در حلقه: {e}", exc_info=True)
+        await asyncio.sleep(FREE_SIGN_POLL_SECONDS)

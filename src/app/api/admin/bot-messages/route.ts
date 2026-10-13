@@ -77,10 +77,12 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // ⭐ نوع سند — فقط وقتی «هزینه» دارد معنا دارد (امضا پس از پرداخت آغاز می‌شود)
+    // ⭐ نوع سند — با هزینه: امضا پس از پرداخت آغاز می‌شود.
+    // ⭐ v2.0 — بدون هزینه + نوع سند امضادار: «امضا بدون فاکتور»؛ پس از ارسال
+    // پیام، ربات (free_sign_request_loop) روند امضا را برای کاربر فعال می‌کند.
     let serviceTypeClean: string | null = null;
     let signMenuPathJson: string | null = null;
-    if (costAmountRial > 0 && serviceType && String(serviceType).trim() !== '' && String(serviceType) !== 'NONE') {
+    if (serviceType && String(serviceType).trim() !== '' && String(serviceType) !== 'NONE') {
       const opt = getServiceOption(String(serviceType).trim());
       if (!opt) {
         return NextResponse.json(
@@ -94,6 +96,13 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // بدون هزینه، فقط نوع سندهای امضادار معنا دارند
+    const freeSign = costAmountRial === 0 && !!serviceTypeClean && !!getServiceOption(serviceTypeClean)?.hasSignFlow;
+    if (costAmountRial === 0 && !freeSign) {
+      serviceTypeClean = null;
+      signMenuPathJson = null;
+    }
+
     const message = await db.botMessage.create({
       data: {
         baleUserId,
@@ -103,7 +112,9 @@ export async function POST(request: NextRequest) {
         fileName: fileName || null,
         status: 'PENDING',
         costAmount: costAmountRial,
-        costStatus: costAmountRial > 0 ? 'AWAITING_PAYMENT' : 'NONE',
+        costStatus: costAmountRial > 0
+          ? 'AWAITING_PAYMENT'
+          : freeSign ? 'FREE_SIGN_PENDING' : 'NONE',
         serviceType: serviceTypeClean,
         signMenuPath: signMenuPathJson,
         trackingCode:
@@ -119,7 +130,9 @@ export async function POST(request: NextRequest) {
         details:
           costAmountRial > 0
             ? `پیام جدید برای ${fullName || baleUserId} - با هزینه ${costAmountRial / 10} تومان${serviceTypeClean ? ` (${getServiceOption(serviceTypeClean)?.label || serviceTypeClean} - امضای خودکار پس از پرداخت)` : ' - بدون امضا'} - در انتظار ارسال`
-            : `پیام جدید برای ${fullName || baleUserId} - در انتظار ارسال`,
+            : freeSign
+              ? `پیام جدید برای ${fullName || baleUserId} - بدون فاکتور، با فعال‌سازی روند امضای ${getServiceOption(serviceTypeClean)?.label || serviceTypeClean} - در انتظار ارسال`
+              : `پیام جدید برای ${fullName || baleUserId} - در انتظار ارسال`,
       },
     });
 
