@@ -4052,14 +4052,17 @@ async def on_tn_sign_sana_not_registered(bot: Bot, user_id: int, error_text: str
     await state.clear()
 
 
-async def on_tn_sign_submit_failure(bot: Bot, user_id: int, state: FSMContext):
+async def on_tn_sign_submit_failure(bot: Bot, user_id: int, state: FSMContext,
+                                    sana_disrupted: bool = False):
     """امضا ناموفق بود — ۲۰ دقیقه بعد درخواست امضای مجدد فعال می‌شود"""
-    await _tn_sign_failed_retry_later(bot, user_id, state)
+    await _tn_sign_failed_retry_later(bot, user_id, state, sana_disrupted)
 
 
-async def _tn_sign_failed_retry_later(bot: Bot, user_id: int, state: FSMContext):
-    from lavayeh_sign_handlers import SIGN_FAILED_RETRY_TEXT
-    await bot.send_message(user_id, SIGN_FAILED_RETRY_TEXT, reply_markup=ReplyKeyboardRemove())
+async def _tn_sign_failed_retry_later(bot: Bot, user_id: int, state: FSMContext,
+                                      sana_disrupted: bool = False):
+    from lavayeh_sign_handlers import SIGN_FAILED_RETRY_TEXT, SIGN_SANA_DISRUPTED_TEXT
+    await bot.send_message(user_id, SIGN_SANA_DISRUPTED_TEXT if sana_disrupted else SIGN_FAILED_RETRY_TEXT,
+                           reply_markup=ReplyKeyboardRemove())
     await state.set_state(Form.tn_sign_wrong_code_wait)
     asyncio.create_task(_tn_wrong_code_waiter(bot, user_id, state))
 

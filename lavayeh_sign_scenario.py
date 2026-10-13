@@ -30,7 +30,7 @@ from sign_tab import active_page as active_sign_page
 from browser_helpers import (
     check_and_handle_expiry,
     goto_url_with_retry,
-    handle_session_expired,
+    handle_session_expired, start_background_relogin,
     human_delay,
     resilient_sleep,
     safe_click_by_text,
@@ -328,15 +328,7 @@ async def _navigate_to_sign_page_once(
         # کل تلاش را باطل می‌کند.
         table_already_visible = await _check_lavayeh_sign_table_exists(sana_page)
         if not table_already_visible:
-            clicked_sign = await sana_page.evaluate('''() => {
-                const heads = Array.from(document.querySelectorAll('.box h5'));
-                const t = heads.find(el => el.innerText && el.innerText.includes("اخذ امضا"));
-                if (t) {
-                    const box = t.closest('.box');
-                    if (box) { box.click(); return true; }
-                }
-                return false;
-            }''')
+            clicked_sign = await _click_sign_box(sana_page)
             if not clicked_sign:
                 try:
                     await safe_click_by_text(sana_page, "اخذ امضا", bot, user_id)
@@ -365,15 +357,7 @@ async def _navigate_to_sign_page_once(
             await resilient_sleep(sana_page, 3, bot, user_id)
 
             # دوباره کلیک روی اخذ امضا
-            clicked_sign2 = await sana_page.evaluate('''() => {
-                const heads = Array.from(document.querySelectorAll('.box h5'));
-                const t = heads.find(el => el.innerText && el.innerText.includes("اخذ امضا"));
-                if (t) {
-                    const box = t.closest('.box');
-                    if (box) { box.click(); return true; }
-                }
-                return false;
-            }''')
+            clicked_sign2 = await _click_sign_box(sana_page)
             if clicked_sign2:
                 await resilient_sleep(sana_page, 6, bot, user_id)
 
@@ -676,6 +660,8 @@ async def submit_sign_code_for_person(
             await _close_any_popup(sana_page)
             logging.warning(f"[SIGN] امضا در سامانه ثنا ثبت نشده — ردیف {row_idx}")
             return {"success": False, "error": "sana_not_registered"}
+        elif popup_result == "session_expired":
+            return {"success": False, "error": "sana_session_expired"}
         elif popup_result == "session_expired_handled":
             logging.info(f"[SIGN] نشست پس از انقضا تمدید شد — تلاش مجدد تایید کد ردیف {row_idx}")
             continue
@@ -707,15 +693,7 @@ async def submit_sign_code_for_person(
             logging.warning(f"[SIGN] امضای ردیف {row_idx} ناموفق: {popup_result} (تلاش {attempt+1})")
 
             # بازگشت به مرحله اخذ امضا
-            clicked_sign = await sana_page.evaluate('''() => {
-                const heads = Array.from(document.querySelectorAll('.box h5'));
-                const t = heads.find(el => el.innerText && el.innerText.includes("اخذ امضا"));
-                if (t) {
-                    const box = t.closest('.box');
-                    if (box) { box.click(); return true; }
-                }
-                return false;
-            }''')
+            clicked_sign = await _click_sign_box(sana_page, wait_sec=8)
             if not clicked_sign and not await _check_lavayeh_sign_table_exists(sana_page):
                 try:
                     await safe_click_by_text(sana_page, "اخذ امضا", bot, user_id)
@@ -734,6 +712,35 @@ async def submit_sign_code_for_person(
 # ══════════════════════════════════════════════════════════════════════════════
 # توابع کمکی داخلی
 # ══════════════════════════════════════════════════════════════════════════════
+
+async def _click_sign_box(page, wait_sec: float = 20.0) -> bool:
+    """⭐ کلیک باکس «اخذ امضاي الكترونيك» (ng-click="navCtrl.onStepSelect(item)").
+    قبلاً فقط یک‌بار و بلافاصله جستجو می‌شد؛ اگر انگولار هنوز باکس‌ها را رندر نکرده
+    بود، کلیک انجام نمی‌شد. حالا تا wait_sec ثانیه با متن یکسان‌سازی‌شده (ي/ك عربی،
+    نیم‌فاصله) منتظر باکس می‌مانیم."""
+    js = '''() => {
+        const norm = s => String(s || "").replace(/ي/g, "ی").replace(/ك/g, "ک")
+            .replace(/[\u200c\u200d]/g, "").replace(/\\s+/g, " ").trim();
+        const heads = Array.from(document.querySelectorAll('.box h5, .box .heading'));
+        const t = heads.find(el => norm(el.innerText || el.textContent).includes("اخذ امضا"));
+        if (!t) return false;
+        const box = t.closest('.box');
+        if (!box) return false;
+        box.click();
+        return true;
+    }'''
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + wait_sec
+    while True:
+        try:
+            if await page.evaluate(js):
+                return True
+        except Exception as e:
+            logging.debug(f"[SIGN] _click_sign_box: {e}")
+        if loop.time() >= deadline:
+            return False
+        await asyncio.sleep(1)
+
 
 async def _fill_input(page, selector: str, value: str):
     """پر کردن فیلد ورودی با پشتیبانی از AngularJS ng-model."""
@@ -863,7 +870,10 @@ async def _wait_for_sign_popup(page, bot: Bot = None, user_id: int = None, timeo
             if (!popup) return null;
             const h2 = popup.querySelector('h2');
             const p = popup.querySelector('p');
-            const text = ((h2 ? h2.innerText : "") + " " + (p ? p.innerText : "")).trim();
+            // ⭐ یکسان‌سازی ي/ك عربی، نیم‌فاصله و فاصله‌ها تا پاپ‌آپ ورود همزمان از دست نرود
+            const text = ((h2 ? h2.innerText : "") + " " + (p ? p.innerText : ""))
+                .replace(/ي/g, "ی").replace(/ك/g, "ک")
+                .replace(/[\u200c\u200d\u200e\u200f]/g, "").replace(/\\s+/g, " ").trim();
             const successIcon = popup.querySelector('.sa-icon.sa-success');
             const warningIcon = popup.querySelector('.sa-icon.sa-warning');
             const errorIcon = popup.querySelector('.sa-icon.sa-error');
@@ -906,9 +916,12 @@ async def _wait_for_sign_popup(page, bot: Bot = None, user_id: int = None, timeo
         }''')
         if result == "session_expired":
             if bot is not None and user_id is not None:
-                logging.warning("[SIGN] پاپ‌آپ ورود همزمان در مرحله تایید کد شناسایی شد — لاگین مجدد مدیر...")
-                await handle_session_expired(bot, user_id, page=page)
-                return "session_expired_handled"
+                # ⭐ دستور کارفرما: ورود همزمان هنگام ثبت کد امضا → لاگین مجدد مدیر
+                # (پس‌زمینه)، اطلاع «اختلال سامانه» به کاربر و فعال‌شدن امضای
+                # مجدد ۲۰ دقیقه بعد — همان کد دوباره ثبت نمی‌شود.
+                logging.warning("[SIGN] پاپ‌آپ ورود همزمان در مرحله تایید کد شناسایی شد — لاگین مجدد مدیر، امضای مجدد ۲۰ دقیقه بعد")
+                start_background_relogin(bot, page=page)
+                return "session_expired"
             return "error"
         if result:
             return result

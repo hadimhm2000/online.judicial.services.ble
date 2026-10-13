@@ -137,6 +137,18 @@ async def print_page_session_expired(page) -> bool:
     return is_print_session_expired_text(body_text)
 
 
+def start_background_relogin(bot: Bot, page=None):
+    """⭐ لاگین مجدد مدیر بدون معطل‌کردن فراخوان (مثلاً ثبت کد امضا): کاربر
+    همان لحظه پیام «اختلال سامانه» می‌گیرد و ۲۰ دقیقه بعد امضای مجدد برایش
+    فعال می‌شود؛ پیام «پرونده در صف» برای او ارسال نمی‌شود (user_id=0)."""
+    async def _run():
+        try:
+            await handle_session_expired(bot, 0, page=page)
+        except Exception as e:
+            logging.error(f"[SESSION] لاگین مجدد پس‌زمینه ناموفق: {e}")
+    return asyncio.get_running_loop().create_task(_run())
+
+
 async def install_session_watcher(context=None, page=None) -> None:
     """نصب ناظر پاپ‌آپ ورود همزمان روی context (برای ناوبری‌های بعدی) و/یا صفحهٔ فعلی."""
     if context is not None:

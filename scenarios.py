@@ -2749,6 +2749,10 @@ async def _process_lavayeh_submit_sign(data: dict, bot: Bot):
             elif "sana_not_registered" in error:
                 await on_lavayeh_sign_sana_not_registered(bot, user_id, "امضای شخص در سامانه ثنا درج نشده است", user_state)
                 await bot.send_message(ADMIN_ID, f"❌ [SIGN] امضا در ثنا ثبت نیست — کاربر {user_id}.")
+            elif "sana_session_expired" in error:
+                # ⭐ ورود همزمان هنگام ثبت کد: لاگین مجدد مدیر در پس‌زمینه شروع شده؛
+                # به کاربر «اختلال سامانه» و امضای مجدد ۲۰ دقیقه بعد
+                await on_lavayeh_sign_submit_failure(bot, user_id, user_state, sana_disrupted=True)
             else:
                 await on_lavayeh_sign_submit_failure(bot, user_id, user_state)
 
@@ -2878,6 +2882,8 @@ async def _process_tn_submit_sign(data: dict, bot: Bot):
             elif "sana_not_registered" in error:
                 await on_tn_sign_sana_not_registered(bot, user_id, "امضای شخص در سامانه ثنا درج نشده است", user_state)
                 await bot.send_message(ADMIN_ID, f"❌ [TN-SIGN] امضا در ثنا ثبت نیست — کاربر {user_id}.")
+            elif "sana_session_expired" in error:
+                await on_tn_sign_submit_failure(bot, user_id, user_state, sana_disrupted=True)
             else:
                 await on_tn_sign_submit_failure(bot, user_id, user_state)
 
@@ -3005,6 +3011,8 @@ async def _process_ezhharnameh_submit_sign(data: dict, bot: Bot):
             elif "sana_not_registered" in error:
                 await on_ezhhar_sign_sana_not_registered(bot, user_id, "امضای شخص در سامانه ثنا درج نشده است", user_state)
                 await bot.send_message(ADMIN_ID, f"❌ [EZHHAR_SIGN] امضا در ثنا ثبت نیست — کاربر {user_id}.")
+            elif "sana_session_expired" in error:
+                await on_ezhhar_sign_submit_failure(bot, user_id, user_state, sana_disrupted=True)
             else:
                 # ⭐ رفع باگ «ناموفق کاذب»: متن خام آخرین پاپ‌آپ سیستم (در صورت
                 # وجود) هم برای مدیر ارسال می‌شود تا اگر واقعاً موفق بوده ولی
