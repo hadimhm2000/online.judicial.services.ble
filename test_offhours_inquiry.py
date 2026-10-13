@@ -128,3 +128,20 @@ def test_legacy_items_without_flag_still_sent():
                           "registered_date": "2026-10-01", "status": "pending", "attempts": 0})
     final_print._save(data)
     assert len(final_print._due_items(final_print._load(), "2026-10-02")) == 1
+
+
+def test_panel_signature_marks_item_signed(monkeypatch):
+    import panel_sync
+    _register("111")
+    _register("222")
+
+    async def fake_find(uid, svc, tc):
+        if tc == "111":
+            return {"hasSignature": True, "signedAt": "2026-10-01T10:00:00.000Z"}
+        return {"hasSignature": False}
+
+    monkeypatch.setattr(panel_sync, "find_case_in_panel", fake_find)
+    assert asyncio.run(final_print._sync_signatures_from_panel()) == 1
+    items = {it["tracking_code"]: it for it in final_print._load()["items"]}
+    assert items["111"]["signed"] and items["111"]["signed_date"] == "2026-10-01"
+    assert not items["222"]["signed"]

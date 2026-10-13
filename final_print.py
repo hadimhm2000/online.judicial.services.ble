@@ -27,6 +27,8 @@ scenarios.process_task در این حالت فقط چاپ را می‌فرستد
 mark_signed(...) (از on_*_sign_submit_success پس از امضای آخرین نفر) آن را
 آمادهٔ ارسال می‌کند. چاپ روز بعد از تکمیل امضا ساعت ۱۷:۰۰ ارسال می‌گردد.
 موارد قدیمیِ فایل که فیلد sign_required ندارند مثل قبل ارسال می‌شوند.
+اگر مدیر در پنل امضای پرونده را «درج شده» علامت بزند (Case.hasSignature)،
+پیش از اجرای روزانه همان هم امضای کامل حساب می‌شود (_sync_signatures_from_panel).
 """
 
 import asyncio
@@ -291,8 +293,60 @@ def _due_items(data: dict, today: str) -> list:
     ]
 
 
+def _panel_signed_date(case: dict) -> str:
+    """تاریخ (تهران) signedAt پنل؛ اگر نبود/نامعتبر بود: امروز."""
+    raw = str(case.get("signedAt") or "")
+    try:
+        dt = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return dt.astimezone(TEHRAN_TZ).date().isoformat()
+    except ValueError:
+        return _today()
+
+
+async def _sync_signatures_from_panel() -> int:
+    """موارد بدون امضا که مدیر در پنل «امضا درج شد» زده (Case.hasSignature)
+    امضاشده حساب می‌شوند. خطای پنل هیچ موردی را تغییر نمی‌دهد."""
+    with _lock:
+        unsigned = [dict(it) for it in _load()["items"]
+                    if it.get("status") in ("pending", "queued") and not _is_signed(it)]
+    if not unsigned:
+        return 0
+    try:
+        from panel_sync import find_case_in_panel
+    except Exception:
+        return 0
+    found = {}
+    for it in unsigned:
+        try:
+            case = await find_case_in_panel(it["user_id"], it.get("service_type") or "LAVAYEH",
+                                            it["tracking_code"])
+        except Exception as e:
+            logging.warning(f"[FINAL_PRINT] بررسی امضای پنل برای {it['tracking_code']} ناموفق: {e}")
+            continue
+        if case and case.get("hasSignature"):
+            found[(it["user_id"], it["tracking_code"])] = _panel_signed_date(case)
+    if found:
+        with _lock:
+            data = _load()
+            for it in data["items"]:
+                key = (it.get("user_id"), it.get("tracking_code"))
+                if key in found and not _is_signed(it):
+                    it["signed"] = True
+                    it["signed_date"] = found[key]
+                    it["signed_by"] = "panel"
+            _save(data)
+        logging.info(f"[FINAL_PRINT] {len(found)} مورد با علامت امضای پنل آمادهٔ چاپ نهایی شد")
+    return len(found)
+
+
 async def run_daily_batch(bot: Bot) -> int:
     """موارد روزهای قبل را در صف استعلام قرار می‌دهد. خروجی: تعداد تسک‌ها."""
+    try:
+        await _sync_signatures_from_panel()
+    except Exception as e:
+        logging.error(f"[FINAL_PRINT] خطا در همگام‌سازی امضا از پنل: {e}")
     today = _today()
     exhausted = []
     queued = []
