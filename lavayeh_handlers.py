@@ -1555,6 +1555,13 @@ async def lavayeh_get_company_id(message: Message, state: FSMContext):
         await message.answer("⚠️ شناسه ملی شرکت باید *۱۱ رقمی* باشد:")
         return
     data = await state.get_data()
+    # ⭐ بررسی تکراری نبودن شناسه ملی شرکت
+    if company_id in [p.get("company_id") for p in data.get("lavayeh_persons", []) if p.get("company_id")]:
+        await message.answer(
+            f"⚠️ شناسه ملی `{company_id}` قبلاً ثبت شده است.\n\n"
+            f"لطفاً شناسه ملی دیگری وارد فرمایید:",
+            reply_markup=back_only_kb)
+        return
     current_person = data.get("_current_person", {})
     current_person["company_id"] = company_id
     await state.update_data(_current_person=current_person)
@@ -1598,8 +1605,18 @@ async def lavayeh_get_national_id(message: Message, state: FSMContext):
         return
     data = await state.get_data()
     current_person = data.get("_current_person", {})
-    current_person["national_id"] = nat_id
     persons = data.get("lavayeh_persons", [])
+    # ⭐ بررسی تکراری نبودن کدملی (ارائه‌دهندگان + وکلای اعلام وکالت)
+    used_ids = [p.get("national_id") for p in persons if p.get("national_id")]
+    used_ids += list(data.get("ealam_lawyers", []))
+    if nat_id in used_ids:
+        await message.answer(
+            f"⚠️ کد ملی `{nat_id}` قبلاً ثبت شده است.\n"
+            f"هر شخص باید کد ملی متفاوت داشته باشد.\n\n"
+            f"لطفاً کد ملی دیگری وارد فرمایید:",
+            reply_markup=back_only_kb)
+        return
+    current_person["national_id"] = nat_id
     persons.append(current_person)
     await state.update_data(lavayeh_persons=persons, _current_person={})
     person_type = current_person.get("person_type", "")
@@ -1697,6 +1714,13 @@ async def ealam_in_lavayeh_get_national_id(message: Message, state: FSMContext):
     nat_id = _to_en(message.text)
     if not re.match(r"^[0-9]{10}$", nat_id):
         await message.answer("⚠️ کد ملی باید *۱۰ رقمی* باشد:")
+        return
+    # ⭐ بررسی تکراری نبودن کدملی وکیل
+    if nat_id in lawyers:
+        await message.answer(
+            f"⚠️ کد ملی وکیل `{nat_id}` قبلاً ثبت شده است.\n\n"
+            f"لطفاً کد ملی دیگری وارد فرمایید:",
+            reply_markup=back_only_kb)
         return
     lawyers.append(nat_id)
     await state.update_data(ealam_lawyers=lawyers)
@@ -2631,7 +2655,7 @@ async def lav_nid_fix_callback(callback: CallbackQuery, state: FSMContext, bot: 
     win = _nfw.get_window(target_user_id)
     if not win or win.get("flow") != _nfw.FLOW_LAVAYEH:
         await callback.answer(
-            "⚠️ درخواستی برای ویرایش یافت نشد (مهلت ۴۵ دقیقه‌ای به پایان رسیده است).")
+            "⚠️ درخواستی برای ویرایش یافت نشد (مهلت ۳ ساعته به پایان رسیده است).")
         return
 
     await callback.answer()
@@ -2769,6 +2793,21 @@ async def lav_nid_receive_new_nid(message: Message, state: FSMContext, bot: Bot)
         await message.answer("⚠️ کدملی باید *۱۰ رقمی* باشد:")
         return
 
+    # ⭐ کدملی جدید نباید با کدملی سایر ارائه‌دهندگان همین لایحه تکراری باشد
+    _peek = _nfw.get_window(user_id)
+    if _peek and _peek.get("flow") == _nfw.FLOW_LAVAYEH:
+        _peek_idx = (await state.get_data()).get(
+            "_nid_fix_person_index", _peek.get("person_index", -1))
+        _others = [
+            (p or {}).get("national_id")
+            for i, p in enumerate((_peek.get("task_data") or {}).get("lavayeh_persons", []))
+            if i != _peek_idx]
+        if nat_id in _others:
+            await message.answer(
+                f"⚠️ کد ملی `{nat_id}` برای شخص دیگری در همین لایحه ثبت شده است.\n\n"
+                f"لطفاً کد ملی صحیح را وارد فرمایید:")
+            return
+
     win = _nfw.pop_window(user_id)
     runtime_state.pending_lavayeh_sana_fix.pop(user_id, None)
     if not win or win.get("flow") != _nfw.FLOW_LAVAYEH:
@@ -2832,7 +2871,7 @@ async def eal_nid_fix_callback(callback: CallbackQuery, state: FSMContext, bot: 
     win = _nfw.get_window(target_user_id)
     if not win or win.get("flow") != _nfw.FLOW_EALAM:
         await callback.answer(
-            f"⚠️ درخواستی برای ویرایش یافت نشد (مهلت {_nfw.NID_FIX_WINDOW_MINUTES} دقیقه‌ای به پایان رسیده است).")
+            f"⚠️ درخواستی برای ویرایش یافت نشد (مهلت {_nfw.duration_adj(_nfw.NID_FIX_WINDOW_MINUTES)} به پایان رسیده است).")
         return
     await callback.answer()
     await bot.send_message(
@@ -2877,7 +2916,7 @@ async def eal_nid_receive_new_nid(message: Message, state: FSMContext, bot: Bot)
     if message.text == "🔙 بازگشت":
         await message.answer(
             "برای ویرایش کدملی، دکمهٔ «✏️ ویرایش کدملی» را بزنید؛ "
-            f"مهلت {_nfw.NID_FIX_WINDOW_MINUTES} دقیقه‌ای همچنان برقرار است.",
+            f"مهلت {_nfw.duration_adj(_nfw.NID_FIX_WINDOW_MINUTES)} همچنان برقرار است.",
             reply_markup=restart_kb)
         await state.clear()
         return

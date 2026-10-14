@@ -40,8 +40,24 @@ from config import ADMIN_ID
 logger = logging.getLogger(__name__)
 
 # ── ثابت‌ها ────────────────────────────────────────────────────────────────
-NID_FIX_WINDOW_MINUTES = 45          # مهلت ویرایش کدملی
-TN_RETRIEVE_FIX_MINUTES = 45         # مهلت ویرایش دادنامه/پرونده/تاریخ
+NID_FIX_WINDOW_MINUTES = 180         # مهلت ویرایش کدملی (۳ ساعت)
+TN_RETRIEVE_FIX_MINUTES = 180        # مهلت ویرایش دادنامه/پرونده/تاریخ (۳ ساعت)
+
+_FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+
+
+def duration_label(minutes: int) -> str:
+    """«۳ ساعت» / «۴۵ دقیقه» — متن مهلت برای پیام‌های کاربر."""
+    if minutes % 60 == 0:
+        return f"{minutes // 60} ساعت".translate(_FA_DIGITS)
+    return f"{minutes} دقیقه".translate(_FA_DIGITS)
+
+
+def duration_adj(minutes: int) -> str:
+    """«۳ ساعته» / «۴۵ دقیقه‌ای» — صفت مهلت («مهلت ۳ ساعته»)."""
+    if minutes % 60 == 0:
+        return f"{minutes // 60} ساعته".translate(_FA_DIGITS)
+    return f"{minutes} دقیقه‌ای".translate(_FA_DIGITS)
 
 FLOW_LAVAYEH = "lavayeh"
 FLOW_EZHHARNAMEH = "ezhharnameh"
@@ -65,8 +81,8 @@ def flow_label(flow: str) -> str:
 def nid_fix_deadline_text() -> str:
     """متن استاندارد اعلام مهلت ویرایش کدملی — عین دستور کارفرما."""
     return (
-        f"⏰ شما *{NID_FIX_WINDOW_MINUTES} دقیقه* فرصت دارید "
-        f"کدملی شخص را ویرایش کنید؛ در غیر این صورت پس از {NID_FIX_WINDOW_MINUTES} دقیقه "
+        f"⏰ شما *{duration_label(NID_FIX_WINDOW_MINUTES)}* فرصت دارید "
+        f"کدملی شخص را ویرایش کنید؛ در غیر این صورت پس از {duration_label(NID_FIX_WINDOW_MINUTES)} "
         "*نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از هزینه کسر می‌گردد."
     )
 
@@ -89,7 +105,7 @@ def deceased_message(error_text: str) -> str:
     return (
         f"⚠️ *خطای استعلام ثنا:*\n\n«{(error_text or '').strip()[:300]}»\n\n"
         "لطفاً *شماره کدملی جدید* را وارد کنید.\n\n"
-        f"⏰ شما *{NID_FIX_WINDOW_MINUTES} دقیقه* فرصت دارید کدملی جدید را وارد کنید. "
+        f"⏰ شما *{duration_label(NID_FIX_WINDOW_MINUTES)}* فرصت دارید کدملی جدید را وارد کنید. "
         "در صورت انصراف (یا پایان مهلت)، *۵۰ درصد مبلغ پیش‌پرداخت* به کیف پول "
         "شما بازگردانده می‌شود.")
 
@@ -132,7 +148,7 @@ def start_window(user_id: int, flow: str, task_data: dict, error_text: str,
     }
     runtime_state.pending_nid_fix_windows[user_id] = win
     logger.info(
-        f"[NID-FIX] پنجرهٔ {NID_FIX_WINDOW_MINUTES} دقیقه‌ای شروع شد: user={user_id}, flow={flow}, "
+        f"[NID-FIX] پنجرهٔ {duration_adj(NID_FIX_WINDOW_MINUTES)} شروع شد: user={user_id}, flow={flow}, "
         f"nid={national_id}, deadline={win['deadline'].strftime('%H:%M:%S')}")
     return win
 
@@ -306,7 +322,7 @@ def pop_tn_retrieve_fix(user_id: int):
 #     آماده‌سازی/هزینه/چاپ و ادامهٔ مراحل انجام می‌شود
 #   (contract_fix_scenario.py — تسک CONTRACT_FIX_SUBMIT)
 
-CONTRACT_FIX_MINUTES = 45             # مهلت ارسال کد قرارداد جدید
+CONTRACT_FIX_MINUTES = 180            # مهلت ارسال کد قرارداد جدید (۳ ساعت)
 
 
 def start_contract_fix(user_id: int, flow: str, task_data: dict, bill_no: str,
@@ -326,7 +342,7 @@ def start_contract_fix(user_id: int, flow: str, task_data: dict, bill_no: str,
     }
     runtime_state.pending_contract_fix[user_id] = win
     logger.info(
-        f"[CONTRACT-FIX] پنجرهٔ {CONTRACT_FIX_MINUTES} دقیقه‌ای شماره قرارداد شروع شد: "
+        f"[CONTRACT-FIX] پنجرهٔ {duration_adj(CONTRACT_FIX_MINUTES)} شماره قرارداد شروع شد: "
         f"user={user_id}, flow={flow}, bill_no={bill_no}, old={old_contract}, "
         f"deadline={win['deadline'].strftime('%H:%M:%S')}")
     return win
@@ -343,7 +359,7 @@ def pop_contract_fix(user_id: int):
 def contract_fix_deadline_text() -> str:
     """متن استاندارد اعلام مهلت ۴۵ دقیقه‌ای — عین دستور کارفرما."""
     return (
-        f"⏰ شما *{CONTRACT_FIX_MINUTES} دقیقه* فرصت دارید کد قرارداد جدید را ارسال فرمائید."
+        f"⏰ شما *{duration_label(CONTRACT_FIX_MINUTES)}* فرصت دارید کد قرارداد جدید را ارسال فرمائید."
     )
 
 
@@ -383,7 +399,7 @@ async def sweep_expired(bot) -> int:
             try:
                 await bot.send_message(
                     uid,
-                    f"⌛ *مهلت {NID_FIX_WINDOW_MINUTES} دقیقه‌ای ویرایش کدملی به پایان رسید.*\n\n"
+                    f"⌛ *مهلت {duration_adj(NID_FIX_WINDOW_MINUTES)} ویرایش کدملی به پایان رسید.*\n\n"
                     f"درخواست {label} حذف شد.\n"
                     f"{settle_text}\n"
                     "در صورت تمایل می‌توانید از منوی اصلی مجدداً اقدام فرمایید.",
@@ -416,7 +432,7 @@ async def sweep_expired(bot) -> int:
             try:
                 await bot.send_message(
                     uid,
-                    f"⌛ *مهلت {TN_RETRIEVE_FIX_MINUTES} دقیقه‌ای ویرایش شماره دادنامه/"
+                    f"⌛ *مهلت {duration_adj(TN_RETRIEVE_FIX_MINUTES)} ویرایش شماره دادنامه/"
                     "شماره پرونده/تاریخ دادنامه به پایان رسید.*\n\n"
                     "درخواست دعاوی اعتراضی حذف شد.\n"
                     "💰 مبلغ پیش‌پرداخت شما حفظ شده و در هزینه ثبت بعدی شما "
@@ -451,7 +467,7 @@ async def sweep_expired(bot) -> int:
             try:
                 await bot.send_message(
                     uid,
-                    f"⌛ *مهلت {CONTRACT_FIX_MINUTES} دقیقه‌ای ارسال کد قرارداد جدید به پایان رسید.*\n\n"
+                    f"⌛ *مهلت {duration_adj(CONTRACT_FIX_MINUTES)} ارسال کد قرارداد جدید به پایان رسید.*\n\n"
                     f"امکان ثبت خودکار قرارداد برای درخواست «{label}» با کد رهگیری "
                     f"`{bill_no}` وجود ندارد.\n\n"
                     "برای ثبت شماره قرارداد و ادامهٔ مراحل، با پشتیبانی در تماس باشید.",

@@ -56,7 +56,7 @@ async def contract_fix_start_callback(callback: CallbackQuery, state, bot):
     pending = nid_fix_window.get_contract_fix(target_user_id)
     if not pending:
         await callback.answer(
-            "⚠️ درخواستی برای ارسال کد قرارداد یافت نشد (مهلت ۴۵ دقیقه‌ای به پایان رسیده است).")
+            "⚠️ درخواستی برای ارسال کد قرارداد یافت نشد (مهلت ۳ ساعته به پایان رسیده است).")
         return
 
     await callback.answer()
@@ -88,7 +88,7 @@ async def contract_fix_code_handler(message: Message, state, bot):
         # خارج می‌شویم)
         await message.answer(
             "🔙 بازگشت انجام شد.\n"
-            "⏰ توجه: تا پایان مهلت ۴۵ دقیقه‌ای می‌توانید با زدن دکمهٔ "
+            "⏰ توجه: تا پایان مهلت ۳ ساعته می‌توانید با زدن دکمهٔ "
             "«🔢 ارسال کد قرارداد جدید» اقدام فرمایید.",
             reply_markup=restart_kb)
         await state.clear()

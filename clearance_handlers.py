@@ -42,6 +42,7 @@ import runtime_state
 from config import ADMIN_ID, BALE_API_BASE, BALE_SSL_CONTEXT, BALE_WALLET_TOKEN, BOT_TOKEN
 from damages_calc import parse_jalali_date
 from id_validation import is_valid_national_id, normalize_digits
+from nid_fix_window import duration_adj, duration_label
 from keyboards import BACK_TO_MAIN_TEXT, CLEARANCE_MENU_TEXT, get_flow_type_kb
 from states import Form
 
@@ -54,7 +55,7 @@ SERVICE_LABEL = "گواهی عدم سوءپیشینه"
 FEE_TOMAN = 150_000
 SITE_COST_TOMAN = 42_000          # سود = ۱۰۸,۰۰۰ تومان
 CODE_WINDOW_MINUTES = 7
-FIX_WINDOW_MINUTES = 45
+FIX_WINDOW_MINUTES = 180  # مهلت اصلاح اطلاعات (۳ ساعت)
 RESEND_AFTER_MINUTES = 30
 TIMEOUT_REFUND_PERCENT = 50       # لغو پس از پایان مهلت ویرایش کدملی
 
@@ -683,12 +684,12 @@ async def on_send_code_result(bot: Bot, rid: str, kind: str, info: str):
             bot, uid,
             "❌ *کدملی و تاریخ تولد اشتباه است.*\n"
             f"پیام سامانه: «{info}»\n\n"
-            f"⏰ شما *{FIX_WINDOW_MINUTES} دقیقه* مهلت دارید تا اطلاعات را ویرایش کنید؛ در غیر این صورت "
+            f"⏰ شما *{duration_label(FIX_WINDOW_MINUTES)}* مهلت دارید تا اطلاعات را ویرایش کنید؛ در غیر این صورت "
             f"درخواست لغو و {TIMEOUT_REFUND_PERCENT}٪ مبلغ پرداختی به کیف پول شما برمی‌گردد.\n\n"
             "✏️ لطفاً *کدملی* صحیح را وارد کنید:",
             reply_markup=_back_kb)
         await _notify_admin(bot, f"ℹ️ [گواهی عدم سوءپیشینه] {rid}: کدملی/تاریخ تولد اشتباه — "
-                                 f"{FIX_WINDOW_MINUTES} دقیقه مهلت ویرایش به کاربر داده شد.\n{_who(req)}")
+                                 f"{duration_label(FIX_WINDOW_MINUTES)} مهلت ویرایش به کاربر داده شد.\n{_who(req)}")
         return
     await _fail(bot, rid, "send_code", "ارسال رمز موقت", info, _USER_SUPPORT_TEXT)
 
@@ -819,7 +820,7 @@ async def _expire_fix_window(bot: Bot, rid: str):
         await wallet.credit(uid, refund, "refund", f"لغو {SERVICE_LABEL} {rid} (پایان مهلت ویرایش)")
     await _notify_user(
         bot, uid,
-        f"⌛ مهلت {FIX_WINDOW_MINUTES} دقیقه‌ای ویرایش کدملی و تاریخ تولد به پایان رسید و درخواست "
+        f"⌛ مهلت {duration_adj(FIX_WINDOW_MINUTES)} ویرایش کدملی و تاریخ تولد به پایان رسید و درخواست "
         f"{SERVICE_LABEL} لغو شد."
         + (f"\n👛 مبلغ {refund:,} تومان به کیف پول شما برگشت." if refund else ""),
         reply_markup=get_flow_type_kb(uid))

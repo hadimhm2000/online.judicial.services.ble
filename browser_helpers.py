@@ -1434,8 +1434,13 @@ async def safe_click_by_text(page, text, bot: Bot, user_id: int, retry_count=3):
                 if (closeBtn) {
                     const rect = closeBtn.getBoundingClientRect();
                     if (rect.width > 0 && rect.height > 0 && window.getComputedStyle(closeBtn).display !== 'none') {
+                        const popup = closeBtn.closest('.sweet-alert');
+                        const h2 = popup ? popup.querySelector('h2') : null;
+                        const p = popup ? popup.querySelector('p') : null;
+                        const text = [h2 ? h2.innerText : '', p ? p.innerText : '']
+                            .filter(Boolean).join(' - ').trim();
                         closeBtn.click();
-                        return { found: true };
+                        return { found: true, text: text };
                     }
                 }
                 const hasAlert = document.querySelector('.sweet-alert.showSweetAlert, .alert-danger, .error') !== null;
@@ -1443,7 +1448,9 @@ async def safe_click_by_text(page, text, bot: Bot, user_id: int, retry_count=3):
             }''')
             
             if error_details['found']:
-                logging.warning(f"Error dialog detected on clicking '{text}'. Retrying...")
+                logging.warning(
+                    f"Error dialog detected on clicking '{text}': "
+                    f"«{(error_details.get('text') or '')[:200]}». Retrying...")
                 await asyncio.sleep(3)
                 continue
                 

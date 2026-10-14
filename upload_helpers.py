@@ -71,7 +71,8 @@ from config import temp_path
 from browser_helpers import (
     resilient_sleep, check_and_handle_expiry, wait_for_angular_idle,
     soft_click_if_exists, dismiss_expiry_popup,
-    detect_concurrent_login_popup, check_concurrent_login_all_sections)
+    detect_concurrent_login_popup, check_concurrent_login_all_sections,
+    detect_sana_service_delay_popup, dismiss_sana_error_popup)
 
 # =========================================================
 # تنظیمات
@@ -1499,6 +1500,38 @@ async def _count_alerts(page, alert_text_substring: str) -> int:
         return 0
 
 
+async def _handle_service_delay_popup(page, step_name: str, prefix: str) -> bool:
+    """⭐ طبق دستور کارفرما: اگر پاپ‌آپ «خطا: تاخیر در اجرای سرویس» باز است،
+    بسته می‌شود تا همان مرحله (آپلود همه / تایید همه) دوباره کلیک شود.
+    بازگشت True یعنی پاپ‌آپ دیده و بسته شد."""
+    if not await detect_sana_service_delay_popup(page):
+        return False
+    _log(prefix, f"پاپ‌آپ «تاخیر در اجرای سرویس» در مرحلهٔ «{step_name}» — بستن و تکرار همان مرحله", 'warning')
+    await dismiss_sana_error_popup(page)
+    await asyncio.sleep(3)
+    return True
+
+
+async def _attachments_look_applied(page, expected_count: int, prefix: str) -> bool:
+    """⭐ آیا صفحه نشان می‌دهد همهٔ پیوست‌ها ثبت شده‌اند؟
+
+    وقتی پیوست‌ها قبلاً (در تلاش قبلی) تایید شده‌اند، کلیک مجدد «تایید همه»
+    هیچ alert جدیدی نمی‌دهد و شمارش alert صفر می‌ماند — در حالی که همهٔ
+    برگ‌ها در جدول هستند. معیار: هیچ پاپ‌آپ خطا/لودینگی نیست و تعداد
+    دکمه‌های حذف نمایان دست‌کم برابر تعداد مورد انتظار است."""
+    snap = await page_state_snapshot(page, prefix)
+    if not snap or snap.get("error"):
+        return False
+    _log(prefix, f"بررسی وضعیت نهایی پیوست‌ها (snapshot): {snap}", 'info')
+    if snap.get("viewModel_loading") is True:
+        return False
+    if snap.get("has_sweet_alert") and snap.get("sweet_alert_is_error"):
+        return False
+    if snap.get("has_loading_bar_blue") or snap.get("has_blockUI"):
+        return False
+    return (snap.get("visible_delete_buttons") or 0) >= expected_count
+
+
 async def click_upload_all_with_retry(
     page,
     expected_file_count: int,
@@ -1716,6 +1749,7 @@ async def click_upload_all_with_retry(
         snapshot_logged = False  # ⭐ flag برای فقط یک‌بار لاگ snapshot
 
         _log(prefix, f"انتظار برای {expected_file_count} alert موفقیت آپلود (با شمارش تجمعی)...")
+        service_delay_hit = False
 
         for wait_i in range(UPLOAD_CONFIRM_TIMEOUT * 2):
             if wait_i % 4 == 0 and bot and user_id:
@@ -1797,6 +1831,11 @@ async def click_upload_all_with_retry(
                         _log(prefix, f"وضعیت نهایی صفحه: {snap}", 'warning')
                     break
 
+            # ⭐ «تاخیر در اجرای سرویس» → بستن و کلیک مجدد آپلود همه
+            if await _handle_service_delay_popup(page, "آپلود همه", prefix):
+                service_delay_hit = True
+                break
+
             await asyncio.sleep(0.5)
         else:
             # تایم‌اوت
@@ -1823,6 +1862,11 @@ async def click_upload_all_with_retry(
                 # ادامه نمی‌دهیم — برگرد به retry
                 await asyncio.sleep(3)
                 continue
+
+        if service_delay_hit:
+            # همان مرحله (آپلود همه) دوباره — فایل‌های آپلودشده در صف
+            # آپلودر دوباره ارسال نمی‌شوند
+            continue
 
         result["alerts_seen"] = alerts_seen_cumulative
 
@@ -1929,6 +1973,11 @@ async def click_apply_all_with_retry(
         "alerts_seen": 0,
         "method": None,
     }
+    # ⭐ مجموع alertهای تایید در همهٔ تلاش‌ها و تعداد تلاش‌های مجددِ بی‌alert —
+    # برای تشخیص حالتی که پیوست‌ها در تلاش قبلی تایید شده‌اند و کلیک مجدد
+    # دیگر alertی نمی‌دهد (خطای کاذب «تایید همه بعد از ۵ تلاش ناموفق»)
+    total_alerts_all_attempts = 0
+    zero_alert_retries = 0
 
     for attempt in range(1, max_retries + 1):
         _log(prefix, f"━━━ تایید همه [{doc_title}] — تلاش {attempt}/{max_retries} ━━━")
@@ -2169,6 +2218,12 @@ async def click_apply_all_with_retry(
                         _log(prefix, f"وضعیت نهایی صفحه: {snap}", 'warning')
                     break
 
+            # ⭐ «تاخیر در اجرای سرویس» → بستن و کلیک مجدد تایید همه
+            if await _handle_service_delay_popup(page, "تایید همه", prefix):
+                result["error_type"] = "service_delay"
+                result["error"] = "تاخیر در اجرای سرویس حین تایید همه"
+                break
+
             # بررسی خطای دیگر
             error_text = await get_and_close_error_popup_text(page)
             if error_text:
@@ -2207,7 +2262,15 @@ async def click_apply_all_with_retry(
             await asyncio.sleep(3)
             continue
 
+        # ⭐ «تاخیر در اجرای سرویس» → همان مرحله (تایید همه) دوباره کلیک می‌شود
+        if result["error_type"] == "service_delay":
+            total_alerts_all_attempts += alerts_seen_cumulative
+            result["error_type"] = None
+            result["error"] = None
+            continue
+
         result["alerts_seen"] = alerts_seen_cumulative
+        total_alerts_all_attempts += alerts_seen_cumulative
 
         # ─── ۷. انتظار برای محو شدن alertها ───
         _log(prefix, "انتظار برای محو شدن alertهای تایید...")
@@ -2240,6 +2303,21 @@ async def click_apply_all_with_retry(
             return result
         else:
             _log(prefix, f"تایید همه کامل نشد — فقط {alerts_seen_cumulative}/{expected_count} alert", 'warning')
+            # ⭐ کلیک مجدد بی‌alert و بی‌خطا یعنی چیزی برای تایید باقی نمانده
+            # (پیوست‌ها در تلاش قبلی تایید شده‌اند). اگر صفحه هم همهٔ برگ‌ها
+            # را نشان می‌دهد، موفق حساب می‌شود — نه «۵ تلاش ناموفق».
+            if attempt >= 2 and alerts_seen_cumulative == 0:
+                zero_alert_retries += 1
+                if (total_alerts_all_attempts > 0 or zero_alert_retries >= 2) and \
+                        await _attachments_look_applied(page, expected_count, prefix):
+                    _log(prefix, f"✓✓ تایید همه: پیوست‌ها از تلاش قبلی تایید شده‌اند و "
+                                 f"همهٔ {expected_count} برگ در صفحه است — موفق "
+                                 f"(alerts_seen کل={total_alerts_all_attempts})")
+                    result["alerts_seen"] = total_alerts_all_attempts
+                    result["error_type"] = None
+                    result["error"] = None
+                    result["success"] = True
+                    return result
             # بدون fallback به حذف — فقط retry
             await asyncio.sleep(3)
 

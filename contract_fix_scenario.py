@@ -748,7 +748,7 @@ async def process_contract_fix_task(data: dict, bot: Bot):
                 await bot.send_message(
                     user_id,
                     f"❌ کد قرارداد «{contract_number}» نیز در سامانه معتبر نیست.\n\n"
-                    f"⏰ تا پایان مهلت ۴۵ دقیقه‌ای می‌توانید کد دیگری ارسال فرمائید.",
+                    f"⏰ تا پایان مهلت ۳ ساعته می‌توانید کد دیگری ارسال فرمائید.",
                     parse_mode="Markdown")
                 await bot.send_message(
                     ADMIN_ID,

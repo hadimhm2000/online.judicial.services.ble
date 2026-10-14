@@ -150,8 +150,8 @@ def test_wrong_id_gives_45_minute_window_then_refunds_half():
     run(ch.on_send_code_result(bot, rid, cs.WRONG_ID, "اطلاعاتی بااین شماره ملی وتاریخ تولد پیدا نشد."))
     req = ch.get_request(rid)
     assert req["status"] == ch.ST_FIX
-    assert 44 * 60 < req["fix_deadline"] - time.time() <= 45 * 60
-    assert "کدملی و تاریخ تولد اشتباه است" in _texts(bot) and "45 دقیقه" in _texts(bot)
+    assert 179 * 60 < req["fix_deadline"] - time.time() <= 180 * 60
+    assert "کدملی و تاریخ تولد اشتباه است" in _texts(bot) and "۳ ساعت" in _texts(bot)
 
     # پایان مهلت → لغو + ۵۰٪ به کیف پول
     req["fix_deadline"] = time.time() - 1
