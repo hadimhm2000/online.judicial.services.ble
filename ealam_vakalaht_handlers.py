@@ -88,6 +88,12 @@ async def ealam_get_national_id(message: Message, state: FSMContext):
 
     data = await state.get_data()
     lawyers = data.get("ealam_lawyers", [])
+    # ⭐ بررسی تکراری نبودن کدملی وکیل
+    if nat_id in lawyers:
+        await message.answer(
+            f"⚠️ کد ملی `{nat_id}` قبلاً ثبت شده است.\n\n"
+            f"لطفاً کد ملی دیگری وارد فرمایید:")
+        return
     lawyers.append(nat_id)
     await state.update_data(ealam_lawyers=lawyers)
 

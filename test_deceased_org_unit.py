@@ -52,7 +52,7 @@ def test_deceased_message_has_error_text_and_deadline():
     msg = nid_fix_window.deceased_message(DECEASED_POPUP)
     assert "فوت کرده است" in msg
     assert "کدملی جدید" in msg
-    assert "45 دقیقه" in msg
+    assert "۳ ساعت" in msg
     assert "۵۰ درصد" in msg
 
 

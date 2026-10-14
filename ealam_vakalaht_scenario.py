@@ -354,7 +354,7 @@ async def process_ealam_vakalaht_task(data: dict, bot: Bot):
                         ADMIN_ID,
                         f"⚠️ [EALAM] شماره قرارداد وکالت «{first_contract or ''}» برای کاربر "
                         f"{user_id} معتبر نبود | کد: {lavayeh_bill_no}\n"
-                        f"پنجرهٔ ۴۵ دقیقه‌ای کد قرارداد جدید باز شد.")
+                        f"پنجرهٔ ۳ ساعته کد قرارداد جدید باز شد.")
                 except Exception as cf_err:
                     logging.error(f"[EALAM] خطا در شروع پنجرهٔ کد قرارداد جدید: {cf_err}")
                 return

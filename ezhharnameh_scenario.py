@@ -684,7 +684,7 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
                             ADMIN_ID,
                             f"⚠️ [EZHHAR] شماره قرارداد وکالت «{first_lawyer.get('contract_number', '')}» "
                             f"برای کاربر {user_id} معتبر نبود | کد: {bill_no}\n"
-                            f"پنجرهٔ ۴۵ دقیقه‌ای کد قرارداد جدید باز شد.")
+                            f"پنجرهٔ ۳ ساعته کد قرارداد جدید باز شد.")
                     except Exception as cf_err:
                         logging.error(f"[EZHHAR] خطا در شروع پنجرهٔ کد قرارداد جدید: {cf_err}")
                     return

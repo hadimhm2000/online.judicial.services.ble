@@ -229,6 +229,17 @@ async def process_lavayeh_task(data: dict, bot: Bot):
     province      = data.get("lavayeh_province", "")
     row_number    = data.get("lavayeh_row_number", 1)
     persons       = data.get("lavayeh_persons", [])
+    # ⭐ اشخاص تکراری (همان کدملی/شناسه ملی) فقط یک‌بار در سامانه درج می‌شوند —
+    # درج دوبارهٔ یک شخص باعث خطای سامانه در مرحلهٔ «متن» و گیر کردن ثبت می‌شد
+    _uniq_persons, _seen_person_keys = [], set()
+    for _p in persons:
+        _key = ((_p or {}).get("national_id") or "", (_p or {}).get("company_id") or "")
+        if _key != ("", "") and _key in _seen_person_keys:
+            logging.warning(f"[LAVAYEH] شخص تکراری حذف شد: user={data.get('user_id')} key={_key}")
+            continue
+        _seen_person_keys.add(_key)
+        _uniq_persons.append(_p)
+    persons = _uniq_persons
     lavayeh_text  = data.get("lavayeh_text", "")
     attachment_groups = data.get("lavayeh_attachments", [])
     has_images    = len(attachment_groups) > 0
@@ -916,7 +927,7 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                         ADMIN_ID,
                         f"⚠️ [LAVAYEH] شماره قرارداد وکالت «{ealam_contracts[0] if ealam_contracts else ''}» "
                         f"برای کاربر {user_id} معتبر نبود | کد لایحه: {lavayeh_bill_no}\n"
-                        f"پنجرهٔ ۴۵ دقیقه‌ای کد قرارداد جدید باز شد.")
+                        f"پنجرهٔ ۳ ساعته کد قرارداد جدید باز شد.")
                 except Exception as cf_err:
                     logging.error(f"[LAVAYEH] خطا در شروع پنجرهٔ کد قرارداد جدید: {cf_err}")
                 runtime_state.active_lavayeh_users.discard(user_id)
@@ -1496,14 +1507,48 @@ async def _click_step_box(page, step_name: str, bot: Bot, user_id: int):
 
 
 async def _click_step_label(page, step_name: str, bot: Bot, user_id: int):
-    clicked = await page.evaluate(f'''() => {{
+    js = f'''() => {{
         const labels = Array.from(document.querySelectorAll('.step-label, .nav-pills > li > a'));
         const target = labels.find(el => el.innerText && el.innerText.includes("{step_name}"));
         if (target) {{ target.click(); return true; }}
         return false;
-    }}''')
+    }}'''
+    # ⭐ اگر برچسب مرحله فوراً پیدا نشد (مثلاً پاپ‌آپ «تاخیر در اجرای سرویس»
+    # یا پاپ‌آپ خطای دیگری روی صفحه باز است)، پاپ‌آپ بسته و متنش لاگ می‌شود
+    # و چند ثانیه برای رندر برچسب صبر می‌شود — قبلاً مستقیماً به
+    # safe_click_by_text می‌رفت که متن خطا را ثبت نمی‌کرد.
+    clicked = False
+    delay_count = 0
+    for _ in range(6):
+        clicked = await page.evaluate(js)
+        if clicked:
+            break
+        if await detect_sana_service_delay_popup(page):
+            delay_count += 1
+            logging.warning(
+                f"[LAVAYEH] پاپ‌آپ «تاخیر در اجرای سرویس» قبل از کلیک «{step_name}» — "
+                f"بستن و تکرار ({delay_count})")
+            await dismiss_sana_error_popup(page)
+        else:
+            popup_text = await _get_and_close_error_popup_text(page)
+            if popup_text:
+                logging.warning(f"[LAVAYEH] پاپ‌آپ خطا قبل از کلیک «{step_name}»: {popup_text[:200]}")
+        await asyncio.sleep(2)
     if not clicked:
         await safe_click_by_text(page, step_name, bot, user_id)
+
+    # ⭐ «تاخیر در اجرای سرویس» بعد از کلیک → بستن و کلیک مجدد همان مرحله
+    for _retry in range(SANA_SERVICE_DELAY_MAX_RETRIES):
+        await asyncio.sleep(1.5)
+        if not await detect_sana_service_delay_popup(page):
+            break
+        logging.warning(
+            f"[LAVAYEH] پاپ‌آپ «تاخیر در اجرای سرویس» بعد از کلیک «{step_name}» — "
+            f"تکرار {_retry + 1}/{SANA_SERVICE_DELAY_MAX_RETRIES}")
+        await dismiss_sana_error_popup(page)
+        await asyncio.sleep(3)
+        if not await page.evaluate(js):
+            await safe_click_by_text(page, step_name, bot, user_id)
 
 
 async def _fill_input(page, selector: str, value: str, bot: Bot, user_id: int):
@@ -1679,6 +1724,7 @@ async def _click_validate_with_retry(page, bot: Bot, user_id: int, max_retries: 
     """
     attempt = 0
     relogins = 0
+    service_delays = 0
     while attempt < max_retries:
         if relogins < _CASE_INFO_MAX_RELOGINS and await _handle_case_info_session_popup(
                 page, bot, user_id, "اطلاعات پرونده — شماره پرونده"):
@@ -1695,6 +1741,16 @@ async def _click_validate_with_retry(page, bot: Bot, user_id: int, max_retries: 
         if relogins < _CASE_INFO_MAX_RELOGINS and await _handle_case_info_session_popup(
                 page, bot, user_id, "اطلاعات پرونده — شماره پرونده"):
             relogins += 1
+            continue
+
+        # ⭐ «تاخیر در اجرای سرویس» → بستن و کلیک مجدد صحت‌سنجی شماره پرونده
+        if service_delays < SANA_SERVICE_DELAY_MAX_RETRIES and await detect_sana_service_delay_popup(page):
+            service_delays += 1
+            logging.warning(
+                f"[LAVAYEH] پاپ‌آپ «تاخیر در اجرای سرویس» در صحت‌سنجی شماره پرونده — "
+                f"تکرار {service_delays}/{SANA_SERVICE_DELAY_MAX_RETRIES}")
+            await dismiss_sana_error_popup(page)
+            await asyncio.sleep(3)
             continue
 
         error_text = await _get_and_close_error_popup_text(page)
@@ -2970,7 +3026,24 @@ async def _calculate_cost_with_retry(page, bot: Bot, user_id: int, max_retries: 
     ورود به مرحله «محاسبه و دريافت هزينه» و استخراج مبلغ نمایش‌داده‌شده.
     مبلغ خام (ریال) برمی‌گرداند — تبدیل/رند/فرمول در calculate_lavayeh_fee (config.py) انجام می‌شود.
     """
-    for attempt in range(max_retries):
+    service_delays = 0
+    for attempt in range(max_retries + SANA_SERVICE_DELAY_MAX_RETRIES):
+        # ⭐ «خطا: تاخیر در اجرای سرویس» در مرحلهٔ هزینه → بستن پاپ‌آپ و کلیک
+        # مجدد «محاسبه هزینه ی دادرسی و تعرفه خدمات» (#btnCalculateCash)
+        if await detect_sana_service_delay_popup(page):
+            service_delays += 1
+            logging.warning(
+                f"[LAVAYEH] پاپ‌آپ «تاخیر در اجرای سرویس» در محاسبه هزینه — "
+                f"کلیک مجدد #btnCalculateCash ({service_delays}/{SANA_SERVICE_DELAY_MAX_RETRIES})")
+            await dismiss_sana_error_popup(page)
+            await asyncio.sleep(2)
+            await _click_calculate_cash(page)
+            await wait_for_horizontal_loading_bar(page, bot, user_id, timeout=60)
+            await asyncio.sleep(3)
+            if await detect_sana_service_delay_popup(page) and service_delays < SANA_SERVICE_DELAY_MAX_RETRIES:
+                continue
+        elif attempt >= max_retries:
+            break
         await _close_error_popup(page)
         await asyncio.sleep(2)
         await wait_for_angular_idle(page)
@@ -3027,6 +3100,27 @@ async def _calculate_cost_with_retry(page, bot: Bot, user_id: int, max_retries: 
 
     logging.error(f"[LAVAYEH] استخراج مبلغ پس از {max_retries} تلاش ناموفق (user={user_id})")
     return 0
+
+
+async def _click_calculate_cash(page) -> bool:
+    """کلیک «محاسبه هزینه ی دادرسی و تعرفه خدمات» (#btnCalculateCash /
+    actions.paymentCost) — پس از بسته شدن پاپ‌آپ تاخیر سرویس."""
+    return bool(await page.evaluate('''() => {
+        const btn = document.querySelector('#btnCalculateCash') ||
+                    document.querySelector('button[ng-click*="paymentCost"]');
+        if (!btn || btn.disabled) return false;
+        try {
+            if (typeof angular !== 'undefined') {
+                const scope = angular.element(btn).scope();
+                if (scope && scope.actions && typeof scope.actions.paymentCost === 'function') {
+                    scope.$apply(() => { scope.actions.paymentCost(); });
+                    return true;
+                }
+            }
+        } catch(e) {}
+        btn.click();
+        return true;
+    }'''))
 
 
 def _is_valid_pdf_file(pdf_path: str, min_size: int = 1024) -> bool:
@@ -3203,6 +3297,7 @@ async def _click_validate_with_retry_archive(page, bot: Bot, user_id: int):
     """
     consecutive_errors = 0
     relogins = 0
+    service_delays = 0
     attempt = -1
     while attempt < 4:
         attempt += 1
@@ -3224,6 +3319,17 @@ async def _click_validate_with_retry_archive(page, bot: Bot, user_id: int):
         if relogins < _CASE_INFO_MAX_RELOGINS and await _handle_case_info_session_popup(
                 page, bot, user_id, "اطلاعات پرونده — شماره بایگانی"):
             relogins += 1
+            attempt -= 1
+            continue
+
+        # ⭐ «تاخیر در اجرای سرویس» → بستن و کلیک مجدد صحت‌سنجی (جزو خطاها شمرده نمی‌شود)
+        if service_delays < SANA_SERVICE_DELAY_MAX_RETRIES and await detect_sana_service_delay_popup(page):
+            service_delays += 1
+            logging.warning(
+                f"[LAVAYEH] پاپ‌آپ «تاخیر در اجرای سرویس» در صحت‌سنجی بایگانی — "
+                f"تکرار {service_delays}/{SANA_SERVICE_DELAY_MAX_RETRIES}")
+            await dismiss_sana_error_popup(page)
+            await asyncio.sleep(3)
             attempt -= 1
             continue
 

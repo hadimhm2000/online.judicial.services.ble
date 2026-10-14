@@ -4318,7 +4318,7 @@ async def chk_nid_fix_callback(callback: CallbackQuery, state: FSMContext, bot: 
     win = _chk_nfw.get_window(target_user_id)
     if not win or win.get("flow") != _chk_nfw.FLOW_CHECK:
         await callback.answer(
-            "⚠️ درخواستی برای ویرایش یافت نشد (مهلت ۴۵ دقیقه‌ای به پایان رسیده است).")
+            "⚠️ درخواستی برای ویرایش یافت نشد (مهلت ۳ ساعته به پایان رسیده است).")
         return
 
     await callback.answer()

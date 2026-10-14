@@ -365,7 +365,7 @@ recovery_notified: dict = {}
 #   "template_job": dict,       — نمونه‌ی job اصلی (برای کپی need_attachments/full_name و ...)
 # }
 invalid_tracking_retry: dict = {}
-INVALID_TRACKING_RETRY_MINUTES = 45
+INVALID_TRACKING_RETRY_MINUTES = 180  # مهلت اصلاح کدرهگیری (۳ ساعت)
 
 # =========================================================
 # پیگیری پیشرفت استعلام‌های دسته‌جمعی (برای گزارش نهایی کدهای نامعتبر)
