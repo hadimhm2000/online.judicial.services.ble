@@ -11,7 +11,7 @@ import {
 } from '@/components/ui/select';
 import {
   Search, RefreshCw, Download, Shield, Bell, Filter,
-  LayoutDashboard, FileCheck2, FileWarning, CreditCard, Send, AlertTriangle, ListChecks, XCircle, Activity, Moon, Sun, Play, Pause, Zap, ChevronDown, ChevronLeft, CalendarDays, Maximize2, Minimize2, Trash2, Clock, ArrowUp, Printer, Keyboard, Wifi, WifiOff, FileSpreadsheet, Volume2, VolumeX, MessageSquare, ClipboardCheck, Paperclip, Check, Wallet, Settings2, Users, PenLine,
+  LayoutDashboard, FileCheck2, FileWarning, CreditCard, Send, AlertTriangle, ListChecks, XCircle, Activity, Moon, Sun, Play, Pause, Zap, ChevronDown, ChevronLeft, CalendarDays, Maximize2, Minimize2, Trash2, Clock, ArrowUp, Printer, Keyboard, Wifi, WifiOff, FileSpreadsheet, Volume2, VolumeX, MessageSquare, ClipboardCheck, Paperclip, Check, Wallet, Settings2, Users, PenLine, Percent,
 } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
@@ -47,6 +47,8 @@ const BotSettingsDialog = React.lazy(() => import('@/components/admin/bot-settin
 const InsightsDialog = React.lazy(() => import('@/components/admin/insights-dialog').then(m => ({ default: m.default })));
 const WorkingHoursDialog = React.lazy(() => import('@/components/admin/working-hours-dialog').then(m => ({ default: m.default })));
 const ExemptUsersDialog = React.lazy(() => import('@/components/admin/exempt-users-dialog').then(m => ({ default: m.default })));
+// تخفیف اختصاصی کاربران (فقط روی سود)
+const UserDiscountsDialog = React.lazy(() => import('@/components/admin/user-discounts-dialog').then(m => ({ default: m.default })));
 
 import { ServicePieChart, StatusOverviewChart, RevenueChart } from '@/components/admin/charts';
 import TrendLineChart from '@/components/admin/trend-line-chart';
@@ -249,6 +251,7 @@ export default function AdminPanel() {
   const [insightsOpen, setInsightsOpen] = useState(false);
   const [workingHoursOpen, setWorkingHoursOpen] = useState(false);
   const [exemptUsersOpen, setExemptUsersOpen] = useState(false);
+  const [userDiscountsOpen, setUserDiscountsOpen] = useState(false);
   const [batchConfirmSending, setBatchConfirmSending] = useState(false);
   const [batchConfirmDone, setBatchConfirmDone] = useState(false);
 
@@ -873,6 +876,16 @@ export default function AdminPanel() {
                 title="کاربران معاف"
               >
                 <Users className="h-4 w-4" />
+              </Button>
+
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-9 w-9 p-0 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-900/20"
+                onClick={() => setUserDiscountsOpen(true)}
+                title="تخفیف اختصاصی کاربران"
+              >
+                <Percent className="h-4 w-4" />
               </Button>
 
               <Button
@@ -1670,6 +1683,10 @@ export default function AdminPanel() {
       <ExemptUsersDialog open={exemptUsersOpen} onOpenChange={setExemptUsersOpen} />
       </Suspense>
 
+      <Suspense fallback={<div className="animate-pulse h-8 w-48 rounded-lg bg-muted" />}>
+      <UserDiscountsDialog open={userDiscountsOpen} onOpenChange={setUserDiscountsOpen} />
+      </Suspense>
+
       {/* 14. Confirm Send Dialog - dialog-premium, animate-float icon, gradient preview */}
       <Dialog open={confirmSendOpen} onOpenChange={setConfirmSendOpen}>
         <DialogContent className="max-w-sm p-0 dialog-premium" dir="rtl">
@@ -1803,6 +1820,7 @@ export default function AdminPanel() {
         { id: 'insights', label: 'رضایت کاربران و قیف تبدیل', icon: Filter, group: 'تنظیمات', onSelect: () => setInsightsOpen(true) },
         { id: 'working-hours', label: 'ساعات کاری', icon: Clock, group: 'تنظیمات', onSelect: () => setWorkingHoursOpen(true) },
         { id: 'exempt-users', label: 'کاربران معاف', icon: Users, group: 'تنظیمات', onSelect: () => setExemptUsersOpen(true) },
+        { id: 'user-discounts', label: 'تخفیف اختصاصی کاربران', icon: Percent, group: 'تنظیمات', onSelect: () => setUserDiscountsOpen(true) },
         { id: 'reset-data', label: 'ریست داده‌ها (پاک کردن پرونده‌ها و آمار)', icon: Trash2, group: 'تنظیمات', onSelect: () => setResetDataOpen(true) },
       ] as CommandAction[]} />
 

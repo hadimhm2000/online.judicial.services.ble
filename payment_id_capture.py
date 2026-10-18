@@ -396,6 +396,13 @@ async def capture_and_report_payment_ids(
       ۴. اگر شناسه‌ای پیدا نشد، فقط به مدیر هشدار می‌دهد (کاربر چیزی نمی‌بیند).
     هیچ‌وقت exception نمی‌دهد تا فلوی اصلی ربات مختل نشود.
     """
+    # ⭐ هزینهٔ خام سامانه برای محاسبهٔ تخفیف اختصاصی روی سود (user_discounts.py)
+    try:
+        from user_discounts import remember_system_cost
+        remember_system_cost(user_id, amount, tracking_code)
+    except Exception as ex:
+        logging.warning(f"[{log_prefix}] ثبت هزینهٔ سامانه برای تخفیف ناموفق: {ex}")
+
     try:
         excludes = list(exclude_values or [])
         if tracking_code:

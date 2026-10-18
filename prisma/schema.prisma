@@ -164,6 +164,18 @@ model ExemptUser {
   createdAt  DateTime @default(now())
 }
 
+// تخفیف اختصاصی کاربر — درصدی که فقط از «سود» ربات کم می‌شود،
+// نه از هزینهٔ سامانه/دفتر خدمات (user_discounts.py در ربات)
+model UserDiscount {
+  id         String   @id @default(cuid())
+  baleUserId String   @unique
+  fullName   String?
+  percent    Int      // ۱ تا ۱۰۰
+  reason     String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
 // ⭐ v1.7 — دفتر «مبالغ قابل بازگشت / قابل کسر» کاربران
 // مبالغی از پیش‌پرداخت (یا هر پرداخت دیگر) که باید به کاربر برگردد
 // یا در پرونده‌های بعدی کاربر کسر شود، با شناسه بله و دلیل ثبت می‌شوند.
