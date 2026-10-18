@@ -1194,9 +1194,9 @@ async def _handle_wrong_form_tracking_code(bot: Bot, user_id: int, data: dict, t
 
 
 # حداکثر زمان انتظار برای لود کامل فایل PDF در تب «نمایش و چاپ» پیوست (ثانیه)
-ATTACHMENT_PDF_WAIT_SEC = 90
+ATTACHMENT_PDF_WAIT_SEC = 15
 # حداقل انتظار پیش از آن‌که تب پیوستِ بدون محتوای قابل‌مشاهده «غیر PDF» فرض شود
-ATTACHMENT_NON_PDF_MIN_WAIT_SEC = 20
+ATTACHMENT_NON_PDF_MIN_WAIT_SEC = ATTACHMENT_PDF_WAIT_SEC
 
 
 def _make_pdf_response_collector(main_page, sink: list):
@@ -1295,6 +1295,11 @@ async def _wait_and_fetch_attachment_pdf(att_page, browser_context, captured: li
     while True:
         # ۱) پاسخ PDF که مرورگر دریافت کرده
         for resp in list(captured):
+            try:
+                if resp.frame.page is not att_page:
+                    continue
+            except Exception:
+                pass
             try:
                 if "pdf" in (resp.headers.get("content-type") or "").lower():
                     is_pdf = True
@@ -2484,60 +2489,15 @@ async def process_task(data, bot: Bot):
                         data_rows = rows_data[1:] if has_signature_row else rows_data
                         real_rows = [r for r in data_rows if r['count'] > 0]
 
-                        # ⭐ پیوست‌ها فقط به اندازهٔ برگ‌های پرداخت‌شده ارسال می‌شوند.
-                        # باگ قبلی: اگر در استعلام اولیه «منضمات» دیر لود می‌شد،
-                        # تعداد پیوست 0 محاسبه و فقط هزینهٔ پایه دریافت می‌شد؛ اما
-                        # این‌جا همهٔ برگ‌ها (مثلاً ۱۱ برگ) بدون پرداخت ارسال می‌شد.
+                        # ⭐ اگر برگ‌های سامانه از برگ‌های پرداخت‌شده بیشتر باشد (مثلاً
+                        # «منضمات» در استعلام اولیه دیر لود شده و 0 برگ حساب شده)،
+                        # پیوست‌ها مثل قبل ارسال و آخر کار مابه‌التفاوت اعلام می‌شود.
                         found_pages = sum(r['count'] for r in real_rows)
                         paid_pages = _paid_attachment_pages(data)
                         unpaid_attachments = (
                             paid_pages is not None and found_pages > paid_pages)
 
-                        if real_rows and unpaid_attachments:
-                            for path, caption in saved_attachments:
-                                if os.path.exists(path):
-                                    await send_document_direct(user_id, path, caption=caption)
-                                    os.remove(path)
-                            saved_attachments.clear()
-                            extra_fee = (found_pages - paid_pages) * ATTACHMENT_PAGE_FEE
-                            logging.warning(
-                                f"[INQUIRY] پیوست پرداخت‌نشده: کد {tracking_code} — "
-                                f"{found_pages} برگ در سامانه، {paid_pages} برگ پرداخت‌شده؛ پیوست‌ها ارسال نشد")
-                            await bot.send_message(
-                                user_id,
-                                f"📎 این پرونده در سامانه *{found_pages} برگ* پیوست دارد، اما در "
-                                f"استعلام اولیه *{paid_pages} برگ* محاسبه و پرداخت شده است.\n\n"
-                                f"به همین دلیل پیوست‌ها ارسال نشد و فقط چاپ پرونده برای شما ارسال گردید. "
-                                f"برای دریافت پیوست‌ها، استعلام با پیوست را مجدداً ثبت فرمایید.")
-                            try:
-                                await bot.send_message(
-                                    ADMIN_ID,
-                                    f"⚠️ *پیوست پرداخت‌نشده — ارسال نشد*\n\n"
-                                    f"👤 کاربر: `{user_id}`\n"
-                                    f"🔢 کد رهگیری: `{tracking_code}`\n"
-                                    f"📄 سند: {doc_name}\n"
-                                    f"📎 برگ‌های سامانه: {found_pages} | پرداخت‌شده: {paid_pages}\n"
-                                    f"💰 مابه‌التفاوت: {extra_fee:,} تومان")
-                            except Exception:
-                                pass
-
-                            # ── ثبت استعلام در پنل ادمین ──
-                            try:
-                                await register_inquiry_to_panel(
-                                    user_id=user_id,
-                                    full_name=data.get('full_name', ''),
-                                    tracking_code=tracking_code,
-                                    doc_category=category,
-                                    doc_subcategory=subcategory,
-                                    fee=data.get('payment_fee', 0),
-                                    result_summary=(
-                                        f"استعلام با منضمات - {doc_name} - پیوست‌ها ارسال نشد "
-                                        f"({found_pages} برگ در سامانه، {paid_pages} برگ پرداخت‌شده)")
-                                )
-                            except Exception as panel_err:
-                                logger.warning(f"خطا در ثبت استعلام: {panel_err}")
-
-                        elif not real_rows:
+                        if not real_rows:
                             for path, caption in saved_attachments:
                                 if os.path.exists(path):
                                     await send_document_direct(user_id, path, caption=caption)
@@ -2725,6 +2685,33 @@ async def process_task(data, bot: Bot):
                                             logging.error(f"خطا در ارسال {path}: {send_err}")
 
                                 await bot.send_message(user_id, "✅ استخراج منضمات کاملاً تمام شد.")
+
+                                # ⭐ پیوست‌های بیش از مقدار پرداخت‌شده هم ارسال می‌شوند؛
+                                # آخر کار مابه‌التفاوت هزینه به کاربر و مدیر اعلام می‌شود
+                                if unpaid_attachments:
+                                    extra_pages = found_pages - paid_pages
+                                    extra_fee = extra_pages * ATTACHMENT_PAGE_FEE
+                                    logging.warning(
+                                        f"[INQUIRY] مابه‌التفاوت پیوست: کد {tracking_code} — "
+                                        f"{found_pages} برگ در سامانه، {paid_pages} برگ پرداخت‌شده")
+                                    await bot.send_message(
+                                        user_id,
+                                        f"💰 *مابه‌التفاوت هزینهٔ پیوست‌ها*\n\n"
+                                        f"📎 تعداد پیوست‌های این پرونده در سامانه *{found_pages} برگ* است، "
+                                        f"اما در استعلام اولیه *{paid_pages} برگ* محاسبه و پرداخت شده بود.\n\n"
+                                        f"مابه‌التفاوت هزینه ({extra_pages} × {ATTACHMENT_PAGE_FEE:,} تومان): "
+                                        f"*{extra_fee:,} تومان* می‌باشد.")
+                                    try:
+                                        await bot.send_message(
+                                            ADMIN_ID,
+                                            f"⚠️ *مابه‌التفاوت پیوست استعلام*\n\n"
+                                            f"👤 کاربر: `{user_id}`\n"
+                                            f"🔢 کد رهگیری: `{tracking_code}`\n"
+                                            f"📄 سند: {doc_name}\n"
+                                            f"📎 برگ‌های سامانه: {found_pages} | پرداخت‌شده: {paid_pages}\n"
+                                            f"💰 مابه‌التفاوت: {extra_fee:,} تومان")
+                                    except Exception:
+                                        pass
 
                                 # ── ثبت استعلام در پنل ادمین ──
                                 try:
