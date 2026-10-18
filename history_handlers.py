@@ -5,6 +5,8 @@
      وضعیت، مبلغ پرداختی و تاریخ) — panel_sync.get_user_cases
   📎 فایل‌های ارسالی: آخرین فایل‌هایی که ربات برای کاربر فرستاده (user_files.py)
      با دکمهٔ دریافت دوباره (فقط با file_id بله — بدون آپلود مجدد)
+  📄 دریافت دوبارهٔ چاپ PDF: برای همهٔ درخواست‌های اخیر به‌جز استعلام‌ها
+     (final_print.request_print — همان مسیر چاپ نهایی) — ۱۴۰۵/۰۷
 
 این روتر در bot.py قبل از روتر اصلی ثبت می‌شود و به سامانهٔ قضایی درخواستی
 نمی‌فرستد.
@@ -17,6 +19,8 @@ from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+import final_print
+import pending_cases
 import user_files
 from keyboards import HISTORY_MENU_TEXT
 from panel_sync import get_user_cases
@@ -104,7 +108,56 @@ async def history_cases(callback: CallbackQuery):
         await callback.message.answer("📭 هنوز درخواستی از شما ثبت نشده است.")
         return
     body = "\n\n".join(format_case(c) for c in cases)
-    await callback.message.answer(f"📋 *{len(cases)} درخواست اخیر شما*\n\n{body}")
+    rows = []
+    for c in cases:
+        if print_category(callback.from_user.id, c):
+            service = SERVICE_LABELS.get(c.get("serviceType"), c.get("serviceType") or "")
+            rows.append([InlineKeyboardButton(
+                text=f"📄 چاپ PDF — {service} {c['trackingCode']}"[:60],
+                callback_data=f"hist:print:{c['trackingCode']}")])
+    if rows:
+        body += "\n\n📄 برای دریافت دوبارهٔ چاپ PDF روی پرونده بزنید:"
+    await callback.message.answer(
+        f"📋 *{len(cases)} درخواست اخیر شما*\n\n{body}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if rows else None)
+
+
+def print_category(user_id: int, c: dict):
+    """(doc_category, doc_subcategory) منوی استعلام برای چاپ دوبارهٔ یک پرونده؛
+    None برای استعلام‌ها، پرونده بدون کد رهگیری یا دسته‌بندی نامشخص."""
+    tc = str(c.get("trackingCode") or "")
+    svc = c.get("serviceType") or ""
+    if not tc or svc in ("INQUIRY", "ADMIN_SEND"):
+        return None
+    # ۱) دفترهای خود ربات — دسته‌بندی دقیق هنگام ثبت ذخیره شده
+    cat = pending_cases.print_category(user_id, tc) or final_print.queued_category(user_id, tc)
+    if cat and cat[0]:
+        return cat
+    # ۲) پرونده‌های قدیمی‌تر — از نوع سرویس پنل (چک بدون مسیر منو حدس زده نمی‌شود)
+    if svc == "TAJDID_NAZAR":
+        case_type = (c.get("documentCategory") or "").split("—")[0].strip()
+        if case_type not in final_print._OBJECTION_SUB_MENUS:
+            return None
+        return final_print.category_for(svc, case_type=case_type)
+    if svc in ("LAVAYEH", "EZHHARNAMEH", "EALAM_VAKALAHT"):
+        return final_print.category_for(svc)
+    return None
+
+
+@history_router.callback_query(F.data.startswith("hist:print:"))
+async def history_print(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    tc = callback.data.split(":", 2)[2]
+    cases = await get_user_cases(user_id, limit=30)
+    case = next((c for c in (cases or []) if str(c.get("trackingCode") or "") == tc), None)
+    cat = print_category(user_id, case) if case else (
+        pending_cases.print_category(user_id, tc) or final_print.queued_category(user_id, tc))
+    if not cat or not cat[0]:
+        await callback.answer("چاپ این پرونده قابل دریافت نیست.", show_alert=True)
+        return
+    await callback.answer()
+    from pending_cases_handlers import send_print_request
+    await send_print_request(callback.message, user_id, tc, cat)
 
 
 @history_router.callback_query(F.data == "hist:files")

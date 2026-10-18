@@ -16,6 +16,8 @@ CHANNEL_LINK = "https://ble.ir/onlinejudicialservice"
 # ⭐ دکمه‌های منوی اصلی بخش‌های جدید (۱۴۰۵/۰۷)
 DAMAGES_MENU_TEXT = "📈 خسارت تأخیر و مهریه"
 HISTORY_MENU_TEXT = "📂 سوابق و فاکتورهای من"
+# ⭐ پرونده‌های بدون امضا/پرداخت‌نشده (۱۴۰۵/۰۷) — pending_cases_handlers.py
+PENDING_CASES_MENU_TEXT = "🖊 پرونده‌های در انتظار امضا و پرداخت"
 WALLET_MENU_TEXT = "👛 کیف پول"
 BACK_TO_MAIN_TEXT = "🔙 بازگشت به منوی اصلی"
 # ⭐ محاسبه هزینه دادرسی (رایگان — ۱۴۰۵/۰۷)
@@ -50,6 +52,7 @@ def get_flow_type_kb(user_id: int) -> ReplyKeyboardMarkup:
         # ⭐ محاسبه دیه و ارث (۱۴۰۵/۰۷) — بین «گواهی عدم سوءپیشینه» و «ابزار فایل»
         [KeyboardButton(text=LEGAL_MENU_TEXT)],
         [KeyboardButton(text="🔧 ابزار فایل")],
+        [KeyboardButton(text=PENDING_CASES_MENU_TEXT)],
         [KeyboardButton(text=HISTORY_MENU_TEXT), KeyboardButton(text=WALLET_MENU_TEXT)],
         # ⭐ گزینهٔ «شروع مجدد» (۱۴۰۵/۰۶) — صرفاً کاربر را به منوی اصلی برمی‌گرداند
         # (از هر مرحله‌ای از هر فلوی — هندلر سراسری در handlers.py)
@@ -85,6 +88,7 @@ flow_type_kb = ReplyKeyboardMarkup(
         [KeyboardButton(text=DAMAGES_MENU_TEXT), KeyboardButton(text=CLEARANCE_MENU_TEXT)],
         [KeyboardButton(text=LEGAL_MENU_TEXT)],
         [KeyboardButton(text="🔧 ابزار فایل")],
+        [KeyboardButton(text=PENDING_CASES_MENU_TEXT)],
         [KeyboardButton(text=HISTORY_MENU_TEXT), KeyboardButton(text=WALLET_MENU_TEXT)],
         # ⭐ گزینهٔ «شروع مجدد» — بازگشت صرف به منوی اصلی (۱۴۰۵/۰۶)
         [KeyboardButton(text="🔄 شروع مجدد")],

@@ -56,6 +56,9 @@ dp.include_router(court_fee_router)
 # ⭐ درخواست گواهی عدم سوءپیشینه — دکمهٔ منو، رمز موقت و پرداخت (payload: clearance)
 from clearance_handlers import clearance_router, clearance_loop
 dp.include_router(clearance_router)
+# ⭐ پرونده‌های در انتظار امضا و پرداخت (۱۴۰۵/۰۷) — دکمهٔ منو + پرداخت با payload pending_case
+from pending_cases_handlers import pending_router
+dp.include_router(pending_router)
 from history_handlers import history_router
 dp.include_router(history_router)
 import wallet

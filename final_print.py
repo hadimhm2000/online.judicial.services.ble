@@ -29,6 +29,12 @@ mark_signed(...) (از on_*_sign_submit_success پس از امضای آخرین 
 موارد قدیمیِ فایل که فیلد sign_required ندارند مثل قبل ارسال می‌شوند.
 اگر مدیر در پنل امضای پرونده را «درج شده» علامت بزند (Case.hasSignature)،
 پیش از اجرای روزانه همان هم امضای کامل حساب می‌شود (_sync_signatures_from_panel).
+
+⭐ ۱۴۰۵/۰۷ — چاپ درخواستی کاربر (request_print): از «پرونده‌های در انتظار
+امضا و پرداخت» و «سوابق» کاربر می‌تواند همان لحظه چاپ PDF را بگیرد. همان تسک
+final_print=True در صف می‌رود؛ کلید (کاربر، کد) در بخش on_demand فایل ذخیره
+می‌شود تا mark_sent / report_failure مورد صف چاپ نهایی روز بعد را دست نزنند و
+در خطا به خود کاربر پیام برود (نه «فردا دوباره تلاش می‌شود» به مدیر).
 """
 
 import asyncio
@@ -86,10 +92,11 @@ def _load() -> dict:
                 if isinstance(data, dict):
                     data.setdefault("items", [])
                     data.setdefault("last_run_date", "")
+                    data.setdefault("on_demand", [])
                     return data
     except Exception as e:
         logging.error(f"[FINAL_PRINT] خطا در خواندن {STORE_FILE}: {e}")
-    return {"items": [], "last_run_date": ""}
+    return {"items": [], "last_run_date": "", "on_demand": []}
 
 
 def _save(data: dict) -> None:
@@ -196,6 +203,12 @@ def mark_signed(user_id: int, *tracking_codes: str) -> bool:
                 it["signed_date"] = _today()
             if targets:
                 _save(data)
+        # ⭐ «پرونده‌های در انتظار امضا و پرداخت»: پروندهٔ امضاشده از منو خارج شود
+        try:
+            import pending_cases
+            pending_cases.mark_signed(user_id, *codes)
+        except Exception as _pc_err:
+            logging.warning(f"[FINAL_PRINT] به‌روزرسانی پرونده‌های در انتظار ناموفق: {_pc_err}")
         if targets:
             logging.info(f"[FINAL_PRINT] امضای مورد {targets[0].get('tracking_code')} کاربر "
                          f"{user_id} کامل شد — چاپ نهایی فردا ارسال می‌شود")
@@ -209,6 +222,9 @@ def mark_signed(user_id: int, *tracking_codes: str) -> bool:
 
 
 def mark_sent(user_id: int, tracking_code: str) -> None:
+    if _pop_on_demand(user_id, tracking_code):
+        logging.info(f"[FINAL_PRINT] چاپ درخواستی کد {tracking_code} برای کاربر {user_id} ارسال شد")
+        return
     try:
         with _lock:
             data = _load()
@@ -241,7 +257,15 @@ async def report_failure(bot: Bot, user_id: int, tracking_code: str,
                          doc_name: str, reason: str) -> None:
     """⭐ طبق دستور کارفرما: هر ارسال ناموفق چاپ نهایی همان روز (بلافاصله)
     به مدیر اطلاع داده می‌شود. به کاربر پیامی نمی‌رود؛ مورد در صف می‌ماند
-    و روز بعد ساعت ۱۷:۰۰ دوباره تلاش می‌شود (تا MAX_ATTEMPTS روز)."""
+    و روز بعد ساعت ۱۷:۰۰ دوباره تلاش می‌شود (تا MAX_ATTEMPTS روز).
+    ⭐ چاپ درخواستی کاربر: فقط به خود کاربر گفته می‌شود که بعداً دوباره بگیرد."""
+    if _pop_on_demand(user_id, tracking_code):
+        logging.warning(f"[FINAL_PRINT] چاپ درخواستی کد {tracking_code} کاربر {user_id} ناموفق: {reason}")
+        try:
+            await bot.send_message(user_id, ON_DEMAND_FAILED_TEXT.format(tc=tracking_code))
+        except Exception:
+            pass
+        return
     mark_failed(user_id, tracking_code, reason)
     attempts = 0
     try:
@@ -274,6 +298,82 @@ async def report_failure(bot: Bot, user_id: int, tracking_code: str,
                 f"{doc_name} — علت: {(reason or 'نامشخص')[:250]} — تلاش {attempts}/{MAX_ATTEMPTS}")
         except Exception:
             pass
+
+
+# ───────────────────────── چاپ درخواستی کاربر ─────────────────────────
+
+ON_DEMAND_FAILED_TEXT = (
+    "⚠️ دریافت چاپ PDF کد رهگیری `{tc}` در حال حاضر ممکن نشد.\n"
+    "لطفاً کمی بعد دوباره از همین بخش درخواست دهید.")
+# هر کد حداکثر یک درخواست در جریان؛ درخواستِ گیرکرده پس از این مدت آزاد می‌شود
+ON_DEMAND_STALE_HOURS = 24
+
+
+def _pop_on_demand(user_id: int, tracking_code: str) -> bool:
+    try:
+        with _lock:
+            data = _load()
+            key = (int(user_id), str(tracking_code))
+            before = len(data["on_demand"])
+            data["on_demand"] = [r for r in data["on_demand"]
+                                 if (r.get("user_id"), r.get("tracking_code")) != key]
+            if len(data["on_demand"]) == before:
+                return False
+            _save(data)
+            return True
+    except Exception as e:
+        logging.error(f"[FINAL_PRINT] خطا در on_demand {tracking_code}: {e}")
+        return False
+
+
+def print_in_progress(user_id: int, tracking_code: str) -> bool:
+    cutoff = (now_tehran() - datetime.timedelta(hours=ON_DEMAND_STALE_HOURS)).isoformat()
+    with _lock:
+        return any(r.get("user_id") == int(user_id) and r.get("tracking_code") == str(tracking_code)
+                   and (r.get("at") or "") >= cutoff
+                   for r in _load()["on_demand"])
+
+
+def queued_category(user_id: int, tracking_code: str):
+    """(doc_category, doc_subcategory) موردی که در صف چاپ نهایی ثبت شده؛ None اگر نبود."""
+    with _lock:
+        for it in _load()["items"]:
+            if it.get("user_id") == int(user_id) and it.get("tracking_code") == str(tracking_code):
+                return it.get("doc_category"), it.get("doc_subcategory")
+    return None
+
+
+async def request_print(user_id: int, tracking_code: str, doc_category: str,
+                        doc_subcategory: str | None = None) -> bool:
+    """چاپ PDF همین حالا (به درخواست کاربر) در صف استعلام قرار می‌گیرد.
+    False اگر درخواست قبلی همین کد هنوز در جریان باشد."""
+    tracking_code = str(tracking_code).strip()
+    if print_in_progress(user_id, tracking_code):
+        return False
+    with _lock:
+        data = _load()
+        key = (int(user_id), tracking_code)
+        data["on_demand"] = [r for r in data["on_demand"]
+                             if (r.get("user_id"), r.get("tracking_code")) != key]
+        data["on_demand"].append({"user_id": int(user_id), "tracking_code": tracking_code,
+                                  "at": now_tehran().isoformat(timespec="seconds")})
+        _save(data)
+    doc_name = f"{doc_category} - {doc_subcategory}" if doc_subcategory else doc_category
+    await runtime_state.job_queue.put({
+        "user_id": int(user_id),
+        "query_type": "کد رهگیری",
+        "tracking_code": tracking_code,
+        "doc_category": doc_category,
+        "doc_subcategory": doc_subcategory,
+        "doc_type": doc_name,
+        "need_attachments": False,
+        "full_name": "",
+        "payment_fee": 0,
+        "final_print": True,   # همان مسیر چاپ نهایی — فقط ارسال چاپ
+        "print_caption": f"📄 *چاپ PDF* — کد رهگیری: `{tracking_code}`\n{doc_name}",
+    })
+    logging.info(f"[FINAL_PRINT] چاپ درخواستی کد {tracking_code} کاربر {user_id} در صف قرار گرفت")
+    return True
 
 
 # ───────────────────────── اجرای روزانه ─────────────────────────

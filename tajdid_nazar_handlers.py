@@ -3651,6 +3651,14 @@ async def send_tajdid_nazar_result(
     except Exception as panel_err:
         logging.warning(f"[TN-PAYMENT] خطا در ثبت پرونده (در انتظار پرداخت) در پنل: {panel_err}")
 
+    # ⭐ «پرونده‌های در انتظار امضا و پرداخت» — کاربر بعداً هم می‌تواند پرداخت کند
+    try:
+        import pending_cases
+        pending_cases.record_unpaid(user_id, pending_cases.KIND_TN,
+                                    runtime_state.pending_tn_payments[user_id])
+    except Exception as _pc_err:
+        logging.warning(f"[PENDING_CASES] ثبت پرونده ناموفق: {_pc_err}")
+
     user_state = runtime_state.dp.fsm.resolve_context(bot, user_id, user_id)
     await user_state.set_state(Form.waiting_for_tn_payment_receipt)
 
@@ -3722,6 +3730,13 @@ async def tn_successful_payment(message: Message, state: FSMContext, bot: Bot):
 async def _tn_start_sign_flow(bot: Bot, user_id: int, tracking_code: str, case_type: str, tn_persons: list):
     """انتقال به مرحله آمادگی برای اخذ امضای الکترونیک."""
     user_state = runtime_state.dp.fsm.resolve_context(bot, user_id, user_id)
+    # ⭐ «پرونده‌های در انتظار امضا و پرداخت» — هزینه پرداخت شده؛ تا درج امضا در منو می‌ماند
+    try:
+        import pending_cases
+        pending_cases.record_paid(user_id, pending_cases.KIND_TN, {
+            "tracking_code": tracking_code, "case_type": case_type, "tn_persons": tn_persons})
+    except Exception as _pc_err:
+        logging.warning(f"[PENDING_CASES] ثبت پرونده ناموفق: {_pc_err}")
     runtime_state.pending_tn_sign[user_id] = {
         "tracking_code": tracking_code,
         "case_type": case_type,
