@@ -1489,8 +1489,10 @@ async def tn_text_handler(message: Message, state: FSMContext, bot: Bot):
 
             data = await st.get_data()
             appellants = data.get("tn_appellants", [])
-            appellees = data.get("tn_appellees", [])
-            has_legal = any(p.get("person_type") == "شخص حقوقی" for p in appellants + appellees)
+            # مدرک نمایندگی فقط وقتی لازم است که *سمت خود کاربر* (تجدیدنظرخواه/
+            # خواهان/معترض) حقوقی باشد؛ حقوقی بودن طرف مقابل (تجدیدنظرخوانده)
+            # نیازی به مدرک نمایندگی ندارد — مطابق منضمات سناریو.
+            has_legal = any(p.get("person_type") == "شخص حقوقی" for p in appellants)
 
             if has_legal:
                 await b.send_message(
@@ -1535,8 +1537,10 @@ async def tn_text_handler(message: Message, state: FSMContext, bot: Bot):
 
         data = await st.get_data()
         appellants = data.get("tn_appellants", [])
-        appellees = data.get("tn_appellees", [])
-        has_legal = any(p.get("person_type") == "شخص حقوقی" for p in appellants + appellees)
+        # مدرک نمایندگی فقط وقتی لازم است که *سمت خود کاربر* (تجدیدنظرخواه/
+        # خواهان/معترض) حقوقی باشد؛ حقوقی بودن طرف مقابل (تجدیدنظرخوانده)
+        # نیازی به مدرک نمایندگی ندارد — مطابق منضمات سناریو.
+        has_legal = any(p.get("person_type") == "شخص حقوقی" for p in appellants)
 
         if has_legal:
             await b.send_message(
@@ -3047,11 +3051,14 @@ async def tn_edit_choice_handler(message: Message, state: FSMContext):
         return
 
     if text == "🖼 ویرایش مدارک":
-        await state.update_data(tn_attachments=[], _tn_mandatory_proxy_sent=False)
+        await state.update_data(tn_attachments=[])
         data = await state.get_data()
         appellants = data.get("tn_appellants", [])
-        appellees = data.get("tn_appellees", [])
-        has_legal = any(p.get("person_type") == "شخص حقوقی" for p in appellants + appellees)
+        # مدرک نمایندگی فقط وقتی لازم است که *سمت خود کاربر* (تجدیدنظرخواه/
+        # خواهان/معترض) حقوقی باشد؛ حقوقی بودن طرف مقابل (تجدیدنظرخوانده)
+        # نیازی به مدرک نمایندگی ندارد — مطابق منضمات سناریو.
+        has_legal = any(p.get("person_type") == "شخص حقوقی" for p in appellants)
+        await state.update_data(_tn_mandatory_proxy_sent=not has_legal)
         if has_legal:
             await message.answer(
                 "⚠️ چون شخص *حقوقی* دارید، ارسال *مدرک نمایندگی اجباری* است.\n\n"

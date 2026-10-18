@@ -1110,25 +1110,28 @@ async def _fill_text_editor(page, text: str, bot: Bot, user_id: int, stored_html
     }''', text_html)
     await asyncio.sleep(1)
 
-    # اعمال H3
-    await page.evaluate('''() => {
-        const editor = document.querySelector('[contenteditable="true"][ta-bind]');
-        if (editor) {
-            const range = document.createRange();
-            range.selectNodeContents(editor);
-            const sel = window.getSelection();
-            sel.removeAllRanges();
-            sel.addRange(range);
-            document.dispatchEvent(new Event("selectionchange", { bubbles: true }));
-        }
-    }''')
-    await asyncio.sleep(0.5)
-    await page.evaluate('''() => {
-        const btn = document.querySelector('button[name="h3"]') ||
-                    Array.from(document.querySelectorAll('button')).find(b => b.title === "Heading 3");
-        if (btn && !btn.disabled) btn.click();
-    }''')
-    await asyncio.sleep(0.5)
+    # اعمال H3 فقط برای متنی که کاربر مستقیم تایپ کرده؛ متن فایل ورد
+    # با همان قالب اصلی (بولد، زیرخط، خط‌خورده و ...) ثبت می‌شود و
+    # H3 روی آن اعمال نمی‌شود تا قالب‌بندی ورد از بین نرود.
+    if not stored_html:
+        await page.evaluate('''() => {
+            const editor = document.querySelector('[contenteditable="true"][ta-bind]');
+            if (editor) {
+                const range = document.createRange();
+                range.selectNodeContents(editor);
+                const sel = window.getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+                document.dispatchEvent(new Event("selectionchange", { bubbles: true }));
+            }
+        }''')
+        await asyncio.sleep(0.5)
+        await page.evaluate('''() => {
+            const btn = document.querySelector('button[name="h3"]') ||
+                        Array.from(document.querySelectorAll('button')).find(b => b.title === "Heading 3");
+            if (btn && !btn.disabled) btn.click();
+        }''')
+        await asyncio.sleep(0.5)
 
 
 async def _click_save_temp_with_retry(page, bot: Bot, user_id: int, max_retries: int = 5):

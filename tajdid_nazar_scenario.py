@@ -1939,27 +1939,30 @@ async def _fill_sharh_section(page, tn_text: str, tn_text_html: str, bot: Bot, u
     }''', html_content)
     await resilient_sleep(page, 2, bot, user_id)
 
-    # اعمال H3 (الگوی اظهارنامه)
-    await page.evaluate('''() => {
-        const editor = document.querySelector('[contenteditable="true"][ta-bind]')
-            || document.querySelector('[contenteditable="true"]');
-        if (editor) {
-            const range = document.createRange();
-            range.selectNodeContents(editor);
-            const sel = window.getSelection();
-            sel.removeAllRanges();
-            sel.addRange(range);
-            document.dispatchEvent(new Event("selectionchange", { bubbles: true }));
-            editor.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
-        }
-    }''')
-    await asyncio.sleep(0.5)
-    await page.evaluate('''() => {
-        const btn = document.querySelector('button[name="h3"]') ||
-            Array.from(document.querySelectorAll('button')).find(b => b.title === "Heading 3");
-        if (btn && !btn.disabled) btn.click();
-    }''')
-    await asyncio.sleep(0.5)
+    # اعمال H3 فقط برای متنی که کاربر مستقیم تایپ کرده؛ متن فایل ورد
+    # با همان قالب اصلی (بولد، زیرخط، خط‌خورده و ...) ثبت می‌شود و
+    # H3 روی آن اعمال نمی‌شود تا قالب‌بندی ورد از بین نرود.
+    if not stored_html:
+        await page.evaluate('''() => {
+            const editor = document.querySelector('[contenteditable="true"][ta-bind]')
+                || document.querySelector('[contenteditable="true"]');
+            if (editor) {
+                const range = document.createRange();
+                range.selectNodeContents(editor);
+                const sel = window.getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+                document.dispatchEvent(new Event("selectionchange", { bubbles: true }));
+                editor.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+            }
+        }''')
+        await asyncio.sleep(0.5)
+        await page.evaluate('''() => {
+            const btn = document.querySelector('button[name="h3"]') ||
+                Array.from(document.querySelectorAll('button')).find(b => b.title === "Heading 3");
+            if (btn && !btn.disabled) btn.click();
+        }''')
+        await asyncio.sleep(0.5)
 
 
 async def _fill_dalael_section(page, extra_text: str, bot: Bot, user_id: int):

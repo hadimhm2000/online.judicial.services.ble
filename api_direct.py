@@ -28,7 +28,7 @@ from browser_helpers import (
     force_click_by_text, is_login_redirect_url,
     check_and_handle_expiry, retry_step_on_service_delay, SanaSystemDownError,
     open_expert_correspondence_menu,
-    open_attachments_and_read_rows, sum_attachment_pages)
+    open_attachments_and_read_rows, sum_attachment_pages, wait_for_attachments_tab)
 from config import FEES
 
 logger = logging.getLogger(__name__)
@@ -467,18 +467,8 @@ async def _do_page_check(tracking_code, category, subcategory, user_id, bot) -> 
 
         # ── کلیک منضمات و شمارش ─────────────────────────────────
         # بررسی وجود تب «منضمات» قبل از کلیک
-        mozamatat_exists = await page.evaluate('''() => {
-            const tags = ['button', 'a', 'label', 'span', 'li', 'h5', 'div', 'td'];
-            for (let tag of tags) {
-                const elements = Array.from(document.querySelectorAll(tag));
-                const target = elements.find(el => el.innerText && el.innerText.trim().includes("منضمات"));
-                if (target) {
-                    const rect = target.getBoundingClientRect();
-                    if (rect.width > 0 && rect.height > 0) return true;
-                }
-            }
-            return false;
-        }''')
+        # ⭐ چند بار (تا لود کامل صفحه) بررسی می‌شود؛ قبلاً یک‌بار و فوری بود
+        mozamatat_exists = await wait_for_attachments_tab(page, log_prefix="FAST-CHECK")
         if not mozamatat_exists:
             logger.info("[FAST-CHECK] تب منضمات یافت نشد — تعداد پیوست: 0")
             discovery.analyze_and_save()

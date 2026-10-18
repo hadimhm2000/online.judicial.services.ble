@@ -1741,6 +1741,47 @@ async def read_attachment_rows(page) -> list:
     }''')
 
 
+_ATTACHMENTS_TAB_JS = '''() => {
+    const tags = ['button', 'a', 'label', 'span', 'li', 'h5', 'div', 'td'];
+    for (let tag of tags) {
+        const elements = Array.from(document.querySelectorAll(tag));
+        const target = elements.find(el => el.innerText && el.innerText.trim().includes("منضمات"));
+        if (target) {
+            const rect = target.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) return true;
+        }
+    }
+    return false;
+}'''
+
+
+async def wait_for_attachments_tab(page, timeout_sec: float = 20, log_prefix: str = "ATTACHMENTS") -> bool:
+    """منتظر ظاهر شدن تب/باکس «منضمات» پس از جستجوی پرونده.
+
+    ⚠️ باگ قبلی: وجود «منضمات» فقط یک‌بار و بلافاصله پس از جستجو بررسی
+    می‌شد؛ وقتی سامانه کند بود و صفحه هنوز کامل رندر نشده بود، نتیجه
+    «تب منضمات یافت نشد — تعداد پیوست: 0» می‌شد و فاکتور بدون پیوست صادر
+    می‌گردید، درحالی‌که پرونده واقعاً پیوست داشت. حالا تا timeout_sec ثانیه
+    (همراه با انتظار لودرها) چندبار بررسی می‌شود.
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout_sec
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            if await page.evaluate(_ATTACHMENTS_TAB_JS):
+                if attempt > 1:
+                    logging.info(f"[{log_prefix}] تب منضمات پس از {attempt} بار بررسی ظاهر شد")
+                return True
+        except Exception as e:
+            logging.warning(f"[{log_prefix}] خطا در بررسی تب منضمات: {e}")
+        if loop.time() >= deadline:
+            return False
+        await _wait_page_loaders(page, timeout_sec=10)
+        await asyncio.sleep(1.5)
+
+
 def is_ignored_attachment_title(title: str) -> bool:
     t = (title or "").replace("‌", " ")
     return "قرارداد الکترونیک" in t and ("وکالت نامه" in t or "وکالتنامه" in t)
