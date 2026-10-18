@@ -2211,9 +2211,10 @@ async def process_task(data, bot: Bot):
 
                         if is_final_print:
                             # ⭐ چاپ نهایی روز بعد — فقط ارسال چاپ؛ بدون ثبت استعلام در پنل
+                            # ⭐ چاپ درخواستی کاربر (final_print.request_print) کپشن خودش را دارد
                             await send_document_direct(
                                 user_id, pdf_path,
-                                caption=f"📄 *چاپ نهایی* — کد رهگیری: `{tracking_code}`\n{doc_name}")
+                                caption=data.get("print_caption") or f"📄 *چاپ نهایی* — کد رهگیری: `{tracking_code}`\n{doc_name}")
                             os.remove(pdf_path)
                             _fp_mark_sent(user_id, tracking_code)
                             logging.info(f"[FINAL_PRINT] چاپ نهایی کد {tracking_code} برای کاربر {user_id} ارسال شد")

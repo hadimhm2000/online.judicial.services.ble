@@ -35,6 +35,8 @@ export async function GET(request: NextRequest) {
         paymentMethod: true,
         createdAt: true,
         sentToUserAt: true,
+        // ⭐ «پرونده‌های در انتظار امضا و پرداخت» — امضای درج‌شده توسط مدیر
+        hasSignature: true,
       },
     });
 

@@ -51,6 +51,8 @@ sessions/
 bot_persisted_state*.json
 final_print_queue.json
 final_print_queue.json.tmp
+pending_cases.json
+pending_cases.json.tmp
 cpi_index.json
 cpi_index.json.tmp
 diyeh_rates.json

@@ -3374,6 +3374,26 @@ async def _go_to_sign_flow_after_prepaid(
     if service_type is None:
         service_type = "EZHHARNAMEH" if is_ezhharnameh else "LAVAYEH"
 
+    # ⭐ «پرونده‌های در انتظار امضا و پرداخت» — هزینه پرداخت شده؛ تا درج امضا
+    # در منو می‌ماند (ردیف‌های دسته‌جمعی منوی امضای خودشان را دارند)
+    if not bulk_batch_tc:
+        try:
+            import pending_cases
+            pending_cases.record_paid(user_id, pending_cases.KIND_LAVAYEH, {
+                "tracking_code": tracking_code,
+                "court_total": court_total,
+                "national_ids": national_ids,
+                "lavayeh_title": lavayeh_title,
+                "lavayeh_province": lavayeh_province,
+                "lavayeh_row_number": lavayeh_row_number,
+                "lavayeh_persons": lavayeh_persons,
+                "is_ezhharnameh": is_ezhharnameh,
+                "service_type": service_type,
+                "sign_menu_path": sign_menu_path,
+            }, service_type=service_type)
+        except Exception as _pc_err:
+            logging.warning(f"[PENDING_CASES] ثبت پرونده ناموفق: {_pc_err}")
+
     if is_ezhharnameh:
         sign_persons = []
         for i, p in enumerate(lavayeh_persons):
@@ -3978,6 +3998,14 @@ async def send_lavayeh_result(
     except Exception as panel_err:
         logging.warning(f"[LAVAYEH] خطا در ثبت پرونده (در انتظار پرداخت) در پنل: {panel_err}")
 
+    # ⭐ «پرونده‌های در انتظار امضا و پرداخت» — کاربر بعداً هم می‌تواند پرداخت کند
+    try:
+        import pending_cases
+        pending_cases.record_unpaid(user_id, pending_cases.KIND_LAVAYEH,
+                                    runtime_state.pending_lavayeh_payments[user_id])
+    except Exception as _pc_err:
+        logging.warning(f"[PENDING_CASES] ثبت پرونده ناموفق: {_pc_err}")
+
     user_state = runtime_state.dp.fsm.resolve_context(bot, user_id, user_id)
     await user_state.set_state(Form.waiting_for_lavayeh_payment_receipt)
 
@@ -4117,6 +4145,13 @@ async def lavayeh_successful_payment(message: Message, state: FSMContext, bot: B
             user_id, svc_type, pending.get("tracking_code", ""))
     except Exception as panel_err:
         logging.warning(f"[LAVAYEH-PAYMENT] خطا در آپدیت پرونده در پنل: {panel_err}")
+
+    # ⭐ «پرونده‌های در انتظار امضا و پرداخت» — درج امضا برای این پرونده فعال شد
+    try:
+        import pending_cases
+        pending_cases.mark_paid(user_id, pending.get("tracking_code", ""))
+    except Exception as _pc_err:
+        logging.warning(f"[PENDING_CASES] به‌روزرسانی پرداخت ناموفق: {_pc_err}")
 
     # ── انتقال به مرحله امضای الکترونیک ──
     if is_ezhhar:
@@ -4428,6 +4463,12 @@ async def lavayeh_reminder_yes(message: Message, state: FSMContext, bot: Bot):
         # در غیر این صورت مسدود کردن بدون راه پرداخت، ربات را برای همیشه قفل می‌کند
         pending["blocked"] = True
         pending["final_fee"] = reduced_amount
+        # ⭐ مورد کنسل‌شده از «پرونده‌های در انتظار امضا و پرداخت» خارج می‌شود
+        try:
+            import pending_cases
+            pending_cases.mark_cancelled(user_id, pending.get("tracking_code", ""))
+        except Exception as _pc_err:
+            logging.warning(f"[PENDING_CASES] علامت کنسلی ناموفق: {_pc_err}")
         await message.answer(
             f"لطفاً هزینه ثبت لایحه‌ای که کنسل شده است را پرداخت بفرمائید.\n"
             f"مبلغ: *{reduced_amount:,} ریال*\n\n"
