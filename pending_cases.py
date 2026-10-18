@@ -5,7 +5,9 @@ pending_cases.py — «🖊 پرونده‌های در انتظار امضا و 
   ۱. گزینه‌ای در منوی اصلی برای پرونده‌هایی که امضا درج نشده و/یا هزینه
      پرداخت نشده است؛ کاربر با زدن هر پرونده مراحل باقی‌مانده را انجام می‌دهد.
      درج امضا فقط برای پرونده‌هایی فعال است که هزینه‌شان از قبل پرداخت شده.
-  ۲. لایحه فقط ۴ روز در این بخش می‌ماند و بعد حذف می‌شود؛ سایر موارد همیشه.
+  ۲. لایحه و اعلام وکالت ۴ روز در این بخش می‌مانند و بعد حذف می‌شوند؛ سایر
+     موارد (اظهارنامه، دعاوی اعتراضی، دادخواست چک) ۳۰ روز. همین قاعده در پنل
+     ادمین (/api/admin/pending-signatures) هم اعمال می‌شود.
   ۳. اگر کاربر بخواهد، چاپ PDF هم برایش ارسال می‌شود (final_print.request_print).
 
 ثبت پرونده‌ها (بدون تغییر روند فعلی — فقط ثبت در کنار آن):
@@ -43,8 +45,10 @@ _lock = threading.Lock()
 KIND_LAVAYEH = "lavayeh"   # لایحه، اظهارنامه، چک، اعلام وکالت، اصلاح قرارداد (send_lavayeh_result)
 KIND_TN = "tn"             # دعاوی اعتراضی (send_tajdid_nazar_result)
 
-# لایحه فقط ۴ روز در منو می‌ماند؛ سایر موارد تا درج امضا همیشه
-LAVAYEH_VISIBLE_DAYS = 4
+# مدت ماندن در منو (روز) — هم‌راستا با src/app/api/admin/pending-signatures/route.ts
+SHORT_VISIBLE_DAYS = 4                       # لایحه و اعلام وکالت
+SHORT_VISIBLE_SERVICES = ("LAVAYEH", "EALAM_VAKALAHT")
+VISIBLE_DAYS = 30                            # سایر موارد
 # رکوردها (برای دریافت دوبارهٔ چاپ از «سوابق») پس از این مدت پاک می‌شوند
 KEEP_RECORD_DAYS = 365
 
@@ -202,9 +206,11 @@ def _registered(it: dict) -> datetime.datetime:
 def _is_visible(it: dict, now: datetime.datetime) -> bool:
     if it.get("signed") or it.get("cancelled"):
         return False
-    if it.get("service_type") == "LAVAYEH":
-        return now - _registered(it) < datetime.timedelta(days=LAVAYEH_VISIBLE_DAYS)
-    return True
+    return now - _registered(it) < datetime.timedelta(days=visible_days(it.get("service_type")))
+
+
+def visible_days(service_type: str | None) -> int:
+    return SHORT_VISIBLE_DAYS if service_type in SHORT_VISIBLE_SERVICES else VISIBLE_DAYS
 
 
 def _purge(data: dict) -> None:
@@ -261,7 +267,7 @@ async def sync_with_panel(user_id: int) -> None:
 
     ⚠️ وضعیت CANCELLED پنل عمداً نادیده گرفته می‌شود: stale_requests پرونده‌های
     بی‌اقدام را پس از ۲۴ ساعت لغو می‌کند، ولی طبق دستور کارفرما این پرونده‌ها
-    (به‌جز لایحه پس از ۴ روز) باید همیشه قابل ادامه باشند.
+    تا پایان مهلت خود (۴ یا ۳۰ روز) باید قابل ادامه باشند.
     """
     if not open_cases(user_id):
         return

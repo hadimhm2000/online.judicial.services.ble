@@ -69,14 +69,22 @@ def test_paid_record_keeps_tn_persons_from_earlier_record():
 
 # ── ۲) لایحه ۴ روز، سایر موارد همیشه ─────────────────────────────────────
 
-def test_lavayeh_hidden_after_four_days_others_stay():
+def test_lavayeh_and_ealam_four_days_others_thirty():
     pending_cases.record_unpaid(7, pending_cases.KIND_LAVAYEH, _lavayeh_ctx("111", "LAVAYEH"))
     pending_cases.record_unpaid(7, pending_cases.KIND_LAVAYEH, _lavayeh_ctx("222", "EZHHARNAMEH"))
-    _age("111", 3)
-    _age("222", 40)
-    assert {it["tracking_code"] for it in pending_cases.open_cases(7)} == {"111", "222"}
-    _age("111", 4)
-    assert [it["tracking_code"] for it in pending_cases.open_cases(7)] == ["222"]
+    pending_cases.record_unpaid(7, pending_cases.KIND_LAVAYEH, _lavayeh_ctx("333", "EALAM_VAKALAHT"))
+    pending_cases.record_unpaid(7, pending_cases.KIND_LAVAYEH, _lavayeh_ctx("444", "CHECK"))
+    for tc in ("111", "333"):
+        _age(tc, 3)
+    for tc in ("222", "444"):
+        _age(tc, 29)
+    assert {it["tracking_code"] for it in pending_cases.open_cases(7)} == {"111", "222", "333", "444"}
+    for tc in ("111", "333"):
+        _age(tc, 4)
+    assert {it["tracking_code"] for it in pending_cases.open_cases(7)} == {"222", "444"}
+    for tc in ("222", "444"):
+        _age(tc, 30)
+    assert pending_cases.open_cases(7) == []
 
 
 def test_cancelled_hidden():

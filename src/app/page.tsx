@@ -11,7 +11,7 @@ import {
 } from '@/components/ui/select';
 import {
   Search, RefreshCw, Download, Shield, Bell, Filter,
-  LayoutDashboard, FileCheck2, FileWarning, CreditCard, Send, AlertTriangle, ListChecks, XCircle, Activity, Moon, Sun, Play, Pause, Zap, ChevronDown, ChevronLeft, CalendarDays, Maximize2, Minimize2, Trash2, Clock, ArrowUp, Printer, Keyboard, Wifi, WifiOff, FileSpreadsheet, Volume2, VolumeX, MessageSquare, ClipboardCheck, Paperclip, Check, Wallet, Settings2, Users,
+  LayoutDashboard, FileCheck2, FileWarning, CreditCard, Send, AlertTriangle, ListChecks, XCircle, Activity, Moon, Sun, Play, Pause, Zap, ChevronDown, ChevronLeft, CalendarDays, Maximize2, Minimize2, Trash2, Clock, ArrowUp, Printer, Keyboard, Wifi, WifiOff, FileSpreadsheet, Volume2, VolumeX, MessageSquare, ClipboardCheck, Paperclip, Check, Wallet, Settings2, Users, PenLine,
 } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
@@ -39,6 +39,8 @@ const CreditsDialog = React.lazy(() => import('@/components/admin/credits-dialog
 // ⭐ v1.8 — پرداخت‌های کارت‌به‌کارت + ریست داده‌ها
 const CardPaymentsDialog = React.lazy(() => import('@/components/admin/card-payments-dialog').then(m => ({ default: m.default })));
 const ResetDataDialog = React.lazy(() => import('@/components/admin/reset-data-dialog').then(m => ({ default: m.default })));
+// ⭐ پرونده‌های در انتظار امضا و پرداخت (همان فهرست ربات)
+const PendingSignaturesDialog = React.lazy(() => import('@/components/admin/pending-signatures-dialog').then(m => ({ default: m.default })));
 // ⭐ v1.9 — تنظیمات ربات، رضایت/قیف، ساعات کاری و کاربران معاف
 // (قبلاً فقط به admin-panel.tsx وصل شده بودند که در صفحهٔ زنده رندر نمی‌شود)
 const BotSettingsDialog = React.lazy(() => import('@/components/admin/bot-settings-dialog').then(m => ({ default: m.default })));
@@ -241,6 +243,7 @@ export default function AdminPanel() {
   const [creditsOpen, setCreditsOpen] = useState(false);
   const [creditsPrefill, setCreditsPrefill] = useState<{ baleUserId?: string; fullName?: string; caseId?: string; trackingCode?: string | null } | null>(null);
   const [cardPaymentsOpen, setCardPaymentsOpen] = useState(false);
+  const [pendingSignaturesOpen, setPendingSignaturesOpen] = useState(false);
   const [resetDataOpen, setResetDataOpen] = useState(false);
   const [botSettingsOpen, setBotSettingsOpen] = useState(false);
   const [insightsOpen, setInsightsOpen] = useState(false);
@@ -820,6 +823,16 @@ export default function AdminPanel() {
                     {new Intl.NumberFormat('fa-IR').format(stats?.pendingCardPaymentCount ?? 0)}
                   </span>
                 )}
+              </Button>
+
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-9 w-9 p-0 text-violet-600 hover:text-violet-700 hover:bg-violet-50 dark:hover:bg-violet-900/20"
+                onClick={() => setPendingSignaturesOpen(true)}
+                title="پرونده‌های در انتظار امضا و پرداخت"
+              >
+                <PenLine className="h-4 w-4" />
               </Button>
 
               <Button
@@ -1627,6 +1640,13 @@ export default function AdminPanel() {
       </Suspense>
 
       <Suspense fallback={<div className="animate-pulse h-8 w-48 rounded-lg bg-muted" />}>
+      <PendingSignaturesDialog
+        open={pendingSignaturesOpen}
+        onOpenChange={setPendingSignaturesOpen}
+      />
+      </Suspense>
+
+      <Suspense fallback={<div className="animate-pulse h-8 w-48 rounded-lg bg-muted" />}>
       <ResetDataDialog
         open={resetDataOpen}
         onOpenChange={setResetDataOpen}
@@ -1778,6 +1798,7 @@ export default function AdminPanel() {
         { id: 'google-sheets', label: 'همگام‌سازی گوگل شیت', icon: FileSpreadsheet, group: 'تنظیمات', onSelect: () => setSheetsPanelOpen(true) },
         { id: 'credits', label: 'مبالغ قابل بازگشت / کسر', icon: Wallet, group: 'تنظیمات', onSelect: () => { setCreditsPrefill(null); setCreditsOpen(true); } },
         { id: 'card-payments', label: 'پرداخت‌های کارت به کارت', icon: CreditCard, group: 'تنظیمات', onSelect: () => setCardPaymentsOpen(true) },
+        { id: 'pending-signatures', label: 'پرونده‌های در انتظار امضا و پرداخت', icon: PenLine, group: 'تنظیمات', onSelect: () => setPendingSignaturesOpen(true) },
         { id: 'bot-settings', label: 'تنظیمات ربات (تعرفه‌ها و متن‌ها)', icon: Settings2, group: 'تنظیمات', onSelect: () => setBotSettingsOpen(true) },
         { id: 'insights', label: 'رضایت کاربران و قیف تبدیل', icon: Filter, group: 'تنظیمات', onSelect: () => setInsightsOpen(true) },
         { id: 'working-hours', label: 'ساعات کاری', icon: Clock, group: 'تنظیمات', onSelect: () => setWorkingHoursOpen(true) },

@@ -1,7 +1,8 @@
 """
 هندلرهای بخش «🖊 پرونده‌های در انتظار امضا و پرداخت» — گزینهٔ مستقل منوی اصلی.
 
-  - فهرست پرونده‌های بدون امضای کاربر (pending_cases.open_cases)؛ لایحه فقط ۴ روز
+  - فهرست پرونده‌های بدون امضای کاربر (pending_cases.open_cases)؛ لایحه و اعلام
+    وکالت ۴ روز، سایر موارد ۳۰ روز
   - هر پرونده: 💳 پرداخت هزینه (اگر پرداخت نشده) / 🖊 درج امضا (فقط پس از پرداخت)
     / 📄 دریافت چاپ PDF
   - پرداخت با فاکتور payload {"type": "pending_case", "tc": ...}؛ پس از پرداخت
@@ -86,7 +87,8 @@ async def pending_entry(message: Message, state: FSMContext):
     await message.answer(
         "🖊 *پرونده‌های در انتظار امضا و پرداخت*\n\n"
         "💳 هزینه پرداخت نشده  |  🖊 پرداخت شده، در انتظار درج امضا\n\n"
-        f"ℹ️ لایحه فقط {pending_cases.LAVAYEH_VISIBLE_DAYS} روز در این بخش می‌ماند.\n"
+        f"ℹ️ لایحه و اعلام وکالت {pending_cases.SHORT_VISIBLE_DAYS} روز و سایر موارد "
+        f"{pending_cases.VISIBLE_DAYS} روز در این بخش می‌مانند.\n"
         "برای ادامهٔ مراحل روی پرونده بزنید:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
@@ -108,13 +110,12 @@ def _detail(it: dict) -> tuple[str, InlineKeyboardMarkup]:
         rows.append([InlineKeyboardButton(text=f"💳 پرداخت هزینه ({fee_toman:,} تومان)",
                                           callback_data=f"pc:pay:{tc}")])
         rows.append([InlineKeyboardButton(text="🔒 درج امضا (پس از پرداخت)", callback_data="pc:lock")])
-    if it.get("service_type") == "LAVAYEH":
-        try:
-            reg = datetime.datetime.fromisoformat(it.get("registered_at") or "")
-            until = (reg + datetime.timedelta(days=pending_cases.LAVAYEH_VISIBLE_DAYS)).isoformat()
-            lines.append(f"⏳ تا {_fa_date(until)} در این بخش می‌ماند.")
-        except ValueError:
-            pass
+    try:
+        reg = datetime.datetime.fromisoformat(it.get("registered_at") or "")
+        days = pending_cases.visible_days(it.get("service_type"))
+        lines.append(f"⏳ تا {_fa_date((reg + datetime.timedelta(days=days)).isoformat())} در این بخش می‌ماند.")
+    except ValueError:
+        pass
     if it.get("doc_category"):
         rows.append([InlineKeyboardButton(text="📄 دریافت چاپ PDF", callback_data=f"pc:print:{tc}")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
