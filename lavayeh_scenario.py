@@ -699,30 +699,34 @@ async def process_lavayeh_task(data: dict, bot: Bot):
             }''', lavayeh_text_html)
             await resilient_sleep(sana_page, 2, bot, user_id)
 
-            await sana_page.evaluate('''() => {
-                const editor = document.querySelector('[contenteditable="true"][ta-bind]');
-                if (editor) {
-                    const range = document.createRange();
-                    range.selectNodeContents(editor);
-                    const sel = window.getSelection();
-                    sel.removeAllRanges();
-                    sel.addRange(range);
-                    document.dispatchEvent(new Event("selectionchange", { bubbles: true }));
-                    editor.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
-                    editor.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
-                }
-            }''')
-            await asyncio.sleep(0.5)
+            # اعمال H3 فقط برای متنی که کاربر مستقیم تایپ کرده؛ متن فایل ورد
+            # با همان قالب اصلی (بولد، زیرخط، خط‌خورده و ...) ثبت می‌شود و
+            # H3 روی آن اعمال نمی‌شود تا قالب‌بندی ورد از بین نرود.
+            if not stored_html:
+                await sana_page.evaluate('''() => {
+                    const editor = document.querySelector('[contenteditable="true"][ta-bind]');
+                    if (editor) {
+                        const range = document.createRange();
+                        range.selectNodeContents(editor);
+                        const sel = window.getSelection();
+                        sel.removeAllRanges();
+                        sel.addRange(range);
+                        document.dispatchEvent(new Event("selectionchange", { bubbles: true }));
+                        editor.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+                        editor.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
+                    }
+                }''')
+                await asyncio.sleep(0.5)
 
-            clicked_h3 = await sana_page.evaluate('''() => {
-                const btn = document.querySelector('button[name="h3"]') ||
-                            Array.from(document.querySelectorAll('button')).find(b => b.title === "Heading 3");
-                if (btn && !btn.disabled) { btn.click(); return true; }
-                return false;
-            }''')
-            if not clicked_h3:
-                logging.warning(f"[LAVAYEH] دکمه H3 پیدا نشد (user={user_id})")
-            await resilient_sleep(sana_page, 1, bot, user_id)
+                clicked_h3 = await sana_page.evaluate('''() => {
+                    const btn = document.querySelector('button[name="h3"]') ||
+                                Array.from(document.querySelectorAll('button')).find(b => b.title === "Heading 3");
+                    if (btn && !btn.disabled) { btn.click(); return true; }
+                    return false;
+                }''')
+                if not clicked_h3:
+                    logging.warning(f"[LAVAYEH] دکمه H3 پیدا نشد (user={user_id})")
+                await resilient_sleep(sana_page, 1, bot, user_id)
 
             # ══════════════════════════════════════════════════════════
             # ثبت موقت — با محافظت تکراری

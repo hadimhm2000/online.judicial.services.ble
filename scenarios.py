@@ -82,7 +82,7 @@ from browser_helpers import (
     NATIONAL_ID_ERROR_MSG,
     open_expert_correspondence_menu,
     open_attachments_and_read_rows, refresh_inquiry_and_reopen_attachments,
-    is_ignored_attachment_title, sum_attachment_pages)
+    is_ignored_attachment_title, sum_attachment_pages, wait_for_attachments_tab)
 from sana_profile_report import extract_sana_profile, build_sana_profile_pdf
 
 
@@ -483,18 +483,8 @@ async def _process_pre_check_on_new_page(data: dict, bot: Bot, _retry: bool = Fa
 
         # ── ۸. کلیک «منضمات» و شمارش ────────────────────────────
         # بررسی وجود تب «منضمات» قبل از کلیک
-        mozamatat_exists = await page.evaluate('''() => {
-            const tags = ['button', 'a', 'label', 'span', 'li', 'h5', 'div', 'td'];
-            for (let tag of tags) {
-                const elements = Array.from(document.querySelectorAll(tag));
-                const target = elements.find(el => el.innerText && el.innerText.trim().includes("منضمات"));
-                if (target) {
-                    const rect = target.getBoundingClientRect();
-                    if (rect.width > 0 && rect.height > 0) return true;
-                }
-            }
-            return false;
-        }''')
+        # ⭐ چند بار (تا لود کامل صفحه) بررسی می‌شود؛ قبلاً یک‌بار و فوری بود
+        mozamatat_exists = await wait_for_attachments_tab(page, log_prefix="PRE_CHECK")
         if not mozamatat_exists:
             total_attachments_count = 0
             logging.info(f"[PRE_CHECK] تب منضمات یافت نشد — تعداد پیوست: 0 (کد: {tracking_code})")
@@ -861,18 +851,8 @@ async def _process_test_attachments(data: dict, bot: Bot):
             return
 
         # ── ورود به تب منضمات ────────────────────────────────────────
-        mozamatat_exists = await sana_page.evaluate('''() => {
-            const tags = ['button', 'a', 'label', 'span', 'li', 'h5', 'div', 'td'];
-            for (let tag of tags) {
-                const elements = Array.from(document.querySelectorAll(tag));
-                const target = elements.find(el => el.innerText && el.innerText.trim().includes("منضمات"));
-                if (target) {
-                    const rect = target.getBoundingClientRect();
-                    if (rect.width > 0 && rect.height > 0) return true;
-                }
-            }
-            return false;
-        }''')
+        # ⭐ چند بار (تا لود کامل صفحه) بررسی می‌شود؛ قبلاً یک‌بار و فوری بود
+        mozamatat_exists = await wait_for_attachments_tab(sana_page, log_prefix="TEST_ATTACH")
 
         if not mozamatat_exists:
             await bot.send_message(user_id, "📄 این درخواست فاقد بخش منضمات است.")
@@ -1213,6 +1193,174 @@ async def _handle_wrong_form_tracking_code(bot: Bot, user_id: int, data: dict, t
     await _start_free_retry_window(bot, user_id, notice_text, data, tracking_code, doc_name)
 
 
+# حداکثر زمان انتظار برای لود کامل فایل PDF در تب «نمایش و چاپ» پیوست (ثانیه)
+ATTACHMENT_PDF_WAIT_SEC = 90
+# حداقل انتظار پیش از آن‌که تب پیوستِ بدون محتوای قابل‌مشاهده «غیر PDF» فرض شود
+ATTACHMENT_NON_PDF_MIN_WAIT_SEC = 20
+
+
+def _make_pdf_response_collector(main_page, sink: list):
+    """listener رویداد response کانتکست: پاسخ‌های PDF (یا باینری) تب‌های
+    غیر از صفحهٔ اصلی را در sink جمع می‌کند."""
+    def _on_response(resp):
+        try:
+            ctype = (resp.headers.get("content-type") or "").lower()
+            if "pdf" not in ctype and "octet-stream" not in ctype:
+                return
+            try:
+                page = resp.frame.page
+            except Exception:
+                page = None
+            if page is main_page:
+                return
+            sink.append(resp)
+        except Exception:
+            pass
+    return _on_response
+
+
+_ATT_PDF_PROBE_JS = """() => {
+    const pick = (u) => (u && u !== 'about:blank' && !u.startsWith('chrome-extension:')
+                         && !u.startsWith('chrome:')) ? u : null;
+    const isPdfDoc = (document.contentType || '').toLowerCase().includes('pdf');
+    const el = document.querySelector(
+        'embed[type="application/pdf"], object[type="application/pdf"], ' +
+        'embed[src*="pdf" i], iframe[src*="pdf" i], object[data*="pdf" i]');
+    let url = el ? pick(el.src || el.data) : null;
+    if (!url) {
+        const ifr = document.querySelector('iframe');
+        if (ifr) url = pick(ifr.src);
+    }
+    const loaderVisible = Array.from(document.querySelectorAll(
+        '.blockUI, .blockOverlay, .loading-mask, .ajax-loader, .spinner, .loading, #loading'))
+        .some(l => { const r = l.getBoundingClientRect();
+                     return r.width > 0 && r.height > 0 && getComputedStyle(l).display !== 'none'; });
+    const imagesPending = Array.from(document.images).some(i => !i.complete);
+    const hasFrameEl = !!document.querySelector('iframe, embed, object');
+    const hasContent = Array.from(document.images).some(i => i.complete && i.naturalWidth > 50)
+        || !!document.querySelector('canvas, svg')
+        || ((document.body && document.body.innerText) || '').trim().length > 200;
+    return {
+        url, isPdfDoc, hasPdfEl: !!el, hasContent,
+        pending: document.readyState !== 'complete' || loaderVisible || imagesPending
+                 || (hasFrameEl && !url),
+    };
+}"""
+
+_ATT_BLOB_FETCH_JS = """async (u) => {
+    try {
+        const response = await fetch(u);
+        const blob = await response.blob();
+        return await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result.split(',')[1]);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
+    } catch (e) { return null; }
+}"""
+
+
+def _looks_like_pdf(data) -> bool:
+    return bool(data) and b"%PDF" in data[:1024]
+
+
+async def _wait_and_fetch_attachment_pdf(att_page, browser_context, captured: list,
+                                         timeout_sec: float = ATTACHMENT_PDF_WAIT_SEC):
+    """انتظار تا لود کامل تب پیوست و دانلود فایل PDF ضمیمه.
+
+    خروجی: (pdf_bytes, is_pdf_attachment)
+      - pdf_bytes: محتوای PDF در صورت موفقیت، وگرنه b""
+      - is_pdf_attachment: True اگر پیوست واقعاً PDF است (نمایشگر PDF/embed/پاسخ PDF)
+        — در این حالت نباید از صفحه چاپ گرفته شود (خروجی صفحهٔ خالی است)
+
+    ⚠️ باگ قبلی: فقط ۵ ثانیه صبر و یک‌بار جستجوی embed؛ PDF‌های حجیم که دیر
+    لود می‌شدند embed نداشتند (یا src آن about:blank بود) و ربات به‌جای فایل
+    PDF از صفحهٔ نیمه‌لود چاپ می‌گرفت یا پیوست ارسال نمی‌شد. حالا به ترتیب:
+    ۱) پاسخ PDF ضبط‌شده از شبکه، ۲) دانلود آدرس embed/iframe یا خود سند PDF
+    با کوکی‌های همان نشست، تا timeout_sec ثانیه تکرار می‌شود.
+    """
+    import base64
+    loop = asyncio.get_event_loop()
+    started = loop.time()
+    deadline = started + timeout_sec
+    is_pdf = False
+    tried_urls = set()
+
+    try:
+        await att_page.wait_for_load_state("load", timeout=int(timeout_sec * 1000))
+    except Exception:
+        pass
+
+    while True:
+        # ۱) پاسخ PDF که مرورگر دریافت کرده
+        for resp in list(captured):
+            try:
+                if "pdf" in (resp.headers.get("content-type") or "").lower():
+                    is_pdf = True
+            except Exception:
+                pass
+            try:
+                body = await resp.body()
+            except Exception:
+                body = b""
+            if _looks_like_pdf(body):
+                logging.info(f"[ATTACHMENT] PDF پیوست از پاسخ شبکه دریافت شد ({len(body):,} بایت)")
+                return body, True
+
+        # ۲) آدرس PDF از صفحه
+        try:
+            info = await att_page.evaluate(_ATT_PDF_PROBE_JS)
+        except Exception as e:
+            if att_page.is_closed():
+                raise
+            logging.warning(f"[ATTACHMENT] بررسی تب پیوست ناموفق: {e}")
+            info = {"url": None, "isPdfDoc": False, "hasPdfEl": False, "hasContent": False, "pending": True}
+
+        if info.get("isPdfDoc") or info.get("hasPdfEl"):
+            is_pdf = True
+        urls = []
+        if info.get("url"):
+            urls.append(info["url"])
+        if info.get("isPdfDoc") and att_page.url and att_page.url not in urls:
+            urls.append(att_page.url)
+
+        for u in urls:
+            data = b""
+            if u.startswith("blob:") or u.startswith("data:"):
+                b64 = await att_page.evaluate(_ATT_BLOB_FETCH_JS, u)
+                data = base64.b64decode(b64) if b64 else b""
+            elif u.startswith("http"):
+                try:
+                    r = await browser_context.request.get(u, timeout=int(max(10, deadline - loop.time()) * 1000))
+                    data = await r.body() if r.ok else b""
+                except Exception as e:
+                    if u not in tried_urls:
+                        logging.warning(f"[ATTACHMENT] دانلود {u[:120]} ناموفق: {e}")
+                    data = b""
+            tried_urls.add(u)
+            if _looks_like_pdf(data):
+                logging.info(f"[ATTACHMENT] PDF پیوست دانلود شد ({len(data):,} بایت)")
+                return data, True
+            if data:
+                is_pdf = is_pdf or u.lower().split("?")[0].endswith(".pdf")
+
+        now = loop.time()
+        # پیوست تصویری/HTML که کامل لود شده — چاپ از خود صفحه (مثل قبل).
+        # اگر هنوز محتوایی دیده نمی‌شود (مثلاً PDF در حال بارگذاری است)،
+        # حداقل ATTACHMENT_NON_PDF_MIN_WAIT_SEC ثانیه صبر می‌شود.
+        if not is_pdf and not info.get("pending"):
+            elapsed = now - started
+            if (info.get("hasContent") and elapsed >= 3) or elapsed >= ATTACHMENT_NON_PDF_MIN_WAIT_SEC:
+                return b"", False
+        if now >= deadline:
+            logging.warning(
+                f"[ATTACHMENT] پس از {timeout_sec:.0f} ثانیه انتظار، فایل PDF پیوست کامل دریافت نشد "
+                f"(is_pdf={is_pdf})")
+            return b"", is_pdf
+        await asyncio.sleep(2)
+
+
 async def _reopen_attachment_row(sana_page, row_idx: int, bot: Bot, user_id: int):
     """بازگرداندن صفحهٔ اصلی به دیالوگ پیوست‌های یک ردیف «منضمات» پس از لاگین مجدد.
 
@@ -1252,6 +1400,33 @@ async def _reopen_attachment_row(sana_page, row_idx: int, bot: Bot, user_id: int
         await resilient_sleep(sana_page, 5, bot, user_id)
     except Exception as e:
         logging.warning(f"[ATTACHMENT] بازگرداندن دیالوگ ردیف {row_idx} ناموفق: {e}")
+
+
+# هزینهٔ هر برگ پیوست (تومان) — هم‌راستا با فاکتور PRE_CHECK و handlers.py
+ATTACHMENT_PAGE_FEE = 5000
+
+
+def _paid_attachment_pages(data: dict):
+    """تعداد برگ پیوستی که کاربر هزینه‌اش را پرداخت کرده.
+
+    اگر تسک تعداد برگ را صریحاً داشته باشد (total_attachments) همان، وگرنه از
+    مبلغ فاکتور محاسبه می‌شود: (مبلغ − هزینهٔ پایهٔ استعلام با منضمات) ÷ هزینهٔ
+    هر برگ. اگر مبلغ معلوم نباشد None برمی‌گردد (بدون محدودیت، مثل قبل).
+    """
+    explicit = data.get('total_attachments')
+    if explicit is not None:
+        try:
+            return max(0, int(explicit))
+        except (TypeError, ValueError):
+            pass
+    try:
+        fee = int(data.get('payment_fee') or 0)
+    except (TypeError, ValueError):
+        return None
+    base = FEES["کد رهگیری با منضمات"]
+    if fee < base:
+        return None
+    return (fee - base) // ATTACHMENT_PAGE_FEE
 
 
 async def process_task(data, bot: Bot):
@@ -2269,18 +2444,8 @@ async def process_task(data, bot: Bot):
 
                     if need_attachments:
                         # ── بررسی وجود تب «منضمات» قبل از کلیک ─────
-                        mozamatat_exists = await sana_page.evaluate('''() => {
-                            const tags = ['button', 'a', 'label', 'span', 'li', 'h5', 'div', 'td'];
-                            for (let tag of tags) {
-                                const elements = Array.from(document.querySelectorAll(tag));
-                                const target = elements.find(el => el.innerText && el.innerText.trim().includes("منضمات"));
-                                if (target) {
-                                    const rect = target.getBoundingClientRect();
-                                    if (rect.width > 0 && rect.height > 0) return true;
-                                }
-                            }
-                            return false;
-                        }''')
+                        # ⭐ چند بار (تا لود کامل صفحه) بررسی می‌شود؛ قبلاً یک‌بار و فوری بود
+                        mozamatat_exists = await wait_for_attachments_tab(sana_page, log_prefix="INQUIRY")
                         if not mozamatat_exists:
                             # تب منضمات وجود ندارد — فایل اصلی را ارسال و اسکیپ کن
                             for path, caption in saved_attachments:
@@ -2319,7 +2484,60 @@ async def process_task(data, bot: Bot):
                         data_rows = rows_data[1:] if has_signature_row else rows_data
                         real_rows = [r for r in data_rows if r['count'] > 0]
 
-                        if not real_rows:
+                        # ⭐ پیوست‌ها فقط به اندازهٔ برگ‌های پرداخت‌شده ارسال می‌شوند.
+                        # باگ قبلی: اگر در استعلام اولیه «منضمات» دیر لود می‌شد،
+                        # تعداد پیوست 0 محاسبه و فقط هزینهٔ پایه دریافت می‌شد؛ اما
+                        # این‌جا همهٔ برگ‌ها (مثلاً ۱۱ برگ) بدون پرداخت ارسال می‌شد.
+                        found_pages = sum(r['count'] for r in real_rows)
+                        paid_pages = _paid_attachment_pages(data)
+                        unpaid_attachments = (
+                            paid_pages is not None and found_pages > paid_pages)
+
+                        if real_rows and unpaid_attachments:
+                            for path, caption in saved_attachments:
+                                if os.path.exists(path):
+                                    await send_document_direct(user_id, path, caption=caption)
+                                    os.remove(path)
+                            saved_attachments.clear()
+                            extra_fee = (found_pages - paid_pages) * ATTACHMENT_PAGE_FEE
+                            logging.warning(
+                                f"[INQUIRY] پیوست پرداخت‌نشده: کد {tracking_code} — "
+                                f"{found_pages} برگ در سامانه، {paid_pages} برگ پرداخت‌شده؛ پیوست‌ها ارسال نشد")
+                            await bot.send_message(
+                                user_id,
+                                f"📎 این پرونده در سامانه *{found_pages} برگ* پیوست دارد، اما در "
+                                f"استعلام اولیه *{paid_pages} برگ* محاسبه و پرداخت شده است.\n\n"
+                                f"به همین دلیل پیوست‌ها ارسال نشد و فقط چاپ پرونده برای شما ارسال گردید. "
+                                f"برای دریافت پیوست‌ها، استعلام با پیوست را مجدداً ثبت فرمایید.")
+                            try:
+                                await bot.send_message(
+                                    ADMIN_ID,
+                                    f"⚠️ *پیوست پرداخت‌نشده — ارسال نشد*\n\n"
+                                    f"👤 کاربر: `{user_id}`\n"
+                                    f"🔢 کد رهگیری: `{tracking_code}`\n"
+                                    f"📄 سند: {doc_name}\n"
+                                    f"📎 برگ‌های سامانه: {found_pages} | پرداخت‌شده: {paid_pages}\n"
+                                    f"💰 مابه‌التفاوت: {extra_fee:,} تومان")
+                            except Exception:
+                                pass
+
+                            # ── ثبت استعلام در پنل ادمین ──
+                            try:
+                                await register_inquiry_to_panel(
+                                    user_id=user_id,
+                                    full_name=data.get('full_name', ''),
+                                    tracking_code=tracking_code,
+                                    doc_category=category,
+                                    doc_subcategory=subcategory,
+                                    fee=data.get('payment_fee', 0),
+                                    result_summary=(
+                                        f"استعلام با منضمات - {doc_name} - پیوست‌ها ارسال نشد "
+                                        f"({found_pages} برگ در سامانه، {paid_pages} برگ پرداخت‌شده)")
+                                )
+                            except Exception as panel_err:
+                                logger.warning(f"خطا در ثبت استعلام: {panel_err}")
+
+                        elif not real_rows:
                             for path, caption in saved_attachments:
                                 if os.path.exists(path):
                                     await send_document_direct(user_id, path, caption=caption)
@@ -2417,54 +2635,44 @@ async def process_task(data, bot: Bot):
                                                         session_hit = True
                                                         raise Exception("انقضای نشست روی صفحه اصلی پیش از چاپ پیوست")
 
-                                                    async with browser_context.expect_page(timeout=20000) as att_page_info:
-                                                        await sana_page.evaluate(f'''(b_idx) => {{
-                                                            const btns = Array.from(document.querySelectorAll('button'));
-                                                            const printBtns = btns.filter(b => b.innerText && b.innerText.includes("نمایش و چاپ"));
-                                                            if (printBtns.length > b_idx) {{ printBtns[b_idx].click(); }}
-                                                        }}''', btn_idx)
+                                                    # ⭐ پاسخ‌های PDF تب پیوست از همان لحظهٔ باز شدن ضبط می‌شوند تا
+                                                    # فایل PDF ضمیمه (که دیر لود می‌شود) مستقیم دانلود شود
+                                                    att_pdf_responses = []
+                                                    _att_resp_listener = _make_pdf_response_collector(sana_page, att_pdf_responses)
+                                                    browser_context.on("response", _att_resp_listener)
+                                                    try:
+                                                        async with browser_context.expect_page(timeout=20000) as att_page_info:
+                                                            await sana_page.evaluate(f'''(b_idx) => {{
+                                                                const btns = Array.from(document.querySelectorAll('button'));
+                                                                const printBtns = btns.filter(b => b.innerText && b.innerText.includes("نمایش و چاپ"));
+                                                                if (printBtns.length > b_idx) {{ printBtns[b_idx].click(); }}
+                                                            }}''', btn_idx)
+                                                        att_page = await att_page_info.value
+                                                        if await resilient_sleep(att_page, 5, bot, user_id):
+                                                            session_hit = True
+                                                            raise Exception("انقضای نشست هنگام بارگذاری تب پیوست")
+                                                        if await check_and_handle_expiry(att_page, bot, user_id):
+                                                            session_hit = True
+                                                            raise Exception("انقضای نشست روی تب پیوست")
 
-                                                    att_page = await att_page_info.value
-                                                    if await resilient_sleep(att_page, 5, bot, user_id):
-                                                        session_hit = True
-                                                        raise Exception("انقضای نشست هنگام بارگذاری تب پیوست")
-                                                    if await check_and_handle_expiry(att_page, bot, user_id):
-                                                        session_hit = True
-                                                        raise Exception("انقضای نشست روی تب پیوست")
-
-                                                    import base64
-                                                    pdf_data_base64 = await att_page.evaluate('''async () => {
-                                                        const embed = document.querySelector('embed[type="application/pdf"], embed[src*="pdf"], iframe[src*="pdf"]');
-                                                        let pdfUrl = null;
-                                                        if (embed && embed.src) pdfUrl = embed.src;
-                                                        else {
-                                                            const iframe = document.querySelector('iframe');
-                                                            if (iframe && iframe.src) pdfUrl = iframe.src;
-                                                        }
-                                                        if (pdfUrl) {
-                                                            try {
-                                                                const response = await fetch(pdfUrl);
-                                                                const blob = await response.blob();
-                                                                return new Promise((resolve, reject) => {
-                                                                    const reader = new FileReader();
-                                                                    reader.onloadend = () => resolve(reader.result.split(',')[1]);
-                                                                    reader.onerror = reject;
-                                                                    reader.readAsDataURL(blob);
-                                                                });
-                                                            } catch(e) { return null; }
-                                                        }
-                                                        return null;
-                                                    }''')
+                                                        # ⭐ انتظار تا لود کامل PDF و دانلود آن (قبلاً فقط ۵ ثانیه صبر و
+                                                        # در نبودِ embed، از صفحهٔ نیمه‌لود چاپ گرفته می‌شد)
+                                                        pdf_bytes, is_pdf_attachment = await _wait_and_fetch_attachment_pdf(
+                                                            att_page, browser_context, att_pdf_responses)
+                                                    finally:
+                                                        browser_context.remove_listener("response", _att_resp_listener)
 
                                                     att_pdf_path = temp_path(f"attachment_{tracking_code}_{row_idx}_{btn_idx}.pdf")
-                                                    pdf_bytes = base64.b64decode(pdf_data_base64) if pdf_data_base64 else b""
-                                                    if pdf_bytes and b"%PDF" not in pdf_bytes[:1024]:
-                                                        # پاسخ غیر PDF (مثلاً صفحهٔ خطا) — مثل حالت بدون embed از خود صفحه PDF گرفته می‌شود
-                                                        logging.warning(f"[ATTACHMENT] محتوای پیوست {btn_idx} از ردیف {row_idx} PDF نیست — چاپ از صفحه")
-                                                        pdf_bytes = b""
                                                     if pdf_bytes:
                                                         with open(att_pdf_path, 'wb') as pdf_file:
                                                             pdf_file.write(pdf_bytes)
+                                                    elif is_pdf_attachment:
+                                                        # پیوست PDF است ولی فایل کامل دریافت نشد — به‌جای ارسال چاپِ صفحهٔ
+                                                        # خالی نمایشگر PDF، دوباره تلاش می‌شود
+                                                        if await check_and_handle_expiry(att_page, bot, user_id):
+                                                            session_hit = True
+                                                            raise Exception("انقضای نشست هنگام دانلود PDF پیوست")
+                                                        raise Exception("فایل PDF پیوست پس از انتظار کامل دریافت نشد")
                                                     else:
                                                         if await resilient_sleep(att_page, 8, bot, user_id):
                                                             session_hit = True
