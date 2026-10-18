@@ -43,6 +43,7 @@ from states import Form
 from bale_file_sender import send_document_direct
 from config import ADMIN_ID, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, BALE_SSL_CONTEXT
 from exempt_users import is_exempt_user
+from user_discounts import apply_profit_discount, build_discount_line, pop_system_cost
 from prepay_registration import (
     send_prepay_invoice,
     register_prepaid,
@@ -3487,6 +3488,12 @@ async def send_tajdid_nazar_result(
 
     final_fee = court_total
 
+    # ⭐ تخفیف اختصاصی کاربر (پنل ادمین) — فقط روی سود؛ main_total همان
+    # هزینهٔ خام سامانه است که به capture_and_report_payment_ids هم داده شد.
+    pop_system_cost(user_id, tracking_code)
+    final_fee, discount_info = await apply_profit_discount(
+        user_id, final_fee, cost_info.get("main_total", 0))
+
     # ⭐ اصلاحیه کارفرما (۱۴۰۵/۰۶/۲۴): فقط مبلغ نهایی به کاربر نمایش داده
     # می‌شود — نه جزئیات محاسبه (تفکیک مبلغ سامانه/سود حذف شد).
     # ⭐ سکشن جدید (۱۴۰۵/۰۶): اگر کاربر پیش‌پرداخت داشته، هزینه کل اعلام،
@@ -3498,6 +3505,8 @@ async def send_tajdid_nazar_result(
         fee_text = build_prepay_fee_text(final_fee, prepay_info, total_fee_rial)
     else:
         fee_text = f"💳 *مبلغ نهایی قابل پرداخت: {final_fee:,} ریال*"
+    if discount_info:
+        fee_text = f"{build_discount_line(discount_info)}\n{fee_text}"
     await bot.send_message(user_id, fee_text)
 
     # ── بررسی معافیت از پرداخت ──────────────────────────────────────────
