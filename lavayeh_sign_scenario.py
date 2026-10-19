@@ -31,6 +31,7 @@ from browser_helpers import (
     check_and_handle_expiry,
     goto_url_with_retry,
     handle_session_expired, start_background_relogin,
+    detect_concurrent_login_popup,
     human_delay,
     resilient_sleep,
     safe_click_by_text,
@@ -839,6 +840,14 @@ async def _wait_for_popup_result(page, bot: Bot = None, user_id: int = None, tim
             }
             return null;
         }''')
+        # ⭐ پاپ‌آپ ورود همزمان («… در صفحه یا رایانه ای دیگر … اعتبار ورود قبلی …
+        # منقضی شده است») پس از کلیک ارسال کد/امضاء ثنا گاهی با بررسی بالا از دست
+        # می‌رفت (فقط اولین sweet-alert خوانده می‌شد، ي/ک عربی و نیم‌فاصله یکسان
+        # نمی‌شد و پاپ‌آپ بسته‌شده دیده نمی‌شد). تشخیص مشترک browser_helpers همهٔ
+        # پاپ‌آپ‌های visible و علامت ناظر صفحه را هم بررسی می‌کند.
+        if (result is None or str(result).startswith("error")) and \
+                await detect_concurrent_login_popup(page):
+            result = "session_expired"
         if result == "session_expired":
             if bot is not None and user_id is not None:
                 logging.warning("[SIGN] پاپ‌آپ ورود همزمان در مرحله ارسال کد شناسایی شد — لاگین مجدد مدیر...")
@@ -914,6 +923,14 @@ async def _wait_for_sign_popup(page, bot: Bot = None, user_id: int = None, timeo
             }
             return null;
         }''')
+        # ⭐ پاپ‌آپ ورود همزمان («… در صفحه یا رایانه ای دیگر … اعتبار ورود قبلی …
+        # منقضی شده است») پس از کلیک ارسال کد/امضاء ثنا گاهی با بررسی بالا از دست
+        # می‌رفت (فقط اولین sweet-alert خوانده می‌شد، ي/ک عربی و نیم‌فاصله یکسان
+        # نمی‌شد و پاپ‌آپ بسته‌شده دیده نمی‌شد). تشخیص مشترک browser_helpers همهٔ
+        # پاپ‌آپ‌های visible و علامت ناظر صفحه را هم بررسی می‌کند.
+        if (result is None or str(result).startswith("error")) and \
+                await detect_concurrent_login_popup(page):
+            result = "session_expired"
         if result == "session_expired":
             if bot is not None and user_id is not None:
                 # ⭐ دستور کارفرما: ورود همزمان هنگام ثبت کد امضا → لاگین مجدد مدیر
