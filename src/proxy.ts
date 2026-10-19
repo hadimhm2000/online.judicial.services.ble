@@ -16,11 +16,68 @@ import { NextRequest, NextResponse } from 'next/server';
 const REALM = 'Admin Panel';
 
 // مقایسهٔ زمان‌ثابت تا طول/محتوای کلید از روی زمان پاسخ لو نرود
+// (حلقه همیشه به طول رشتهٔ بلندتر اجرا می‌شود؛ اختلاف طول هم در نتیجه لحاظ می‌شود)
 function safeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  const len = Math.max(a.length, b.length);
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < len; i++) diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
   return diff === 0;
+}
+
+// ⭐ محدودیت تلاش ناموفق ورود (حدس رمز): پس از MAX_FAILURES تلاش ناموفق در
+// FAILURE_WINDOW_MS از یک IP، آن IP تا LOCK_MS قفل می‌شود. اگر IP مشخص نباشد،
+// قفل اعمال نمی‌شود (تا مهاجم نتواند مدیر را بیرون نگه دارد) و فقط پاسخ کند می‌شود.
+const MAX_FAILURES = 20;
+const FAILURE_WINDOW_MS = 15 * 60 * 1000;
+const LOCK_MS = 15 * 60 * 1000;
+const failures = new Map<string, { count: number; first: number; lockedUntil: number }>();
+
+function clientIp(request: NextRequest): string | null {
+  const fwd = request.headers.get('x-forwarded-for');
+  if (fwd) return fwd.split(',')[0].trim() || null;
+  return request.headers.get('x-real-ip');
+}
+
+function isLocked(ip: string | null): boolean {
+  if (!ip) return false;
+  const rec = failures.get(ip);
+  return !!rec && rec.lockedUntil > Date.now();
+}
+
+function noteFailure(ip: string | null): void {
+  if (!ip) return;
+  const now = Date.now();
+  const rec = failures.get(ip);
+  if (!rec || now - rec.first > FAILURE_WINDOW_MS) {
+    failures.set(ip, { count: 1, first: now, lockedUntil: 0 });
+  } else {
+    rec.count += 1;
+    if (rec.count >= MAX_FAILURES) rec.lockedUntil = now + LOCK_MS;
+  }
+  if (failures.size > 10_000) failures.clear();
+}
+
+// ⭐ CSRF: مرورگر رمز Basic Auth را برای درخواست‌هایی که از سایت‌های دیگر شروع
+// شده‌اند هم خودکار می‌فرستد. درخواست‌های تغییردهنده (POST/PUT/PATCH/DELETE) که
+// مرورگر آن‌ها را «از سایت دیگر» علامت زده رد می‌شوند. درخواست‌های خود پنل
+// (same-origin) و ربات (کلید API، بدون مرورگر) تغییری نمی‌کنند.
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+function isCrossSiteWrite(request: NextRequest): boolean {
+  if (SAFE_METHODS.has(request.method.toUpperCase())) return false;
+  const site = request.headers.get('sec-fetch-site');
+  if (site) return site === 'cross-site' || site === 'same-site';
+  // مرورگرهای قدیمی بدون Sec-Fetch-Site: مقایسهٔ Origin با Host
+  const origin = request.headers.get('origin');
+  if (!origin || origin === 'null') return origin === 'null';
+  let originHost: string;
+  try {
+    originHost = new URL(origin).host;
+  } catch {
+    return true;
+  }
+  const hosts = [request.headers.get('host'), request.headers.get('x-forwarded-host')];
+  return !hosts.some((h) => h && h.split(',')[0].trim() === originHost);
 }
 
 function hasValidApiKey(request: NextRequest, secret: string | undefined): boolean {
@@ -48,7 +105,7 @@ function hasValidBasicAuth(request: NextRequest, user: string | undefined, pass:
   return userOk && passOk;
 }
 
-export function proxy(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const secret = process.env.ADMIN_API_SECRET;
   const user = process.env.ADMIN_PANEL_USER;
   const pass = process.env.ADMIN_PANEL_PASSWORD;
@@ -60,8 +117,26 @@ export function proxy(request: NextRequest) {
     );
   }
 
-  if (hasValidApiKey(request, secret) || hasValidBasicAuth(request, user, pass)) {
+  if (hasValidApiKey(request, secret)) {
     return NextResponse.next();
+  }
+
+  const ip = clientIp(request);
+  if (isLocked(ip)) {
+    return new NextResponse('Too many failed login attempts. Try again later.', { status: 429 });
+  }
+
+  if (hasValidBasicAuth(request, user, pass)) {
+    if (isCrossSiteWrite(request)) {
+      return NextResponse.json({ error: 'درخواست از سایت دیگر پذیرفته نمی‌شود' }, { status: 403 });
+    }
+    return NextResponse.next();
+  }
+
+  // فقط تلاش واقعی با رمز اشتباه شمرده می‌شود (نه درخواست اول مرورگر بدون رمز)
+  if (request.headers.get('authorization')) {
+    noteFailure(ip);
+    if (!ip) await new Promise((r) => setTimeout(r, 1000));
   }
 
   return new NextResponse('Unauthorized', {

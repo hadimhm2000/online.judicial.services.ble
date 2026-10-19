@@ -2,6 +2,7 @@ import { db } from '@/lib/db';
 import { getServiceOption } from '@/lib/service-types';
 import { NextRequest, NextResponse } from 'next/server';
 import { Prisma } from '@prisma/client';
+import { resolveUploadPath } from '@/lib/uploads';
 
 export async function GET(request: NextRequest) {
   try {
@@ -50,6 +51,11 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const { baleUserId, fullName, messageText, fileUrl, fileName, costToman, serviceType, trackingCode } = body;
+
+    // ⭐ فایل پیوست فقط از پوشهٔ آپلود پنل (جلوگیری از ارسال فایل‌های دیگر سرور مثل .env)
+    if (fileUrl && !resolveUploadPath(fileUrl)) {
+      return NextResponse.json({ error: 'مسیر فایل پیوست نامعتبر است' }, { status: 400 });
+    }
 
     if (!baleUserId || !messageText) {
       return NextResponse.json(

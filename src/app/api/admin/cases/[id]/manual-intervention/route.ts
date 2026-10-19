@@ -2,6 +2,7 @@ import { db } from '@/lib/db';
 import { sendBaleMessage, sendBaleDocument } from '@/lib/bale';
 import { NextRequest, NextResponse } from 'next/server';
 import path from 'path';
+import { resolveUploadPath } from '@/lib/uploads';
 
 export async function POST(
   request: NextRequest,
@@ -38,7 +39,8 @@ export async function POST(
         await sendBaleMessage(existing.baleUserId, messageText);
 
         for (const url of uploadedFileUrls) {
-          const filePath = path.join(process.cwd(), 'public', url);
+          const filePath = resolveUploadPath(url);
+          if (!filePath) throw new Error(`مسیر فایل نامعتبر است: ${url}`);
           const displayName = path
             .basename(url)
             .replace(/^[0-9a-f-]{36}-/i, ''); // remove the random-id prefix added on upload

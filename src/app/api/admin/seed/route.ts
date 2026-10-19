@@ -2,7 +2,15 @@ import { db } from '@/lib/db';
 import { NextResponse } from 'next/server';
 
 // Seed test data for development
+// ⭐ در محیط production غیرفعال است (دادهٔ ساختگی آمار مالی را خراب می‌کند)؛
+// برای فعال‌سازی عمدی ALLOW_SEED=1 در .env پنل.
 export async function POST() {
+  if (process.env.NODE_ENV === 'production' && process.env.ALLOW_SEED !== '1') {
+    return NextResponse.json(
+      { error: 'ساخت دادهٔ نمونه در محیط اصلی غیرفعال است' },
+      { status: 403 }
+    );
+  }
   try {
     // Check if we already have data
     const existingCount = await db.case.count();
