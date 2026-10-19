@@ -4607,6 +4607,9 @@ async def lavayeh_payment_waiting_message(message: Message):
 
 @lavayeh_router.callback_query(F.data.startswith("oklav:"))
 async def admin_approve_lavayeh_receipt(callback: CallbackQuery, bot: Bot):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("⛔ فقط مدیر", show_alert=True)
+        return
     user_id = int(callback.data.split(":")[1])
     review = runtime_state.pending_admin_payment_review.pop(user_id, None)
     if not review:
@@ -4733,6 +4736,9 @@ async def admin_approve_lavayeh_receipt(callback: CallbackQuery, bot: Bot):
 
 @lavayeh_router.callback_query(F.data.startswith("nolav:"))
 async def admin_reject_lavayeh_receipt(callback: CallbackQuery, bot: Bot):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("⛔ فقط مدیر", show_alert=True)
+        return
     user_id = int(callback.data.split(":")[1])
     review = runtime_state.pending_admin_payment_review.pop(user_id, None)
     if not review:

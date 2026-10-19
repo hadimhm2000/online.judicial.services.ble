@@ -127,3 +127,16 @@ db/
 !env.example
 # درخواست‌های گواهی عدم سوءپیشینه (کدملی/تاریخ تولد مشتریان)
 data/clearance_requests.json*
+
+# ── فایل‌های وضعیت ربات که در فهرست بالا نبودند ──
+pending_jobs.json
+subscriptions_store.json
+working_hours_cache.json
+data/card_payments.json*
+data/invoice_guard.json*
+wallet.json.bak
+wallet.json.corrupt-*
+wallet_ledger.jsonl
+
+# ── خروجی build تایپ‌اسکریپت ──
+tsconfig.tsbuildinfo

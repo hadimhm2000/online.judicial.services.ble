@@ -293,18 +293,18 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
                     # چند تلاش برای پیدا کردن فیلد کدملی (ممکن است هنوز رندر نشده باشد)
                     nat_id_set = False
                     for _nat_try in range(5):
-                        nat_id_set = await sana_page.evaluate(f'''() => {{
+                        nat_id_set = await sana_page.evaluate('''(natId) => {
                             const inp = document.querySelector('#txtRealIrNationalityCode');
-                            if (inp && !inp.disabled) {{
+                            if (inp && !inp.disabled) {
                                 inp.focus();
                                 inp.value = "";
-                                inp.value = "{nat_id}";
-                                inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
-                                inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
+                                inp.value = natId;
+                                inp.dispatchEvent(new Event("input", { bubbles: true }));
+                                inp.dispatchEvent(new Event("change", { bubbles: true }));
                                 return true;
-                            }}
+                            }
                             return false;
-                        }}''')
+                        }''', str(nat_id))
                         if nat_id_set:
                             break
                         logging.warning(f"[EZHHAR][نماينده] فیلد کدملی پیدا نشد — تلاش {_nat_try+1}")
@@ -1079,14 +1079,14 @@ async def _fill_real_person(page, national_id: str, bot: Bot, user_id: int,
     for sel in ["#txtRealIrNationalityCode1", "#txtRealIrNationalityCode"]:
         elem_count = await page.locator(sel).count()
         if elem_count > 0:
-            await page.evaluate(f'''() => {{
-                const inp = document.querySelector('{sel}');
-                if (inp && inp.offsetParent !== null) {{
-                    inp.value = "{national_id}";
-                    inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
-                    inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
-                }}
-            }}''')
+            await page.evaluate('''([sel, nationalId]) => {
+                const inp = document.querySelector(sel);
+                if (inp && inp.offsetParent !== null) {
+                    inp.value = nationalId;
+                    inp.dispatchEvent(new Event("input", { bubbles: true }));
+                    inp.dispatchEvent(new Event("change", { bubbles: true }));
+                }
+            }''', [sel, str(national_id)])
             await asyncio.sleep(1)
             break
 
@@ -1189,14 +1189,14 @@ async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
         await asyncio.sleep(2)
 
         # وارد کردن شناسه ملی شرکت
-        await page.evaluate(f'''() => {{
+        await page.evaluate('''(companyId) => {
             const inp = document.querySelector('#txtLegalIrNationalityCode');
-            if (inp) {{
-                inp.value = "{company_id}";
-                inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
-                inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
-            }}
-        }}''')
+            if (inp) {
+                inp.value = companyId;
+                inp.dispatchEvent(new Event("input", { bubbles: true }));
+                inp.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+        }''', str(company_id))
         await asyncio.sleep(1)
 
         # استعلام شرکت
@@ -1229,14 +1229,14 @@ async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
     await asyncio.sleep(2)
 
     # وارد کردن شناسه ملی شرکت
-    await page.evaluate(f'''() => {{
+    await page.evaluate('''(companyId) => {
         const inp = document.querySelector('#txtLegalIrNationalityCode');
-        if (inp) {{
-            inp.value = "{company_id}";
-            inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
-            inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
-        }}
-    }}''')
+        if (inp) {
+            inp.value = companyId;
+            inp.dispatchEvent(new Event("input", { bubbles: true }));
+            inp.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+    }''', str(company_id))
     await asyncio.sleep(1)
 
     # استعلام شرکت
@@ -1286,14 +1286,14 @@ async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
     await asyncio.sleep(2)
 
     # وارد کردن کدملی نماینده
-    await page.evaluate(f'''() => {{
+    await page.evaluate('''(nationalId) => {
         const inp = document.querySelector('#txtRealIrNationalityCode, #txtRealIrNationalityCode1');
-        if (inp && inp.offsetParent !== null) {{
-            inp.value = "{national_id}";
-            inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
-            inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
-        }}
-    }}''')
+        if (inp && inp.offsetParent !== null) {
+            inp.value = nationalId;
+            inp.dispatchEvent(new Event("input", { bubbles: true }));
+            inp.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+    }''', str(national_id))
     await asyncio.sleep(1)
 
     # استعلام نماینده
@@ -1304,14 +1304,14 @@ async def _fill_legal_person(page, person: dict, bot: Bot, user_id: int,
 async def _fill_lawyer_person(page, national_id: str, bot: Bot, user_id: int,
                                person_role: str = "", person_index: int = 0):
     """پر کردن کدملی وکیل در step وکیل"""
-    await page.evaluate(f'''() => {{
+    await page.evaluate('''(nationalId) => {
         const inp = document.querySelector('#txtNationalityCode');
-        if (inp) {{
-            inp.value = "{national_id}";
-            inp.dispatchEvent(new Event("input", {{ bubbles: true }}));
-            inp.dispatchEvent(new Event("change", {{ bubbles: true }}));
-        }}
-    }}''')
+        if (inp) {
+            inp.value = nationalId;
+            inp.dispatchEvent(new Event("input", { bubbles: true }));
+            inp.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+    }''', str(national_id))
     await asyncio.sleep(1)
 
     # استعلام وکیل از ثنا
