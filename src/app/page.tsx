@@ -47,7 +47,7 @@ const BotSettingsDialog = React.lazy(() => import('@/components/admin/bot-settin
 const InsightsDialog = React.lazy(() => import('@/components/admin/insights-dialog').then(m => ({ default: m.default })));
 const WorkingHoursDialog = React.lazy(() => import('@/components/admin/working-hours-dialog').then(m => ({ default: m.default })));
 const ExemptUsersDialog = React.lazy(() => import('@/components/admin/exempt-users-dialog').then(m => ({ default: m.default })));
-// تخفیف اختصاصی کاربران (فقط روی سود)
+// تخفیف اختصاصی کاربران (استعلام‌ها و پیش‌پرداخت)
 const UserDiscountsDialog = React.lazy(() => import('@/components/admin/user-discounts-dialog').then(m => ({ default: m.default })));
 
 import { ServicePieChart, StatusOverviewChart, RevenueChart } from '@/components/admin/charts';

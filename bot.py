@@ -557,6 +557,9 @@ async def main():
         logging.warning(f"[START] دریافت ساعت کاری از پنل ناموفق ({e}) — آخرین برنامهٔ ذخیره‌شده استفاده می‌شود.")
     logging.info(f"[START] ساعت کاری ({working_hours.source()}): {working_hours.describe_week()}")
     asyncio.create_task(working_hours.refresh_loop())
+    # ⭐ تخفیف اختصاصی کاربران (پنل ادمین) — کش برای فاکتورها
+    import user_discounts
+    asyncio.create_task(user_discounts.refresh_loop())
 
     # ── شروع تسک‌های پس‌زمینه ──
     asyncio.create_task(browser_worker(bot))

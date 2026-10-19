@@ -55,6 +55,10 @@ MIN_INVOICE_AMOUNT_RIAL = 10_000
 # کلید payload فاکتور — برای تشخیص قطعی نوع پرداخت در هندلر سراسری
 PREPAY_INVOICE_TYPE = "reg_prepay"
 
+# تخفیف اختصاصیِ کم‌شده از آخرین فاکتور پیش‌پرداخت هر کاربر (ریال) —
+# register_prepaid آن را برمی‌دارد و جزو پیش‌پرداخت ثبت می‌کند
+_pending_discounts: dict = {}
+
 
 # ═══ ⭐ مانده/بستانکاری کاربر (مبالغ قابل بازگشت/کسر) ═══
 # رکورد runtime_state.prepaid_registrations[user_id] می‌تواند شامل دو بخش باشد:
@@ -133,6 +137,18 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
     amount_rial = (amount_rial // 10) * 10
     amount_toman = amount_rial // 10
     credit_used_rial = base_toman * 10 - amount_rial if credit_rial > 0 else 0
+    # ⭐ تخفیف اختصاصی کاربر (پنل ادمین) — فقط روی پیش‌پرداخت. کاربر کمتر
+    # می‌پردازد ولی register_prepaid مبلغ تخفیف را هم به رکورد می‌افزاید تا در
+    # فاکتور نهایی کل پیش‌پرداخت کسر شود و تخفیف واقعاً به کاربر برسد.
+    import user_discounts
+    discount_rial = user_discounts.discount_amount(user_id, amount_rial)
+    discount_pct = user_discounts.get_percent(user_id)
+    if discount_rial > 0:
+        amount_rial -= discount_rial
+        amount_toman = amount_rial // 10
+        _pending_discounts[user_id] = discount_rial
+    else:
+        _pending_discounts.pop(user_id, None)
     if credit_used_rial > 0:
         # ⭐ اگر کارت‌به‌کارت پرداخت شود، کسر در رسید برای مدیر نمایش داده می‌شود
         try:
@@ -160,6 +176,8 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
                     + (f"پیش‌پرداخت: {base_toman:,} تومان − مانده/بستانکاری شما: "
                        f"{credit_used_rial // 10:,} تومان\n"
                        if credit_used_rial > 0 else "")
+                    + (f"تخفیف اختصاصی شما ({discount_pct}٪): {discount_rial // 10:,} تومان\n"
+                       if discount_rial > 0 else "")
                     + f"مبلغ: {amount_toman:,} تومان ({amount_rial:,} ریال)"
                 ),
                 "payload": invoice_payload,
@@ -197,6 +215,9 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
         f"💵 مبلغ پیش‌پرداخت {base_toman:,} تومان است؛ "
         f"{credit_used_rial // 10:,} تومان از مانده/بستانکاری شما از آن کسر شد.\n\n"
         if credit_used_rial > 0 else "")
+    if discount_rial > 0:
+        credit_line += (f"🎁 تخفیف اختصاصی شما ({discount_pct}٪): {discount_rial // 10:,} تومان؛ "
+                        f"در فاکتور نهایی کل پیش‌پرداخت ({base_toman:,} تومان) از هزینه کسر می‌شود.\n\n")
 
     # ═══ پیام راهنما — عیناً متن دستور کارفرما ═══
     try:
@@ -225,7 +246,9 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
             f"💰 مبلغ: {amount_toman:,} تومان — در انتظار پرداخت"
             + (f"\n💵 {credit_used_rial // 10:,} تومان از مانده/بستانکاری کاربر "
                f"از پیش‌پرداخت {base_toman:,} تومانی کسر شد"
-               if credit_used_rial > 0 else ""))
+               if credit_used_rial > 0 else "")
+            + (f"\n🎁 تخفیف اختصاصی {discount_pct}٪: {discount_rial // 10:,} تومان"
+               if discount_rial > 0 else ""))
     except Exception:
         pass
 
@@ -309,7 +332,9 @@ def register_prepaid(user_id: int, amount_toman: int, service_key: str,
     _old_paid, old_credit = _split_record(existing)
     # پیش‌پرداختِ پرداخت‌نشدهٔ قبلی هم (اگر مصرف نشده) جزو مانده حساب می‌شود
     carried = _old_paid + old_credit
-    paid_rial = int(amount_toman) * 10
+    # تخفیف اختصاصی که از فاکتور پیش‌پرداخت کم شده بود، جزو پیش‌پرداخت حساب می‌شود
+    discount_rial = _pending_discounts.pop(user_id, 0)
+    paid_rial = int(amount_toman) * 10 + discount_rial
     total_rial = paid_rial + carried
     runtime_state.prepaid_registrations[user_id] = {
         "amount_toman": total_rial // 10,
@@ -319,10 +344,11 @@ def register_prepaid(user_id: int, amount_toman: int, service_key: str,
         "service_label": service_label,
         "charge_id": charge_id,
         "paid_at": datetime.datetime.now(),
+        "discount_rial": discount_rial,
     }
     logging.info(
         f"[REG-PREPAY] پیش‌پرداخت ثبت شد: user={user_id}, svc={service_key}, "
-        f"مبلغ={amount_toman:,} تومان, مانده قبلی={carried:,} ریال, "
+        f"مبلغ={amount_toman:,} تومان, تخفیف={discount_rial:,} ریال, مانده قبلی={carried:,} ریال, "
         f"جمع قابل کسر={total_rial:,} ریال, charge={charge_id}")
 
 
@@ -348,6 +374,8 @@ def pop_prepaid(user_id: int):
             # این مبلغ را به «مقدار واقعاً کسرشده» اصلاح می‌کند تا باقی‌ماندهٔ
             # مانده که به پروندهٔ بعدی می‌رود دوبار شمرده نشود.
             amount_rial = int(prepay.get("amount_rial", 0) or 0)
+            # تخفیف اختصاصی پولی نیست که از کاربر گرفته شده باشد
+            amount_rial = max(0, amount_rial - int(prepay.get("discount_rial", 0) or 0))
             stash[user_id] = {
                 "amount_toman": amount_rial // 10,
                 "paid_at": prepay.get("paid_at"),
@@ -391,7 +419,8 @@ def adjust_final_fee_with_prepay(user_id: int, final_fee_rial: int):
     try:
         stash = getattr(runtime_state, "consumed_prepay_for_panel", None)
         if isinstance(stash, dict) and user_id in stash:
-            stash[user_id]["amount_toman"] = applied // 10
+            _disc = int(prepay.get("discount_rial", 0) or 0)
+            stash[user_id]["amount_toman"] = max(0, applied - _disc) // 10
     except Exception as ex:
         logging.warning(f"[REG-PREPAY] اصلاح مبلغ پیش‌پرداخت پنل ناموفق: {ex}")
     if leftover > 0:
