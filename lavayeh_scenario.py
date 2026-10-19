@@ -164,6 +164,16 @@ class LavayehServiceDownError(LavayehFatalError):
     pass
 
 
+class LavayehCaseNotFoundError(LavayehFatalError):
+    """⭐ صحت‌سنجی اطلاعات پرونده (شماره بایگانی) ناموفق — مثلاً «با اطلاعات
+    ارسالی پرونده یافت نشد». زیرکلاس LavayehFatalError است تا رفتار دسته‌جمعی
+    (ثبت شکست ردیف) تغییری نکند؛ در ثبت تکی به‌جای توقف، پنجرهٔ اصلاح اطلاعات
+    پرونده باز می‌شود (_offer_case_info_fix)."""
+    def __init__(self, message: str, sana_text: str = ""):
+        super().__init__(message)
+        self.sana_text = sana_text
+
+
 class LavayehSanaDataError(LavayehFatalError):
     """⭐ اصلاحیهٔ کارفرما — خطای داده‌ای ثنا در ثبت لایحه که با ویرایش
     کدملی شخص قابل رفع است:
@@ -357,18 +367,29 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                 await resilient_sleep(sana_page, 1, bot, user_id)
                 
                 # کلیک روی دکمه صحت‌سنجی
-                await _click_validate_with_retry_archive(sana_page, bot, user_id)
-                await resilient_sleep(sana_page, 10, bot, user_id)
-                
-                # بررسی موفقیت
-                table_ok = await _wait_for_case_table(sana_page, bot, user_id)
+                # ⭐ «پرونده یافت نشد» در ثبت تکی → پنجرهٔ اصلاح اطلاعات پرونده
+                # (دسته‌جمعی: همان رفتار قبلی — ثبت شکست ردیف)
+                validate_error = None
+                try:
+                    validate_error = await _click_validate_with_retry_archive(sana_page, bot, user_id)
+                except LavayehCaseNotFoundError as _cnf:
+                    if data.get("_is_bulk"):
+                        raise
+                    validate_error = _cnf.sana_text or str(_cnf)
+                    table_ok = False
+                else:
+                    await resilient_sleep(sana_page, 10, bot, user_id)
+                    # بررسی موفقیت
+                    table_ok = await _wait_for_case_table(sana_page, bot, user_id)
                 if not table_ok:
-                    await bot.send_message(
-                        user_id,
-                        "⚠️ *استعلام پرونده با خطا مواجه شد.*\n\n"
-                        "لطفاً موارد زیر را بررسی و اصلاح نمایید:\n"
-                        "🔢 شماره بایگانی\n🏛 کد شعبه\n\n"
-                        "سپس مجدداً «ثبت لایحه» را شروع کنید.")
+                    if data.get("_is_bulk") or not await _offer_case_info_fix(
+                            data, bot, user_id, validate_error):
+                        await bot.send_message(
+                            user_id,
+                            "⚠️ *استعلام پرونده با خطا مواجه شد.*\n\n"
+                            "لطفاً موارد زیر را بررسی و اصلاح نمایید:\n"
+                            "🔢 شماره بایگانی\n🏛 کد شعبه\n\n"
+                            "سپس مجدداً «ثبت لایحه» را شروع کنید.")
                     await bot.send_message(ADMIN_ID, f"❌ [LAVAYEH] صحت‌سنجی بایگانی کاربر {user_id} ناموفق.")
                     runtime_state.active_lavayeh_users.discard(user_id)
                     await log_event(
@@ -419,17 +440,20 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                     return
                 await resilient_sleep(sana_page, 2, bot, user_id)
 
-                await _click_validate_with_retry(sana_page, bot, user_id)
+                validate_error = await _click_validate_with_retry(sana_page, bot, user_id)
                 await resilient_sleep(sana_page, 10, bot, user_id)
 
                 table_ok = await _wait_for_case_table(sana_page, bot, user_id)
                 if not table_ok:
-                    await bot.send_message(
-                        user_id,
-                        "⚠️ *استعلام پرونده با خطا مواجه شد.*\n\n"
-                        "لطفاً موارد زیر را بررسی و اصلاح نمایید:\n"
-                        "🔢 شماره پرونده\n🔢 ردیف فرعی\n🏙 استان\n\n"
-                        "سپس مجدداً «ثبت لایحه» را شروع کنید.")
+                    # ⭐ ثبت تکی → پنجرهٔ اصلاح اطلاعات پرونده / تغییر روش ورود
+                    if data.get("_is_bulk") or not await _offer_case_info_fix(
+                            data, bot, user_id, validate_error):
+                        await bot.send_message(
+                            user_id,
+                            "⚠️ *استعلام پرونده با خطا مواجه شد.*\n\n"
+                            "لطفاً موارد زیر را بررسی و اصلاح نمایید:\n"
+                            "🔢 شماره پرونده\n🔢 ردیف فرعی\n🏙 استان\n\n"
+                            "سپس مجدداً «ثبت لایحه» را شروع کنید.")
                     await bot.send_message(ADMIN_ID, f"❌ [LAVAYEH] صحت‌سنجی پرونده کاربر {user_id} ناموفق.")
                     runtime_state.active_lavayeh_users.discard(user_id)
                     await log_event(
@@ -1716,6 +1740,70 @@ async def _handle_case_info_session_popup(page, bot: Bot, user_id: int, where: s
     return True
 
 
+async def _offer_case_info_fix(data: dict, bot: Bot, user_id: int, error_text: str | None) -> bool:
+    """⭐ صحت‌سنجی اطلاعات پرونده ناموفق ماند («با اطلاعات ارسالی پرونده یافت
+    نشد») — به‌جای پایان درخواست، پنجرهٔ ۳ ساعته اصلاح باز می‌شود تا کاربر
+    شماره پرونده/استان/ردیف فرعی یا شماره بایگانی/شعبه را اصلاح کند یا روش
+    ورود پرونده را تغییر دهد. پس از اصلاح، همان تسک (با prepaid=True و سایر
+    اطلاعات سیو شده) دوباره به صف می‌رود — پرداخت مجدد لازم نیست
+    (هندلرها: lavayeh_handlers.py، بخش lav_case_fix).
+
+    بازگشت: True اگر پنجره باز و پیام ارسال شد؛ False → پیام قبلی «مجدداً
+    ثبت لایحه را شروع کنید» (مثلاً پس از سقف دفعات اصلاح).
+    """
+    import nid_fix_window
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+    rounds = int(data.get("_case_fix_rounds", 0) or 0)
+    if rounds >= nid_fix_window.LAVAYEH_CASE_FIX_MAX_ROUNDS:
+        logging.warning(
+            f"[LAVAYEH] سقف دفعات اصلاح اطلاعات پرونده برای کاربر {user_id} پر شده ({rounds})")
+        return False
+    try:
+        nid_fix_window.start_lavayeh_case_fix(user_id, dict(data), error_text or "")
+    except Exception as e:
+        logging.error(f"[LAVAYEH] خطا در شروع پنجرهٔ اصلاح اطلاعات پرونده: {e}")
+        return False
+
+    if data.get("tracking_method") == "archive_number":
+        current = (
+            f"🔢 شماره بایگانی: `{data.get('lavayeh_archive_number') or '---'}`\n"
+            f"🏛 شعبه: *{data.get('lavayeh_branch_name') or '---'}*")
+    else:
+        current = (
+            f"🔢 شماره پرونده: `{data.get('lavayeh_tracking_code') or '---'}`\n"
+            f"🏙 استان: *{data.get('lavayeh_province') or '---'}*\n"
+            f"🔢 ردیف فرعی: *{data.get('lavayeh_row_number') or '---'}*")
+    sana_line = ""
+    if error_text:
+        _clean = str(error_text).strip()[:250]
+        for ch in "*_`[]":
+            _clean = _clean.replace(ch, " ")
+        sana_line = f"«{_clean}»\n\n"
+
+    fix_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="✏️ اصلاح اطلاعات پرونده / تغییر روش ورود",
+            callback_data=f"lav_case_fix:{user_id}")],
+        [InlineKeyboardButton(
+            text="🗑 انصراف از درخواست",
+            callback_data=f"lav_case_cancel:{user_id}")],
+    ])
+    await bot.send_message(
+        user_id,
+        "⚠️ *پرونده با اطلاعات واردشده در سامانه یافت نشد.*\n\n"
+        f"{sana_line}"
+        f"اطلاعات واردشده:\n{current}\n\n"
+        "✏️ می‌توانید این اطلاعات را اصلاح کنید یا *روش ورود پرونده* را تغییر دهید "
+        "(مثلاً به‌جای شماره پرونده، از شماره بایگانی و شعبه استفاده کنید).\n"
+        "✅ سایر اطلاعات لایحه (اشخاص، متن و پیوست‌ها) حفظ شده و پس از اصلاح، "
+        "ثبت *بدون پرداخت مجدد* ادامه می‌یابد.\n"
+        f"⏰ شما *{nid_fix_window.duration_label(nid_fix_window.LAVAYEH_CASE_FIX_MINUTES)}* "
+        "فرصت دارید اطلاعات را اصلاح کنید.",
+        reply_markup=fix_kb)
+    return True
+
+
 # سقف دفعات لاگین مجدد در یک مرحلهٔ صحت‌سنجی (جدا از شمارش خطاهای عادی)
 _CASE_INFO_MAX_RELOGINS = 3
 
@@ -1725,10 +1813,14 @@ async def _click_validate_with_retry(page, bot: Bot, user_id: int, max_retries: 
 
     ⭐ پاپ‌آپ ورود همزمان (قبل یا بعد از کلیک) → لاگین مجدد مدیر و تکرار
     همان تلاش؛ جزو شمارش خطاهای صحت‌سنجی حساب نمی‌شود.
+
+    بازگشت: در صورت ناموفق ماندن، متن آخرین خطای سامانه (برای پیام اصلاح
+    اطلاعات پرونده)؛ در صورت موفقیت None.
     """
     attempt = 0
     relogins = 0
     service_delays = 0
+    last_error = ""
     while attempt < max_retries:
         if relogins < _CASE_INFO_MAX_RELOGINS and await _handle_case_info_session_popup(
                 page, bot, user_id, "اطلاعات پرونده — شماره پرونده"):
@@ -1765,6 +1857,7 @@ async def _click_validate_with_retry(page, bot: Bot, user_id: int, max_retries: 
                     "سامانهٔ استعلام واحدهای قضایی سنا موقتاً قطع است. لطفاً دو ساعت دیگر مجدداً تلاش بفرمائید."
                 )
             logging.warning(f"[LAVAYEH] خطای صحت‌سنجی (تلاش {attempt+1}): {error_text}")
+            last_error = error_text
             await asyncio.sleep(5)
             if attempt > 0:
                 attempt += 1
@@ -1776,6 +1869,7 @@ async def _click_validate_with_retry(page, bot: Bot, user_id: int, max_retries: 
         attempt += 1
 
     logging.warning(f"[LAVAYEH] صحت‌سنجی ناموفق پس از {max_retries} تلاش")
+    return last_error
 
 
 async def _wait_for_case_table(page, bot: Bot, user_id: int, timeout_sec: int = 30) -> bool:
@@ -3348,8 +3442,9 @@ async def _click_validate_with_retry_archive(page, bot: Bot, user_id: int):
             logging.warning(f"[LAVAYEH] خطای صحت‌سنجی بایگانی (تلاش {attempt+1}): {error_text}")
             if consecutive_errors >= 2:
                 logging.error(f"[LAVAYEH] خطای صحت‌سنجی بایگانی تکراری — قطع فرآیند")
-                raise LavayehFatalError(
-                    "خطا در استعلام پرونده. لطفاً شماره بایگانی و کد شعبه را بررسی کنید."
+                raise LavayehCaseNotFoundError(
+                    "خطا در استعلام پرونده. لطفاً شماره بایگانی و کد شعبه را بررسی کنید.",
+                    sana_text=error_text,
                 )
             await asyncio.sleep(5)
             continue

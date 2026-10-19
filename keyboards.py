@@ -240,6 +240,25 @@ lavayeh_tracking_method_kb = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# ⭐ پنجرهٔ اصلاح اطلاعات پرونده لایحه (پس از «پرونده یافت نشد»)
+LAVAYEH_CASE_FIX_KEEP = "✅ بدون تغییر"
+LAVAYEH_CASE_FIX_SUBMIT = "✅ تایید و ثبت مجدد"
+LAVAYEH_CASE_FIX_AGAIN = "✏️ اصلاح مجدد"
+lavayeh_case_fix_keep_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=LAVAYEH_CASE_FIX_KEEP)],
+        [KeyboardButton(text="🔙 بازگشت")]
+    ],
+    resize_keyboard=True
+)
+lavayeh_case_fix_confirm_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=LAVAYEH_CASE_FIX_SUBMIT)],
+        [KeyboardButton(text=LAVAYEH_CASE_FIX_AGAIN)]
+    ],
+    resize_keyboard=True
+)
+
 # کیبورد انتخاب نحوه ورود نام شعبه
 # گزینه ورود دستی حذف شد - فقط انتخاب از لیست
 lavayeh_branch_input_method_kb = ReplyKeyboardMarkup(
@@ -265,7 +284,8 @@ PROVINCES = [
     "هرمزگان", "همدان", "یزد"
 ]
 
-def create_province_kb():
+def create_province_kb(keep_current: bool = False):
+    """keep_current=True → ردیف «✅ بدون تغییر» (پنجرهٔ اصلاح اطلاعات پرونده لایحه)."""
     keyboard = []
     i = 0
     while i < len(PROVINCES):
@@ -283,6 +303,8 @@ def create_province_kb():
         else:
             keyboard.append([KeyboardButton(text=item)])
             i += 1
+    if keep_current:
+        keyboard.append([KeyboardButton(text=LAVAYEH_CASE_FIX_KEEP)])
     keyboard.append([KeyboardButton(text="🔙 بازگشت")])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 

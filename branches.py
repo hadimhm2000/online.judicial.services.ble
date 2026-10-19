@@ -392,6 +392,18 @@ async def process_branch_callback(callback: CallbackQuery, state: FSMContext):
             await _go_to_check_preview(callback.message, state)
             return
 
+        # ⭐ پنجرهٔ اصلاح اطلاعات پرونده لایحه (پس از «پرونده یافت نشد»)
+        if current_state == Form.lavayeh_case_fix_branch:
+            from lavayeh_handlers import lavayeh_case_fix_branch_selected
+            branch_name = node.get("UnitName", "")
+            await callback.message.answer(
+                f"✅ *شعبه انتخاب شد:*\n\n"
+                f"📋 نام: *{branch_name}*\n"
+                f"🔢 کد: `{branch_code}`")
+            await lavayeh_case_fix_branch_selected(
+                callback.message, state, branch_name, branch_code, node.get("Path", ""))
+            return
+
         # اگر در حالت انتخاب شعبه برای لایحه هستیم
         if current_state == Form.lavayeh_branch_name:
             # ذخیره نام شعبه و کد شعبه

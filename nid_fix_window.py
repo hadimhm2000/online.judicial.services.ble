@@ -364,6 +364,53 @@ def contract_fix_deadline_text() -> str:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# ۶) ⭐ پنجرهٔ ۳ ساعته اصلاح اطلاعات پرونده لایحه
+# ════════════════════════════════════════════════════════════════════════════
+# وقتی در ثبت لایحه (پس از پیش‌پرداخت) صحت‌سنجی اطلاعات پرونده ناموفق
+# می‌ماند («با اطلاعات ارسالی پرونده یافت نشد»):
+#   - کاربر ۳ ساعت فرصت دارد شماره پرونده/استان/ردیف فرعی یا شماره
+#     بایگانی/شعبه را اصلاح کند — یا روش ورود پرونده را عوض کند
+#   - پس از اصلاح، ثبت با «همان اطلاعات سیو شده» (اشخاص، متن، پیوست‌ها)
+#     و بدون پرداخت مجدد از نو آغاز می‌شود
+#   - بدون جریمه — پیش‌پرداخت دست‌نخورده می‌ماند (کسر در پایان کار یا
+#     ثبت بعدی)
+
+LAVAYEH_CASE_FIX_MINUTES = 180        # مهلت اصلاح اطلاعات پرونده (۳ ساعت)
+LAVAYEH_CASE_FIX_MAX_ROUNDS = 3       # سقف دفعات اصلاح برای یک درخواست
+
+
+def start_lavayeh_case_fix(user_id: int, task_data: dict, error_text: str = "") -> dict:
+    """شروع پنجرهٔ اصلاح اطلاعات پرونده لایحه."""
+    now = datetime.datetime.now()
+    win = {
+        "task_data": task_data or {},
+        "error_text": error_text or "",
+        "created_at": now,
+        "deadline": now + datetime.timedelta(minutes=LAVAYEH_CASE_FIX_MINUTES),
+    }
+    runtime_state.pending_lavayeh_case_fix[user_id] = win
+    logger.info(
+        f"[LAV-CASE-FIX] پنجرهٔ {duration_adj(LAVAYEH_CASE_FIX_MINUTES)} شروع شد: user={user_id}, "
+        f"deadline={win['deadline'].strftime('%H:%M:%S')}")
+    return win
+
+
+def get_lavayeh_case_fix(user_id: int):
+    return runtime_state.pending_lavayeh_case_fix.get(user_id)
+
+
+def pop_lavayeh_case_fix(user_id: int):
+    return runtime_state.pending_lavayeh_case_fix.pop(user_id, None)
+
+
+def lavayeh_case_fix_prepay_line(user_id: int) -> str:
+    """یک خط «پیش‌پرداخت حفظ شد» — خالی اگر کاربر پیش‌پرداختی ندارد (مثلاً معاف)."""
+    if not runtime_state.prepaid_registrations.get(user_id):
+        return ""
+    return "💰 مبلغ پیش‌پرداخت شما حفظ شده و در هزینه ثبت بعدی شما لحاظ می‌گردد.\n"
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # ۵) اسوئپر دوره‌ای — بستن پنجره‌های منقضی (پس از کرش/ری‌استارت هم کار می‌کند)
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -485,5 +532,33 @@ async def sweep_expired(bot) -> int:
             closed += 1
         except Exception as e:
             logger.error(f"[CONTRACT-FIX] خطا در sweep پنجرهٔ کاربر {uid}: {e}")
+
+    # ── ⭐ پنجرهٔ اصلاح اطلاعات پرونده لایحه — بدون جریمه ─────────────────
+    for uid in list(runtime_state.pending_lavayeh_case_fix.keys()):
+        try:
+            win = runtime_state.pending_lavayeh_case_fix.get(uid)
+            if not win or not is_expired(win, now):
+                continue
+            runtime_state.pending_lavayeh_case_fix.pop(uid, None)
+            try:
+                await bot.send_message(
+                    uid,
+                    f"⌛ *مهلت {duration_adj(LAVAYEH_CASE_FIX_MINUTES)} اصلاح اطلاعات پرونده به پایان رسید.*\n\n"
+                    "درخواست ثبت لایحه حذف شد.\n"
+                    f"{lavayeh_case_fix_prepay_line(uid)}\n"
+                    "در صورت تمایل می‌توانید از منوی اصلی مجدداً اقدام فرمایید.",
+                    parse_mode="Markdown")
+            except Exception as e:
+                logger.warning(f"[LAV-CASE-FIX] خطا در اطلاع به کاربر {uid}: {e}")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"⌛ [LAV-CASE-FIX] مهلت اصلاح اطلاعات پرونده لایحه کاربر {uid} به پایان رسید؛ "
+                    "درخواست حذف شد (پیش‌پرداخت دست‌نخورده ماند).")
+            except Exception:
+                pass
+            closed += 1
+        except Exception as e:
+            logger.error(f"[LAV-CASE-FIX] خطا در sweep پنجرهٔ کاربر {uid}: {e}")
 
     return closed

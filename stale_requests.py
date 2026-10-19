@@ -59,7 +59,8 @@ _TS_FIELDS = (
 )
 # پنجره‌های مهلت‌دار (جریمه/اطلاع‌رسانی‌شان با nid_fix_window است) — تا وقتی
 # مهلتشان باقی است کاربر کنار گذاشته می‌شود
-_DEADLINE_STORES = ("pending_nid_fix_windows", "pending_tn_retrieve_fix", "pending_contract_fix")
+_DEADLINE_STORES = ("pending_nid_fix_windows", "pending_tn_retrieve_fix", "pending_contract_fix",
+                    "pending_lavayeh_case_fix")
 # مخازنی که هنگام لغو پرونده برای کاربر پاک می‌شوند
 _CLEAR_STORES = (
     "pending_lavayeh_payments", "pending_tn_payments", "pending_admin_fee_payments",
