@@ -93,21 +93,19 @@ export async function GET(request: NextRequest) {
 
     const shouldDedup = !status && serviceType !== 'INQUIRY';
 
-    const [rawCases, total] = await Promise.all([
-      db.case.findMany({
+    let cases;
+    let pagination;
+    if (shouldDedup) {
+      // ⭐ یکتاسازی روی id/کد رهگیری/تاریخِ همهٔ ردیف‌ها انجام می‌شود (نه متن و نتیجهٔ کامل
+      // پرونده‌ها، و بدون سقف ۱۰۰۰۰ ردیف)؛ الگوریتم و ترتیب همان قبلی است و فقط
+      // ردیف‌های همین صفحه کامل خوانده می‌شوند.
+      const keys = await db.case.findMany({
         where,
         orderBy,
-        skip: shouldDedup ? 0 : (page - 1) * limit,
-        take: shouldDedup ? 10000 : limit,
-      }),
-      db.case.count({ where }),
-    ]);
-
-    let cases = rawCases;
-    let pagination = { page, limit, total, totalPages: Math.ceil(total / limit) };
-    if (shouldDedup) {
-      const seen = new Map<string, typeof rawCases[0]>();
-      for (const c of rawCases) {
+        select: { id: true, trackingCode: true, createdAt: true },
+      });
+      const seen = new Map<string, typeof keys[0]>();
+      for (const c of keys) {
         if (!c.trackingCode) { seen.set(c.id, c); continue; }
         const existing = seen.get(c.trackingCode);
         if (!existing || new Date(c.createdAt) > new Date(existing.createdAt)) {
@@ -115,10 +113,21 @@ export async function GET(request: NextRequest) {
           seen.set(c.trackingCode, c);
         }
       }
-      cases = Array.from(seen.values());
-      const dedupTotal = cases.length;
-      cases = cases.slice((page - 1) * limit, page * limit);
-      pagination = { page, limit, total: dedupTotal, totalPages: Math.ceil(dedupTotal / limit) };
+      const deduped = Array.from(seen.values());
+      const pageIds = deduped.slice((page - 1) * limit, page * limit).map((c) => c.id);
+      const pageRows = pageIds.length
+        ? await db.case.findMany({ where: { id: { in: pageIds } } })
+        : [];
+      const byId = new Map(pageRows.map((r) => [r.id, r]));
+      cases = pageIds.map((id) => byId.get(id)).filter((r): r is NonNullable<typeof r> => !!r);
+      pagination = { page, limit, total: deduped.length, totalPages: Math.ceil(deduped.length / limit) };
+    } else {
+      const [rawCases, total] = await Promise.all([
+        db.case.findMany({ where, orderBy, skip: (page - 1) * limit, take: limit }),
+        db.case.count({ where }),
+      ]);
+      cases = rawCases;
+      pagination = { page, limit, total, totalPages: Math.ceil(total / limit) };
     }
 
     const nameMap = await buildKnownNameMap([...new Set(cases.map((c) => c.baleUserId))]);
