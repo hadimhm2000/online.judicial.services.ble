@@ -37,7 +37,8 @@ from sign_tab import active_page as active_sign_page
 from browser_helpers import (
     check_and_handle_expiry,
     goto_url_with_retry,
-    handle_session_expired, start_background_relogin,
+    handle_session_expired,
+    detect_concurrent_login_popup,
     human_delay,
     resilient_sleep,
     safe_click_by_text,
@@ -814,6 +815,14 @@ async def _wait_for_popup_result(page, bot: Bot = None, user_id: int = None, tim
             }
             return null;
         }''')
+        # ⭐ پاپ‌آپ ورود همزمان («… در صفحه یا رایانه ای دیگر … اعتبار ورود قبلی …
+        # منقضی شده است») پس از کلیک ارسال کد/امضاء ثنا گاهی با بررسی بالا از دست
+        # می‌رفت (فقط اولین sweet-alert خوانده می‌شد، ي/ک عربی و نیم‌فاصله یکسان
+        # نمی‌شد و پاپ‌آپ بسته‌شده دیده نمی‌شد). تشخیص مشترک browser_helpers همهٔ
+        # پاپ‌آپ‌های visible و علامت ناظر صفحه را هم بررسی می‌کند.
+        if (result is None or str(result).startswith("error")) and \
+                await detect_concurrent_login_popup(page):
+            result = "session_expired"
         if result == "session_expired":
             if bot is not None and user_id is not None:
                 logging.warning("[EZHHAR_SIGN] پاپ‌آپ ورود همزمان در مرحله ارسال کد شناسایی شد — لاگین مجدد مدیر...")
@@ -841,6 +850,8 @@ async def _enter_code_and_sign(
     expiry_retries = 0
     service_delay_count = 0
     last_popup_result = None  # ⭐ برای گزارش محافظه‌کارانه‌تر «max_attempts» پایین نگه داشته می‌شود
+    # ⭐ آیا در همین ثبت، پس از پاپ‌آپ ورود همزمان لاگین مجدد مدیر انجام شد؟
+    relogged_in = False
     while attempt < 3 and expiry_retries < 2:
         filled = await page.evaluate(f'''(args) => {{
             const idx = args.idx;
@@ -907,6 +918,12 @@ async def _enter_code_and_sign(
             return {"success": True}
         elif popup_result == "wrong_code":
             await _close_any_popup(page)
+            if relogged_in:
+                # ⭐ دستور کارفرما: «رمز موقت نادرست» پس از لاگین مجدد مدیر یعنی
+                # کد با انقضای نشست از بین رفته — به کاربر «اختلال سامانه» و
+                # فعال‌شدن ارسال کد مجدد ۲۰ دقیقه بعد اعلام می‌شود.
+                logging.warning(f"[EZHHAR_SIGN] رمز موقت نادرست پس از لاگین مجدد — ردیف {row_idx}، امضای مجدد ۲۰ دقیقه بعد")
+                return {"success": False, "error": "sana_session_expired"}
             logging.info(f"[EZHHAR_SIGN] رمز موقت نادرست — ردیف {row_idx}")
             return {"success": False, "error": "wrong_code"}
         elif popup_result == "sana_not_registered":
@@ -942,8 +959,9 @@ async def _enter_code_and_sign(
         elif popup_result == "session_expired_handled":
             # نشست هنگام تایید کد منقضی شده بود — لاگین مجدد انجام شد،
             # این تلاش را جزو بودجه اصلی حساب نمی‌کنیم و دوباره امتحان می‌کنیم.
-            logging.info(f"[EZHHAR_SIGN] نشست پس از انقضا تمدید شد — تلاش مجدد تایید کد ردیف {row_idx}")
+            logging.info(f"[EZHHAR_SIGN] نشست پس از انقضا تمدید شد — زدن مجدد کلید امضا ردیف {row_idx}")
             expiry_retries += 1
+            relogged_in = True
             continue
         else:
             await _close_any_popup(page)
@@ -1045,14 +1063,23 @@ async def _wait_for_sign_popup(page, bot: Bot = None, user_id: int = None, timeo
             }
             return null;
         }''')
+        # ⭐ پاپ‌آپ ورود همزمان («… در صفحه یا رایانه ای دیگر … اعتبار ورود قبلی …
+        # منقضی شده است») پس از کلیک ارسال کد/امضاء ثنا گاهی با بررسی بالا از دست
+        # می‌رفت (فقط اولین sweet-alert خوانده می‌شد، ي/ک عربی و نیم‌فاصله یکسان
+        # نمی‌شد و پاپ‌آپ بسته‌شده دیده نمی‌شد). تشخیص مشترک browser_helpers همهٔ
+        # پاپ‌آپ‌های visible و علامت ناظر صفحه را هم بررسی می‌کند.
+        if (result is None or str(result).startswith("error")) and \
+                await detect_concurrent_login_popup(page):
+            result = "session_expired"
         if result == "session_expired":
             if bot is not None and user_id is not None:
-                # ⭐ دستور کارفرما: ورود همزمان هنگام ثبت کد امضا → لاگین مجدد مدیر
-                # (پس‌زمینه)، اطلاع «اختلال سامانه» به کاربر و فعال‌شدن امضای
-                # مجدد ۲۰ دقیقه بعد — همان کد دوباره ثبت نمی‌شود.
-                logging.warning("[EZHHAR_SIGN] پاپ‌آپ ورود همزمان در مرحله تایید کد شناسایی شد — لاگین مجدد مدیر، امضای مجدد ۲۰ دقیقه بعد")
-                start_background_relogin(bot, page=page)
-                return "session_expired"
+                # ⭐ دستور کارفرما: ورود همزمان پس از کلیک «امضاء ثنا» → منتظر لاگین
+                # مجدد مدیر و سپس زدن دوبارهٔ همان کلید امضا با همان کد (کد جدید
+                # ارسال نمی‌شود). اگر پس از آن «رمز موقت نادرست» آمد، فراخوان به
+                # کاربر «اختلال سامانه» و امضای مجدد ۲۰ دقیقه بعد را اعلام می‌کند.
+                logging.warning("[EZHHAR_SIGN] پاپ‌آپ ورود همزمان در مرحله تایید کد شناسایی شد — لاگین مجدد مدیر و زدن مجدد کلید امضا")
+                await handle_session_expired(bot, user_id, page=page)
+                return "session_expired_handled"
             return "error"
         if result:
             return result
