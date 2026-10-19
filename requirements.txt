@@ -1,11 +1,10 @@
-aiogram>=3.4.0
+aiogram>=3.4.0,<4
 playwright==1.45.0
 gspread==6.1.0
 google-auth==2.35.0
 python-dotenv==1.0.1
 Pillow==10.4.0
-pytesseract==0.3.13
-opencv-python==4.10.0.84
+numpy
 openpyxl==3.1.5
 PyMuPDF==1.24.9
 # weasyprint==62.3  ← حذف شد: نیاز به GTK3 بومی روی ویندوز دارد
@@ -17,3 +16,7 @@ requests
 # ⚠️ اگر نصب نباشد، docx_parser.py به‌صورت خودکار از پارسر جایگزین
 # (zipfile + XML) استفاده می‌کند — اما برای کیفیت بهتر نصب الزامی است:
 python-docx>=1.1.0
+# tax_geolocation_query.py (استعلام ارزش منطقه‌ای)
+beautifulsoup4
+# تاریخ شمسی دقیق در تاریخچه، محاسبهٔ خسارت و PDF ارزش منطقه‌ای
+jdatetime
