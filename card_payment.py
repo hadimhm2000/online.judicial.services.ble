@@ -297,6 +297,12 @@ def track_invoice(invoice_data: dict, card_only: bool = False) -> None:
                       (chat_id, title, description, payload, prices, ...)
         card_only: فاکتور درگاه ارسال نشده (مبلغ بالای سقف) — کارت‌به‌کارت فوری
     """
+    # ⭐ ثبت آخرین مبلغ فاکتور برای رد پرداخت فاکتورهای قدیمی‌تر/ارزان‌تر (invoice_guard)
+    try:
+        import invoice_guard
+        invoice_guard.record(invoice_data)
+    except Exception as e:
+        logger.error(f"[CARD-PAY] ثبت فاکتور در invoice_guard ناموفق: {e}")
     # ⭐ کیف پول: اگر موجودی کافی باشد، دکمهٔ «پرداخت از کیف پول» زیر فاکتور
     try:
         import wallet

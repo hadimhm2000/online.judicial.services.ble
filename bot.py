@@ -35,6 +35,9 @@ from persistence import (
     mark_crash_and_save)
 
 dp = Dispatcher(storage=MemoryStorage())
+# ⭐ رد پرداخت فاکتور قدیمی/نامربوط — باید پیش از ناظر کارت‌به‌کارت و کیف پول ثبت شود
+import invoice_guard
+dp.message.outer_middleware(invoice_guard.InvoiceGuardMiddleware())
 # ⭐ پرداخت کارت‌به‌کارت — روتر رسید/تایید مدیر باید *قبل از* روتر اصلی ثبت شود
 # (فقط عکس‌هایی را می‌گیرد که رسید یک فاکتور کارت‌به‌کارت فعال باشند).
 import card_payment

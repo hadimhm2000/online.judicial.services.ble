@@ -196,8 +196,29 @@ async def restart_to_main_menu(message: types.Message, state: FSMContext):
 
 # ================= هندلر pre_checkout_query — تایید خودکار پرداخت بله =================
 @router.pre_checkout_query()
-async def pre_checkout_query_handler(pre_checkout_query: PreCheckoutQuery, bot: Bot):
-    """تایید خودکار تمام درخواست‌های پیش‌پرداخت فاکتور بله"""
+async def pre_checkout_query_handler(pre_checkout_query: PreCheckoutQuery, bot: Bot,
+                                     state: FSMContext | None = None):
+    """تایید خودکار درخواست‌های پیش‌پرداخت فاکتور بله — به‌جز فاکتور قدیمی/نامربوط (invoice_guard)"""
+    import invoice_guard
+    reason = None
+    try:
+        current_state = await state.get_state() if state is not None else None
+        reason = invoice_guard.check(pre_checkout_query.from_user.id,
+                                     pre_checkout_query.invoice_payload,
+                                     pre_checkout_query.total_amount, current_state)
+    except Exception as e:
+        logging.error(f"[PRE-CHECKOUT] خطا در بررسی فاکتور (تایید عادی ادامه می‌یابد): {e}", exc_info=True)
+    if reason:
+        logging.warning(f"[PRE-CHECKOUT] رد شد برای کاربر {pre_checkout_query.from_user.id}: {reason}")
+        try:
+            await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=False,
+                                                error_message=invoice_guard.STALE_INVOICE_TEXT)
+        except Exception:
+            try:
+                await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=False)
+            except Exception as e:
+                logging.error(f"[PRE-CHECKOUT] خطا در رد فاکتور: {e}", exc_info=True)
+        return
     try:
         await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
         logging.info(f"[PRE-CHECKOUT] تایید شد برای کاربر {pre_checkout_query.from_user.id}")
