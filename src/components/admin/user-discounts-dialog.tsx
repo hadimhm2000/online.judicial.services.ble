@@ -123,7 +123,7 @@ export default function UserDiscountsDialog({ open, onOpenChange }: UserDiscount
             <div>
               <DialogTitle className="text-base font-bold">تخفیف اختصاصی کاربران</DialogTitle>
               <DialogDescription className="text-xs text-muted-foreground mt-1">
-                درصد تخفیف فقط از سود ربات کم می‌شود، نه از هزینهٔ سامانه و دفتر خدمات
+                استعلام‌ها: از کل مبلغ — سایر بخش‌ها: فقط از پیش‌پرداخت
               </DialogDescription>
             </div>
           </div>
@@ -144,7 +144,7 @@ export default function UserDiscountsDialog({ open, onOpenChange }: UserDiscount
                 />
               </div>
               <div className="space-y-1.5">
-                <Label className="text-xs">درصد تخفیف از سود *</Label>
+                <Label className="text-xs">درصد تخفیف *</Label>
                 <Input
                   value={percent}
                   onChange={(e) => setPercent(e.target.value.replace(/[^0-9۰-۹]/g, '').replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d))))}
@@ -218,7 +218,7 @@ export default function UserDiscountsDialog({ open, onOpenChange }: UserDiscount
                             {record.baleUserId}
                           </span>
                           <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 px-1.5 py-0.5 rounded">
-                            {new Intl.NumberFormat('fa-IR').format(record.percent)}٪ از سود
+                            {new Intl.NumberFormat('fa-IR').format(record.percent)}٪ تخفیف
                           </span>
                         </div>
                         {record.reason && (

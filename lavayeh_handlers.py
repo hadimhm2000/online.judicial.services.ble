@@ -3728,18 +3728,6 @@ async def send_lavayeh_result(
         final_fee = calculate_lavayeh_fee(court_total)
         base_fee_text = format_lavayeh_fee_explanation(court_total)
 
-    # ⭐ تخفیف اختصاصی کاربر (پنل ادمین) — فقط روی سود، نه هزینهٔ سامانه.
-    # بدون محاسبه، هزینهٔ سامانه همان مبلغ رندشده است؛ با skip_fee_calc
-    # مقداری است که سناریو به capture_and_report_payment_ids داده.
-    from user_discounts import apply_profit_discount, build_discount_line, pop_system_cost
-    _sys_cost = pop_system_cost(user_id, tracking_code)
-    if not skip_fee_calc:
-        _sys_cost = ((int(court_total or 0) + 999) // 1000) * 1000
-    final_fee, discount_info = await apply_profit_discount(user_id, final_fee, _sys_cost)
-    if discount_info:
-        base_fee_text = (f"{build_discount_line(discount_info)}\n"
-                         f"💳 *مبلغ نهایی قابل پرداخت: {final_fee:,} ریال*")
-
     # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): کسر پیش‌پرداخت از هزینه کل —
     # هزینه کل اعلام می‌شود، ذکر می‌گردد که فلان مبلغ به عنوان پیش پرداخت
     # پرداخت شده است و مابقی به‌عنوان «مبلغ قابل پرداخت شما» + فاکتور ارسال می‌شود.
@@ -3749,8 +3737,6 @@ async def send_lavayeh_result(
         total_fee_rial = final_fee
         final_fee = adjusted_fee
         fee_text = build_prepay_fee_text(final_fee, prepay_info, total_fee_rial)
-        if discount_info:
-            fee_text = f"{build_discount_line(discount_info)}\n{fee_text}"
     else:
         fee_text = base_fee_text
 

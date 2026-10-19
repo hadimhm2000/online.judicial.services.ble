@@ -207,6 +207,12 @@ def prepare_invoice(invoice_data: dict) -> dict:
     - موجودی کافی → فاکتور دست‌نخورده؛ on_invoice آن را خودکار پرداخت می‌کند.
     هرگز استثنا نمی‌دهد؛ در خطا همان فاکتور اصلی برمی‌گردد.
     """
+    # ⭐ تخفیف اختصاصی کاربر روی فاکتورهای استعلام — پیش از کسر کیف پول
+    try:
+        import user_discounts
+        invoice_data = user_discounts.apply_to_invoice(invoice_data)
+    except Exception as e:
+        logger.error(f"[WALLET] اعمال تخفیف اختصاصی ناموفق: {e}")
     try:
         payload = str(invoice_data.get("payload") or "")
         ptype = _ptype_of(payload)
