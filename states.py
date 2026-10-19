@@ -55,6 +55,16 @@ class Form(StatesGroup):
     lavayeh_nid_fix_select_person = State()   # انتخاب شخصی که کدملیش ویرایش می‌شود
     lavayeh_nid_fix_new_nid = State()         # دریافت کدملی جدید
 
+    # ⭐ پنجرهٔ ۳ ساعته اصلاح اطلاعات پرونده لایحه — پس از ناموفق ماندن
+    # صحت‌سنجی («با اطلاعات ارسالی پرونده یافت نشد»)؛ پیش‌پرداخت حفظ می‌شود
+    lavayeh_case_fix_method = State()          # انتخاب روش: شماره پرونده یا شماره بایگانی
+    lavayeh_case_fix_tracking_code = State()   # شماره پرونده جدید
+    lavayeh_case_fix_province = State()        # استان جدید
+    lavayeh_case_fix_row_number = State()      # ردیف فرعی جدید
+    lavayeh_case_fix_archive_number = State()  # شماره بایگانی جدید
+    lavayeh_case_fix_branch = State()          # انتخاب شعبه از لیست (callback در branches.py)
+    lavayeh_case_fix_confirm = State()         # تایید و ارسال مجدد به صف
+
     # =========================================================
     # State های بخش اخذ امضای الکترونیک لایحه
     # =========================================================

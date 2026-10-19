@@ -57,6 +57,7 @@ _BUSY_STORE_NAMES = (
     "pending_lavayeh_payments",   # فاکتور لایحه در انتظار پرداخت
     "pending_tn_payments",        # فاکتور دعاوی اعتراضی در انتظار پرداخت
     "pending_contract_fix",       # پنجرهٔ ۴۵ دقیقه‌ای کد قرارداد وکالت
+    "pending_lavayeh_case_fix",   # اصلاح اطلاعات پرونده لایحه (پرونده یافت نشد)
     "pending_nid_fix_windows",    # پنجره‌های ویرایش کدملی/دادنامه
     "invalid_tracking_retry",     # تلاش مجدد کدرهگیری نامعتبر
     "pending_subscription_payments",  # پرداخت اشتراک

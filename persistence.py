@@ -212,6 +212,12 @@ def save_runtime_state():
         contract_fix[str(uid)] = info
     data["pending_contract_fix"] = contract_fix
 
+    # 6-ز. ⭐ پنجرهٔ اصلاح اطلاعات پرونده لایحه (پرونده یافت نشد)
+    lav_case_fix = {}
+    for uid, info in getattr(runtime_state, "pending_lavayeh_case_fix", {}).items():
+        lav_case_fix[str(uid)] = info
+    data["pending_lavayeh_case_fix"] = lav_case_fix
+
     # 7. استفاده رایگان کاربران
     free_usage = {}
     for uid, info in runtime_state.user_free_usage.items():
@@ -390,6 +396,11 @@ def load_into_runtime_state():
         info = _deserialize_all_datetimes(info, ["created_at", "deadline"])
         runtime_state.pending_contract_fix[int(uid_str)] = info
         active_submitted.append(int(uid_str))
+
+    # 6-ز. ⭐ pending_lavayeh_case_fix — پنجرهٔ اصلاح اطلاعات پرونده لایحه
+    for uid_str, info in data.get("pending_lavayeh_case_fix", {}).items():
+        info = _deserialize_all_datetimes(info, ["created_at", "deadline"])
+        runtime_state.pending_lavayeh_case_fix[int(uid_str)] = info
 
     # 7. user_free_usage
     for uid_str, info in data.get("user_free_usage", {}).items():

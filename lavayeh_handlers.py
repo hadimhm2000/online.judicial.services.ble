@@ -2857,6 +2857,384 @@ async def lav_nid_receive_new_nid(message: Message, state: FSMContext, bot: Bot)
     await state.clear()
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ⭐ پنجرهٔ ۳ ساعته اصلاح اطلاعات پرونده لایحه — پس از ناموفق ماندن صحت‌سنجی
+# («با اطلاعات ارسالی پرونده یافت نشد»). کاربر می‌تواند شماره پرونده/استان/
+# ردیف فرعی یا شماره بایگانی/شعبه را اصلاح کند یا روش ورود پرونده را تغییر
+# دهد؛ سپس همان تسک سیو شده (prepaid=True — بدون پرداخت مجدد) دوباره به صف
+# می‌رود. پنجره در nid_fix_window (pending_lavayeh_case_fix) نگه‌داری می‌شود.
+# مقادیر در حال ویرایش با پیشوند _cf_ در FSM نگه داشته می‌شوند و فقط پس از
+# «تایید و ثبت مجدد» روی task_data اعمال می‌شوند.
+# ══════════════════════════════════════════════════════════════════════════════
+
+from keyboards import (
+    LAVAYEH_CASE_FIX_KEEP, LAVAYEH_CASE_FIX_SUBMIT, LAVAYEH_CASE_FIX_AGAIN,
+    lavayeh_case_fix_keep_kb, lavayeh_case_fix_confirm_kb)
+
+_CF_METHOD_CASE = "1️⃣ شماره پرونده و ردیف فرعی"
+_CF_METHOD_ARCHIVE = "2️⃣ شعبه رسیدگی کننده و شماره بایگانی"
+
+
+def _cf_task_data(user_id: int) -> dict | None:
+    win = _nfw.get_lavayeh_case_fix(user_id)
+    return (win or {}).get("task_data") if win else None
+
+
+def _cf_old(fsm_data: dict, task_data: dict, key: str):
+    """مقدار فعلی برای «بدون تغییر» — فقط اگر روش ورود همان روش قبلی باشد."""
+    if fsm_data.get("_cf_method") != task_data.get("tracking_method", "case_number"):
+        return None
+    return task_data.get(key) or None
+
+
+def _cf_kb(has_old: bool):
+    return lavayeh_case_fix_keep_kb if has_old else back_only_kb
+
+
+async def _cf_expired(message: Message, state: FSMContext):
+    await message.answer(
+        "⚠️ مهلت اصلاح اطلاعات پرونده به پایان رسیده است. لطفاً از منوی اصلی مجدداً اقدام فرمایید.",
+        reply_markup=restart_kb)
+    await state.clear()
+
+
+async def _cf_ask_method(message: Message, state: FSMContext):
+    await message.answer(
+        "🔢 لطفاً *روش ورود پرونده* را انتخاب فرمایید:\n\n"
+        "_(می‌توانید همان روش قبلی را انتخاب و اطلاعات را اصلاح کنید یا روش دیگر را برگزینید)_",
+        reply_markup=lavayeh_tracking_method_kb)
+    await state.set_state(Form.lavayeh_case_fix_method)
+
+
+async def _cf_ask_tracking_code(message: Message, state: FSMContext, task_data: dict):
+    old = _cf_old(await state.get_data(), task_data, "lavayeh_tracking_code")
+    await message.answer(
+        "🔢 لطفاً *شماره پرونده* را ارسال فرمایید:\n"
+        "_(پرونده‌های ۱۴۰۰ تا ۱۴۰۷: ۱۸ رقمی | پرونده‌های ۹۹ و قبل‌تر: ۱۶ رقمی)_"
+        + (f"\n\nمقدار فعلی: `{old}`" if old else ""),
+        reply_markup=_cf_kb(bool(old)))
+    await state.set_state(Form.lavayeh_case_fix_tracking_code)
+
+
+async def _cf_ask_province(message: Message, state: FSMContext, task_data: dict):
+    old = _cf_old(await state.get_data(), task_data, "lavayeh_province")
+    await message.answer(
+        "🏙 لطفاً *استان* مربوط به پرونده را انتخاب فرمایید:"
+        + (f"\n\nمقدار فعلی: *{old}*" if old else ""),
+        reply_markup=create_province_kb(keep_current=bool(old)))
+    await state.set_state(Form.lavayeh_case_fix_province)
+
+
+async def _cf_ask_row_number(message: Message, state: FSMContext, task_data: dict):
+    old = _cf_old(await state.get_data(), task_data, "lavayeh_row_number")
+    await message.answer(
+        "🔢 لطفاً *ردیف فرعی پرونده* را وارد فرمایید:\n_(عدد بین ۱ تا ۳۰)_"
+        + (f"\n\nمقدار فعلی: *{old}*" if old else ""),
+        reply_markup=_cf_kb(bool(old)))
+    await state.set_state(Form.lavayeh_case_fix_row_number)
+
+
+async def _cf_ask_archive_number(message: Message, state: FSMContext, task_data: dict):
+    old = _cf_old(await state.get_data(), task_data, "lavayeh_archive_number")
+    await message.answer(
+        "🔢 لطفاً *شماره بایگانی* را ارسال فرمایید:\n\n"
+        "📌 *توجه:*\n"
+        "• اگر دو رقم اول شماره بایگانی *۰۰ تا ۰۷* است، باید *۷ رقمی* باشد\n"
+        "• اگر دو رقم اول شماره بایگانی *۹۳ تا ۹۹* است، باید *۶ رقمی* باشد"
+        + (f"\n\nمقدار فعلی: `{old}`" if old else ""),
+        reply_markup=_cf_kb(bool(old)))
+    await state.set_state(Form.lavayeh_case_fix_archive_number)
+
+
+async def _cf_ask_branch(message: Message, state: FSMContext, task_data: dict):
+    from branches import UNITS_DATA, create_branches_keyboard, ROOT_NODES
+    old = _cf_old(await state.get_data(), task_data, "lavayeh_branch_name")
+    if not UNITS_DATA:
+        await message.answer(
+            "⚠️ متأسفانه لیست شعب در دسترس نیست. لطفاً روش «شماره پرونده» را انتخاب کنید "
+            "یا با پشتیبانی تماس بگیرید.")
+        await _cf_ask_method(message, state)
+        return
+    await message.answer(
+        "🏛 لطفاً *شعبه رسیدگی‌کننده* را از لیست زیر انتخاب کنید:"
+        + (f"\n\nشعبهٔ فعلی: *{old}*" if old else ""),
+        reply_markup=_cf_kb(bool(old)))
+    await message.answer(
+        "📂 *قوه قضائیه - سطح اول*",
+        reply_markup=create_branches_keyboard(ROOT_NODES, page=0, parent_id=None))
+    await state.set_state(Form.lavayeh_case_fix_branch)
+
+
+async def _cf_show_confirm(message: Message, state: FSMContext):
+    d = await state.get_data()
+    if d.get("_cf_method") == "archive_number":
+        summary = (
+            f"🔢 شماره بایگانی: `{d.get('_cf_archive_number', '---')}`\n"
+            f"🏛 شعبه: *{d.get('_cf_branch_name', '---')}*")
+    else:
+        summary = (
+            f"🔢 شماره پرونده: `{d.get('_cf_tracking_code', '---')}`\n"
+            f"🏙 استان: *{d.get('_cf_province', '---')}*\n"
+            f"🔢 ردیف فرعی: *{d.get('_cf_row_number', '---')}*")
+    await message.answer(
+        f"📋 *اطلاعات جدید پرونده:*\n\n{summary}\n\n"
+        "در صورت صحت، «تایید و ثبت مجدد» را بزنید تا ثبت لایحه با همین اطلاعات "
+        "و *بدون پرداخت مجدد* ادامه یابد.",
+        reply_markup=lavayeh_case_fix_confirm_kb)
+    await state.set_state(Form.lavayeh_case_fix_confirm)
+
+
+@lavayeh_router.callback_query(F.data.startswith("lav_case_fix:"))
+async def lav_case_fix_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """کاربر دکمهٔ «اصلاح اطلاعات پرونده / تغییر روش ورود» را زد."""
+    target_user_id = int(callback.data.split(":")[1])
+    if callback.from_user.id != target_user_id:
+        await callback.answer("⚠️ این دکمه مربوط به شما نیست.")
+        return
+    if not _cf_task_data(target_user_id):
+        await callback.answer(
+            "⚠️ درخواستی برای اصلاح یافت نشد (مهلت ۳ ساعته به پایان رسیده است).")
+        return
+    await callback.answer()
+    await state.set_data({})
+    await _cf_ask_method(callback.message, state)
+
+
+@lavayeh_router.callback_query(F.data.startswith("lav_case_cancel:"))
+async def lav_case_cancel_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """انصراف از درخواست — بستن پنجره؛ پیش‌پرداخت دست‌نخورده می‌ماند."""
+    target_user_id = int(callback.data.split(":")[1])
+    if callback.from_user.id != target_user_id:
+        await callback.answer("⚠️ این دکمه مربوط به شما نیست.")
+        return
+    _nfw.pop_lavayeh_case_fix(target_user_id)
+    await callback.answer("درخواست حذف شد.")
+    try:
+        await callback.message.edit_text(
+            (callback.message.text or "") + "\n\n🗑 _درخواست حذف شد._")
+    except Exception:
+        pass
+    await bot.send_message(
+        target_user_id,
+        "🗑 *درخواست لایحه حذف شد.*\n\n"
+        f"{_nfw.lavayeh_case_fix_prepay_line(target_user_id)}\n"
+        "در صورت نیاز، از منوی اصلی مجدداً اقدام فرمایید.",
+        reply_markup=restart_kb)
+    await state.clear()
+
+
+@lavayeh_router.message(Form.lavayeh_case_fix_method)
+async def lav_case_fix_method(message: Message, state: FSMContext):
+    text = message.text or ""
+    task_data = _cf_task_data(message.from_user.id)
+    if not task_data:
+        await _cf_expired(message, state)
+        return
+    if text == "🔙 بازگشت":
+        # پنجره باز می‌ماند — تا پایان مهلت دکمهٔ اصلاح دوباره قابل استفاده است
+        await message.answer(
+            "⏸ اصلاح اطلاعات متوقف شد.\n"
+            "تا پایان مهلت می‌توانید با دکمهٔ «اصلاح اطلاعات پرونده» در پیام قبلی دوباره اقدام کنید.",
+            reply_markup=restart_kb)
+        await state.clear()
+        return
+    if text == _CF_METHOD_CASE:
+        await state.update_data(_cf_method="case_number")
+        await _cf_ask_tracking_code(message, state, task_data)
+        return
+    if text == _CF_METHOD_ARCHIVE:
+        await state.update_data(_cf_method="archive_number")
+        await _cf_ask_archive_number(message, state, task_data)
+        return
+    await message.answer("⚠️ لطفاً یکی از گزینه‌های موجود را انتخاب کنید:", reply_markup=lavayeh_tracking_method_kb)
+
+
+@lavayeh_router.message(Form.lavayeh_case_fix_tracking_code)
+async def lav_case_fix_tracking_code(message: Message, state: FSMContext):
+    if not message.text:
+        return
+    task_data = _cf_task_data(message.from_user.id)
+    if not task_data:
+        await _cf_expired(message, state)
+        return
+    if message.text == "🔙 بازگشت":
+        await _cf_ask_method(message, state)
+        return
+    if message.text == LAVAYEH_CASE_FIX_KEEP:
+        code = _cf_old(await state.get_data(), task_data, "lavayeh_tracking_code")
+        if not code:
+            await message.answer("⚠️ مقدار قبلی وجود ندارد؛ لطفاً شماره پرونده را ارسال فرمایید:")
+            return
+    else:
+        code = _to_en(message.text)
+        valid, result = validate_tracking_code(code)
+        if not valid:
+            await message.answer(result)
+            return
+    await state.update_data(_cf_tracking_code=code)
+    await _cf_ask_province(message, state, task_data)
+
+
+@lavayeh_router.message(Form.lavayeh_case_fix_province)
+async def lav_case_fix_province(message: Message, state: FSMContext):
+    text = message.text or ""
+    task_data = _cf_task_data(message.from_user.id)
+    if not task_data:
+        await _cf_expired(message, state)
+        return
+    if text == "🔙 بازگشت":
+        await _cf_ask_tracking_code(message, state, task_data)
+        return
+    if text == LAVAYEH_CASE_FIX_KEEP:
+        text = _cf_old(await state.get_data(), task_data, "lavayeh_province") or ""
+    if text not in PROVINCES:
+        await message.answer("⚠️ لطفاً استان را از لیست انتخاب کنید:", reply_markup=create_province_kb())
+        return
+    await state.update_data(_cf_province=text)
+    await _cf_ask_row_number(message, state, task_data)
+
+
+@lavayeh_router.message(Form.lavayeh_case_fix_row_number)
+async def lav_case_fix_row_number(message: Message, state: FSMContext):
+    if not message.text:
+        return
+    task_data = _cf_task_data(message.from_user.id)
+    if not task_data:
+        await _cf_expired(message, state)
+        return
+    if message.text == "🔙 بازگشت":
+        await _cf_ask_province(message, state, task_data)
+        return
+    if message.text == LAVAYEH_CASE_FIX_KEEP:
+        num_str = str(_cf_old(await state.get_data(), task_data, "lavayeh_row_number") or "")
+    else:
+        num_str = _to_en(message.text)
+    if not num_str.isdigit() or not (1 <= int(num_str) <= 30):
+        await message.answer("⚠️ ردیف فرعی باید عددی بین *۱ تا ۳۰* باشد:")
+        return
+    await state.update_data(_cf_row_number=int(num_str))
+    await _cf_show_confirm(message, state)
+
+
+@lavayeh_router.message(Form.lavayeh_case_fix_archive_number)
+async def lav_case_fix_archive_number(message: Message, state: FSMContext):
+    if not message.text:
+        return
+    task_data = _cf_task_data(message.from_user.id)
+    if not task_data:
+        await _cf_expired(message, state)
+        return
+    if message.text == "🔙 بازگشت":
+        await _cf_ask_method(message, state)
+        return
+    if message.text == LAVAYEH_CASE_FIX_KEEP:
+        archive_num = _cf_old(await state.get_data(), task_data, "lavayeh_archive_number")
+        if not archive_num:
+            await message.answer("⚠️ مقدار قبلی وجود ندارد؛ لطفاً شماره بایگانی را ارسال فرمایید:")
+            return
+    else:
+        archive_num = _to_en(message.text)
+        valid, result = validate_archive_number(archive_num)
+        if not valid:
+            await message.answer(result)
+            return
+    await state.update_data(_cf_archive_number=archive_num)
+    await _cf_ask_branch(message, state, task_data)
+
+
+@lavayeh_router.message(Form.lavayeh_case_fix_branch)
+async def lav_case_fix_branch_message(message: Message, state: FSMContext):
+    """انتخاب شعبه از طریق callback در branches.py انجام می‌شود؛ اینجا فقط
+    «بازگشت» و «بدون تغییر» پردازش می‌شوند."""
+    text = message.text or ""
+    task_data = _cf_task_data(message.from_user.id)
+    if not task_data:
+        await _cf_expired(message, state)
+        return
+    if text == "🔙 بازگشت":
+        await _cf_ask_archive_number(message, state, task_data)
+        return
+    if text == LAVAYEH_CASE_FIX_KEEP:
+        d = await state.get_data()
+        old_name = _cf_old(d, task_data, "lavayeh_branch_name")
+        if old_name:
+            await state.update_data(
+                _cf_branch_name=old_name,
+                _cf_branch_code=task_data.get("lavayeh_branch_code", ""),
+                _cf_branch_path=task_data.get("lavayeh_branch_path", ""))
+            await _cf_show_confirm(message, state)
+            return
+    await message.answer("⚠️ لطفاً شعبه را از دکمه‌های لیست شعب انتخاب کنید.")
+
+
+async def lavayeh_case_fix_branch_selected(message: Message, state: FSMContext,
+                                           branch_name: str, branch_code: str, branch_path: str):
+    """از branches.py پس از انتخاب شعبه در حالت lavayeh_case_fix_branch صدا زده می‌شود."""
+    await state.update_data(
+        _cf_branch_name=branch_name, _cf_branch_code=branch_code, _cf_branch_path=branch_path)
+    await _cf_show_confirm(message, state)
+
+
+@lavayeh_router.message(Form.lavayeh_case_fix_confirm)
+async def lav_case_fix_confirm(message: Message, state: FSMContext, bot: Bot):
+    text = message.text or ""
+    user_id = message.from_user.id
+    if not _cf_task_data(user_id):
+        await _cf_expired(message, state)
+        return
+    if text == LAVAYEH_CASE_FIX_AGAIN:
+        await state.set_data({})
+        await _cf_ask_method(message, state)
+        return
+    if text != LAVAYEH_CASE_FIX_SUBMIT:
+        await message.answer("⚠️ لطفاً یکی از گزینه‌های زیر را انتخاب کنید:",
+                             reply_markup=lavayeh_case_fix_confirm_kb)
+        return
+
+    win = _nfw.pop_lavayeh_case_fix(user_id)
+    task_data = (win or {}).get("task_data")
+    if not task_data:
+        await _cf_expired(message, state)
+        return
+
+    d = await state.get_data()
+    method = d.get("_cf_method", "case_number")
+    task_data["tracking_method"] = method
+    if method == "archive_number":
+        task_data["lavayeh_archive_number"] = d.get("_cf_archive_number", "")
+        task_data["lavayeh_branch_name"] = d.get("_cf_branch_name", "")
+        task_data["lavayeh_branch_code"] = d.get("_cf_branch_code", "")
+        task_data["lavayeh_branch_path"] = d.get("_cf_branch_path", "")
+        new_info = f"بایگانی={task_data['lavayeh_archive_number']} شعبه={task_data['lavayeh_branch_name']}"
+    else:
+        task_data["lavayeh_tracking_code"] = d.get("_cf_tracking_code", "")
+        task_data["lavayeh_province"] = d.get("_cf_province", "")
+        task_data["lavayeh_row_number"] = d.get("_cf_row_number", 1)
+        new_info = (f"پرونده={task_data['lavayeh_tracking_code']} "
+                    f"استان={task_data['lavayeh_province']} ردیف={task_data['lavayeh_row_number']}")
+    task_data["_case_fix_rounds"] = int(task_data.get("_case_fix_rounds", 0) or 0) + 1
+
+    logging.info(f"[LAVAYEH] اطلاعات پرونده کاربر {user_id} اصلاح شد ({new_info}) — ارسال مجدد به صف")
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"✏️ [LAVAYEH] کاربر {user_id} اطلاعات پرونده را اصلاح کرد ({new_info}) — "
+            "درخواست مجدداً به صف ارسال شد (بدون پرداخت مجدد).")
+    except Exception:
+        pass
+
+    await message.answer(
+        "✅ اطلاعات پرونده به‌روزرسانی شد.\n\n"
+        "⏳ ثبت لایحه با *همان اطلاعات سیو شده* و بدون پرداخت مجدد ادامه می‌یابد...",
+        reply_markup=restart_kb)
+
+    if not hasattr(runtime_state, "active_lavayeh_users"):
+        runtime_state.active_lavayeh_users = set()
+    runtime_state.active_lavayeh_users.add(user_id)
+    await runtime_state.job_queue.put(task_data)
+    await state.clear()
+
+
 # ══════════════════════════════════════════════════════════════════════
 # ⭐ پنجرهٔ ۴۵ دقیقه‌ای ویرایش کدملی وکیل — اعلام وکالت
 # (خطای «تاریخ تولد ارسالی مربوط به شماره ملی ... اشتباه است»)
