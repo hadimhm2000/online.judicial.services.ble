@@ -30,7 +30,7 @@ from sign_tab import active_page as active_sign_page
 from browser_helpers import (
     check_and_handle_expiry,
     goto_url_with_retry,
-    handle_session_expired, start_background_relogin,
+    handle_session_expired,
     detect_concurrent_login_popup,
     human_delay,
     resilient_sleep,
@@ -587,6 +587,8 @@ async def submit_sign_code_for_person(
         return {"success": False, "error": "sana_page is None"}
 
     service_delay_count = 0
+    # ⭐ آیا در همین ثبت، پس از پاپ‌آپ ورود همزمان لاگین مجدد مدیر انجام شد؟
+    relogged_in = False
     for attempt in range(3):
         # وارد کردن کد
         filled = await sana_page.evaluate(f'''(args) => {{
@@ -655,6 +657,12 @@ async def submit_sign_code_for_person(
             return {"success": True}
         elif popup_result == "wrong_code":
             await _close_any_popup(sana_page)
+            if relogged_in:
+                # ⭐ دستور کارفرما: «رمز موقت نادرست» پس از لاگین مجدد مدیر یعنی
+                # کد با انقضای نشست از بین رفته — به کاربر «اختلال سامانه» و
+                # فعال‌شدن ارسال کد مجدد ۲۰ دقیقه بعد اعلام می‌شود.
+                logging.warning(f"[SIGN] رمز موقت نادرست پس از لاگین مجدد — ردیف {row_idx}، امضای مجدد ۲۰ دقیقه بعد")
+                return {"success": False, "error": "sana_session_expired"}
             logging.info(f"[SIGN] رمز موقت نادرست — ردیف {row_idx}")
             return {"success": False, "error": "wrong_code"}
         elif popup_result == "sana_not_registered":
@@ -664,7 +672,8 @@ async def submit_sign_code_for_person(
         elif popup_result == "session_expired":
             return {"success": False, "error": "sana_session_expired"}
         elif popup_result == "session_expired_handled":
-            logging.info(f"[SIGN] نشست پس از انقضا تمدید شد — تلاش مجدد تایید کد ردیف {row_idx}")
+            logging.info(f"[SIGN] نشست پس از انقضا تمدید شد — زدن مجدد کلید امضا ردیف {row_idx}")
+            relogged_in = True
             continue
         elif popup_result == "service_delay":
             # ⭐ طبق دستور کارفرما: «تاخیر در اجرای سرویس» خطای موقت است —
@@ -933,12 +942,13 @@ async def _wait_for_sign_popup(page, bot: Bot = None, user_id: int = None, timeo
             result = "session_expired"
         if result == "session_expired":
             if bot is not None and user_id is not None:
-                # ⭐ دستور کارفرما: ورود همزمان هنگام ثبت کد امضا → لاگین مجدد مدیر
-                # (پس‌زمینه)، اطلاع «اختلال سامانه» به کاربر و فعال‌شدن امضای
-                # مجدد ۲۰ دقیقه بعد — همان کد دوباره ثبت نمی‌شود.
-                logging.warning("[SIGN] پاپ‌آپ ورود همزمان در مرحله تایید کد شناسایی شد — لاگین مجدد مدیر، امضای مجدد ۲۰ دقیقه بعد")
-                start_background_relogin(bot, page=page)
-                return "session_expired"
+                # ⭐ دستور کارفرما: ورود همزمان پس از کلیک «امضاء ثنا» → منتظر لاگین
+                # مجدد مدیر و سپس زدن دوبارهٔ همان کلید امضا با همان کد (کد جدید
+                # ارسال نمی‌شود). اگر پس از آن «رمز موقت نادرست» آمد، فراخوان به
+                # کاربر «اختلال سامانه» و امضای مجدد ۲۰ دقیقه بعد را اعلام می‌کند.
+                logging.warning("[SIGN] پاپ‌آپ ورود همزمان در مرحله تایید کد شناسایی شد — لاگین مجدد مدیر و زدن مجدد کلید امضا")
+                await handle_session_expired(bot, user_id, page=page)
+                return "session_expired_handled"
             return "error"
         if result:
             return result
