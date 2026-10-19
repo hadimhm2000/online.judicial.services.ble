@@ -334,7 +334,7 @@ async def check_bulk_file_upload_handler(message: Message, state: FSMContext):
 
         # دانلود فایل
         tmp_dir = tempfile.mkdtemp()
-        file_path = os.path.join(tmp_dir, doc.file_name or "bulk_check.xlsx")
+        file_path = os.path.join(tmp_dir, os.path.basename(doc.file_name or "") or "bulk_check.xlsx")
         await message.document.bot.download_file(doc.file_id, file_path)
 
         # قالب نسخهٔ ۲ (چندشیتی، اشخاص حقوقی، صلاحیت دادگاه مرحله‌ای)

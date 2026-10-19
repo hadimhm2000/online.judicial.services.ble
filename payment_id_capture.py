@@ -83,7 +83,7 @@ async def _find_panel_case(service_type: str, bale_user_id, tracking_code: str):
     params = {"search": search_value, "serviceType": service_type, "limit": "50"}
 
     try:
-        connector = aiohttp.TCPConnector(ssl=False)
+        connector = aiohttp.TCPConnector()
         timeout = aiohttp.ClientTimeout(total=15)
         async with aiohttp.ClientSession(connector=connector, timeout=timeout, headers=PANEL_AUTH_HEADERS) as session:
             async with session.get(url, params=params) as resp:
@@ -127,7 +127,7 @@ async def _update_panel_case(case_id: str, payment_id: str, system_cost) -> bool
         payload["systemCost"] = int(system_cost)
 
     try:
-        connector = aiohttp.TCPConnector(ssl=False)
+        connector = aiohttp.TCPConnector()
         timeout = aiohttp.ClientTimeout(total=15)
         async with aiohttp.ClientSession(connector=connector, timeout=timeout, headers=PANEL_AUTH_HEADERS) as session:
             async with session.put(url, json=payload) as resp:

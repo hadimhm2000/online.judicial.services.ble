@@ -522,7 +522,7 @@ async def admin_case_pdf_handler(message: Message, state: FSMContext, bot: Bot):
     doc = message.document
     try:
         tmp_dir = tempfile.mkdtemp()
-        tmp_path = os.path.join(tmp_dir, doc.file_name or "case_result.pdf")
+        tmp_path = os.path.join(tmp_dir, os.path.basename(doc.file_name or "") or "case_result.pdf")
         file_info = await bot.get_file(doc.file_id)
         await bot.download_file(file_info.file_path, tmp_path)
     except Exception as e:
@@ -1209,7 +1209,7 @@ async def panel_message_successful_payment(message: Message, state: FSMContext, 
     last_err = ""
     for attempt in range(1, 4):
         try:
-            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False), headers=PANEL_AUTH_HEADERS) as session:
+            async with aiohttp.ClientSession(headers=PANEL_AUTH_HEADERS) as session:
                 async with session.post(
                     url,
                     json={"paymentId": payment_id},

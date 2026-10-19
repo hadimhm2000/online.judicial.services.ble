@@ -27,6 +27,9 @@ from admin_relay import admin_relay_router
 
 # فعال‌سازی لاگ فایل چرخشی در اولین فرصت (قابل آپلود مستمر خطاها)
 init_file_logging()
+# ⭐ توکن ربات در هیچ خط لاگی (کنسول/فایل) نوشته نشود
+import secret_redact
+secret_redact.install_log_filter()
 import runtime_state
 import user_activity
 from persistence import (
@@ -479,6 +482,8 @@ async def main():
     logging.info(f"👤 ADMIN_ID={ADMIN_ID} (نوع: {type(ADMIN_ID).__name__})")
     custom_api_server = TelegramAPIServer.from_base(BALE_API_BASE)
     session = AiohttpSession(api=custom_api_server)
+    # ⭐ اگر متن خطایی که توکن در آن است در پیامی قرار گرفت، توکن پیش از ارسال حذف می‌شود
+    session.middleware(secret_redact.TokenRedactRequestMiddleware())
 
     bot = Bot(token=BOT_TOKEN, session=session)
     try:

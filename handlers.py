@@ -2878,7 +2878,7 @@ async def bulk_inquiry_file_handler(message: types.Message, state: FSMContext, b
 
     import tempfile
     tmp_dir = tempfile.mkdtemp()
-    file_path = os.path.join(tmp_dir, doc.file_name or "bulk_inquiry.xlsx")
+    file_path = os.path.join(tmp_dir, os.path.basename(doc.file_name or "") or "bulk_inquiry.xlsx")
     try:
         file_info = await bot.get_file(doc.file_id)
         await bot.download_file(file_info.file_path, file_path)

@@ -425,7 +425,8 @@ async def bulk_file_upload_handler(message: Message, state: FSMContext):
         bot = message.bot
         file_id = doc.file_id
         file_info = await bot.get_file(file_id)
-        local_path = temp_path(doc.file_name)
+        # نام فایل از کاربر است: فقط نام خالی (بدون مسیر) + پیشوند یکتا تا فایل دو کاربر روی هم نیفتد
+        local_path = temp_path(f"{uuid.uuid4().hex[:12]}_{os.path.basename(doc.file_name)}")
         await bot.download_file(file_info.file_path, local_path)
         parse_result = parse_excel_file(local_path, service_type)
         items = parse_result.get("valid_items", [])
