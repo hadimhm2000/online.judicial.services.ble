@@ -230,3 +230,28 @@ def test_upload_error_popup_reader_notifies_admin(monkeypatch):
     page.evaluate = AsyncMock(return_value="نوع فایل مجاز نیست")
     assert run(upload_helpers.get_and_close_error_popup_text(page)) == "نوع فایل مجاز نیست"
     assert calls == [("منضمات", "نوع فایل مجاز نیست")]
+
+
+def test_signature_image_row_is_ignored_anywhere():
+    from browser_helpers import is_ignored_attachment_title, sum_attachment_pages
+    assert is_ignored_attachment_title("تصوير امضاء اشخاص ")
+    assert is_ignored_attachment_title("تصویر امضا اشخاص")
+    assert is_ignored_attachment_title("تصوير‌امضاء  اشخاص")
+    assert not is_ignored_attachment_title("دادخواست")
+    rows = [
+        {"title": "سند", "count": 2},
+        {"title": "تصوير امضاء اشخاص ", "count": 1},
+        {"title": "رسید", "count": 4},
+    ]
+    assert sum_attachment_pages(rows) == 6
+
+
+def test_api_direct_counts_skip_signature_image_rows():
+    import api_direct
+    rows = [{"title": "سند", "count": 2}, {"title": "تصوير امضاء اشخاص", "count": 1}]
+    assert api_direct._count_from_json(rows) == 2
+    html = ("<table><tbody>"
+            "<tr><td>1</td><td></td><td><div>سند</div></td><td></td><td></td><td><div>3</div></td></tr>"
+            "<tr><td>2</td><td></td><td><div>تصوير امضاء اشخاص </div></td><td></td><td></td><td><div>1</div></td></tr>"
+            "</tbody></table>")
+    assert api_direct._count_from_html(html) == 3

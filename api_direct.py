@@ -28,7 +28,8 @@ from browser_helpers import (
     force_click_by_text, is_login_redirect_url,
     check_and_handle_expiry, retry_step_on_service_delay, SanaSystemDownError,
     open_expert_correspondence_menu,
-    open_attachments_and_read_rows, sum_attachment_pages, wait_for_attachments_tab)
+    open_attachments_and_read_rows, sum_attachment_pages, wait_for_attachments_tab,
+    is_ignored_attachment_title)
 from config import FEES
 
 logger = logging.getLogger(__name__)
@@ -255,7 +256,7 @@ def _count_from_json(data) -> int:
     for i, item in enumerate(rows):
         title = str(item.get('title', '') or item.get('name', '') or item.get('documentTitle', ''))
         title_clean = title.replace('\u200c', ' ')
-        if 'قرارداد الکترونیک' in title_clean and ('وکالت نامه' in title_clean or 'وکالتنامه' in title_clean):
+        if is_ignored_attachment_title(title):
             continue
         if i == 0 and start == 0 and ('امضا' in title_clean or 'امضاء' in title_clean):
             start = 1
@@ -277,10 +278,7 @@ def _count_from_html(html: str) -> int:
             title = re.sub(r'<[^>]+>', '', tds[2]).strip()
             count_text = re.sub(r'<[^>]+>', '', tds[5]).strip()
             rows.append({'title': title, 'count': int(count_text) if count_text.isdigit() else 0})
-    def is_ignored(t):
-        t = t.replace('\u200c', ' ')
-        return 'قرارداد الکترونیک' in t and ('وکالت نامه' in t or 'وکالتنامه' in t)
-    filtered = [r for r in rows if not is_ignored(r['title'])]
+    filtered = [r for r in rows if not is_ignored_attachment_title(r['title'])]
     if filtered and ('امضا' in filtered[0]['title'] or 'امضاء' in filtered[0]['title']):
         filtered = filtered[1:]
     return sum(r['count'] for r in filtered)
