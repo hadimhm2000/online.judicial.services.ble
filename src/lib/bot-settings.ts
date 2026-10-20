@@ -28,6 +28,10 @@ export const BOT_SETTING_DEFS: BotSettingDef[] = [
   { key: 'reminder.enabled', group: 'یادآوری پرداخت', label: 'یادآوری فاکتورهای پرداخت‌نشده فعال باشد', kind: 'boolean', defaultValue: 'true', hint: 'یک یادآوری پس از ارسال فاکتور و یکی ۲۴ ساعت پیش از حذف پرونده' },
   { key: 'reminder.first_hours', group: 'یادآوری پرداخت', label: 'یادآوری اول چند ساعت پس از ارسال فاکتور', kind: 'number', defaultValue: '1', hint: 'بین ۱ تا ۲۳' },
 
+  { key: 'inactivity.minutes', group: 'بازگشت خودکار به منوی اصلی', label: 'بازگشت به منوی اصلی پس از چند دقیقه بی‌کاری', kind: 'number', defaultValue: '60', hint: 'بین ۵ تا ۱۴۴۰ دقیقه' },
+  { key: 'inactivity.notify', group: 'بازگشت خودکار به منوی اصلی', label: 'ارسال منوی اصلی و پیام توضیح به کاربر', kind: 'boolean', defaultValue: 'true', hint: 'false = بازگشت بی‌صدا، بدون پیام' },
+  { key: 'inactivity.text', group: 'بازگشت خودکار به منوی اصلی', label: 'متن پیام بازگشت به منوی اصلی', kind: 'text', defaultValue: '', hint: 'خالی = «⏱ به دلیل عدم فعالیت، به منوی اصلی بازگشتید.»' },
+
   { key: 'gate.outage_queued', group: 'متن‌های صف سامانه', label: 'پیام به کاربر هنگام قطعی سامانه', kind: 'text', defaultValue: '' , hint: 'خالی = متن پیش‌فرض ربات' },
   { key: 'gate.offhours_queued', group: 'متن‌های صف سامانه', label: 'پیام به کاربر برای درخواست خارج از ساعت کاری', kind: 'text', defaultValue: '', hint: 'خالی = متن پیش‌فرض ربات. {start} = ساعت شروع کار' },
   { key: 'gate.outage_sign_paused', group: 'متن‌های صف سامانه', label: 'پیام به کاربر وسط امضا هنگام قطعی سامانه', kind: 'text', defaultValue: '', hint: 'خالی = متن پیش‌فرض ربات' },
@@ -48,6 +52,7 @@ export function validateBotSetting(def: BotSettingDef, value: string): string | 
     if (def.key.startsWith('prepay.') && n < 1000) return 'حداقل ۱,۰۰۰ تومان';
     if (def.key === 'report.hour' && n > 23) return 'بین ۰ تا ۲۳';
     if (def.key === 'reminder.first_hours' && (n < 1 || n > 23)) return 'بین ۱ تا ۲۳';
+    if (def.key === 'inactivity.minutes' && (n < 5 || n > 1440)) return 'بین ۵ تا ۱۴۴۰';
   }
   if (def.kind === 'boolean' && value !== 'true' && value !== 'false') return 'true یا false';
   if (def.kind === 'text' && value.length > 1500) return 'حداکثر ۱۵۰۰ کاراکتر';

@@ -280,8 +280,8 @@ async def state_persister(bot: Bot):
             except Exception as _sw_err:
                 logging.error(f"[PERSIST] خطا در sweep پنجره‌های ویرایش: {_sw_err}")
             cleanup_expired_pending_entries()
-            # ⭐ سوئیپر بی‌کاری ۱ ساعته — پاک‌سازی proactive state کاربران
-            # غایب (>۱ ساعت) تا در منوی اصلی قرار بگیرند (بی‌صدا، بدون پیام)
+            # ⭐ سوئیپر بی‌کاری ۱ ساعته — کاربران غایب (>۱ ساعت) به منوی
+            # اصلی برگردانده می‌شوند و منوی اصلی برایشان ارسال می‌شود
             try:
                 await user_activity.sweep_inactive_users(bot)
             except Exception as _ia_err:
