@@ -1,5 +1,6 @@
 import { db } from '@/lib/db';
 import { NextRequest, NextResponse } from 'next/server';
+import type { Case } from '@prisma/client';
 import { appendNewCase } from '@/lib/google-sheets';
 import { sanitizeCaseData } from '@/lib/case-fields';
 import { normalizeSearchText, searchTokens, matchesAllTokens, flattenJsonForSearch } from '@/lib/search-normalize';
@@ -93,8 +94,8 @@ export async function GET(request: NextRequest) {
 
     const shouldDedup = !status && serviceType !== 'INQUIRY';
 
-    let cases;
-    let pagination;
+    let cases: Case[];
+    let pagination: { page: number; limit: number; total: number; totalPages: number };
     if (shouldDedup) {
       // ⭐ یکتاسازی روی id/کد رهگیری/تاریخِ همهٔ ردیف‌ها انجام می‌شود (نه متن و نتیجهٔ کامل
       // پرونده‌ها، و بدون سقف ۱۰۰۰۰ ردیف)؛ الگوریتم و ترتیب همان قبلی است و فقط
