@@ -75,3 +75,70 @@ def test_inquiry_context():
     msg.text = "123"
     assert sana_gate.is_inquiry_context(msg, "Form:waiting_for_tracking_code")
     assert not sana_gate.is_inquiry_context(msg, "Form:lavayeh_title")
+
+
+# ── ⭐ قطعی فوری: بستن فوری مرورگر و انتقال صف ─────────────────────────────
+
+def test_outage_on_moves_queue_and_closes_browser_now(monkeypatch):
+    import asyncio as _aio
+    from unittest.mock import AsyncMock as _AM, MagicMock as _MM
+    monkeypatch.setattr(runtime_state, "job_queue", runtime_state._SignRoutingQueue())
+    monkeypatch.setattr(runtime_state, "priority_job_queue", runtime_state._SignRoutingQueue())
+    runtime_state.job_queue.put_nowait({"task_type": "LAVAYEH_SUBMIT", "user_id": 50})
+    runtime_state.priority_job_queue.put_nowait({"task_type": "CHECK_SUBMIT", "user_id": 51})
+    browser = _MM()
+    browser.is_connected.return_value = True
+    browser.close = _AM()
+    monkeypatch.setattr(runtime_state, "browser", browser)
+    sana_gate._busy = 1   # تسکی در حال پردازش — بستن نباید منتظر بماند
+    bot = _MM()
+    bot.send_message = _AM()
+    msg = _MM()
+    msg.answer = _AM()
+
+    _aio.run(sana_gate.outage_on_cmd(msg, bot))
+
+    assert sana_gate.is_outage() and sana_gate.browser_closed()
+    browser.close.assert_awaited_once()
+    assert runtime_state.browser is None
+    assert runtime_state.job_queue.qsize() == 0 and runtime_state.priority_job_queue.qsize() == 0
+    assert {it["job"]["user_id"] for it in sana_gate._state["deferred"]} == {50, 51}
+    assert all(it["reason"] == "outage" for it in sana_gate._state["deferred"])
+    notified = {c.args[0] for c in bot.send_message.call_args_list}
+    assert {50, 51} <= notified
+    sana_gate._busy = 0
+
+
+def test_outage_pauses_signs_and_notifies_after_reconnect(monkeypatch, tmp_path):
+    import asyncio as _aio
+    from unittest.mock import AsyncMock as _AM, MagicMock as _MM
+    import pending_cases
+    monkeypatch.setattr(pending_cases, "STORE_FILE", str(tmp_path / "pc.json"))
+    pending_cases.record_paid(70, pending_cases.KIND_LAVAYEH, {"tracking_code": "TC70"},
+                              service_type="LAVAYEH")
+    monkeypatch.setattr(runtime_state, "pending_lavayeh_sign", {70: {"tracking_code": "TC70"}})
+    monkeypatch.setattr(runtime_state, "pending_ezhhar_sign", {})
+    monkeypatch.setattr(runtime_state, "pending_tn_sign", {})
+    monkeypatch.setattr(runtime_state, "browser", None)
+    monkeypatch.setattr(runtime_state, "job_queue", runtime_state._SignRoutingQueue())
+    monkeypatch.setattr(runtime_state, "priority_job_queue", runtime_state._SignRoutingQueue())
+    sana_gate._state["outage_sign"] = []
+    sana_gate._state["deferred"] = [{"job": {"task_type": "LAVAYEH_SEND_SIGN_CODE", "user_id": 70},
+                                     "reason": "outage"}]
+    bot = _MM()
+    bot.send_message = _AM()
+    msg = _MM()
+    msg.answer = _AM()
+
+    _aio.run(sana_gate.outage_on_cmd(msg, bot))
+    assert runtime_state.pending_lavayeh_sign == {}
+    assert sana_gate._state["deferred"] == []
+    assert sana_gate._state["outage_sign"] == [{"uid": 70, "tc": "TC70"}]
+    assert bot.send_message.call_args.args[0] == 70
+    assert "امضای" in bot.send_message.call_args.args[1]
+
+    bot.send_message.reset_mock()
+    assert _aio.run(sana_gate.notify_sign_resume(bot)) == 1
+    kb = bot.send_message.call_args.kwargs["reply_markup"]
+    assert kb.inline_keyboard[0][0].callback_data == "pc:sign:TC70"
+    assert sana_gate._state["outage_sign"] == []

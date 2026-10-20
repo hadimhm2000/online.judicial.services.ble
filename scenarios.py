@@ -3517,6 +3517,10 @@ async def _requeue_interrupted_job(data: dict, bot: Bot) -> bool:
     از بقیه) در صف قرار می‌گیرد و به کاربر گفته می‌شود نیازی به اقدام مجدد نیست.
     False یعنی سقف تلاش خودکار پر شده و مورد برای مدیر در /pending است."""
     reason = "کرش/بسته‌شدن مرورگر حین ثبت"
+    # ⭐ قطع به دستور مدیر (/outage_on) — تلاش خودکار حساب نمی‌شود
+    if sana_gate.is_outage():
+        await sana_gate.defer(data, bot)
+        return True
     if not pending_jobs.retry_interrupted(data, reason):
         try:
             await bot.send_message(
