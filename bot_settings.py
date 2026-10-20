@@ -15,6 +15,7 @@ REFRESH_SECONDS ثانیه آن‌ها را از GET /api/admin/bot-settings م�
   prepay.lavayeh_ezhhar_toman / prepay.other_toman → prepay_registration
   rating.enabled                   → نظرسنجی پس از تحویل (feedback.py)
   report.hour                      → ساعت گزارش شبانهٔ مدیر (daily_report.py)
+  reminder.enabled / reminder.first_hours → یادآوری فاکتور پرداخت‌نشده (invoice_reminders.py)
   gate.*                           → متن‌های صف خارج از ساعت کاری/قطعی سامانه
 """
 import asyncio
