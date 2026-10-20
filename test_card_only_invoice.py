@@ -78,3 +78,73 @@ def test_card_only_resend_on_reminder(_isolated):
     entry["status"] = cp.S_CARD_SENT
     cp.track_card_only_invoice(_invoice(20_000_000))
     assert entry["status"] == cp.S_INVOICE   # دوباره ارسال می‌شود
+
+
+def test_default_delay_is_ten_minutes(monkeypatch):
+    import importlib
+    import config
+    monkeypatch.delenv("CARD_PAY_DELAY_MINUTES", raising=False)
+    assert importlib.reload(config).CARD_PAY_DELAY_MINUTES == 10
+
+
+@pytest.mark.parametrize("ptype", ["wallet_topup", "pending_case"])
+def test_payload_routed_invoice_gets_card_offer_without_payment_state(_isolated, monkeypatch, ptype):
+    """فاکتورهای بدون state انتظار پرداخت (شارژ کیف پول، پروندهٔ در انتظار) هم کارت‌به‌کارت بگیرند."""
+    cp.track_invoice(_invoice(1_000_000, ptype))
+    entry = next(iter(cp._store.values()))
+
+    async def fake_state(_bot, _uid):
+        return None, {}
+    monkeypatch.setattr(cp, "_get_state", fake_state)
+    asyncio.run(cp._send_card_offer(None, entry))
+    assert entry["status"] == cp.S_CARD_SENT
+
+
+def test_wallet_topup_card_choice_sends_card_offer_with_choice_caption(_isolated, monkeypatch):
+    import wallet
+    from unittest.mock import AsyncMock, MagicMock
+    cb = MagicMock()
+    cb.data = "wal:cc:200000"
+    cb.from_user.id = UID
+    cb.answer = AsyncMock()
+    cb.message.answer = AsyncMock()
+    asyncio.run(wallet.cb_wallet_topup_card(cb))
+
+    entry = next(iter(cp._store.values()))
+    assert entry["card_only"] and entry["card_by_choice"] and entry["amount_rial"] == 2_000_000
+    assert json.loads(entry["payload"])["type"] == wallet.TOPUP_TYPE
+
+    async def fake_state(_bot, _uid):
+        return None, {}
+    monkeypatch.setattr(cp, "_get_state", fake_state)
+    asyncio.run(cp._send_card_offer(None, entry))
+    assert entry["status"] == cp.S_CARD_SENT
+    caption = _isolated[0][1]["text"]
+    assert "200,000 تومان" in caption and "درگاه امکان‌پذیر نیست" not in caption
+
+
+def test_wallet_topup_amount_asks_for_payment_method(monkeypatch):
+    import wallet
+    from unittest.mock import AsyncMock, MagicMock
+    monkeypatch.setattr("config.CARD_PAY_ENABLED", True)
+    cb = MagicMock()
+    cb.data = "wal:top:100000"
+    cb.answer = AsyncMock()
+    cb.message.answer = AsyncMock()
+    asyncio.run(wallet.cb_wallet_topup(cb))
+    kb = cb.message.answer.await_args.kwargs["reply_markup"].inline_keyboard
+    assert [b[0].callback_data for b in kb] == ["wal:gw:100000", "wal:cc:100000"]
+
+
+def test_receipt_without_state_matches_payload_routed_entry(_isolated):
+    from unittest.mock import AsyncMock, MagicMock
+    cp.track_invoice(_invoice(1_000_000, "wallet_topup"))
+    entry = next(iter(cp._store.values()))
+    entry.update(status=cp.S_CARD_SENT, state_snapshot=None)
+    msg = MagicMock()
+    msg.from_user.id = UID
+    state = MagicMock()
+    state.get_state = AsyncMock(return_value=None)
+    assert asyncio.run(cp._receipt_target(msg, state)) is entry
+    state.get_state = AsyncMock(return_value="Form:something")
+    assert asyncio.run(cp._receipt_target(msg, state)) is None

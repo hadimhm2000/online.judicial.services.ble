@@ -3,9 +3,12 @@ wallet.py — کیف پول (اعتبار پیش‌خرید) برای کاربر
 ══════════════════════════════════════════════════════════════════════════════
 
 جریان:
-  ۱) شارژ: منوی «👛 کیف پول» → انتخاب مبلغ → فاکتور بله با payload
-     {"type": "wallet_topup"} → پس از پرداخت موفق، موجودی افزایش می‌یابد.
-     (رسید کارت‌به‌کارت همین فاکتور هم از مسیر card_payment بازپخش و شارژ می‌شود.)
+  ۱) شارژ: منوی «👛 کیف پول» → انتخاب مبلغ → انتخاب روش پرداخت:
+       - درگاه پرداخت: فاکتور بله با payload {"type": "wallet_topup"} → پس از
+         پرداخت موفق، موجودی افزایش می‌یابد (اگر پرداخت نشود، پیام کارت‌به‌کارت
+         پس از CARD_PAY_DELAY_MINUTES دقیقه می‌آید).
+       - کارت به کارت: فاکتور درگاه ارسال نمی‌شود و پیام کارت فوراً می‌آید.
+     رسید کارت‌به‌کارت پس از تایید مدیر از مسیر card_payment بازپخش و شارژ می‌شود.
   ۲) خرج: هر جا ربات فاکتور می‌فرستد، card_payment.track_invoice صدا زده
      می‌شود؛ اگر موجودی کیف پول کاربر کافی باشد، زیر فاکتور یک پیام با دکمهٔ
      «پرداخت از کیف پول» ارسال می‌شود (on_invoice).
@@ -505,20 +508,17 @@ async def cb_wallet_tx(callback: CallbackQuery):
     await callback.message.answer("📜 *تراکنش‌های اخیر*\n\n" + "\n".join(lines))
 
 
-@wallet_router.callback_query(F.data.startswith("wal:top:"))
-async def cb_wallet_topup(callback: CallbackQuery):
+def _topup_amount(data: str) -> int | None:
     try:
-        amount_toman = int(callback.data.rsplit(":", 1)[1])
+        amount_toman = int(data.rsplit(":", 1)[1])
     except ValueError:
-        await callback.answer()
-        return
-    if amount_toman not in TOPUP_OPTIONS_TOMAN:
-        await callback.answer()
-        return
-    await callback.answer()
-    uid = callback.from_user.id
+        return None
+    return amount_toman if amount_toman in TOPUP_OPTIONS_TOMAN else None
+
+
+def _topup_invoice(uid: int, amount_toman: int) -> dict:
     amount_rial = amount_toman * 10
-    invoice_data = {
+    return {
         "chat_id": uid,
         "title": "شارژ کیف پول",
         "description": f"شارژ کیف پول ربات به مبلغ {amount_toman:,} تومان",
@@ -527,13 +527,58 @@ async def cb_wallet_topup(callback: CallbackQuery):
         "currency": "IRR",
         "prices": [{"label": "شارژ کیف پول", "amount": amount_rial}],
     }
+
+
+@wallet_router.callback_query(F.data.startswith("wal:top:"))
+async def cb_wallet_topup(callback: CallbackQuery):
+    """⭐ انتخاب مبلغ → انتخاب روش پرداخت (درگاه / کارت به کارت)."""
+    amount_toman = _topup_amount(callback.data)
+    await callback.answer()
+    if amount_toman is None:
+        return
+    from config import CARD_PAY_ENABLED
+    if not CARD_PAY_ENABLED:
+        await _topup_via_gateway(callback, amount_toman)
+        return
+    await callback.message.answer(
+        f"👛 شارژ کیف پول — *{amount_toman:,} تومان*\n\nروش پرداخت را انتخاب کنید:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🌐 پرداخت با درگاه پرداخت", callback_data=f"wal:gw:{amount_toman}")],
+            [InlineKeyboardButton(text="💳 پرداخت کارت به کارت", callback_data=f"wal:cc:{amount_toman}")],
+        ]))
+
+
+@wallet_router.callback_query(F.data.startswith("wal:gw:"))
+async def cb_wallet_topup_gateway(callback: CallbackQuery):
+    amount_toman = _topup_amount(callback.data)
+    await callback.answer()
+    if amount_toman is not None:
+        await _topup_via_gateway(callback, amount_toman)
+
+
+@wallet_router.callback_query(F.data.startswith("wal:cc:"))
+async def cb_wallet_topup_card(callback: CallbackQuery):
+    """کارت‌به‌کارت انتخابی: فاکتور درگاه ارسال نمی‌شود؛ پیام کارت چند ثانیه بعد
+    (card_payment) ارسال و با تایید رسید، همان wallet_topup_paid بازپخش می‌شود."""
+    amount_toman = _topup_amount(callback.data)
+    await callback.answer()
+    if amount_toman is None:
+        return
+    from card_payment import track_card_only_invoice
+    track_card_only_invoice(_topup_invoice(callback.from_user.id, amount_toman), by_choice=True)
+    await callback.message.answer("⏳ مشخصات کارت برای واریز تا چند لحظهٔ دیگر ارسال می‌شود.")
+
+
+async def _topup_via_gateway(callback: CallbackQuery, amount_toman: int):
+    uid = callback.from_user.id
+    invoice_data = _topup_invoice(uid, amount_toman)
     try:
         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
             async with session.post(f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice", json=invoice_data) as resp:
                 result = await resp.json()
         if not result.get("ok"):
             raise Exception(result.get("description", "sendInvoice failed"))
-        from card_payment import track_invoice as _cp_track; _cp_track(invoice_data)  # کارت‌به‌کارت پس از ۲۰ دقیقه
+        from card_payment import track_invoice as _cp_track; _cp_track(invoice_data)  # کارت‌به‌کارت پس از CARD_PAY_DELAY_MINUTES دقیقه
     except Exception as e:
         logger.error(f"[WALLET] ارسال فاکتور شارژ ناموفق: {e}")
         await callback.message.answer("⚠️ ساخت فاکتور شارژ ممکن نشد. لطفاً کمی بعد دوباره تلاش کنید.")
