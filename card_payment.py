@@ -11,7 +11,7 @@ card_payment.py — پرداخت جایگزین «کارت‌به‌کارت» �
 
    (invoice_data همان دیکشنری‌ای است که به sendInvoice پست شده است.)
 
-۲) اگر تا CARD_PAY_DELAY_MINUTES دقیقه (پیش‌فرض ۲۰) پرداخت موفقی برای آن
+۲) اگر تا CARD_PAY_DELAY_MINUTES دقیقه (پیش‌فرض ۱۰) پرداخت موفقی برای آن
    فاکتور نرسد، برای کاربر ارسال می‌شود:
      - تصویر «کارت بانکی» (شماره کارت، صاحب حساب، بانک، مبلغ)
      - متن: «در صورتی که از طریق درگاه پرداخت موفق به واریز نشده‌اید …»
@@ -127,7 +127,10 @@ _DEDUCTION_TTL = 30 * 60             # اعتبار اطلاعات «کسر از
 
 # payloadهایی که هندلر پرداختشان مستقل از state کاربر مسیریابی می‌شود
 # (global_successful_payment_handler در handlers.py از روی payload تصمیم می‌گیرد)
-_PAYLOAD_ROUTED_TYPES = {"admin_fee", "panel_message", "reg_prepay", "single_use", "clearance"}
+# ⭐ wallet_topup و pending_case هم هندلر پرداخت payload-محور دارند و پس از فاکتورشان
+# state انتظار پرداختی ست نمی‌شود؛ بدون این‌ها پیام کارت‌به‌کارت «رد» می‌شد.
+_PAYLOAD_ROUTED_TYPES = {"admin_fee", "panel_message", "reg_prepay", "single_use", "clearance",
+                         "wallet_topup", "pending_case"}
 
 # نوع payload → نام فارسی درخواست (برای پیام مدیر و پنل)
 _TYPE_LABELS = {
@@ -145,6 +148,8 @@ _TYPE_LABELS = {
     "reg_prepay": "پیش‌پرداخت ثبت",
     "single_use": "پرداخت تکی (تمبر / خسارت تأخیر و مهریه)",
     "clearance": "درخواست گواهی عدم سوءپیشینه",
+    "wallet_topup": "شارژ کیف پول",
+    "pending_case": "هزینهٔ پروندهٔ در انتظار پرداخت",
 }
 _SVC_LABELS = {
     "lavayeh": "لایحه",
@@ -162,6 +167,7 @@ _TYPE_TO_PANEL_SERVICE = {
     "bulk_prepay": "BULK", "bulk_settlement": "BULK",
     "single_use": "SINGLE_USE",
     "clearance": "CLEARANCE_CERT",
+    "wallet_topup": "WALLET_TOPUP",
 }
 _SVC_TO_PANEL_SERVICE = {
     "lavayeh": "LAVAYEH", "ealam": "EALAM_VAKALAHT", "ezhharnameh": "EZHHARNAMEH",
@@ -283,10 +289,18 @@ def card_only_required(invoice_data: dict) -> bool:
     return _invoice_rial(invoice_data) > CARD_ONLY_ABOVE_TOMAN * 10
 
 
-def track_card_only_invoice(invoice_data: dict) -> None:
+def track_card_only_invoice(invoice_data: dict, by_choice: bool = False) -> None:
     """⭐ به‌جای sendInvoice صدا زده می‌شود: کارت‌به‌کارت چند ثانیه بعد (پس از ست‌شدن
-    state انتظار پرداخت توسط فراخوان) ارسال می‌شود، نه پس از ۲۰ دقیقه."""
+    state انتظار پرداخت توسط فراخوان) ارسال می‌شود، نه پس از CARD_PAY_DELAY_MINUTES دقیقه.
+
+    by_choice: کاربر خودش «کارت به کارت» را انتخاب کرده (مثلاً شارژ کیف پول) — نه
+               به‌خاطر سقف مبلغ؛ فقط متن پیام کارت فرق می‌کند."""
     track_invoice(invoice_data, card_only=True)
+    if by_choice:
+        entry = _find_active(int(invoice_data.get("chat_id") or 0), str(invoice_data.get("payload") or ""))
+        if entry and entry.get("status") == S_INVOICE:
+            entry["card_by_choice"] = True
+            _mark_dirty()
 
 
 def track_invoice(invoice_data: dict, card_only: bool = False) -> None:
@@ -345,6 +359,7 @@ def track_invoice(invoice_data: dict, card_only: bool = False) -> None:
             "status": S_INVOICE,
             "updated_at": now,
             "card_only": bool(card_only),
+            "card_by_choice": False,
         })
         if card_only:
             # سررسید حلقه: invoice_at + delay → چند ثانیه بعد
@@ -442,7 +457,7 @@ async def _on_gateway_payment(bot: Bot | None, uid: int, payload: str) -> None:
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# ۳) حلقهٔ پس‌زمینه — ارسال پیام کارت‌به‌کارت پس از ۲۰ دقیقه
+# ۳) حلقهٔ پس‌زمینه — ارسال پیام کارت‌به‌کارت پس از CARD_PAY_DELAY_MINUTES دقیقه
 # ═════════════════════════════════════════════════════════════════════════
 async def _get_state(bot: Bot, uid: int) -> tuple[str | None, dict]:
     dp = getattr(runtime_state, "dp", None)
@@ -527,7 +542,19 @@ async def _send_card_offer(bot: Bot, entry: dict) -> None:
     entry["data_snapshot"] = json.loads(json.dumps(fsm_data, default=str, ensure_ascii=False))
     amount_toman = entry["amount_rial"] // 10
 
-    if entry.get("card_only"):
+    if entry.get("card_by_choice"):
+        caption = (
+            "💳 *پرداخت از طریق کارت به کارت*\n\n"
+            f"لطفاً مبلغ «{entry.get('title') or _service_label(entry)}» را به شماره کارت زیر "
+            "واریز نمایید:\n\n"
+            f"🔢 شماره کارت:\n`{CARD_PAY_NUMBER}`\n"
+            f"👤 به نام: *{CARD_PAY_HOLDER}*\n"
+            + (f"🏦 {CARD_PAY_BANK}\n" if CARD_PAY_BANK else "")
+            + f"\n💰 مبلغ: *{amount_toman:,} تومان*  (`{entry['amount_rial']}` ریال)\n\n"
+            "📸 پس از واریز، *تصویر رسید* را همین‌جا ارسال کنید تا پس از تایید "
+            "پشتیبانی، مبلغ به حساب شما منظور شود."
+        )
+    elif entry.get("card_only"):
         caption = (
             "💳 *پرداخت از طریق کارت به کارت*\n\n"
             f"مبلغ فاکتور «{entry.get('title') or _service_label(entry)}» بیش از "
@@ -707,6 +734,12 @@ async def _receipt_target(message: Message, state: FSMContext) -> dict | None:
             return e
     for e in candidates:
         if cur is not None and cur == e.get("state_snapshot"):
+            return e
+    # فاکتورهای payload-محور (شارژ کیف پول، پروندهٔ در انتظار پرداخت) state انتظار
+    # پرداخت ندارند؛ اگر کاربر از آن موقع در هیچ فلویی نیست، عکس همان رسید است.
+    for e in candidates:
+        ptype = (e.get("payload_obj") or {}).get("type", "")
+        if cur is None and e.get("state_snapshot") is None and ptype in _PAYLOAD_ROUTED_TYPES:
             return e
     return None
 

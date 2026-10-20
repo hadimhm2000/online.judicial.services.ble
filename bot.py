@@ -641,6 +641,9 @@ async def main():
     # ⭐ لغو درخواست‌های بی‌پیشرفت پس از ۲۴ ساعت + پیام پشتیبانی به پرداخت‌کنندگان
     from stale_requests import stale_requests_loop
     _start_bg(stale_requests_loop(bot), "stale_requests_loop", bot)
+    # ⭐ یادآوری فاکتورهای پرداخت‌نشده (۱ ساعت پس از فاکتور + ۲۴ ساعت پیش از حذف)
+    from invoice_reminders import invoice_reminder_loop
+    _start_bg(invoice_reminder_loop(bot), "invoice_reminder_loop", bot)
 
     # ⭐ آزادسازی صف خارج از ساعت کاری / پس از رفع قطعی سامانه
     _start_bg(sana_gate.gate_loop(bot), "gate_loop", bot)

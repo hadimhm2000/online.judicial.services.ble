@@ -25,8 +25,13 @@ export const BOT_SETTING_DEFS: BotSettingDef[] = [
   { key: 'rating.enabled', group: 'نظرسنجی و گزارش', label: 'نظرسنجی پس از تحویل فعال باشد', kind: 'boolean', defaultValue: 'true' },
   { key: 'report.hour', group: 'نظرسنجی و گزارش', label: 'ساعت ارسال گزارش شبانه به مدیر (۰ تا ۲۳)', kind: 'number', defaultValue: '23' },
 
+  { key: 'reminder.enabled', group: 'یادآوری پرداخت', label: 'یادآوری فاکتورهای پرداخت‌نشده فعال باشد', kind: 'boolean', defaultValue: 'true', hint: 'یک یادآوری پس از ارسال فاکتور و یکی ۲۴ ساعت پیش از حذف پرونده' },
+  { key: 'reminder.first_hours', group: 'یادآوری پرداخت', label: 'یادآوری اول چند ساعت پس از ارسال فاکتور', kind: 'number', defaultValue: '1', hint: 'بین ۱ تا ۲۳' },
+
   { key: 'gate.outage_queued', group: 'متن‌های صف سامانه', label: 'پیام به کاربر هنگام قطعی سامانه', kind: 'text', defaultValue: '' , hint: 'خالی = متن پیش‌فرض ربات' },
   { key: 'gate.offhours_queued', group: 'متن‌های صف سامانه', label: 'پیام به کاربر برای درخواست خارج از ساعت کاری', kind: 'text', defaultValue: '', hint: 'خالی = متن پیش‌فرض ربات. {start} = ساعت شروع کار' },
+  { key: 'gate.outage_sign_paused', group: 'متن‌های صف سامانه', label: 'پیام به کاربر وسط امضا هنگام قطعی سامانه', kind: 'text', defaultValue: '', hint: 'خالی = متن پیش‌فرض ربات' },
+  { key: 'gate.outage_sign_resume', group: 'متن‌های صف سامانه', label: 'پیام ثبت امضا پس از وصل شدن سامانه', kind: 'text', defaultValue: '', hint: 'خالی = متن پیش‌فرض ربات' },
   { key: 'gate.released', group: 'متن‌های صف سامانه', label: 'پیام شروع ثبت پس از آزاد شدن صف', kind: 'text', defaultValue: '', hint: 'خالی = متن پیش‌فرض ربات' },
   { key: 'gate.inquiry_closed_offhours', group: 'متن‌های صف سامانه', label: 'پیام بسته بودن استعلام خارج از ساعت کاری', kind: 'text', defaultValue: '', hint: 'خالی = متن پیش‌فرض ربات. {start} و {end} = ساعت کاری' },
   { key: 'gate.inquiry_closed_outage', group: 'متن‌های صف سامانه', label: 'پیام بسته بودن استعلام هنگام قطعی سامانه', kind: 'text', defaultValue: '', hint: 'خالی = متن پیش‌فرض ربات' },
@@ -42,6 +47,7 @@ export function validateBotSetting(def: BotSettingDef, value: string): string | 
     const n = Number(value);
     if (def.key.startsWith('prepay.') && n < 1000) return 'حداقل ۱,۰۰۰ تومان';
     if (def.key === 'report.hour' && n > 23) return 'بین ۰ تا ۲۳';
+    if (def.key === 'reminder.first_hours' && (n < 1 || n > 23)) return 'بین ۱ تا ۲۳';
   }
   if (def.kind === 'boolean' && value !== 'true' && value !== 'false') return 'true یا false';
   if (def.kind === 'text' && value.length > 1500) return 'حداکثر ۱۵۰۰ کاراکتر';
