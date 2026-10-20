@@ -810,17 +810,98 @@ async def gate_status_cmd(message: types.Message):
     await message.answer(_status_text())
 
 
+# ── ⭐ قطعی فوری (۱۴۰۵/۰۷) ────────────────────────────────────────────────
+#
+# دستور کارفرما: با روشن شدن «قطعی سامانه» مرورگر فوراً بسته شود (نه پس از
+# بیکار شدن) و پرونده‌های تکمیل‌نشده فوراً به صف بروند:
+#   - تسک‌های منتظر در job_queue / priority_job_queue همین لحظه به صف ماندگار
+#     می‌روند (همان defer؛ پیام «سامانه قطع است» به کاربر).
+#   - تسکی که حین پردازش است با بسته شدن مرورگر قطع می‌شود؛ browser_worker آن را
+#     «نیمه‌کاره» تشخیص می‌دهد، دوباره در صف می‌گذارد و چون قطعی روشن است همان
+#     لحظه به صف ماندگار منتقل می‌شود.
+#   - تسک‌های امضا (sign_job_queue) دست نمی‌خورند؛ sign_should_defer خودش
+#     ناوبری امضا را به صف ماندگار می‌برد.
+
+CLOSE_LOCK_TIMEOUT_SECONDS = 15
+
+
+def _drain_queue(q) -> list:
+    items = []
+    while q is not None:
+        try:
+            items.append(q.get_nowait())
+        except asyncio.QueueEmpty:
+            break
+        q.task_done()
+    return items
+
+
+async def defer_queued_jobs(bot: Bot) -> int:
+    """تسک‌های منتظر صف اصلی → صف ماندگار؛ تعداد منتقل‌شده."""
+    moved = 0
+    for qname in ("priority_job_queue", "job_queue"):
+        q = getattr(runtime_state, qname, None)
+        for job in _drain_queue(q):
+            if should_defer(job):
+                await defer(job, bot)
+                moved += 1
+            else:
+                q.put_nowait(job)
+    return moved
+
+
+async def force_close_browser(reason: str = "outage"):
+    """مرورگر را حتی وسط کار می‌بندد. اگر قفل بازسازی (مثلاً انتظار لاگین)
+    آزاد نشد، بدون قفل بسته می‌شود."""
+    _state["browser_closed"] = True
+    _state["browser_closed_reason"] = reason
+    _state["admin_open"] = False
+    _save()
+    try:
+        await asyncio.wait_for(close_browser(reason=reason), CLOSE_LOCK_TIMEOUT_SECONDS)
+        return
+    except asyncio.TimeoutError:
+        logger.warning("[SANA_GATE] قفل بازسازی مرورگر آزاد نشد — بستن بدون قفل")
+    browser = runtime_state.browser
+    runtime_state.sana_page = None
+    runtime_state.browser_context = None
+    runtime_state.browser = None
+    if browser is not None:
+        try:
+            if browser.is_connected():
+                await browser.close()
+        except Exception as e:
+            logger.warning(f"[SANA_GATE] خطا در بستن مرورگر: {e}")
+
+
 @gate_router.message(Command("outage_on"), _is_admin)
-async def outage_on_cmd(message: types.Message):
+async def outage_on_cmd(message: types.Message, bot: Bot):
     _state["outage"] = True
     _state["outage_since"] = datetime.datetime.now(TEHRAN_TZ).isoformat()
     _save()
-    await message.answer(
-        "⚠️ حالت «قطعی سامانه» روشن شد.\n\n"
-        "ربات اطلاعات و پرداخت را مثل قبل می‌گیرد؛ هر درخواستی که نوبت ورودش به "
-        "سامانه برسد در صف می‌ماند و به کاربر اعلام می‌شود سامانه قطع است.\n"
-        "استعلام‌ها تا رفع قطعی بسته‌اند.\n\n"
-        "پس از رفع قطعی: /outage_off")
+    busy = browser_busy()
+    signing = len(_pending_sign_users())
+    moved = await defer_queued_jobs(bot)
+    was_up = _browser_is_up()
+    await force_close_browser(reason="outage")
+    lines = [
+        "⚠️ حالت «قطعی سامانه» روشن شد.",
+        "",
+        "🔒 مرورگر " + ("همین الان بسته شد." if was_up else "از قبل بسته بود و باز نمی‌شود."),
+        f"📥 {moved} درخواست منتظر به صف منتقل شد (کل صف: {deferred_count()}).",
+    ]
+    if busy:
+        lines.append(f"⏸ کار در جریان قطع شد ({busy}) و خودکار به صف برمی‌گردد.")
+    if signing:
+        lines.append(f"🖊 {signing} کاربر وسط امضا بودند و امضای آن‌ها قطع شد.")
+    lines += [
+        "",
+        "ربات اطلاعات و پرداخت را مثل قبل می‌گیرد و درخواست‌های جدید هم در صف می‌مانند.",
+        "استعلام‌ها تا رفع قطعی بسته‌اند.",
+        "",
+        "پس از رفع قطعی: /outage_off",
+    ]
+    await message.answer("\n".join(lines))
 
 
 @gate_router.message(Command("outage_off"), _is_admin)

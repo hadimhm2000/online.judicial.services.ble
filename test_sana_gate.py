@@ -75,3 +75,35 @@ def test_inquiry_context():
     msg.text = "123"
     assert sana_gate.is_inquiry_context(msg, "Form:waiting_for_tracking_code")
     assert not sana_gate.is_inquiry_context(msg, "Form:lavayeh_title")
+
+
+# ── ⭐ قطعی فوری: بستن فوری مرورگر و انتقال صف ─────────────────────────────
+
+def test_outage_on_moves_queue_and_closes_browser_now(monkeypatch):
+    import asyncio as _aio
+    from unittest.mock import AsyncMock as _AM, MagicMock as _MM
+    monkeypatch.setattr(runtime_state, "job_queue", runtime_state._SignRoutingQueue())
+    monkeypatch.setattr(runtime_state, "priority_job_queue", runtime_state._SignRoutingQueue())
+    runtime_state.job_queue.put_nowait({"task_type": "LAVAYEH_SUBMIT", "user_id": 50})
+    runtime_state.priority_job_queue.put_nowait({"task_type": "CHECK_SUBMIT", "user_id": 51})
+    browser = _MM()
+    browser.is_connected.return_value = True
+    browser.close = _AM()
+    monkeypatch.setattr(runtime_state, "browser", browser)
+    sana_gate._busy = 1   # تسکی در حال پردازش — بستن نباید منتظر بماند
+    bot = _MM()
+    bot.send_message = _AM()
+    msg = _MM()
+    msg.answer = _AM()
+
+    _aio.run(sana_gate.outage_on_cmd(msg, bot))
+
+    assert sana_gate.is_outage() and sana_gate.browser_closed()
+    browser.close.assert_awaited_once()
+    assert runtime_state.browser is None
+    assert runtime_state.job_queue.qsize() == 0 and runtime_state.priority_job_queue.qsize() == 0
+    assert {it["job"]["user_id"] for it in sana_gate._state["deferred"]} == {50, 51}
+    assert all(it["reason"] == "outage" for it in sana_gate._state["deferred"])
+    notified = {c.args[0] for c in bot.send_message.call_args_list}
+    assert {50, 51} <= notified
+    sana_gate._busy = 0
