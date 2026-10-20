@@ -147,6 +147,10 @@ export function computeCardPaymentProfit(
   linkedCase?: { serviceType: string; fee: number | null; prepayAmount?: number | null; systemCost: number | null } | null,
 ): { profit: number; systemCost: number; exact: boolean } {
   const amount = Math.max(0, cp.amount || 0);
+  // شارژ کیف پول سود نیست؛ سودش هنگام خرج از کیف پول روی خود پرونده حساب می‌شود
+  if (cp.serviceType === 'WALLET_TOPUP') {
+    return { profit: 0, systemCost: 0, exact: true };
+  }
   if (cp.paymentKind !== 'FINAL') {
     return { profit: amount, systemCost: 0, exact: true };
   }

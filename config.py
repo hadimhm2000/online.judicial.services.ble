@@ -90,7 +90,7 @@ ACCOUNT_NAME = os.environ.get("ACCOUNT_NAME", "هادی منتظران")
 # اگر کاربر تا CARD_PAY_DELAY_MINUTES دقیقه فاکتور بله را پرداخت نکند، تصویر
 # کارت + دکمه‌های کپی برایش ارسال می‌شود؛ رسید پس از تایید مدیر اعمال می‌شود.
 CARD_PAY_ENABLED = os.environ.get("CARD_PAY_ENABLED", "1").strip() not in ("0", "false", "no", "")
-CARD_PAY_DELAY_MINUTES = int(os.environ.get("CARD_PAY_DELAY_MINUTES", "20"))
+CARD_PAY_DELAY_MINUTES = int(os.environ.get("CARD_PAY_DELAY_MINUTES", "10"))
 CARD_PAY_EXPIRE_HOURS = int(os.environ.get("CARD_PAY_EXPIRE_HOURS", "48"))
 CARD_PAY_NUMBER = "".join(ch for ch in os.environ.get("CARD_PAY_NUMBER", CARD_NUMBER) if ch.isdigit())
 CARD_PAY_HOLDER = os.environ.get("CARD_PAY_HOLDER", ACCOUNT_NAME)
