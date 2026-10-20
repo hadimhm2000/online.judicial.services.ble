@@ -17,6 +17,7 @@ REFRESH_SECONDS ثانیه آن‌ها را از GET /api/admin/bot-settings م�
   report.hour                      → ساعت گزارش شبانهٔ مدیر (daily_report.py)
   reminder.enabled / reminder.first_hours → یادآوری فاکتور پرداخت‌نشده (invoice_reminders.py)
   gate.*                           → متن‌های صف خارج از ساعت کاری/قطعی سامانه
+  inactivity.minutes / inactivity.notify / inactivity.text → بازگشت به منوی اصلی پس از بی‌کاری (user_activity.py)
 """
 import asyncio
 import logging

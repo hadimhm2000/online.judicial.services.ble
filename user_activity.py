@@ -1,5 +1,5 @@
 """
-گیت فعالیت کاربر — بازگشت خودکار و بی‌صدا به منوی اصلی پس از ۱ ساعت بی‌کاری
+گیت فعالیت کاربر — بازگشت خودکار به منوی اصلی پس از ۱ ساعت بی‌کاری
 
 قاعدهٔ کارفرما (۱۴۰۵/۰۶):
 ۱) اگر کاربر بیش از یک ساعت هیچ اقدامی در ربات انجام ندهد، با اولین
@@ -11,6 +11,12 @@
 ۳) سوئیپر پس‌زمینه (sweep_inactive_users) هم هر ۶۰ ثانیه state کاربران
    غایب (>۱ ساعت) را proactive پاک می‌کند تا وضعیت FSM همیشه با واقعیت
    هم‌خوان باشد.
+   ⭐ اصلاحیه ۱۴۰۵/۰۷: سوئیپر حالا کاربر را مستقیماً در منوی اصلی
+   (Form.waiting_for_flow_type) قرار می‌دهد و منوی اصلی را همراه یک خط
+   توضیح برایش می‌فرستد تا کیبورد قدیمی سناریو روی صفحه نماند. کاربری که
+   از قبل در منوی اصلی است پیامی نمی‌گیرد.
+   تنظیم از پنل: inactivity.minutes (پیش‌فرض ۶۰) / inactivity.notify /
+   inactivity.text
 ۴) دکمهٔ «🔄 شروع مجدد» (هندلر سراسری در handlers.py) صرفاً کاربر را به
    منوی اصلی برمی‌گرداند.
 
@@ -31,8 +37,11 @@ from aiogram.types import Message as AiogramMessage
 
 import runtime_state
 
-# ⭐ آستانهٔ بی‌کاری: ۱ ساعت (طبق دستور کارفرما)
+# ⭐ آستانهٔ بی‌کاری: ۱ ساعت (طبق دستور کارفرما) — از پنل با
+# «inactivity.minutes» قابل تغییر است (inactivity_limit_seconds)
 INACTIVITY_LIMIT_SECONDS = 60 * 60
+
+INACTIVITY_DEFAULT_TEXT = "⏱ به دلیل عدم فعالیت، به منوی اصلی بازگشتید."
 
 # آخرین فعالیت هر کاربر (monotonic seconds) — فقط برای جلسهٔ جاری لازم است؛
 # بعد از ری‌استارت هم FSM خالی است و نیازی به ماندگاری نیست.
@@ -80,6 +89,19 @@ def seconds_idle(user_id):
     if ts is None:
         return None
     return time.monotonic() - ts
+
+
+def inactivity_limit_seconds() -> int:
+    """آستانهٔ بی‌کاری (ثانیه) — «inactivity.minutes» پنل یا پیش‌فرض ۶۰ دقیقه."""
+    import bot_settings
+    minutes = bot_settings.get_int("inactivity.minutes", INACTIVITY_LIMIT_SECONDS // 60)
+    return max(1, minutes) * 60
+
+
+def _is_main_menu_state(raw_state) -> bool:
+    """آیا کاربر همین الان در منوی اصلی (انتخاب نوع خدمت) است؟"""
+    from states import Form
+    return raw_state == Form.waiting_for_flow_type.state
 
 
 def is_busy(user_id) -> bool:
@@ -133,7 +155,7 @@ class InactivityGate(BaseMiddleware):
                 is_message
                 and not has_successful_payment
                 and idle is not None
-                and idle > INACTIVITY_LIMIT_SECONDS
+                and idle > inactivity_limit_seconds()
                 and not is_busy(uid)
             ):
                 state = data.get("state")
@@ -141,7 +163,11 @@ class InactivityGate(BaseMiddleware):
                 # stateهای «انتظار پرداخت/رسید/تسویه» معاف‌اند — فاکتور باز
                 # کاربر نباید با ریست بی‌کاری از بین برود (پرداخت دیرهنگام
                 # از طریق global_successful_payment_handler پردازش می‌شود)
-                if state is not None and raw_state and not _is_payment_wait_state(raw_state):
+                # ⭐ کاربری که در منوی اصلی است دست نمی‌خورد — وگرنه فشردن
+                # دکمهٔ منو بعد از بی‌کاری به fallback «متوجه نشدم» می‌رسید
+                if (state is not None and raw_state
+                        and not _is_payment_wait_state(raw_state)
+                        and not _is_main_menu_state(raw_state)):
                     try:
                         await state.clear()
                         logging.info(
@@ -154,11 +180,25 @@ class InactivityGate(BaseMiddleware):
         return await handler(event, data)
 
 
+async def _send_main_menu(bot, uid) -> None:
+    """ارسال منوی اصلی + یک خط توضیح بازگشت به‌دلیل بی‌کاری."""
+    import bot_settings
+    from keyboards import get_flow_type_kb
+    if not bot_settings.get_bool("inactivity.notify", True):
+        return
+    text = bot_settings.get_text("inactivity.text") or INACTIVITY_DEFAULT_TEXT
+    await bot.send_message(
+        uid,
+        f"{text}\n\n❓ *لطفاً نحوه ثبت درخواست خود را انتخاب فرمایید:*",
+        reply_markup=get_flow_type_kb(uid))
+
+
 async def sweep_inactive_users(bot):
-    """سوئیپر پس‌زمینه — پاک‌سازی proactive state کاربران غایب (>۱ ساعت).
+    """سوئیپر پس‌زمینه — بازگرداندن کاربران غایب (>۱ ساعت) به منوی اصلی.
 
     در حلقهٔ state_persister (هر ۶۰ ثانیه) فراخوانی می‌شود. کاربرانی که
-    فرآیند فعال دارند (is_busy) دست‌نخورده می‌مانند.
+    فرآیند فعال دارند (is_busy)، در انتظار پرداخت‌اند یا از قبل در منوی
+    اصلی هستند دست‌نخورده می‌مانند.
     """
     dp = getattr(runtime_state, "dp", None)
     if dp is None or bot is None:
@@ -168,9 +208,12 @@ async def sweep_inactive_users(bot):
     if bot_id is None:
         return
 
+    from states import Form
+
+    limit = inactivity_limit_seconds()
     for uid in list(_last_activity.keys()):
         idle = seconds_idle(uid)
-        if idle is None or idle <= INACTIVITY_LIMIT_SECONDS:
+        if idle is None or idle <= limit:
             continue
         if is_busy(uid):
             continue
@@ -182,11 +225,18 @@ async def sweep_inactive_users(bot):
                 # باز کاربر نباید با سوئیپر بی‌کاری از بین برود
                 if _is_payment_wait_state(current_state):
                     continue
-                await dp.storage.set_state(key, state=None)
+                if _is_main_menu_state(current_state):
+                    continue
                 await dp.storage.set_data(key, {})
+                await dp.storage.set_state(key, state=Form.waiting_for_flow_type)
                 logging.info(
-                    f"[INACTIVITY] (سوئیپر) state کاربر {uid} پس از "
-                    f"{int(idle // 60)} دقیقه بی‌کاری پاک شد — در منوی اصلی "
-                    f"قرار می‌گیرد (بدون پیام).")
+                    f"[INACTIVITY] (سوئیپر) کاربر {uid} پس از {int(idle // 60)} "
+                    f"دقیقه بی‌کاری به منوی اصلی بازگردانده شد "
+                    f"(state قبلی: {current_state}).")
+                try:
+                    await _send_main_menu(bot, uid)
+                except Exception as e:
+                    # کاربر ربات را بسته/مسدود کرده — state به‌هرحال منوی اصلی است
+                    logging.warning(f"[INACTIVITY] ارسال منوی اصلی به {uid} ناموفق: {e}")
         except Exception as e:
             logging.warning(f"[INACTIVITY] خطای سوئیپر برای کاربر {uid}: {e}")
