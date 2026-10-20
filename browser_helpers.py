@@ -1782,14 +1782,32 @@ async def wait_for_attachments_tab(page, timeout_sec: float = 20, log_prefix: st
         await asyncio.sleep(1.5)
 
 
+def _normalize_attachment_title(title: str) -> str:
+    """یکسان‌سازی حروف عربی/فارسی (ي/ی، ك/ک، حذف ء و همزهٔ روی حرف) و
+    فاصله‌های نامرئی تا عنوان‌هایی مثل «تصوير امضاء اشخاص» و «تصویر امضا اشخاص»
+    یکسان دیده شوند."""
+    t = (title or "").replace("ي", "ی").replace("ى", "ی").replace("ك", "ک")
+    t = t.replace("ء", "").replace("ٔ", "")
+    for ch in ("\u200c", "\u200d", "\u200e", "\u200f", "\u00a0", "\ufeff"):
+        t = t.replace(ch, " ")
+    return " ".join(t.split())
+
+
+def is_signature_image_title(title: str) -> bool:
+    """ردیف «تصویر امضاء اشخاص» در منضمات — نه چاپ می‌شود و نه برگ حساب می‌شود."""
+    return "تصویر امضا" in _normalize_attachment_title(title)
+
+
 def is_ignored_attachment_title(title: str) -> bool:
+    if is_signature_image_title(title):
+        return True
     t = (title or "").replace("‌", " ")
     return "قرارداد الکترونیک" in t and ("وکالت نامه" in t or "وکالتنامه" in t)
 
 
 def sum_attachment_pages(rows: list) -> int:
-    """جمع تعداد صفحات پیوست‌ها — بدون ردیف قرارداد الکترونیک وکالت‌نامه و بدون
-    ردیف امضا (اگر اولین ردیف باشد)؛ همان منطق قبلیِ شمارش در جاوااسکریپت."""
+    """جمع تعداد صفحات پیوست‌ها — بدون ردیف قرارداد الکترونیک وکالت‌نامه، بدون
+    ردیف «تصویر امضاء اشخاص» (هر جای جدول) و بدون ردیف امضا (اگر اولین ردیف باشد)؛ همان منطق قبلیِ شمارش در جاوااسکریپت."""
     rows = [r for r in rows if not is_ignored_attachment_title(r.get("title", ""))]
     if rows and ("امضا" in rows[0]["title"] or "امضاء" in rows[0]["title"]):
         rows = rows[1:]
