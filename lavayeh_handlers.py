@@ -425,7 +425,8 @@ async def bulk_file_upload_handler(message: Message, state: FSMContext):
         bot = message.bot
         file_id = doc.file_id
         file_info = await bot.get_file(file_id)
-        local_path = temp_path(doc.file_name)
+        # نام فایل از کاربر است: فقط نام خالی (بدون مسیر) + پیشوند یکتا تا فایل دو کاربر روی هم نیفتد
+        local_path = temp_path(f"{uuid.uuid4().hex[:12]}_{os.path.basename(doc.file_name)}")
         await bot.download_file(file_info.file_path, local_path)
         parse_result = parse_excel_file(local_path, service_type)
         items = parse_result.get("valid_items", [])
@@ -4606,6 +4607,9 @@ async def lavayeh_payment_waiting_message(message: Message):
 
 @lavayeh_router.callback_query(F.data.startswith("oklav:"))
 async def admin_approve_lavayeh_receipt(callback: CallbackQuery, bot: Bot):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("⛔ فقط مدیر", show_alert=True)
+        return
     user_id = int(callback.data.split(":")[1])
     review = runtime_state.pending_admin_payment_review.pop(user_id, None)
     if not review:
@@ -4732,6 +4736,9 @@ async def admin_approve_lavayeh_receipt(callback: CallbackQuery, bot: Bot):
 
 @lavayeh_router.callback_query(F.data.startswith("nolav:"))
 async def admin_reject_lavayeh_receipt(callback: CallbackQuery, bot: Bot):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("⛔ فقط مدیر", show_alert=True)
+        return
     user_id = int(callback.data.split(":")[1])
     review = runtime_state.pending_admin_payment_review.pop(user_id, None)
     if not review:

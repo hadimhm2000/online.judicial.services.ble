@@ -2,7 +2,7 @@ import { db } from '@/lib/db';
 import { sendBaleMessage, sendBaleDocument } from '@/lib/bale';
 import { getServiceOption } from '@/lib/service-types';
 import { NextRequest, NextResponse } from 'next/server';
-import path from 'path';
+import { resolveUploadPath } from '@/lib/uploads';
 
 /**
  * POST /api/admin/bot-messages/{id}/paid
@@ -61,7 +61,8 @@ export async function POST(
     await sendBaleMessage(message.baleUserId, message.messageText);
 
     if (message.fileUrl && message.fileName) {
-      const filePath = path.join(process.cwd(), 'public', message.fileUrl);
+      const filePath = resolveUploadPath(message.fileUrl);
+      if (!filePath) throw new Error(`مسیر فایل پیوست نامعتبر است: ${message.fileName}`);
       await sendBaleDocument(message.baleUserId, filePath, message.fileName);
     }
 

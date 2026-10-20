@@ -45,10 +45,17 @@ export function formatToman(n: number): string {
   return new Intl.NumberFormat('fa-IR').format(n);
 }
 
+// ⭐ سلول CSV امن: " دوبرابر می‌شود (فایل خراب نشود) و متنی که با = + - @ شروع
+// می‌شود با ' شروع می‌شود تا اکسل آن را فرمول اجرا نکند (نام کاربر بله دست خود کاربر است).
+function csvCell(c: string): string {
+  const v = /^[=+\-@\t\r]/.test(c) && !/^-?\d+(\.\d+)?$/.test(c) ? `'${c}` : c;
+  return `"${v.replace(/"/g, '""')}"`;
+}
+
 export function exportToCSV(data: ExportRow[], filename: string): void {
   const rows = data.map(rowToValues);
   const bom = '﻿';
-  const csv = bom + [HEADERS, ...rows].map((r) => r.map((c) => `"${c}"`).join(',')).join('\n');
+  const csv = bom + [HEADERS, ...rows].map((r) => r.map(csvCell).join(',')).join('\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

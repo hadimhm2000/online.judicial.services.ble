@@ -198,7 +198,7 @@ async def _try_api_direct(tracking_code: str, category: str, subcategory: Option
             search_url = BASE_URL + search_url
         search_body = _prepare_body(ep.get('search_body_template', {}), tracking_code)
         try:
-            async with session.post(search_url, cookies=cookies, headers=headers, data=search_body, timeout=aiohttp.ClientTimeout(total=15), ssl=False) as resp:
+            async with session.post(search_url, cookies=cookies, headers=headers, data=search_body, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 if resp.status in (401, 403):
                     raise SessionExpiredError("Session expired")
                 if resp.status != 200:
@@ -215,7 +215,7 @@ async def _try_api_direct(tracking_code: str, category: str, subcategory: Option
             if not attach_url.startswith('http'):
                 attach_url = BASE_URL + attach_url
             attach_body = _prepare_attach_body(ep.get('attachments_body_template', {}), tracking_code, search_data)
-            async with session.post(attach_url, cookies=cookies, headers=headers, data=attach_body, timeout=aiohttp.ClientTimeout(total=15), ssl=False) as resp:
+            async with session.post(attach_url, cookies=cookies, headers=headers, data=attach_body, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 if resp.status in (401, 403):
                     raise SessionExpiredError("Session expired")
                 if resp.status != 200:

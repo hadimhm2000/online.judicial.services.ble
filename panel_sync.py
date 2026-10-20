@@ -66,7 +66,6 @@ def _get_panel_session() -> aiohttp.ClientSession:
     global _panel_session
     if _panel_session is None or _panel_session.closed:
         connector = aiohttp.TCPConnector(
-            ssl=False,
             limit=20,             # حداکثر اتصال همزمان
             ttl_dns_cache=300,    # کش DNS
             enable_cleanup_closed=True,

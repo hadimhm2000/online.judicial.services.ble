@@ -57,14 +57,16 @@ async def _with_page(html, fn):
 @pytest.mark.skipif(_chromium() is None, reason="chromium not available")
 @pytest.mark.parametrize("mod", [lss, ess])
 def test_concurrent_login_popup_on_submit_starts_relogin(monkeypatch, mod):
-    relogin = MagicMock()
-    monkeypatch.setattr(mod, "start_background_relogin", relogin)
+    # از PR #48: پس از پاپ‌آپ ورود همزمان، منتظر لاگین مجدد مدیر می‌ماند و
+    # «session_expired_handled» برمی‌گرداند تا امضا دوباره کلیک شود.
+    relogin = AsyncMock()
+    monkeypatch.setattr(mod, "handle_session_expired", relogin)
 
     async def fn(page):
         return await mod._wait_for_sign_popup(page, MagicMock(), 42, timeout_sec=3)
 
-    assert asyncio.run(_with_page(SWEET_ALERT, fn)) == "session_expired"
-    relogin.assert_called_once()
+    assert asyncio.run(_with_page(SWEET_ALERT, fn)) == "session_expired_handled"
+    relogin.assert_awaited_once()
 
 
 @pytest.mark.skipif(_chromium() is None, reason="chromium not available")

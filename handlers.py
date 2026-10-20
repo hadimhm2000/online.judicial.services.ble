@@ -196,8 +196,29 @@ async def restart_to_main_menu(message: types.Message, state: FSMContext):
 
 # ================= هندلر pre_checkout_query — تایید خودکار پرداخت بله =================
 @router.pre_checkout_query()
-async def pre_checkout_query_handler(pre_checkout_query: PreCheckoutQuery, bot: Bot):
-    """تایید خودکار تمام درخواست‌های پیش‌پرداخت فاکتور بله"""
+async def pre_checkout_query_handler(pre_checkout_query: PreCheckoutQuery, bot: Bot,
+                                     state: FSMContext | None = None):
+    """تایید خودکار درخواست‌های پیش‌پرداخت فاکتور بله — به‌جز فاکتور قدیمی/نامربوط (invoice_guard)"""
+    import invoice_guard
+    reason = None
+    try:
+        current_state = await state.get_state() if state is not None else None
+        reason = invoice_guard.check(pre_checkout_query.from_user.id,
+                                     pre_checkout_query.invoice_payload,
+                                     pre_checkout_query.total_amount, current_state)
+    except Exception as e:
+        logging.error(f"[PRE-CHECKOUT] خطا در بررسی فاکتور (تایید عادی ادامه می‌یابد): {e}", exc_info=True)
+    if reason:
+        logging.warning(f"[PRE-CHECKOUT] رد شد برای کاربر {pre_checkout_query.from_user.id}: {reason}")
+        try:
+            await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=False,
+                                                error_message=invoice_guard.STALE_INVOICE_TEXT)
+        except Exception:
+            try:
+                await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=False)
+            except Exception as e:
+                logging.error(f"[PRE-CHECKOUT] خطا در رد فاکتور: {e}", exc_info=True)
+        return
     try:
         await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
         logging.info(f"[PRE-CHECKOUT] تایید شد برای کاربر {pre_checkout_query.from_user.id}")
@@ -592,15 +613,6 @@ async def global_successful_payment_handler(message: types.Message, state: FSMCo
 
         # فعال‌سازی اشتراک
         runtime_state.activate_subscription(user_id)
-        # همگام‌سازی با پنل ادمین
-        try:
-            async def _sync_sub():
-                async with aiohttp.ClientSession() as s:
-                    from config import ADMIN_API_BASE
-                    await s.post(f"{ADMIN_API_BASE}/subscriptions/activate", json={"user_id": user_id})
-            asyncio.create_task(_sync_sub())
-        except Exception:
-            pass
         sub = runtime_state.user_subscriptions[user_id]
         end_str = sub["end_date"].strftime("%Y/%m/%d %H:%M")
 
@@ -2857,7 +2869,7 @@ async def bulk_inquiry_file_handler(message: types.Message, state: FSMContext, b
 
     import tempfile
     tmp_dir = tempfile.mkdtemp()
-    file_path = os.path.join(tmp_dir, doc.file_name or "bulk_inquiry.xlsx")
+    file_path = os.path.join(tmp_dir, os.path.basename(doc.file_name or "") or "bulk_inquiry.xlsx")
     try:
         file_info = await bot.get_file(doc.file_id)
         await bot.download_file(file_info.file_path, file_path)

@@ -60,18 +60,18 @@ echo "✅ مرورگر نصب شد"
 # ایجاد فایل .env اگر وجود ندارد
 echo ""
 if [ ! -f ".env" ]; then
-    echo "📝 فایل .env وجود ندارد. ایجاد از روی .env.example..."
-    if [ -f ".env.example" ]; then
-        cp .env.example .env
+    echo "📝 فایل .env وجود ندارد. ایجاد از روی env.example..."
+    if [ -f "env.example" ]; then
+        cp env.example .env
         echo "✅ فایل .env ایجاد شد"
         echo ""
         echo "⚠️  توجه: لطفاً فایل .env را ویرایش کرده و اطلاعات واقعی را وارد کنید:"
-        echo "   - TELEGRAM_BOT_TOKEN"
-        echo "   - SANA_USERNAME"
-        echo "   - SANA_PASSWORD"
+        echo "   - BOT_TOKEN"
         echo "   - ADMIN_ID"
-        echo "   - CARD_NUMBER"
-        echo "   - ACCOUNT_NAME"
+        echo "   - BALE_WALLET_TOKEN"
+        echo "   - ADMIN_API_SECRET (همان مقدار در .env پنل)"
+        echo "   - ADMIN_PANEL_USER / ADMIN_PANEL_PASSWORD"
+        echo "   - CARD_NUMBER / ACCOUNT_NAME"
         echo ""
         read -p "فایل .env را الان ویرایش می‌کنید؟ (y/n) " -n 1 -r
         echo
@@ -79,7 +79,7 @@ if [ ! -f ".env" ]; then
             ${EDITOR:-nano} .env
         fi
     else
-        echo "⚠️  فایل .env.example یافت نشد!"
+        echo "⚠️  فایل env.example یافت نشد!"
     fi
 else
     echo "ℹ️  فایل .env از قبل وجود دارد"

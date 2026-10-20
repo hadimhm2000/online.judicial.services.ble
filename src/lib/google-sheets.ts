@@ -70,6 +70,15 @@ const SERVICE_LABELS: Record<string, string> = {
   ADMIN_SEND: 'ارسال پیام مدیریت',
 };
 
+// ⭐ جلوگیری از تزریق فرمول: نام کاربر بله و سایر متن‌های ورودی کاربر ممکن است با
+// = + - @ شروع شوند و در حالت USER_ENTERED به‌عنوان فرمول اجرا شوند (مثلاً
+// IMPORTXML برای ارسال دادهٔ شیت به بیرون). علامت ' در ابتدا باعث می‌شود شیت
+// مقدار را فقط متن نمایش دهد؛ خود ' دیده نمی‌شود.
+function sheetText(v: string | null | undefined, empty = '—'): string {
+  if (v === null || v === undefined || v === '') return empty;
+  return /^[=+\-@\t\r]/.test(v) ? `'${v}` : v;
+}
+
 export async function testConnection(): Promise<{ success: boolean; message: string; sheetTitle?: string }> {
   try {
     const auth = getAuth();
@@ -203,22 +212,22 @@ export async function syncAllCases(): Promise<{
     // Build rows
     const rows = cases.map((c, i) => [
       i + 1,
-      c.fullName,
+      sheetText(c.fullName, ''),
       c.baleUserId,
       SERVICE_LABELS[c.serviceType] || c.serviceType,
       STATUS_LABELS[c.status] || c.status,
       FEE_STATUS_LABELS[c.feeStatus] || c.feeStatus,
       c.fee.toLocaleString('fa-IR'),
-      c.trackingCode || '—',
-      c.branchName || '—',
-      c.province || '—',
-      c.rowNumber || '—',
-      c.archiveNumber || '—',
+      sheetText(c.trackingCode),
+      sheetText(c.branchName),
+      sheetText(c.province),
+      sheetText(c.rowNumber),
+      sheetText(c.archiveNumber),
       new Intl.DateTimeFormat('fa-IR', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(c.createdAt)),
       new Intl.DateTimeFormat('fa-IR', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(c.updatedAt)),
       c.isInReadyToSend ? '✅ بله' : '❌ خیر',
       c.sentViaBot ? '✅ ارسال شد' : '⏳ نشده',
-      c.errorDetails || '—',
+      sheetText(c.errorDetails),
     ]);
 
     // Clear existing data (keep header)
@@ -265,22 +274,22 @@ export async function syncSingleCase(caseId: string): Promise<{
 
     const rowData = [
       0, // placeholder for row number
-      c.fullName,
+      sheetText(c.fullName, ''),
       c.baleUserId,
       SERVICE_LABELS[c.serviceType] || c.serviceType,
       STATUS_LABELS[c.status] || c.status,
       FEE_STATUS_LABELS[c.feeStatus] || c.feeStatus,
       c.fee.toLocaleString('fa-IR'),
-      c.trackingCode || '—',
-      c.branchName || '—',
-      c.province || '—',
-      c.rowNumber || '—',
-      c.archiveNumber || '—',
+      sheetText(c.trackingCode),
+      sheetText(c.branchName),
+      sheetText(c.province),
+      sheetText(c.rowNumber),
+      sheetText(c.archiveNumber),
       new Intl.DateTimeFormat('fa-IR', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(c.createdAt)),
       new Intl.DateTimeFormat('fa-IR', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(c.updatedAt)),
       c.isInReadyToSend ? '✅ بله' : '❌ خیر',
       c.sentViaBot ? '✅ ارسال شد' : '⏳ نشده',
-      c.errorDetails || '—',
+      sheetText(c.errorDetails),
     ];
 
     // Check if case already exists in sheet (find by baleUserId + date match in col B and col M)

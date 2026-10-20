@@ -27,6 +27,9 @@ from admin_relay import admin_relay_router
 
 # فعال‌سازی لاگ فایل چرخشی در اولین فرصت (قابل آپلود مستمر خطاها)
 init_file_logging()
+# ⭐ توکن ربات در هیچ خط لاگی (کنسول/فایل) نوشته نشود
+import secret_redact
+secret_redact.install_log_filter()
 import runtime_state
 import user_activity
 from persistence import (
@@ -35,6 +38,9 @@ from persistence import (
     mark_crash_and_save)
 
 dp = Dispatcher(storage=MemoryStorage())
+# ⭐ رد پرداخت فاکتور قدیمی/نامربوط — باید پیش از ناظر کارت‌به‌کارت و کیف پول ثبت شود
+import invoice_guard
+dp.message.outer_middleware(invoice_guard.InvoiceGuardMiddleware())
 # ⭐ پرداخت کارت‌به‌کارت — روتر رسید/تایید مدیر باید *قبل از* روتر اصلی ثبت شود
 # (فقط عکس‌هایی را می‌گیرد که رسید یک فاکتور کارت‌به‌کارت فعال باشند).
 import card_payment
@@ -426,6 +432,33 @@ async def shutdown_handler(bot: Bot, signal_name: str):
         logging.error(f"[SHUTDOWN] خطا در ارسال به مدیر: {e}", exc_info=True)
 
 
+# ⭐ تسک‌های پس‌زمینه: ارجاع نگه داشته می‌شود (تا garbage collector آن‌ها را از بین
+# نبرد) و اگر یکی با خطا متوقف شد، فوراً لاگ و به مدیر گزارش می‌شود (قبلاً بی‌صدا
+# متوقف می‌شد). رفتار خود تسک‌ها تغییری نمی‌کند و راه‌اندازی مجدد خودکار ندارند.
+_background_tasks: set = set()
+
+
+def _start_bg(coro, name: str, bot: Bot):
+    task = asyncio.create_task(coro, name=name)
+    _background_tasks.add(task)
+
+    def _done(t: asyncio.Task):
+        _background_tasks.discard(t)
+        if t.cancelled() or t.exception() is None:
+            return
+        exc = t.exception()
+        logging.error(f"[BG] تسک پس‌زمینهٔ «{name}» با خطا متوقف شد: {exc!r}",
+                      exc_info=(type(exc), exc, exc.__traceback__))
+        try:
+            asyncio.get_running_loop().create_task(
+                report_bug(bot, where=f"تسک پس‌زمینه {name} متوقف شد", error=exc, with_screenshot=False))
+        except Exception:
+            pass
+
+    task.add_done_callback(_done)
+    return task
+
+
 async def main():
     # ── بررسی کرش قبلی و بارگذاری حالت ──
     crashed, crash_data = was_crash()
@@ -476,6 +509,8 @@ async def main():
     logging.info(f"👤 ADMIN_ID={ADMIN_ID} (نوع: {type(ADMIN_ID).__name__})")
     custom_api_server = TelegramAPIServer.from_base(BALE_API_BASE)
     session = AiohttpSession(api=custom_api_server)
+    # ⭐ اگر متن خطایی که توکن در آن است در پیامی قرار گرفت، توکن پیش از ارسال حذف می‌شود
+    session.middleware(secret_redact.TokenRedactRequestMiddleware())
 
     bot = Bot(token=BOT_TOKEN, session=session)
     try:
@@ -556,24 +591,24 @@ async def main():
     except Exception as e:
         logging.warning(f"[START] دریافت ساعت کاری از پنل ناموفق ({e}) — آخرین برنامهٔ ذخیره‌شده استفاده می‌شود.")
     logging.info(f"[START] ساعت کاری ({working_hours.source()}): {working_hours.describe_week()}")
-    asyncio.create_task(working_hours.refresh_loop())
+    _start_bg(working_hours.refresh_loop(), "refresh_loop", bot)
     # ⭐ تخفیف اختصاصی کاربران (پنل ادمین) — کش برای فاکتورها
     import user_discounts
-    asyncio.create_task(user_discounts.refresh_loop())
+    _start_bg(user_discounts.refresh_loop(), "refresh_loop", bot)
 
     # ── شروع تسک‌های پس‌زمینه ──
-    asyncio.create_task(browser_worker(bot))
+    _start_bg(browser_worker(bot), "browser_worker", bot)
 
     from lavayeh_handlers import lavayeh_payment_reminder_loop
-    asyncio.create_task(lavayeh_payment_reminder_loop(bot))
+    _start_bg(lavayeh_payment_reminder_loop(bot), "lavayeh_payment_reminder_loop", bot)
 
     from subscription_handlers import subscription_expiry_checker
-    asyncio.create_task(subscription_expiry_checker(bot))
+    _start_bg(subscription_expiry_checker(bot), "subscription_expiry_checker", bot)
 
     # ⭐ گرم کردن پنل ادمین — جلوگیری از Timeout اولین sync پس از استارت
     # (در حالت dev پنل، اولین درخواست هر مسیر باعث کامپایل ۱۰-۳۰ ثانیه‌ای می‌شود)
     from panel_sync import warmup_panel
-    asyncio.create_task(warmup_panel())
+    _start_bg(warmup_panel(), "warmup_panel", bot)
     # ⭐ فهرست کاربران راهنما: کاربران قدیمی (فایل‌های ربات + پنل) ثبت می‌شوند تا
     # راهنمای خوش‌آمد فقط برای کاربران واقعاً جدید خودکار ارسال شود
     import user_registry
@@ -582,39 +617,39 @@ async def main():
     async def _seed_guide_users():
         await asyncio.sleep(20)   # پس از گرم شدن پنل
         await guide_handlers.seed_from_panel()
-    asyncio.create_task(_seed_guide_users())
+    _start_bg(_seed_guide_users(), "_seed_guide_users", bot)
     # ⭐ یادآور کارت‌به‌کارت: ۲۰ دقیقه پس از فاکتور پرداخت‌نشده
-    asyncio.create_task(card_payment.card_payment_loop(bot))
+    _start_bg(card_payment.card_payment_loop(bot), "card_payment_loop", bot)
 
     # ⭐ چاپ نهایی: هر روز ساعت ۱۷:۰۰ (تهران) موارد ثبت‌شدهٔ روزهای قبل (به‌جز
     # استعلامات) استعلام و چاپ برای کاربر ارسال می‌شود؛ فهرست روی دیسک
     # (final_print_queue.json) می‌ماند و اجرای ازدست‌رفته پس از راه‌اندازی جبران می‌شود.
     from final_print import final_print_scheduler
-    asyncio.create_task(final_print_scheduler(bot))
+    _start_bg(final_print_scheduler(bot), "final_print_scheduler", bot)
 
     # ⭐ یادآوری ماهانهٔ ثبت شاخص تورم بانک مرکزی (خسارت تأخیر/مهریه)
-    asyncio.create_task(cpi_reminder_loop(bot))
+    _start_bg(cpi_reminder_loop(bot), "cpi_reminder_loop", bot)
     # ⭐ گواهی عدم سوءپیشینه: پایان مهلت ویرایش کدملی و ارسال مجدد رمز موقت
-    asyncio.create_task(clearance_loop(bot))
+    _start_bg(clearance_loop(bot), "clearance_loop", bot)
 
     # ⭐ تنظیمات قابل ویرایش از پنل، نظرسنجی، قیف تبدیل و گزارش شبانه
     import bot_settings
-    asyncio.create_task(bot_settings.refresh_loop())
-    asyncio.create_task(feedback_loop(bot))
-    asyncio.create_task(funnel.flush_loop())
-    asyncio.create_task(daily_report_loop(bot))
+    _start_bg(bot_settings.refresh_loop(), "refresh_loop", bot)
+    _start_bg(feedback_loop(bot), "feedback_loop", bot)
+    _start_bg(funnel.flush_loop(), "flush_loop", bot)
+    _start_bg(daily_report_loop(bot), "daily_report_loop", bot)
     # ⭐ لغو درخواست‌های بی‌پیشرفت پس از ۲۴ ساعت + پیام پشتیبانی به پرداخت‌کنندگان
     from stale_requests import stale_requests_loop
-    asyncio.create_task(stale_requests_loop(bot))
+    _start_bg(stale_requests_loop(bot), "stale_requests_loop", bot)
     # ⭐ یادآوری فاکتورهای پرداخت‌نشده (۱ ساعت پس از فاکتور + ۲۴ ساعت پیش از حذف)
     from invoice_reminders import invoice_reminder_loop
-    asyncio.create_task(invoice_reminder_loop(bot))
+    _start_bg(invoice_reminder_loop(bot), "invoice_reminder_loop", bot)
 
     # ⭐ آزادسازی صف خارج از ساعت کاری / پس از رفع قطعی سامانه
-    asyncio.create_task(sana_gate.gate_loop(bot))
+    _start_bg(sana_gate.gate_loop(bot), "gate_loop", bot)
     # ⭐ فعال‌سازی «روند درج امضا» بدون فاکتور که مدیر از پنل درخواست کرده
     from admin_relay import free_sign_request_loop
-    asyncio.create_task(free_sign_request_loop(bot))
+    _start_bg(free_sign_request_loop(bot), "free_sign_request_loop", bot)
 
     # ── تسک ذخیره‌سازی دوره‌ی ──
     persister_task = asyncio.create_task(state_persister(bot))

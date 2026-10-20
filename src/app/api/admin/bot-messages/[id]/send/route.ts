@@ -2,7 +2,7 @@ import { db } from '@/lib/db';
 import { sendBaleMessage, sendBaleDocument, sendBaleInvoice } from '@/lib/bale';
 import { getServiceOption } from '@/lib/service-types';
 import { NextRequest, NextResponse } from 'next/server';
-import path from 'path';
+import { resolveUploadPath } from '@/lib/uploads';
 
 /**
  * ارسال پیام مدیر به کاربر — با پشتیبانی هزینه (فاکتور کیف پول بله).
@@ -78,7 +78,8 @@ export async function POST(
 
     // ارسال فایل پیوست اگر وجود داشته باشد
     if (message.fileUrl && message.fileName) {
-      const filePath = path.join(process.cwd(), 'public', message.fileUrl);
+      const filePath = resolveUploadPath(message.fileUrl);
+      if (!filePath) throw new Error(`مسیر فایل پیوست نامعتبر است: ${message.fileName}`);
       await sendBaleDocument(
         message.baleUserId,
         filePath,

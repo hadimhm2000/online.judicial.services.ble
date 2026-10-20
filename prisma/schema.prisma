@@ -83,6 +83,13 @@ model Case {
   adminActions    AdminAction[]
   activityLogs    ActivityLog[]
   notes           CaseNote[]
+
+  // ⭐ ایندکس فیلترها و جستجوهای پرتکرار پنل و ربات (فقط سرعت؛ داده تغییری نمی‌کند)
+  @@index([baleUserId])
+  @@index([trackingCode])
+  @@index([status])
+  @@index([serviceType, createdAt])
+  @@index([createdAt])
 }
 
 model AdminAction {
@@ -94,6 +101,8 @@ model AdminAction {
   uploadedFileUrls String?  // JSON array
   sentViaBot      Boolean  @default(false)
   createdAt       DateTime @default(now())
+
+  @@index([caseId])
 }
 
 model ActivityLog {
@@ -103,6 +112,9 @@ model ActivityLog {
   action          String
   details         String?
   createdAt       DateTime @default(now())
+
+  @@index([caseId])
+  @@index([createdAt])
 }
 
 model CaseNote {
@@ -112,6 +124,8 @@ model CaseNote {
   text      String
   isPinned   Boolean  @default(false)
   createdAt DateTime @default(now())
+
+  @@index([caseId])
 }
 
 model BotMessage {

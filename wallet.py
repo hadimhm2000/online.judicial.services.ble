@@ -46,6 +46,7 @@ import json
 import logging
 import os
 import secrets
+import shutil
 import time
 
 import aiohttp
@@ -83,23 +84,51 @@ _PAYLOAD_ROUTED_TYPES = {"admin_fee", "panel_message", "reg_prepay", "clearance"
 _store: dict = {"users": {}, "offers": {}, "holds": {}, "autopaid": {}}
 _lock = asyncio.Lock()
 _bot: Bot | None = None
+_load_problem: str = ""
 
 wallet_router = Router()
 
 
 # ── ذخیره‌سازی ───────────────────────────────────────────────────────────
 
+def _ledger_file() -> str:
+    return os.path.splitext(STORE_FILE)[0] + "_ledger.jsonl"
+
+
+def _read_store(path: str) -> dict:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return {"users": data.get("users", {}), "offers": data.get("offers", {}),
+            "holds": data.get("holds", {}), "autopaid": data.get("autopaid", {})}
+
+
 def _load():
-    global _store
-    if not os.path.exists(STORE_FILE):
+    global _store, _load_problem
+    bak = STORE_FILE + ".bak"
+    if not os.path.exists(STORE_FILE) and not os.path.exists(bak):
         return
     try:
-        with open(STORE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        _store = {"users": data.get("users", {}), "offers": data.get("offers", {}),
-                  "holds": data.get("holds", {}), "autopaid": data.get("autopaid", {})}
+        _store = _read_store(STORE_FILE)
+        return
     except Exception as e:
         logger.error(f"[WALLET] خطا در خواندن کیف پول: {e}")
+        problem = f"فایل کیف پول خوانده نشد ({e})"
+    # ⭐ فایل خراب هرگز با کیف پول خالی بازنویسی نمی‌شود: کنار گذاشته می‌شود و
+    # آخرین نسخهٔ سالم (.bak) بارگذاری می‌شود.
+    if os.path.exists(STORE_FILE):
+        aside = f"{STORE_FILE}.corrupt-{datetime.datetime.now():%Y%m%d-%H%M%S}"
+        try:
+            os.replace(STORE_FILE, aside)
+            problem += f" — فایل خراب در {os.path.basename(aside)} نگه داشته شد"
+        except Exception as e:
+            logger.error(f"[WALLET] کنار گذاشتن فایل خراب ناموفق: {e}")
+    try:
+        _store = _read_store(bak)
+        problem += " و آخرین نسخهٔ پشتیبان (.bak) بارگذاری شد"
+    except Exception as e:
+        problem += f" و نسخهٔ پشتیبان هم خوانده نشد ({e}) — موجودی‌ها را از wallet_ledger.jsonl بازسازی کنید"
+    logger.error(f"[WALLET] {problem}")
+    _load_problem = problem
 
 
 def _save():
@@ -107,9 +136,22 @@ def _save():
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(_store, f, ensure_ascii=False, indent=1)
+            f.flush()
+            os.fsync(f.fileno())
+        if os.path.exists(STORE_FILE):
+            shutil.copyfile(STORE_FILE, STORE_FILE + ".bak")
         os.replace(tmp, STORE_FILE)
     except Exception as e:
         logger.error(f"[WALLET] خطا در ذخیرهٔ کیف پول: {e}")
+
+
+def _append_ledger(entry: dict) -> None:
+    """دفتر فقط‌افزودنی همهٔ تراکنش‌ها (tx هر کاربر به ۵۰ مورد آخر محدود است)."""
+    try:
+        with open(_ledger_file(), "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.error(f"[WALLET] ثبت در دفتر تراکنش‌ها ناموفق: {e}")
 
 
 def _user(uid) -> dict:
@@ -134,6 +176,7 @@ def _apply(uid, amount_toman: int, kind: str, note: str = ""):
     })
     u["tx"] = u["tx"][-MAX_TX_PER_USER:]
     _save()
+    _append_ledger({"uid": str(uid), **u["tx"][-1]})
 
 
 async def credit(uid, amount_toman: int, kind: str = "refund", note: str = ""):
@@ -817,3 +860,9 @@ def setup_wallet(dp, bot: Bot | None = None):
 def set_bot(bot: Bot):
     global _bot
     _bot = bot
+    if _load_problem:
+        try:
+            asyncio.get_running_loop().create_task(
+                bot.send_message(ADMIN_ID, f"🚨 کیف پول: {_load_problem}"))
+        except Exception as e:
+            logger.error(f"[WALLET] اطلاع به مدیر ناموفق: {e}")

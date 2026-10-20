@@ -215,3 +215,42 @@ def test_owed_command_lists_balances():
         assert "12,000" in text and "41" in text
 
     asyncio.run(scenario())
+
+
+# ── پشتیبان، فایل خراب و دفتر تراکنش‌ها ─────────────────────────────────────
+
+def test_save_keeps_backup_and_ledger():
+    wallet.credit_nowait(7, 1_000, "refund", "a")
+    wallet.credit_nowait(7, 2_000, "refund", "b")
+    with open(wallet.STORE_FILE + ".bak", encoding="utf-8") as f:
+        assert json.load(f)["users"]["7"]["balance"] == 1_000
+    with open(wallet._ledger_file(), encoding="utf-8") as f:
+        lines = [json.loads(x) for x in f]
+    assert [(x["uid"], x["amount"], x["balance"]) for x in lines] == [("7", 1_000, 1_000), ("7", 2_000, 3_000)]
+
+
+def test_corrupt_file_is_set_aside_and_backup_loaded(monkeypatch):
+    wallet.credit_nowait(7, 1_000)
+    wallet.credit_nowait(7, 2_000)
+    with open(wallet.STORE_FILE, "w", encoding="utf-8") as f:
+        f.write("{broken")
+    monkeypatch.setattr(wallet, "_load_problem", "")
+    wallet._store = {"users": {}, "offers": {}, "holds": {}, "autopaid": {}}
+    wallet._load()
+    assert wallet.balance(7) == 1_000
+    assert wallet._load_problem
+    folder = os.path.dirname(wallet.STORE_FILE)
+    aside = [n for n in os.listdir(folder) if n.startswith("wallet.json.corrupt-")]
+    assert len(aside) == 1
+    # ذخیرهٔ بعدی نسخهٔ پشتیبان سالم را با فایل خراب جایگزین نمی‌کند
+    wallet.credit_nowait(7, 500)
+    with open(wallet.STORE_FILE + ".bak", encoding="utf-8") as f:
+        assert json.load(f)["users"]["7"]["balance"] == 1_000
+
+
+def test_normal_load_has_no_problem(monkeypatch):
+    wallet.credit_nowait(7, 1_000)
+    monkeypatch.setattr(wallet, "_load_problem", "")
+    wallet._store = {"users": {}, "offers": {}, "holds": {}, "autopaid": {}}
+    wallet._load()
+    assert wallet.balance(7) == 1_000 and wallet._load_problem == ""
