@@ -142,3 +142,6 @@ wallet_ledger.jsonl
 
 # ── خروجی build تایپ‌اسکریپت ──
 tsconfig.tsbuildinfo
+refund_approvals.json
+refund_approvals.json.tmp
+refund_approvals.json.bak

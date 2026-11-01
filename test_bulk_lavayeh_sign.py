@@ -25,6 +25,9 @@ def env(monkeypatch, tmp_path):
     import wallet
     monkeypatch.setattr(wallet, "STORE_FILE", str(tmp_path / "wallet.json"))
     monkeypatch.setattr(wallet, "_store", {"users": {}, "offers": {}, "holds": {}, "autopaid": {}})
+    import refund_approvals
+    monkeypatch.setattr(refund_approvals, "STORE_FILE", str(tmp_path / "refund_approvals.json"))
+    monkeypatch.setattr(refund_approvals, "_store", {"items": {}})
     bot = AsyncMock()
     recorded = []
     import final_print
@@ -158,8 +161,14 @@ def test_late_row_uses_surplus_then_sign_menu(env):
         data = {"_is_bulk": True, "batch_tracking_code": BATCH, "_bulk_row_key": f"{BATCH}#2",
                 "_bulk_row_index": 2, "lavayeh_title": "لایحه دفاعیه"}
         await bulk_submissions.ensure_bulk_row_done(bot, UID, data)
-        # مازاد پیش‌پرداخت به کیف پول کاربر رفت
-        assert BULK_TASKS[BATCH]["surplus_rial"] == 0 and wallet.balance(UID) == 7_000
+        # ⭐ مازاد پیش‌پرداخت تا تایید مدیر به کیف پول نمی‌رود؛ درخواست بازگشت ثبت می‌شود
+        import refund_approvals
+        assert BULK_TASKS[BATCH]["surplus_rial"] == 0 and wallet.balance(UID) == 0
+        assert refund_approvals.pending_total_toman(UID) == 7_000
+        # مدیر تایید می‌کند → مازاد در کیف پول کاربر می‌نشیند
+        for it in refund_approvals.pending():
+            assert (await refund_approvals.decide(it["id"], True, 1))[0] == "done"
+        assert wallet.balance(UID) == 7_000
         bot.send_message.reset_mock()
         # پس از اصلاح، ردیف ۲ ثبت می‌شود
         await _register(bot, 2, "222", "a2", cost=50_000)

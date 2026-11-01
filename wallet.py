@@ -28,9 +28,10 @@ wallet.py — کیف پول (اعتبار پیش‌خرید) برای کاربر
        - موجودی کافی → on_invoice فاکتور را به‌صورت خودکار از کیف پول پرداخت
          می‌کند (همان بازپخش بند ۳). پرداخت تکراری همان فاکتور از درگاه/کارت به
          کیف پول برمی‌گردد.
-  ۵) همهٔ مبالغی که باید به کاربر برگردد (مازاد پیش‌پرداخت، نصف پیش‌پرداخت
-     جریمهٔ کدملی، بازگشت خطای فوت، مازاد دسته‌جمعی، مانده‌های قبلی) به همین
-     کیف پول واریز می‌شوند (credit / credit_nowait).
+  ۵) مبالغ بازگشتی (مازاد پیش‌پرداخت، نصف پیش‌پرداخت جریمهٔ کدملی، بازگشت
+     خطای فوت، مازاد دسته‌جمعی، لغو/ثبت ناموفق گواهی) ⭐ فقط پس از تایید مدیر
+     (refund_approvals) به همین کیف پول واریز می‌شوند. فقط پرداخت تکراری/نامربوط
+     و برگشت پرداخت ناموفقِ خودِ کیف پول خودکار و بدون تایید برمی‌گردند.
 
 دستورات مدیر:
   /wallet <آیدی>                       موجودی و آخرین تراکنش‌ها
@@ -528,10 +529,17 @@ async def wallet_menu(message: Message, state: FSMContext):
     if _pending_prepay_rial(uid) > 0:
         extra += (f"💼 پیش‌پرداخت پروندهٔ در جریان: {_pending_prepay_rial(uid) // 10:,} تومان "
                   "(در فاکتور نهایی همان پرونده کسر می‌شود)\n")
+    try:
+        import refund_approvals
+        _pr = refund_approvals.pending_total_toman(uid)
+        if _pr > 0:
+            extra += f"⏳ بازگشت وجه در انتظار تایید مدیریت: {_pr:,} تومان\n"
+    except Exception:
+        pass
     await message.answer(
         f"👛 *کیف پول*\n\nموجودی شما: *{balance(uid):,} تومان*\n{extra}\n"
-        "هر مبلغی که به شما برگردد (مازاد پیش‌پرداخت، بازگشت وجه و ...) به همین کیف پول "
-        "واریز می‌شود. موجودی کیف پول به‌صورت خودکار از فاکتورهای بعدی شما (استعلام، "
+        "هر مبلغی که به شما برگردد (مازاد پیش‌پرداخت، بازگشت وجه و ...) پس از تایید مدیریت "
+        "به همین کیف پول واریز می‌شود. موجودی کیف پول به‌صورت خودکار از فاکتورهای بعدی شما (استعلام، "
         "پیش‌پرداخت، هزینهٔ نهایی و ...) کسر می‌گردد.",
         reply_markup=_menu_kb())
 
@@ -718,6 +726,15 @@ async def admin_owed(message: Message):
         lines.append(f"• `{uid}`: {b:,} تومان" + (f" (رزرو {r:,})" if r else "") + why)
     if len(bal) > 40:
         lines.append(f"… و {len(bal) - 40} کاربر دیگر")
+
+    try:
+        import refund_approvals
+        _pend = refund_approvals.pending()
+        if _pend:
+            lines.append(f"\n⏳ بازگشت‌های منتظر تایید شما: *{refund_approvals.pending_total_toman():,} تومان* "
+                         f"({len(_pend)} مورد) — /refunds")
+    except Exception:
+        pass
 
     prepaid = getattr(runtime_state, "prepaid_registrations", {}) or {}
     pp = [(uid, int((rec or {}).get("amount_rial", 0) or 0), rec) for uid, rec in prepaid.items()]

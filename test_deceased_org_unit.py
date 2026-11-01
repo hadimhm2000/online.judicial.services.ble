@@ -16,8 +16,15 @@ import pytest
 import error_catalog
 import nid_fix_window
 import org_unit_picker
+import refund_approvals
 import runtime_state
 import wallet
+
+
+def approve_all():
+    """مدیر همهٔ درخواست‌های بازگشتِ در انتظار را تایید می‌کند."""
+    for it in refund_approvals.pending():
+        assert asyncio.run(refund_approvals.decide(it["id"], True, 1))[0] == "done"
 
 DECEASED_POPUP = "طبق اطلاعات ثبت احوال فلان  فلاني فوت کرده است و قابل انتخاب نمی باشد."
 FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -33,6 +40,9 @@ def _isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(wallet, "STORE_FILE", str(tmp_path / "wallet.json"))
     wallet._store = {"users": {}, "offers": {}, "holds": {}, "autopaid": {}}
     wallet._lock = asyncio.Lock()
+    monkeypatch.setattr(refund_approvals, "STORE_FILE", str(tmp_path / "refund_approvals.json"))
+    refund_approvals._store = {"items": {}}
+    refund_approvals._lock = asyncio.Lock()
     runtime_state.prepaid_registrations.clear()
     runtime_state.pending_nid_fix_windows.clear()
     yield
@@ -69,14 +79,20 @@ def test_cancel_deceased_refunds_half_prepay_to_wallet():
     win = nid_fix_window.start_window(7, flow="check", task_data={}, error_text=DECEASED_POPUP,
                                       kind="deceased")
     line = run(nid_fix_window.settle_cancel(7, win))
-    assert wallet.balance(7) == 100_000
+    # ⭐ تا تایید مدیر چیزی به کیف پول واریز نمی‌شود
+    assert wallet.balance(7) == 0 and refund_approvals.pending_total_toman(7) == 100_000
     assert 7 not in runtime_state.prepaid_registrations
-    assert "100,000" in line
+    assert "100,000" in line and "تایید مدیریت" in line
+    approve_all()
+    assert wallet.balance(7) == 100_000
 
 
 def test_cancel_deceased_moves_previous_credit_to_wallet():
     _prepay(8, 2_000_000, credit_rial=300_000)
     run(nid_fix_window.settle_cancel(8, {"kind": "deceased"}))
+    assert wallet.balance(8) == 0
+    assert refund_approvals.pending_total_toman(8) == 100_000 + 30_000
+    approve_all()
     assert wallet.balance(8) == 100_000 + 30_000
     assert 8 not in runtime_state.prepaid_registrations
 
@@ -84,14 +100,18 @@ def test_cancel_deceased_moves_previous_credit_to_wallet():
 def test_cancel_other_errors_keep_half_in_wallet():
     _prepay(9, 2_000_000)
     line = run(nid_fix_window.settle_cancel(9, {"kind": "birthdate"}))
-    assert wallet.balance(9) == 100_000
+    assert wallet.balance(9) == 0 and refund_approvals.pending_total_toman(9) == 100_000
     assert 9 not in runtime_state.prepaid_registrations
     assert "100,000" in line and "کیف پول" in line
+    approve_all()
+    assert wallet.balance(9) == 100_000
 
 
 def test_penalty_halves_only_prepay_not_previous_credit():
     _prepay(12, 2_000_000, credit_rial=300_000)
     run(nid_fix_window.settle_cancel(12, {"kind": "birthdate"}))
+    assert wallet.balance(12) == 0
+    approve_all()
     assert wallet.balance(12) == 100_000 + 30_000
 
 
@@ -106,6 +126,10 @@ def test_sweep_expired_deceased_and_normal_windows():
     bot.send_message = AsyncMock()
     closed = run(nid_fix_window.sweep_expired(bot))
     assert closed == 2
+    assert wallet.balance(10) == 0 and wallet.balance(11) == 0
+    assert refund_approvals.pending_total_toman(10) == 100_000
+    assert refund_approvals.pending_total_toman(11) == 100_000
+    approve_all()
     assert wallet.balance(10) == 100_000
     assert wallet.balance(11) == 100_000
     assert 11 not in runtime_state.prepaid_registrations

@@ -424,11 +424,14 @@ def adjust_final_fee_with_prepay(user_id: int, final_fee_rial: int):
     except Exception as ex:
         logging.warning(f"[REG-PREPAY] اصلاح مبلغ پیش‌پرداخت پنل ناموفق: {ex}")
     if leftover > 0:
-        # ⭐ مازاد به کیف پول کاربر می‌رود (قابل مشاهده و کسر خودکار از هزینه‌های بعدی)
+        # ⭐ مازاد فقط پس از تایید مدیر به کیف پول کاربر واریز می‌شود (refund_approvals)
         try:
-            import wallet
-            wallet.credit_nowait(user_id, leftover // 10, "refund",
-                                 f"مازاد پیش‌پرداخت {prepay.get('service_label') or ''}".strip())
+            import refund_approvals
+            if leftover >= 10:
+                refund_approvals.request_refund_nowait(
+                    user_id, leftover // 10,
+                    f"مازاد پیش‌پرداخت {prepay.get('service_label') or ''}".strip(),
+                    source="prepay_surplus")
         except Exception as ex:
             logging.error(f"[REG-PREPAY] واریز مازاد به کیف پول ناموفق — رکورد مانده حفظ شد: {ex}")
             runtime_state.prepaid_registrations[user_id] = {
@@ -487,6 +490,6 @@ def build_prepay_fee_text(final_fee_rial: int, prepay_info: dict,
     lines.append(f"💳 *مبلغ قابل پرداخت شما: {final_fee_rial:,} ریال*")
     if leftover > 0:
         lines.append(
-            f"👛 مبلغ *{leftover:,} ریال* باقی ماند و به کیف پول شما واریز شد؛ "
-            f"به‌صورت خودکار از هزینه‌های بعدی شما کسر خواهد شد.")
+            f"👛 مبلغ *{leftover:,} ریال* باقی ماند و پس از تایید مدیریت به کیف پول شما واریز می‌شود؛ "
+            f"سپس به‌صورت خودکار از هزینه‌های بعدی شما کسر خواهد شد.")
     return "\n".join(lines)

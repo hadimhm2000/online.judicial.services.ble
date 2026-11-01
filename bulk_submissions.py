@@ -1233,9 +1233,11 @@ def _surplus_to_wallet(user_id: int, tracking_code: str, surplus_rial: int) -> i
     if surplus_rial < 10:
         return 0
     try:
-        import wallet
-        wallet.credit_nowait(user_id, surplus_rial // 10, "refund",
-                             f"مازاد پیش‌پرداخت دسته‌جمعی {tracking_code}")
+        # ⭐ واریز فقط پس از تایید مدیر (refund_approvals)
+        import refund_approvals
+        refund_approvals.request_refund_nowait(
+            user_id, surplus_rial // 10, f"مازاد پیش‌پرداخت دسته‌جمعی {tracking_code}",
+            source="bulk_surplus", dedupe_key=f"bulk-surplus:{tracking_code}")
         task_data["surplus_rial"] = 0
         return surplus_rial // 10
     except Exception as ex:
@@ -1276,7 +1278,8 @@ async def finalize_bulk_batch(bot, user_id: int, tracking_code: str):
         elif remaining < 0:
             diff_line = f"\u2705 پیش‌پرداخت پوشش داده (مازاد: {abs(remaining):,} ریال)"
             if surplus_to_wallet:
-                diff_line += f"\n\U0001f45b مازاد ({surplus_to_wallet:,} تومان) به کیف پول شما واریز شد."
+                diff_line += (f"\n\U0001f45b مازاد ({surplus_to_wallet:,} تومان) پس از تایید "
+                              "مدیریت به کیف پول شما واریز می‌شود.")
         else:
             diff_line = "\u2705 پیش‌پرداخت دقیقاً برابر هزینه سامانه"
 
@@ -1331,5 +1334,6 @@ async def finalize_bulk_batch(bot, user_id: int, tracking_code: str):
             )
         await _safe_send(bot, user_id,
             f"\u274c هیچ ردیفی با موفقیت ثبت نشد. لطفاً خطاهای گزارش‌شده را برطرف و مجدداً تلاش فرمایید.{fail_lines}"
-            + (f"\n\n\U0001f45b پیش‌پرداخت ({surplus_to_wallet:,} تومان) به کیف پول شما واریز شد و از "
-               f"هزینه‌های بعدی به‌صورت خودکار کسر می‌شود." if surplus_to_wallet else ""))
+            + (f"\n\n\U0001f45b پیش‌پرداخت ({surplus_to_wallet:,} تومان) پس از تایید مدیریت به کیف "
+               f"پول شما واریز می‌شود و از هزینه‌های بعدی به‌صورت خودکار کسر می‌شود."
+               if surplus_to_wallet else ""))
