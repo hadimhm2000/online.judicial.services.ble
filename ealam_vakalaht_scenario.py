@@ -536,6 +536,9 @@ async def process_ealam_vakalaht_task(data: dict, bot: Bot):
         except EalamFatalError as e:
             logging.error(f"[EALAM] خطای قطعی user={user_id}: {e}")
             await bot.send_message(user_id, f"⚠️ *خطای قطعی:* {str(e)[:200]}")
+            import refund_approvals   # ⭐ بازگشت پیش‌پرداخت فقط با تایید مدیر
+            refund_approvals.request_failure_refund(
+                user_id, f"ealam:{tracking_code or user_id}", "اعلام وکالت")
             await log_event(
                 "خطای سامانه", "اعلام وکالت", str(user_id), user_id,
                 tracking_code=tracking_code, doc_name="اعلام وکالت",
@@ -562,6 +565,9 @@ async def process_ealam_vakalaht_task(data: dict, bot: Bot):
                     "⚠️ ثبت اعلام وکالت با اختلال مواجه شد. پشتیبانی پیگیری خواهد کرد."
                 )
                 await bot.send_message(ADMIN_ID, f"❌ [EALAM] کاربر {user_id} پس از {max_attempts} تلاش ناموفق.")
+                import refund_approvals   # ⭐ بازگشت پیش‌پرداخت فقط با تایید مدیر
+                refund_approvals.request_failure_refund(
+                    user_id, f"ealam:{tracking_code or user_id}", "اعلام وکالت")
                 await log_event(
                     "خطای سامانه", "اعلام وکالت", str(user_id), user_id,
                     tracking_code=tracking_code, doc_name="اعلام وکالت",

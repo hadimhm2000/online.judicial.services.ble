@@ -361,6 +361,11 @@ def pop_prepaid(user_id: int):
     """
     prepay = runtime_state.prepaid_registrations.pop(user_id, None)
     if prepay:
+        try:   # پیش‌پرداخت مصرف شد → درخواست بازگشتِ شکست قبلی دیگر معتبر نیست
+            import refund_approvals
+            refund_approvals.cancel_pending_for_user(user_id, "service_fail")
+        except Exception:
+            pass
         try:
             stash = getattr(runtime_state, "consumed_prepay_for_panel", None)
             if not isinstance(stash, dict):

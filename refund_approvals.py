@@ -100,7 +100,7 @@ def pending_total_toman(uid=None) -> int:
 # ── ثبت درخواست ─────────────────────────────────────────────────────────
 
 def request_refund_nowait(uid, toman: int, note: str, source: str = "",
-                          dedupe_key: str = "") -> str | None:
+                          dedupe_key: str = "", extra: dict | None = None) -> str | None:
     """ثبت درخواست بازگشت وجه (بدون واریز). هم‌زمان؛ در حلقهٔ asyncio اتمیک است.
 
     dedupe_key: اگر درخواست در انتظار/تاییدشده‌ای با همین کلید باشد، درخواست
@@ -118,6 +118,7 @@ def request_refund_nowait(uid, toman: int, note: str, source: str = "",
         "id": rid, "uid": int(uid), "toman": toman, "note": (note or "")[:200],
         "source": source, "dedupe_key": dedupe_key, "status": ST_PENDING,
         "created_at": time.time(), "notified": False,
+        **(extra or {}),
     }
     _save()
     logger.info(f"[REFUND] درخواست بازگشت {rid}: کاربر {uid}، {toman:,} تومان، {note} ({source})")
@@ -139,6 +140,67 @@ def cancel_pending(dedupe_key: str) -> int:
     if n:
         _save()
     return n
+
+
+def cancel_pending_for_user(uid, source: str) -> int:
+    """لغو درخواست‌های در انتظارِ یک کاربر با یک منبع (مثلاً پیش‌پرداخت مصرف شد)."""
+    n = 0
+    for v in _store["items"].values():
+        if (str(v.get("uid")) == str(uid) and v.get("source") == source
+                and v.get("status") == ST_PENDING):
+            v["status"] = ST_CANCELLED
+            v["decided_at"] = time.time()
+            n += 1
+    if n:
+        _save()
+    return n
+
+
+# ── شکست ثبت در سرویس‌ها (لایحه، اظهارنامه، تجدیدنظر، دادخواست، اعلام وکالت) ──
+
+_TASK_LABELS = {"lavayeh": "لایحه", "ezhhar": "اظهارنامه", "tn": "دعاوی اعتراضی"}
+
+
+def request_failure_refund(uid, key: str, label: str) -> str | None:
+    """⭐ ثبت ناموفق/ناقص: درخواست بازگشت پیش‌پرداختِ پروندهٔ در جریان (با تایید مدیر).
+
+    فقط «پیش‌پرداختِ پرداخت‌شده» برمی‌گردد (نه تخفیف و نه مانده/بستانکاری قبلی). با تایید
+    مدیر، همان مبلغ از رکورد پیش‌پرداخت هم حذف می‌شود تا در فاکتور بعدی دوباره کسر نشود.
+    اگر پیش‌پرداخت قبل از تایید مصرف شود، درخواست خودکار لغو می‌شود. خروجی: شناسه یا None.
+    """
+    try:
+        import runtime_state
+        rec = runtime_state.prepaid_registrations.get(int(uid))
+        if not rec:
+            return None
+        # عین prepay_registration._split_record: بخش «پیش‌پرداخت» جدا از «مانده/بستانکاری»
+        amount = max(0, int(rec.get("amount_rial", 0) or 0))
+        if "prepay_paid_rial" in rec:
+            paid_rial = int(rec.get("prepay_paid_rial", 0) or 0)
+        else:
+            paid_rial = 0 if rec.get("manual") else amount
+        paid_rial = max(0, min(paid_rial, amount))
+        discount = int(rec.get("discount_rial", 0) or 0)
+        money_rial = max(0, paid_rial - discount)       # پولی که واقعاً از کاربر گرفته شده
+        if money_rial < 10:
+            return None
+        return request_refund_nowait(
+            uid, money_rial // 10, f"ثبت ناموفق {label} ({key}) — بازگشت پیش‌پرداخت",
+            source="service_fail", dedupe_key=f"svc-fail:{key}",
+            extra={"consume_prepaid_rial": paid_rial,
+                   "prepaid_charge_id": str(rec.get("charge_id", "") or "")})
+    except Exception as e:
+        logger.error(f"[REFUND] ثبت درخواست بازگشت شکست {key} ناموفق: {e}", exc_info=True)
+        return None
+
+
+def on_incomplete_task(key: str, info) -> None:
+    """از runtime_state.incomplete_tasks صدا زده می‌شود: هر تسک ناقصِ تازه = یک شکست ثبت."""
+    if not isinstance(info, dict) or not info.get("user_id"):
+        return
+    if (info.get("task_data") or {}).get("_is_bulk"):
+        return    # ردیف دسته‌جمعی: مازاد/شکست بچ مسیر خودش را دارد
+    request_failure_refund(info["user_id"], str(key), _TASK_LABELS.get(info.get("type"), "درخواست"))
 
 
 # ── اطلاع به مدیر ───────────────────────────────────────────────────────
@@ -184,7 +246,8 @@ async def notify_pending(bot: Bot):
 
 async def decide(rid: str, approve: bool, by: int = 0) -> tuple[str, dict | None]:
     """هستهٔ تصمیم مدیر. خروجی: (نتیجه، رکورد) با نتیجه یکی از:
-    "done" (انجام شد) | "missing" | "closed" (قبلاً بسته شده) | "failed" (واریز ناموفق؛ هنوز pending).
+    "done" (انجام شد) | "missing" | "closed" (قبلاً بسته شده) | "stale" (پیش‌پرداخت مصرف/جایگزین
+    شده؛ درخواست لغو شد) | "failed" (واریز ناموفق؛ هنوز pending).
     وضعیت پیش از واریز تغییر می‌کند، پس کلیک/فراخوانی دوباره هرگز دوبار واریز نمی‌کند."""
     import wallet
     async with _lock:
@@ -193,6 +256,24 @@ async def decide(rid: str, approve: bool, by: int = 0) -> tuple[str, dict | None
             return "missing", None
         if it["status"] != ST_PENDING:
             return "closed", it
+        backup = None
+        if approve and it.get("consume_prepaid_rial"):
+            # بازگشت پیش‌پرداخت: باید هنوز همان رکورد پیش‌پرداخت موجود باشد؛ وگرنه
+            # (مصرف شده یا جایگزین شده) واریز، پول را دوبار به کاربر می‌دهد.
+            import runtime_state
+            rec = runtime_state.prepaid_registrations.get(int(it["uid"]))
+            if not rec or str(rec.get("charge_id", "") or "") != it.get("prepaid_charge_id", ""):
+                it["status"] = ST_CANCELLED
+                it["decided_at"] = time.time()
+                _save()
+                return "stale", it
+            backup = dict(rec)
+            left = max(0, int(rec.get("amount_rial", 0) or 0) - int(it["consume_prepaid_rial"]))
+            if left <= 0:
+                runtime_state.prepaid_registrations.pop(int(it["uid"]), None)
+            else:
+                rec.update({"amount_rial": left, "amount_toman": left // 10,
+                            "prepay_paid_rial": 0, "discount_rial": 0})
         it["status"] = ST_APPROVED if approve else ST_REJECTED
         it["decided_at"] = time.time()
         it["decided_by"] = by
@@ -202,6 +283,9 @@ async def decide(rid: str, approve: bool, by: int = 0) -> tuple[str, dict | None
                 await wallet.credit(it["uid"], int(it["toman"]), "refund", it.get("note", "")[:100])
             except Exception as e:
                 # واریز نشد → به حالت انتظار برمی‌گردد تا مدیر دوباره بزند
+                if backup is not None:
+                    import runtime_state
+                    runtime_state.prepaid_registrations[int(it["uid"])] = backup
                 it["status"] = ST_PENDING
                 it.pop("decided_at", None)
                 it.pop("decided_by", None)
@@ -227,6 +311,15 @@ async def _decide(callback: CallbackQuery, approve: bool):
         return
     if result == "failed":
         await callback.answer("واریز ناموفق بود؛ دوباره تلاش کنید.", show_alert=True)
+        return
+    if result == "stale":
+        await callback.answer("پیش‌پرداخت این کاربر قبلاً مصرف یا جایگزین شده؛ درخواست لغو شد.",
+                              show_alert=True)
+        try:
+            await callback.message.edit_text(
+                f"{_admin_text(it)}\n\n⚠️ لغو شد: پیش‌پرداخت قبلاً مصرف/جایگزین شده بود.", reply_markup=None)
+        except Exception:
+            pass
         return
     await callback.answer("واریز شد." if approve else "رد شد.")
     verdict = "✅ تایید و واریز شد" if approve else "❌ رد شد"

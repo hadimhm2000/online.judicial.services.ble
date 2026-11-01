@@ -870,6 +870,11 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                 # ذخیره checkpoint با اطلاعات منضمات
                 if task_key_attach and upload_ok:
                     runtime_state.incomplete_tasks.pop(task_key_attach, None)
+                    try:
+                        import refund_approvals
+                        refund_approvals.cancel_pending(f"svc-fail:{task_key_attach}")
+                    except Exception:
+                        pass
 
                 # اگر ناموفق بود، checkpoint از داخل _upload_attachment_groups ذخیره شده
                 # فقط نیاز به ذخیره اطلاعات پایه تسک داریم
