@@ -205,6 +205,14 @@ async def send_check_submission_to_admin(bot: Bot, admin_id: int, user_id: int, 
             if group.get("is_aasar_notice"):
                 notice_count += len(group.get("images", []))
         aasar_hazineh_lines += f"📷 تصویر ابلاغیه: {notice_count} تصویر\n"
+    # ⭐ اعسار از پرداخت مهریه / اعسار از محکوم به (دستور کارفرما) —
+    #   شماره پرونده (دلايل → chk3 + ReferedCaseNo3) + شماره دادنامه بدوی
+    #   (بعد از خواسته → txtOtherData...)
+    elif data.get("check_request_title") in ("اعسار از پرداخت مهریه",
+                                             "اعسار از پرداخت محکوم به"):
+        aasar_hazineh_lines = (
+            f"🔢 شماره پرونده: {data.get('check_aasar_case_no','') or '-'}\n"
+            f"📄 شماره دادنامه بدوی: {data.get('check_aasar_dadnameh_no','') or '-'}\n")
 
     # استشهادیه (پیوست الزامی اعسار)
     estesh_count = 0

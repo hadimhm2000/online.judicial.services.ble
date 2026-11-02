@@ -45,14 +45,25 @@ LAVAYEH_SIGN_NO_ACTION_TIMEOUT = 60 * 60  # ۶۰ دقیقه بدون اقدام
 
 # ⭐ ۱۴۰۵/۰۷ — دستور کارفرما: امضای ناموفق (خطای ارسال کد یا ثبت امضا) →
 # ۲۰ دقیقه بعد درخواست امضای مجدد فعال می‌شود (همان مسیر «رمز اشتباه»)
+# ⭐ دستور جدید کارفرما: هرگاه کاربر موفق به درج امضا نشد، دیگر به کاربر
+# گفته نمی‌شود که به پشتیبان پیام دهد؛ به‌جای آن کلید «پرونده‌های در
+# انتظار» در گزینه‌های آخر ربات معرفی می‌شود تا کاربر بر اساس کد رهگیری
+# که نمایش داده می‌شود، روند امضا یا پرداخت خود را تکمیل کند.
+SIGN_PENDING_CASES_GUIDE = (
+    "🖊 جهت ادامه، از گزینه‌های آخر ربات کلید «پرونده‌های در انتظار امضا و پرداخت» را "
+    "انتخاب کنید؛ بر اساس کد رهگیری که نمایش داده می‌شود، می‌توانید روند امضا "
+    "یا پرداخت خود را تکمیل کنید."
+)
 SIGN_FAILED_RETRY_TEXT = (
     "⚠️ *امضا ناموفق بود.*\n\n"
-    "۲۰ دقیقه دیگر، درخواست امضای مجدد فعال می‌شود و مجدداً درخواست امضای خود را ارسال نمائید."
+    "۲۰ دقیقه دیگر، درخواست امضای مجدد فعال می‌شود و مجدداً درخواست امضای خود را ارسال نمائید.\n\n"
+    + SIGN_PENDING_CASES_GUIDE
 )
 # ⭐ ورود همزمان (انقضای نشست) هنگام ثبت کد امضا — مدیر لاگین مجدد می‌کند
 SIGN_SANA_DISRUPTED_TEXT = (
     "⚠️ *سامانه قضایی در حال حاضر دچار اختلال است و امضای شما ثبت نشد.*\n\n"
-    "۲۰ دقیقه دیگر، درخواست امضای مجدد فعال می‌شود و مجدداً درخواست امضای خود را ارسال نمائید."
+    "۲۰ دقیقه دیگر، درخواست امضای مجدد فعال می‌شود و مجدداً درخواست امضای خود را ارسال نمائید.\n\n"
+    + SIGN_PENDING_CASES_GUIDE
 )
 
 
@@ -254,9 +265,8 @@ async def on_lavayeh_sign_persons_loaded(bot: Bot, user_id: int, persons: list, 
         await bot.send_message(
             user_id,
             "⚠️ *در جدول امضا، شخصی برای ارسال کد موقت یافت نشد.*\n\n"
-            "احتمالاً همه اشخاص قبلاً امضا کرده‌اند یا نوع امضا متفاوت است.\n"
-            "📲 چاپ لایحه خود را جهت ادامه تکمیل نمودن به واتساپ به شماره "
-            "*09306186888* ارسال فرمائید.",
+            "احتمالاً همه اشخاص قبلاً امضا کرده‌اند یا نوع امضا متفاوت است.\n\n"
+            + SIGN_PENDING_CASES_GUIDE,
             reply_markup=restart_kb
         )
         _ended_sign = runtime_state.pending_lavayeh_sign.pop(user_id, None)
@@ -343,7 +353,7 @@ async def on_lavayeh_sign_code_sent_failure(bot: Bot, user_id: int, state: FSMCo
     await bot.send_message(
         user_id,
         "⚠️ *سامانه در ارسال کد موقت با مشکل مواجه شد.*\n\n"
-        "📲 لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ پیام دهید.",
+        + SIGN_PENDING_CASES_GUIDE,
         reply_markup=restart_kb
     )
     _ended_sign = runtime_state.pending_lavayeh_sign.pop(user_id, None)
@@ -468,9 +478,8 @@ async def on_lavayeh_sign_sana_not_registered(bot: Bot, user_id: int, error_text
         user_id,
         f"⚠️ *خطا در ثبت امضا:*\n\n"
         f"{error_text}\n\n"
-        "امضا در سامانه ثنا ثبت نیست، ابتدا به یکی از دفاتر خدمات قضائی مراجعه کنند و پس از تایید امضا "
-        "با شماره *09306186888* در واتساپ هماهنگ کنید، جهت ارسال کد مجدد.\n"
-        "باتشکر",
+        "امضا در سامانه ثنا ثبت نیست؛ ابتدا به یکی از دفاتر خدمات قضائی مراجعه و امضای خود را ثبت نمایید.\n\n"
+        + SIGN_PENDING_CASES_GUIDE,
         reply_markup=restart_kb
     )
     _ended_sign = runtime_state.pending_lavayeh_sign.pop(user_id, None)
@@ -576,8 +585,7 @@ async def _lavayeh_no_action_60min_watcher(bot: Bot, user_id: int, state: FSMCon
         await bot.send_message(
             user_id,
             "⏰ *مهلت امضا به پایان رسید.*\n\n"
-            "لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ "
-            "پیام دهید تا امور شما تکمیل گردد.",
+            + SIGN_PENDING_CASES_GUIDE,
             reply_markup=restart_kb)
         await bot.send_message(
             ADMIN_ID,
@@ -639,7 +647,7 @@ async def lavayeh_sign_resend_no(message: Message, state: FSMContext):
 async def lavayeh_sign_later_yes(message: Message, state: FSMContext):
     await message.answer(
         "✅ *لایحه ثبتی تا ۲۴ ساعت آینده قابلیت تکمیل شدن را دارد.*\n\n"
-        "📲 لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ پیام دهید.",
+        + SIGN_PENDING_CASES_GUIDE,
         reply_markup=restart_kb)
     _ended_sign = runtime_state.pending_lavayeh_sign.pop(message.from_user.id, None)
     await _bulk_sign_finished(message.bot, message.from_user.id, _ended_sign, signed=False)
@@ -649,7 +657,8 @@ async def lavayeh_sign_later_yes(message: Message, state: FSMContext):
 @lavayeh_sign_router.message(Form.lavayeh_sign_later_prompt, F.text == "خیر")
 async def lavayeh_sign_later_no(message: Message, state: FSMContext):
     await message.answer(
-        "📲 لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ پیام دهید.",
+        "برای تکمیل روند امضا یا پرداخت خود:\n\n"
+        + SIGN_PENDING_CASES_GUIDE,
         reply_markup=restart_kb)
     _ended_sign = runtime_state.pending_lavayeh_sign.pop(message.from_user.id, None)
     await _bulk_sign_finished(message.bot, message.from_user.id, _ended_sign, signed=False)
@@ -856,8 +865,8 @@ async def on_ezhhar_sign_persons_loaded(bot: Bot, user_id: int, persons: list, s
         await bot.send_message(
             user_id,
             "⚠️ *در جدول امضا اظهارنامه، شخصی برای ارسال کد موقت یافت نشد.*\n\n"
-            "احتمالاً همه اشخاص قبلاً امضا کرده‌اند.\n"
-            "لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ پیام دهید.",
+            "احتمالاً همه اشخاص قبلاً امضا کرده‌اند.\n\n"
+            + SIGN_PENDING_CASES_GUIDE,
             reply_markup=restart_kb
         )
         _ended_sign = runtime_state.pending_ezhhar_sign.pop(user_id, None)
@@ -940,7 +949,7 @@ async def on_ezhhar_sign_code_sent_failure(bot: Bot, user_id: int, state: FSMCon
     await bot.send_message(
         user_id,
         "⚠️ *سامانه در ارسال کد موقت با مشکل مواجه شد.*\n\n"
-        "📲 لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ پیام دهید.",
+        + SIGN_PENDING_CASES_GUIDE,
         reply_markup=restart_kb
     )
     _ended_sign = runtime_state.pending_ezhhar_sign.pop(user_id, None)
@@ -1046,9 +1055,8 @@ async def on_ezhhar_sign_sana_not_registered(bot: Bot, user_id: int, error_text:
         user_id,
         f"⚠️ *خطا در ثبت امضا:*\n\n"
         f"{error_text}\n\n"
-        "امضا در سامانه ثنا ثبت نیست، ابتدا به یکی از دفاتر خدمات قضائی مراجعه کنند و پس از تایید امضا "
-        "با شماره *09306186888* در واتساپ هماهنگ کنید، جهت ارسال کد مجدد.\n"
-        "باتشکر",
+        "امضا در سامانه ثنا ثبت نیست؛ ابتدا به یکی از دفاتر خدمات قضائی مراجعه و امضای خود را ثبت نمایید.\n\n"
+        + SIGN_PENDING_CASES_GUIDE,
         reply_markup=restart_kb
     )
     _ended_sign = runtime_state.pending_ezhhar_sign.pop(user_id, None)
@@ -1162,8 +1170,7 @@ async def _ezhhar_no_action_60min_watcher(bot: Bot, user_id: int, state: FSMCont
         await bot.send_message(
             user_id,
             "⏰ *مهلت امضا به پایان رسید.*\n\n"
-            "لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ "
-            "پیام دهید تا امور شما تکمیل گردد.",
+            + SIGN_PENDING_CASES_GUIDE,
             reply_markup=restart_kb)
         await bot.send_message(
             ADMIN_ID,
@@ -1225,7 +1232,7 @@ async def ezhhar_sign_resend_no(message: Message, state: FSMContext):
 async def ezhhar_sign_later_yes(message: Message, state: FSMContext):
     await message.answer(
         "✅ *اظهارنامه تا ۲۴ ساعت آینده قابلیت تکمیل شدن را دارد.*\n\n"
-        "📲 لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ پیام دهید.",
+        + SIGN_PENDING_CASES_GUIDE,
         reply_markup=restart_kb)
     _ended_sign = runtime_state.pending_ezhhar_sign.pop(message.from_user.id, None)
     await _bulk_sign_finished(message.bot, message.from_user.id, _ended_sign, signed=False)
@@ -1235,7 +1242,8 @@ async def ezhhar_sign_later_yes(message: Message, state: FSMContext):
 @lavayeh_sign_router.message(Form.ezhhar_sign_later_prompt, F.text == "خیر")
 async def ezhhar_sign_later_no(message: Message, state: FSMContext):
     await message.answer(
-        "📲 لطفاً جهت ثبت امضا به شماره *09306186888* در واتساپ پیام دهید.",
+        "برای تکمیل روند امضا یا پرداخت خود:\n\n"
+        + SIGN_PENDING_CASES_GUIDE,
         reply_markup=restart_kb)
     _ended_sign = runtime_state.pending_ezhhar_sign.pop(message.from_user.id, None)
     await _bulk_sign_finished(message.bot, message.from_user.id, _ended_sign, signed=False)

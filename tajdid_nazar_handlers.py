@@ -81,6 +81,9 @@ from tajdid_nazar_scenario import (
     EADAH_KIFRI_GROUNDS,
     get_grounds_list,
 )
+# ⭐ راهنمای «پرونده‌های در انتظار» برای پیام‌های امضای ناموفق (دستور کارفرما:
+# به‌جای ارجاع به پشتیبان، کاربر به کلید «پرونده‌های در انتظار» هدایت می‌شود)
+from lavayeh_sign_handlers import SIGN_PENDING_CASES_GUIDE
 
 tajdid_nazar_router = Router()
 logger = logging.getLogger(__name__)
@@ -3923,9 +3926,8 @@ async def on_tn_sign_persons_loaded(bot: Bot, user_id: int, persons: list, state
         await bot.send_message(
             user_id,
             "⚠️ *در جدول امضا، شخصی برای ارسال کد موقت یافت نشد.*\n\n"
-            "احتمالاً همه اشخاص قبلاً امضا کرده‌اند یا نوع امضا متفاوت است.\n"
-            f"📲 چاپ دعوی اعتراضی خود را جهت ادامه تکمیل نمودن به واتساپ به شماره "
-            f"*{TN_SUPPORT_NUMBER}* ارسال فرمائید.",
+            "احتمالاً همه اشخاص قبلاً امضا کرده‌اند یا نوع امضا متفاوت است.\n\n"
+            + SIGN_PENDING_CASES_GUIDE,
             reply_markup=restart_kb
         )
         runtime_state.pending_tn_sign.pop(user_id, None)
@@ -3992,7 +3994,7 @@ async def on_tn_sign_code_sent_failure(bot: Bot, user_id: int, state: FSMContext
     await bot.send_message(
         user_id,
         "⚠️ *سامانه در ارسال کد موقت با مشکل مواجه شد.*\n\n"
-        f"📲 لطفاً جهت ثبت امضا به شماره *{TN_SUPPORT_NUMBER}* در واتساپ پیام دهید.",
+        + SIGN_PENDING_CASES_GUIDE,
         reply_markup=restart_kb
     )
     runtime_state.pending_tn_sign.pop(user_id, None)
@@ -4077,9 +4079,8 @@ async def on_tn_sign_sana_not_registered(bot: Bot, user_id: int, error_text: str
         user_id,
         f"⚠️ *خطا در ثبت امضا:*\n\n"
         f"{error_text}\n\n"
-        "امضا در سامانه ثنا ثبت نیست، ابتدا به یکی از دفاتر خدمات قضائی مراجعه کنند و پس از تایید امضا "
-        f"با شماره *{TN_SUPPORT_NUMBER}* در واتساپ هماهنگ کنید، جهت ارسال کد مجدد.\n"
-        "باتشکر",
+        "امضا در سامانه ثنا ثبت نیست؛ ابتدا به یکی از دفاتر خدمات قضائی مراجعه و امضای خود را ثبت نمایید.\n\n"
+        + SIGN_PENDING_CASES_GUIDE,
         reply_markup=restart_kb
     )
     runtime_state.pending_tn_sign.pop(user_id, None)
@@ -4094,7 +4095,8 @@ async def on_tn_sign_submit_failure(bot: Bot, user_id: int, state: FSMContext,
 
 async def _tn_sign_failed_retry_later(bot: Bot, user_id: int, state: FSMContext,
                                       sana_disrupted: bool = False):
-    from lavayeh_sign_handlers import SIGN_FAILED_RETRY_TEXT, SIGN_SANA_DISRUPTED_TEXT
+    from lavayeh_sign_handlers import (SIGN_FAILED_RETRY_TEXT, SIGN_SANA_DISRUPTED_TEXT,
+                                       SIGN_PENDING_CASES_GUIDE)
     await bot.send_message(user_id, SIGN_SANA_DISRUPTED_TEXT if sana_disrupted else SIGN_FAILED_RETRY_TEXT,
                            reply_markup=ReplyKeyboardRemove())
     await state.set_state(Form.tn_sign_wrong_code_wait)
@@ -4176,8 +4178,7 @@ async def _tn_no_action_60min_watcher(bot: Bot, user_id: int, state: FSMContext)
         await bot.send_message(
             user_id,
             "⏰ *مهلت امضا به پایان رسید.*\n\n"
-            f"لطفاً جهت ثبت امضا به شماره *{TN_SUPPORT_NUMBER}* در واتساپ "
-            "پیام دهید تا امور شما تکمیل گردد.",
+            + SIGN_PENDING_CASES_GUIDE,
             reply_markup=restart_kb)
         await bot.send_message(ADMIN_ID, f"⏰ [TN-SIGN] کاربر {user_id} پس از ۶۰ دقیقه اقدامی نکرد.")
     except Exception as e:
@@ -4277,7 +4278,7 @@ async def tn_sign_later_yes(message: Message, state: FSMContext):
 async def tn_sign_later_no(message: Message, state: FSMContext):
     await message.answer(
         "✅ *دعوی اعتراضی ثبتی تا ۲۴ ساعت آینده قابلیت تکمیل شدن را دارد.*\n\n"
-        f"📲 لطفاً جهت ثبت امضا به شماره *{TN_SUPPORT_NUMBER}* در واتساپ پیام دهید.",
+        + SIGN_PENDING_CASES_GUIDE,
         reply_markup=restart_kb)
     runtime_state.pending_tn_sign.pop(message.from_user.id, None)
     await state.clear()

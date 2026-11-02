@@ -95,6 +95,15 @@ CHECK_AASAR_TITLES = ["اعسار از پرداخت هزینه دادرسی",
 #        #txtOtherData45F44C153C3141D28DBE869FD746AB36 (حداکثر ۱۸ رقم)
 #     ۳. تصویر ابلاغیه → در منضمات با نوع «ساير ضمائم» (حداقل ۱، حداکثر ۲ تصویر)
 CHECK_AASAR_HAZINEH_TITLE = "اعسار از پرداخت هزینه دادرسی"
+# ⭐ دستور کارفرما — «اعسار از پرداخت مهریه» و «اعسار از محکوم به»:
+#   این دو عنوان نیز دو فیلد الزامی دارند که از کاربر گرفته می‌شود:
+#     ۱. شماره پرونده ۱۶ یا ۱۸ رقمی → در سامانه: مرحلهٔ «دلايل» → تیک #chk3
+#        و درج در #ReferedCaseNo3
+#     ۲. شماره دادنامه بدوی → درست بعد از انتخاب خواسته، درج در فیلد
+#        otherData (#txtOtherData... — حداکثر ۱۸ رقم)
+CHECK_AASAR_MAHRIEH_TITLE = "اعسار از پرداخت مهریه"
+CHECK_AASAR_MAHKUM_TITLE = "اعسار از پرداخت محکوم به"
+CHECK_AASAR_MAHRIEH_MAHKUM_TITLES = (CHECK_AASAR_MAHRIEH_TITLE, CHECK_AASAR_MAHKUM_TITLE)
 # ⭐ عناوین مجاز انتخاب عنوان خواسته (شامل عناوین اعسار)
 CHECK_ALL_VALID_TITLES = CHECK_FAMILY_TITLES + list(CHECK_AASAR_TITLES) + [
     "صدور اجرائیه چک", "مطالبه وجه چک", "مطالبه وجه بابت..."]
@@ -2462,12 +2471,54 @@ async def check_aasar_case_no_handler(message: Message, state: FSMContext):
         return
 
     await state.update_data(check_aasar_case_no=normalized)
+    data = await state.get_data()
+    request_title = data.get("check_request_title", "")
+    # ⭐ «اعسار از پرداخت مهریه» / «اعسار از محکوم به» — پس از شماره پرونده،
+    # شماره دادنامه بدوی پرسیده می‌شود (به‌جای شماره ابلاغیه)
+    if request_title in CHECK_AASAR_MAHRIEH_MAHKUM_TITLES:
+        await message.answer(
+            f"✅ شماره پرونده `{normalized}` ثبت شد.\n\n"
+            "۲/۲ — لطفاً *شماره دادنامه بدوی* را وارد فرمایید:\n"
+            "_(فقط عدد — حداکثر ۱۸ رقم)_",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.check_aasar_dadnameh_no)
+        return
     await message.answer(
         f"✅ شماره پرونده `{normalized}` ثبت شد.\n\n"
         "۲/۳ — لطفاً *شماره ابلاغیه* را وارد فرمایید:\n"
         "_(فقط عدد — حداکثر ۱۸ رقم)_",
         reply_markup=back_only_kb)
     await state.set_state(Form.check_aasar_notice_no)
+
+
+@check_router.message(Form.check_aasar_dadnameh_no)
+async def check_aasar_dadnameh_no_handler(message: Message, state: FSMContext):
+    """⭐ اعسار از پرداخت مهریه / اعسار از محکوم به — شماره دادنامه بدوی
+    (الزامی؛ در سامانه در فیلد otherData درست بعد از انتخاب خواسته درج می‌شود)."""
+    text = (message.text or "").strip()
+
+    if text == "🔙 بازگشت":
+        await message.answer(
+            "۱/۲ — لطفاً *شماره پرونده* (دادنامه صادرکننده) را وارد فرمایید:\n"
+            "_(۱۶ یا ۱۸ رقم — فقط عدد)_",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.check_aasar_case_no)
+        return
+
+    normalized = _to_en(text)
+    # ⭐ شماره دادنامه بدوی عددی با حداکثر ۱۸ رقم (محدودیت فیلد سامانه)
+    if not re.fullmatch(r"\d{1,18}", normalized):
+        await message.answer(
+            "⚠️ *شماره دادنامه بدوی* باید فقط *عدد* و حداکثر *۱۸ رقم* باشد.\n\n"
+            "لطفاً مجدداً وارد فرمایید:",
+            reply_markup=back_only_kb)
+        return
+
+    await state.update_data(check_aasar_dadnameh_no=normalized)
+    await message.answer(
+        f"✅ شماره دادنامه بدوی `{normalized}` ثبت شد.")
+    # ادامهٔ زنجیرهٔ اعسار: استشهادیه → لیست اموال → دادنامه → ...
+    await _ask_check_next_after_images(message, state)
 
 
 @check_router.message(Form.check_aasar_notice_no)
@@ -3152,6 +3203,9 @@ async def _ask_check_next_after_images(message: Message, state: FSMContext):
         #   سه فیلد الزامی گرفته می‌شود: شماره پروندهٔ ۱۶/۱۸ رقمی → شماره ابلاغیه →
         #   تصویر ابلاغیه (۱ تا ۲ عکس). (فلگ‌ها با data.get چک می‌شوند تا در
         #   مسیر بازگشت/ویرایش دوباره پرسیده نشود.)
+        # ⭐ دستور جدید کارفرما — «اعسار از پرداخت مهریه» و «اعسار از محکوم به»:
+        #   دو فیلد الزامی: شماره پروندهٔ ۱۶/۱۸ رقمی → شماره دادنامه بدوی
+        #   (حداکثر ۱۸ رقم — درج در فیلد otherData بعد از انتخاب خواسته).
         if request_title == CHECK_AASAR_HAZINEH_TITLE:
             if not data.get("check_aasar_case_no"):
                 await message.answer(
@@ -3174,6 +3228,22 @@ async def _ask_check_next_after_images(message: Message, state: FSMContext):
                     "_(الزامی — حداقل ۱ و حداکثر ۲ تصویر)_",
                     reply_markup=check_images_continue_kb)
                 await state.set_state(Form.check_aasar_notice_image)
+                return
+        elif request_title in CHECK_AASAR_MAHRIEH_MAHKUM_TITLES:
+            if not data.get("check_aasar_case_no"):
+                await message.answer(
+                    "🔢 *اطلاعات اعسار:*\n\n"
+                    "۱/۲ — لطفاً *شماره پرونده* (دادنامه صادرکننده) را وارد فرمایید:\n"
+                    "_(۱۶ یا ۱۸ رقم — فقط عدد)_",
+                    reply_markup=back_only_kb)
+                await state.set_state(Form.check_aasar_case_no)
+                return
+            if not data.get("check_aasar_dadnameh_no"):
+                await message.answer(
+                    "۲/۲ — لطفاً *شماره دادنامه بدوی* را وارد فرمایید:\n"
+                    "_(فقط عدد — حداکثر ۱۸ رقم)_",
+                    reply_markup=back_only_kb)
+                await state.set_state(Form.check_aasar_dadnameh_no)
                 return
         if not esteshahadieh_done:
             await message.answer(
@@ -3830,6 +3900,15 @@ async def _go_to_check_preview(message: Message, state: FSMContext):
                 lines.append(f"📮 شماره ابلاغیه: `{aasar_notice_no}`")
             if aasar_notice_imgs:
                 lines.append(f"📷 تصویر ابلاغیه: {len(aasar_notice_imgs)} تصویر")
+        # ⭐ اعسار از پرداخت مهریه / اعسار از محکوم به — فیلدهای الزامی
+        #   (دستور کارفرما): شماره پرونده + شماره دادنامه بدوی
+        elif request_title in CHECK_AASAR_MAHRIEH_MAHKUM_TITLES:
+            aasar_case_no = data.get("check_aasar_case_no", "")
+            aasar_dadnameh_no = data.get("check_aasar_dadnameh_no", "")
+            if aasar_case_no:
+                lines.append(f"\n🔢 شماره پرونده: `{aasar_case_no}`")
+            if aasar_dadnameh_no:
+                lines.append(f"📄 شماره دادنامه بدوی: `{aasar_dadnameh_no}`")
         if esteshahadieh:
             lines.append(f"\n📷 استشهادیه: {len(esteshahadieh)} تصویر")
         if assets_list:
@@ -4019,8 +4098,11 @@ async def _submit_check_request(message: Message, state: FSMContext, bot: Bot):
         # شماره پرونده (دلايل → chk3 + ReferedCaseNo3) و شماره ابلاغیه
         # (بعد از خواسته → txtOtherData...)؛ تصویر ابلاغیه در
         # check_attachment_groups (ساير ضمائم) ارسال می‌شود.
+        # ⭐ اعسار از پرداخت مهریه / محکوم به — شماره پرونده (دلايل → chk3 +
+        # ReferedCaseNo3) و شماره دادنامه بدوی (بعد از خواسته → txtOtherData...)
         "check_aasar_case_no": data.get("check_aasar_case_no", ""),
         "check_aasar_notice_no": data.get("check_aasar_notice_no", ""),
+        "check_aasar_dadnameh_no": data.get("check_aasar_dadnameh_no", ""),
         "check_text": full_text,
         "check_text_html": data.get("check_text_html", ""),
         "check_extra_text": data.get("check_extra_text", ""),

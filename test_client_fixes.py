@@ -544,11 +544,55 @@ def test_aasar_flow_asks_new_fields_before_esteshahadieh():
 
 
 def test_other_aasar_titles_do_not_ask_new_fields():
-    """عناوین اعسارِ دیگر → مستقیم استشهادیه (فقط «هزینه دادرسی» فیلدهای جدید دارد)."""
+    """⭐ دستور جدید کارفرما: «اعسار از پرداخت مهریه» و «اعسار از محکوم به»
+    نیز شماره پرونده و شماره دادنامه بدوی را می‌گیرند (بدون شماره/تصویر
+    ابلاغیه — آن مخصوص «اعسار از هزینه دادرسی» است)."""
     state = FakeState({"check_request_title": "اعسار از پرداخت محکوم به"})
+    run(ch._ask_check_next_after_images(_msg("ادامه"), state))
+    assert state.state == Form.check_aasar_case_no
+
+    # پس از شماره پرونده → شماره دادنامه بدوی
+    state.data["check_aasar_case_no"] = FILE_NO_18
+    run(ch._ask_check_next_after_images(_msg("ادامه"), state))
+    assert state.state == Form.check_aasar_dadnameh_no
+
+    # پس از شماره دادنامه بدوی → استشهادیه (ادامهٔ زنجیرهٔ قبلی)
+    state.data["check_aasar_dadnameh_no"] = "12345"
     run(ch._ask_check_next_after_images(_msg("ادامه"), state))
     assert state.state == Form.check_esteshahadieh_image
 
     state2 = FakeState({"check_request_title": "اعسار از پرداخت مهریه"})
     run(ch._ask_check_next_after_images(_msg("ادامه"), state2))
-    assert state2.state == Form.check_esteshahadieh_image
+    assert state2.state == Form.check_aasar_case_no
+
+
+def test_aasar_dadnameh_no_validation_and_routing():
+    """شماره دادنامه بدوی: اعتبارسنجی عددی/۱۸رقم + مسیر صحیح پس از ثبت."""
+    state = FakeState({"check_request_title": "اعسار از پرداخت مهریه",
+                       "check_aasar_case_no": FILE_NO_18})
+
+    # ۱۹ رقم → رد
+    run(ch.check_aasar_dadnameh_no_handler(_msg("1234567890123456789"), state))
+    assert "check_aasar_dadnameh_no" not in state.data
+
+    # غیر عددی → رد
+    run(ch.check_aasar_dadnameh_no_handler(_msg("دادنامه ۱۲"), state))
+    assert "check_aasar_dadnameh_no" not in state.data
+
+    # ۱۸ رقم → پذیرش و ادامهٔ زنجیره (استشهادیه)
+    run(ch.check_aasar_dadnameh_no_handler(_msg("123456789012345678"), state))
+    assert state.data["check_aasar_dadnameh_no"] == "123456789012345678"
+    assert state.state == Form.check_esteshahadieh_image
+
+
+def test_aasar_case_no_routes_by_title():
+    """پس از شماره پرونده: هزینه دادرسی → ابلاغیه | مهریه/محکوم به → دادنامه بدوی."""
+    state_mahrieh = FakeState({"check_request_title": "اعسار از پرداخت مهریه"})
+    run(ch.check_aasar_case_no_handler(_msg("1234567890123456"), state_mahrieh))
+    assert state_mahrieh.data["check_aasar_case_no"] == "1234567890123456"
+    assert state_mahrieh.state == Form.check_aasar_dadnameh_no
+
+    # «اعسار از هزینه دادرسی» همچنان به شماره ابلاغیه می‌رود (بدون تغییر)
+    state_hazineh = FakeState({"check_request_title": "اعسار از پرداخت هزینه دادرسی"})
+    run(ch.check_aasar_case_no_handler(_msg("1234567890123456"), state_hazineh))
+    assert state_hazineh.state == Form.check_aasar_notice_no

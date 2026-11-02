@@ -270,6 +270,18 @@ async def process_check_task(data: dict, bot: Bot):
     is_aasar_hazineh = (request_title == "اعسار از پرداخت هزینه دادرسی")
     aasar_case_no = (data.get("check_aasar_case_no") or "").strip()
     aasar_notice_no = (data.get("check_aasar_notice_no") or "").strip()
+    # ⭐ اعسار از پرداخت مهریه / اعسار از محکوم به (دستور کارفرما):
+    #   شماره پرونده → دلايل (#chk3 + #ReferedCaseNo3)
+    #   شماره دادنامه بدوی → بعد از انتخاب خواسته (#txtOtherData...)
+    is_aasar_mahrieh_mahkum = request_title in (
+        "اعسار از پرداخت مهریه", "اعسار از پرداخت محکوم به")
+    aasar_dadnameh_no = (data.get("check_aasar_dadnameh_no") or "").strip()
+    # عناوینی که شماره پرونده‌شان در دلايل (chk3 + ReferedCaseNo3) درج می‌شود
+    is_aasar_refered_case = is_aasar_hazineh or is_aasar_mahrieh_mahkum
+    # مقداری که پس از انتخاب خواسته در فیلد otherData درج می‌شود
+    # (اعسار از هزینه دادرسی → شماره ابلاغیه | مهریه/محکوم به → شماره دادنامه بدوی)
+    aasar_other_data_val = (
+        aasar_notice_no if is_aasar_hazineh else aasar_dadnameh_no)
     tracking_no = data.get("check_tracking_no", "")
     plaintiffs = data.get("check_plainiffs", [])
     defendants = data.get("check_defendants", [])
@@ -539,16 +551,19 @@ async def process_check_task(data: dict, bot: Bot):
             await asyncio.sleep(1)
 
             # ══════════════════════════════════════════════════════════
-            # ۴.۴.۵ ⭐ اعسار از هزینه دادرسی — شماره ابلاغیه (اصلاحیهٔ
-            # کارفرما): «حتما بعد از اینکه خواسته را انتخاب کردی» شمارهٔ
-            # ابلاغیه در فیلد otherData (مثل
-            # #txtOtherData45F44C153C3141D28DBE869FD746AB36) درج می‌شود.
-            # این فیلد با انتخاب خواستهٔ «اعسار از پرداخت هزینه دادرسی»
-            # ظاهر می‌شود؛ با پولینگ تا ۳۰ ثانیه منتظر می‌مانیم و سپس با
-            # همگام‌سازی کامل AngularJS ($setViewValue/$render/$apply) درج
-            # و ماندگاری مقدار کنترل می‌شود.
+            # ۴.۴.۵ ⭐ عناوین اعسار — فیلد otherData بعد از انتخاب خواسته
+            # (اصلاحیهٔ کارفرما): «حتما بعد از اینکه خواسته را انتخاب کردی»
+            # مقدار در فیلد otherData (مثل
+            # #txtOtherData45F44C153C3141D28DBE869FD746AB36) درج می‌شود:
+            #   - اعسار از پرداخت هزینه دادرسی → شماره ابلاغیه
+            #   - اعسار از پرداخت مهریه / اعسار از محکوم به → شماره دادنامه بدوی
+            # این فیلد با انتخاب خواستهٔ اعسار ظاهر می‌شود؛ با پولینگ تا ۳۰
+            # ثانیه منتظر می‌مانیم و سپس با همگام‌سازی کامل AngularJS
+            # ($setViewValue/$render/$apply) درج و ماندگاری مقدار کنترل می‌شود.
             # ══════════════════════════════════════════════════════════
-            if is_aasar_hazineh and aasar_notice_no:
+            if is_aasar_refered_case and aasar_other_data_val:
+                _other_data_label = (
+                    "شماره ابلاغیه" if is_aasar_hazineh else "شماره دادنامه بدوی")
                 notice_filled = False
                 for _notice_try in range(10):
                     notice_filled = await sana_page.evaluate('''(val) => {
@@ -573,24 +588,24 @@ async def process_check_task(data: dict, bot: Bot):
                         } catch (e) {}
                         inp.dispatchEvent(new Event("blur", { bubbles: true }));
                         return String(inp.value || '').trim() === String(val);
-                    }''', aasar_notice_no)
+                    }''', aasar_other_data_val)
                     if notice_filled:
                         break
                     # شاید فرم هنوز رندر نشده — کمی صبر و دوباره
                     await asyncio.sleep(3)
                 if notice_filled:
                     logging.info(
-                        f"[CHECK] شماره ابلاغیه «{aasar_notice_no}» در فیلد otherData "
+                        f"[CHECK] {_other_data_label} «{aasar_other_data_val}» در فیلد otherData "
                         f"خواسته درج شد (user={user_id})")
                 else:
                     logging.warning(
-                        "[CHECK] فیلد شماره ابلاغیه (txtOtherData) پس از انتخاب خواستهٔ "
+                        f"[CHECK] فیلد {_other_data_label} (txtOtherData) پس از انتخاب خواستهٔ "
                         f"اعسار پیدا/پر نشد — ادامه بدون آن (user={user_id})")
                     try:
                         await bot.send_message(
                             ADMIN_ID,
-                            f"⚠️ [CHECK] فیلد «شماره ابلاغیه» برای کاربر {user_id} "
-                            f"(اعسار از هزینه دادرسی) در صفحهٔ خواسته پیدا نشد — "
+                            f"⚠️ [CHECK] فیلد «{_other_data_label}» برای کاربر {user_id} "
+                            f"({request_title}) در صفحهٔ خواسته پیدا نشد — "
                             "لطفاً پس از ثبت، در سامانه دستی بررسی کنید.")
                     except Exception:
                         pass
@@ -938,11 +953,12 @@ async def process_check_task(data: dict, bot: Bot):
             await resilient_sleep(sana_page, 2, bot, user_id)
 
             # ── ۱۰. مرحله «دلايل» ────────────────────────────────────────
-            # ⭐ اعسار از هزینه دادرسی (اصلاحیهٔ کارفرما): ورود به «دلايل»
-            # الزامی است — تیک #chk3 زده و شماره پروندهٔ ۱۶/۱۸ رقمی کاربر در
-            # #ReferedCaseNo3 درج می‌شود (فیلد پس از تیک فعال می‌شود). برای
-            # این عنوان حتی بدون extra_text هم وارد این مرحله می‌شویم.
-            need_dalael = bool(extra_text) or (is_aasar_hazineh and aasar_case_no)
+            # ⭐ عناوین اعسار (هزینه دادرسی / مهریه / محکوم به — دستور
+            # کارفرما): ورود به «دلايل» الزامی است — تیک #chk3 زده و شماره
+            # پروندهٔ ۱۶/۱۸ رقمی کاربر در #ReferedCaseNo3 درج می‌شود (فیلد
+            # پس از تیک فعال می‌شود). برای این عناوین حتی بدون extra_text هم
+            # وارد این مرحله می‌شویم.
+            need_dalael = bool(extra_text) or (is_aasar_refered_case and aasar_case_no)
             if need_dalael:
                 clicked = await sana_page.evaluate('''() => {
                     const steps = Array.from(document.querySelectorAll('.step'));
@@ -955,11 +971,11 @@ async def process_check_task(data: dict, bot: Bot):
                 await resilient_sleep(sana_page, 4, bot, user_id)
 
                 # ════════════════════════════════════════════════════════
-                # ⭐ اعسار از هزینه دادرسی — تیک #chk3 + شماره پرونده در
-                # #ReferedCaseNo3 (با همگام‌سازی کامل AngularJS؛ فیلد تا قبل
-                # از تیک disabled است).
+                # ⭐ عناوین اعسار (هزینه دادرسی / مهریه / محکوم به) — تیک
+                # #chk3 + شماره پرونده در #ReferedCaseNo3 (با همگام‌سازی کامل
+                # AngularJS؛ فیلد تا قبل از تیک disabled است).
                 # ════════════════════════════════════════════════════════
-                if is_aasar_hazineh and aasar_case_no:
+                if is_aasar_refered_case and aasar_case_no:
                     case_no_ok = await sana_page.evaluate('''(val) => {
                         const all = Array.from(
                             document.querySelectorAll('input#ReferedCaseNo3'));

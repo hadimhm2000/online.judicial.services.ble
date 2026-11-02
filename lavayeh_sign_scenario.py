@@ -657,13 +657,12 @@ async def submit_sign_code_for_person(
             return {"success": True}
         elif popup_result == "wrong_code":
             await _close_any_popup(sana_page)
-            if relogged_in:
-                # ⭐ دستور کارفرما: «رمز موقت نادرست» پس از لاگین مجدد مدیر یعنی
-                # کد با انقضای نشست از بین رفته — به کاربر «اختلال سامانه» و
-                # فعال‌شدن ارسال کد مجدد ۲۰ دقیقه بعد اعلام می‌شود.
-                logging.warning(f"[SIGN] رمز موقت نادرست پس از لاگین مجدد — ردیف {row_idx}، امضای مجدد ۲۰ دقیقه بعد")
-                return {"success": False, "error": "sana_session_expired"}
-            logging.info(f"[SIGN] رمز موقت نادرست — ردیف {row_idx}")
+            # ⭐ دستور کارفرما: هر بار که پاپ‌آپ «رمز موقت نادرست» ظاهر شد،
+            # یعنی کاربر کد امضا را اشتباه وارد کرده — حتی اگر پیش از آن
+            # لاگین مجدد مدیر انجام شده باشد. به کاربر اعلام می‌شود که کد
+            # اشتباه است و روند امضا ۲۰ دقیقه بعد مجدداً فعال می‌شود
+            # (نه پیام انقضای نشست/اختلال سامانه).
+            logging.info(f"[SIGN] رمز موقت نادرست — ردیف {row_idx} (اعلام کد اشتباه به کاربر)")
             return {"success": False, "error": "wrong_code"}
         elif popup_result == "sana_not_registered":
             await _close_any_popup(sana_page)
