@@ -194,6 +194,18 @@ async def send_check_submission_to_admin(bot: Bot, admin_id: int, user_id: int, 
     aasar_line = "📋 اعسار از هزینه دادرسی: " + (
         "بله" if data.get("check_aasar") else "خیر")
 
+    # ⭐ اعسار از هزینه دادرسی (عنوان اصلی) — فیلدهای الزامی (اصلاحیهٔ کارفرما)
+    aasar_hazineh_lines = ""
+    if data.get("check_request_title") == "اعسار از پرداخت هزینه دادرسی":
+        aasar_hazineh_lines = (
+            f"🔢 شماره پرونده: {data.get('check_aasar_case_no','') or '-'}\n"
+            f"📮 شماره ابلاغیه: {data.get('check_aasar_notice_no','') or '-'}\n")
+        notice_count = 0
+        for group in data.get("check_attachment_groups", []):
+            if group.get("is_aasar_notice"):
+                notice_count += len(group.get("images", []))
+        aasar_hazineh_lines += f"📷 تصویر ابلاغیه: {notice_count} تصویر\n"
+
     # استشهادیه (پیوست الزامی اعسار)
     estesh_count = 0
     for group in data.get("check_attachment_groups", []):
@@ -208,6 +220,7 @@ async def send_check_submission_to_admin(bot: Bot, admin_id: int, user_id: int, 
         f"📌 عنوان خواسته: {data.get('check_request_title','')}\n"
         f"💰 مبلغ: {amount:,} ریال\n"
         f"{tamin_line}\n{aasar_line}\n"
+        + (aasar_hazineh_lines if aasar_hazineh_lines else "")
         + (f"{estesh_line}\n" if estesh_line else "") +
         f"\n📄 عنوان خواسته (متن): {data.get('check_khasteh_text','')}\n\n"
         f"👤 خواهان(ها):\n{plaintiffs_text}\n\n"

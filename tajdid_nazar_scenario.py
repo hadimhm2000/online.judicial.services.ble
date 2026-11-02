@@ -60,6 +60,7 @@ from browser_helpers import (
     wait_for_sana_inquiry_loading,
     resilient_sleep, check_and_handle_expiry,
     goto_url_with_retry, human_delay, safe_click_by_text,
+    soft_click_if_exists,
     wait_for_angular_idle, handle_session_expired,
     wait_for_horizontal_loading_bar, detect_concurrent_login_popup,
     readd_person_section, dismiss_sana_error_popup,
@@ -2743,6 +2744,237 @@ async def _enter_attachments_section(page, bot: Bot, user_id: int, bill_no: str)
     return False
 
 
+async def _register_dadnameh_electronic_document(
+        page, file_no: str, bot: Bot, user_id: int, bill_no: str,
+        max_attempts: int = 3) -> bool:
+    """⭐ اصلاحیهٔ کارفرما — ثبت سند «تصوير الكترونيك دادنامه» با شمارهٔ پرونده.
+
+    در بخش دعاوی اعتراضی (کلیهٔ عناوین)، مسیر زیر در منضمات الزامی است:
+      ۱. انتخاب «تصوير الكترونيك دادنامه» از #attachmentType
+      ۲. درج شمارهٔ پرونده‌ای که کاربر وارد کرده است در #txtCaseNo
+      ۳. کلیک «ثبت و ویرایش پیوست» (#btnSaveDoc)
+      ۴. حتماً پیام تایید (پاپ‌آپ موفقیت) باید نمایش داده شود
+      ۵. خطای ورود همزمان → اطلاع به مدیر برای لاگین + کلیک مجدد #btnSaveDoc
+
+    (الگوی اثبات‌شدهٔ `_upload_electronic_vakalaht` — همان صفحهٔ منضمات مشترک.)
+
+    خروجی: True = ثبت و تایید شد | False = پس از max_attempts تلاش ناموفق
+    (فراخواننده باید کل ثبت را متوقف کند — این سند اجباری است).
+    """
+    from upload_helpers import (
+        click_save_doc_once, wait_save_doc_popup_result,
+        close_save_doc_popup, fill_input_angular)
+
+    if not file_no:
+        logging.error(
+            "[TN][منضمات] شماره پرونده (tn_file_no) برای ثبت سند «تصوير الكترونيك دادنامه» خالی است")
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"❌ [TN] شماره پرونده برای ثبت سند «تصوير الكترونيك دادنامه» در دسترس نیست "
+                f"(کاربر {user_id} | کد: {bill_no}) — ثبت متوقف شد.")
+        except Exception:
+            pass
+        return False
+
+    try:
+        had_expiry = await check_and_handle_expiry(page, bot, user_id)
+        if had_expiry:
+            logging.info("[TN][منضمات] نشست قبل از سند دادنامه الکترونیک تمدید شد")
+            await asyncio.sleep(2)
+
+        for attempt in range(max_attempts):
+            # ══════════════════════════════════════════════════════════
+            # اگر فرم منضمات هنوز در حالت ویرایشِ پیوست قبلی است، ابتدا
+            # «پیوست جدید» (#newAttachmentType) زده می‌شود — وگرنه تغییر
+            # #attachmentType و کلیک #btnSaveDoc بی‌اثر است (الگوی وکالت‌نامه).
+            # ══════════════════════════════════════════════════════════
+            form_dirty = await page.evaluate('''() => {
+                const val = s => { const els = Array.from(document.querySelectorAll(s));
+                                   const el = els.find(e => e.offsetParent !== null) || els[0];
+                                   return el ? String(el.value || '').trim() : ''; };
+                return !!(val('#txtNo') || val('#txtName') || val('#txtCaseNo'));
+            }''')
+            if form_dirty:
+                await asyncio.sleep(2)
+                clicked_new = await page.evaluate('''() => {
+                    const btn = document.querySelector('#newAttachmentType');
+                    if (btn && !btn.disabled) { btn.click(); return true; }
+                    return false;
+                }''')
+                if not clicked_new:
+                    clicked_new = await soft_click_if_exists(page, "پیوست جدید")
+                if clicked_new:
+                    logging.info(
+                        "[TN][منضمات] کلیک «پیوست جدید» قبل از سند دادنامه الکترونیک "
+                        "(فرم در حالت ویرایش بود)")
+                    await asyncio.sleep(3)
+                    await wait_for_angular_idle(page)
+                    await asyncio.sleep(1)
+                else:
+                    logging.warning(
+                        "[TN][منضمات] فرم پر بود ولی دکمهٔ «پیوست جدید» پیدا نشد")
+
+            # ── ۱. انتخاب «تصوير الكترونيك دادنامه» از #attachmentType ──
+            # (select با ng-options روی آبجکت‌هاست؛ روش قطعی = ست‌کردن مستقیم
+            #  روی scope + فراخوانی actions.changeAttachmentTypeList — الگوی
+            #  اثبات‌شدهٔ وکالت‌نامه الکترونیک؛ فال‌بک DOM + تأیید نهایی)
+            select_result = await page.evaluate('''() => {
+                const matchesTitle = (t) => {
+                    if (!t) return false;
+                    // نرمال‌سازی نویسه‌های عربی/فارسی (ي→ی، ك→ک)
+                    const n = String(t).replace(/\\u064A/g, '\\u06CC')
+                                       .replace(/\\u0643/g, '\\u06A9')
+                                       .replace(/\\u200C/g, ' ');
+                    return n.includes("الکترونیک دادنامه") || n.includes("الکترونيک دادنامه");
+                };
+
+                const sels = Array.from(document.querySelectorAll('#attachmentType'));
+                const sel = sels.find(s => s.offsetParent !== null
+                    && window.getComputedStyle(s).visibility !== 'hidden');
+                if (!sel) return {found: false, reason: 'no_visible_select'};
+
+                let method = null;
+                try {
+                    if (typeof angular !== 'undefined') {
+                        const el = angular.element(sel);
+                        let scope = el.scope();
+                        let list = null, cur = scope;
+                        for (let i = 0; i < 6 && cur; i++) {
+                            if (cur.Model && Array.isArray(cur.Model.theJSSPetitionAttachment)) {
+                                list = cur.Model.theJSSPetitionAttachment;
+                                break;
+                            }
+                            cur = cur.$parent;
+                        }
+                        const item = list && list.find(a => matchesTitle(a.Title));
+                        if (item && scope) {
+                            scope.$apply(() => {
+                                scope.viewModel.selectedAttachmentType = item;
+                                if (scope.actions && typeof scope.actions.changeAttachmentTypeList === 'function') {
+                                    scope.actions.changeAttachmentTypeList(item);
+                                }
+                            });
+                            method = 'scope_direct';
+                        }
+                    }
+                } catch (e) {}
+
+                if (!method) {
+                    // فال‌بک: روش DOM value + $setViewValue
+                    const opt = Array.from(sel.options).find(o => matchesTitle(o.text));
+                    if (!opt) return {found: false, reason: 'option_not_found'};
+                    sel.value = opt.value;
+                    sel.dispatchEvent(new Event("change", { bubbles: true }));
+                    try {
+                        if (typeof angular !== 'undefined') {
+                            const el = angular.element(sel);
+                            const ctrl = el.controller('ngModel');
+                            if (ctrl) { ctrl.$setViewValue(opt.value); ctrl.$render(); }
+                            const scope = el.scope();
+                            if (scope) scope.$apply();
+                        }
+                    } catch (e) {}
+                    method = 'dom_fallback';
+                }
+
+                // ─── تأیید نهایی: آیا انتخاب واقعاً روی صفحه نشست؟ ───
+                const selectedOpt = sel.options[sel.selectedIndex];
+                const stuck = !!(selectedOpt && matchesTitle(selectedOpt.text));
+                return {found: true, method: method, stuck: stuck};
+            }''')
+            if not select_result.get("found"):
+                logging.warning(
+                    f"[TN][منضمات] گزینهٔ «تصوير الكترونيك دادنامه» پیدا نشد "
+                    f"(تلاش {attempt+1}): {select_result.get('reason')}")
+                await asyncio.sleep(5)
+                continue
+            logging.info(
+                f"[TN][منضمات] انتخاب نوع پیوست دادنامه الکترونیک: "
+                f"روش={select_result.get('method')}, نشست={select_result.get('stuck')}")
+            if not select_result.get("stuck"):
+                logging.warning(
+                    f"[TN][منضمات] انتخاب نوع پیوست دادنامه ماندگار نشد (تلاش {attempt+1}) — تلاش مجدد")
+                await asyncio.sleep(3)
+                continue
+            await asyncio.sleep(3)
+            await wait_for_angular_idle(page)
+            await asyncio.sleep(1)
+
+            # ── ۲. شماره پروندهٔ کاربر در #txtCaseNo ──
+            filled_case_no = await fill_input_angular(
+                page, "#txtCaseNo", file_no, prefix="TN")
+            if not filled_case_no:
+                logging.warning(
+                    f"[TN][منضمات] شماره پرونده در #txtCaseNo نماند — تلاش مجدد (تلاش {attempt+1})")
+                await asyncio.sleep(2)
+                continue
+            await asyncio.sleep(1)
+
+            # ── ۳. کلیک «ثبت و ویرایش پیوست» (#btnSaveDoc) ──
+            clicked = await click_save_doc_once(page, prefix="TN")
+            if not clicked:
+                logging.warning(
+                    f"[TN][منضمات] کلیک #btnSaveDoc برای سند دادنامه انجام نشد (تلاش {attempt+1})")
+                await asyncio.sleep(5)
+                continue
+
+            # ── ۴. انتظار قطعی برای پاپ‌آپ نتیجه — پیام تایید الزامی است ──
+            popup = await wait_save_doc_popup_result(page, timeout_sec=45, prefix="TN")
+
+            if popup["status"] == "success":
+                from upload_helpers import close_success_popup as _uh_close_success
+                await _uh_close_success(page)
+                logging.info(
+                    "[TN][منضمات] سند «تصوير الكترونيك دادنامه» با شماره پروندهٔ "
+                    f"{file_no} با موفقیت ثبت و تایید شد")
+                return True
+
+            if popup["status"] == "session":
+                # ── ۵. خطای ورود همزمان → اطلاع به مدیر برای لاگین + ──
+                #    کلیک مجدد #btnSaveDoc پس از لاگین مدیر
+                logging.warning(
+                    f"[TN][منضمات] خطای ورود همزمان در ثبت سند دادنامه: {popup['text'][:150]}")
+                await close_save_doc_popup(page)
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        "⚠️ [TN] خطای *ورود همزمان* هنگام ثبت سند «تصوير الكترونيك دادنامه» —\n"
+                        f"کاربر: {user_id} | کد رهگیری: {bill_no}\n"
+                        "🔑 لطفاً *لاگین* کنید؛ پس از ورود، ثبت سند *مجدداً* زده می‌شود.")
+                except Exception:
+                    pass
+                # مدیر به‌صورت دستی (از طریق تب لاگین باز‌شده) وارد می‌شود؛
+                # ربات تا تایید مدیر منتظر می‌ماند و سپس #btnSaveDoc را دوباره می‌زند.
+                await handle_session_expired(bot, user_id, page=page)
+                await asyncio.sleep(3)
+                continue
+
+            if popup["status"] == "error":
+                logging.warning(
+                    f"[TN][منضمات] خطای ثبت سند دادنامه: {popup['text'][:200]} (تلاش {attempt+1})")
+                await close_save_doc_popup(page)
+                await asyncio.sleep(5)
+                continue
+
+            logging.warning(
+                f"[TN][منضمات] پس از کلیک #btnSaveDoc پاپ‌آپی ظاهر نشد (تلاش {attempt+1})")
+            await asyncio.sleep(5)
+
+        return False
+
+    except Exception as e:
+        logging.error(f"[TN] خطا در ثبت سند «تصوير الكترونيك دادنامه»: {e}")
+        try:
+            from bug_reporter import report_bug
+            await report_bug(bot, where="_register_dadnameh_electronic_document",
+                             error=e, user_id=user_id, bill_no=bill_no,
+                             page=page)
+        except Exception:
+            pass
+        return False
+
+
 async def _upload_tn_attachments(page, data: dict, groups_with_paths: list,
                                  has_legal: bool, has_lawyer: bool,
                                  bot: Bot, user_id: int, bill_no: str):
@@ -2751,6 +2983,9 @@ async def _upload_tn_attachments(page, data: dict, groups_with_paths: list,
     ۱. اگر تجدیدنظرخواه حقوقی داشت: اولین گروه = «مدرک نمایندگی» (اجباری)
     ۲. اگر وکیل داشت: «تصویر الکترونیک وکالت‌نامه»
     ۳. سایر پیوست‌ها با retry محلی (بدون ری‌استارت کل ثبت)
+    ۴. ⭐ اصلاحیهٔ کارفرما (الزامی برای کلیهٔ عناوین): در پایان، سند
+       «تصوير الكترونيك دادنامه» + شماره پروندهٔ کاربر ثبت و پیام تایید
+       آن الزامی است؛ در صورت شکست قطعی، کل ثبت متوقف می‌شود.
 
     از توابع اثبات‌شده ezhharnameh_scenario استفاده می‌کند (همان صفحه
     منضمات مشترک سامانه است).
@@ -2852,6 +3087,46 @@ async def _upload_tn_attachments(page, data: dict, groups_with_paths: list,
                     os.remove(p)
             except Exception:
                 pass
+
+    # ══════════════════════════════════════════════════════════════════════
+    # ۴. ⭐ اصلاحیهٔ کارفرما — ثبت سند «تصوير الكترونيك دادنامه» + شمارهٔ
+    #    پروندهٔ کاربر (الزامی برای «کلیهٔ عناوین» دعاوی اعتراضی):
+    #    انتخاب از #attachmentType → درج شماره پرونده در #txtCaseNo → کلیک
+    #    #btnSaveDoc → پیام تایید الزامی؛ خطای ورود همزمان = اطلاع به مدیر
+    #    برای لاگین + کلیک مجدد. در صورت شکست قطعی (پس از ۳ تلاش)، کل ثبت
+    #    متوقف و تسک به‌عنوان ناقص ذخیره می‌شود (این سند اجباری است).
+    # ══════════════════════════════════════════════════════════════════════
+    dadnameh_file_no = str(data.get("tn_file_no", "") or "").strip()
+    dadnameh_ok = await _register_dadnameh_electronic_document(
+        page, dadnameh_file_no, bot, user_id, bill_no)
+    if not dadnameh_ok:
+        logging.error(
+            "[TN][منضمات] ثبت سند «تصوير الكترونيك دادنامه» پس از ۳ تلاش ناموفق — "
+            f"توقف کل ثبت (کاربر {user_id} | کد: {bill_no})")
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"❌ [TN] ثبت سند «تصوير الكترونيك دادنامه» با شماره پروندهٔ "
+                f"«{dadnameh_file_no}» برای کاربر {user_id} پس از ۳ تلاش ناموفق بود "
+                f"(کد رهگیری: {bill_no}) — کل ثبت متوقف شد؛ لطفاً در سامانه بررسی کنید.")
+        except Exception:
+            pass
+        try:
+            await bot.send_message(
+                user_id,
+                f"⚠️ *خطا در بخش منضمات*\nکد رهگیری: `{bill_no}`\n"
+                f"ثبت سند دادنامه الکترونیک انجام نشد؛ تیم پشتیبانی مطلع شد.\n"
+                f"با شماره *09306186888* در واتساپ پیام دهید.")
+        except Exception:
+            pass
+        if bill_no:
+            runtime_state.incomplete_tasks[f"tn:{bill_no}"] = {
+                "bill_no": bill_no, "user_id": user_id, "type": "tn",
+                "last_completed_step": "ثبت موقت", "next_step": "منضمات",
+                "task_data": data, "created_at": time.time(),
+                "dadnameh_doc_pending": True,
+            }
+        return False, {}  # توقف بدون retry — سند الزامی ثبت نشده است
 
     # ⭐ اصلاحیه ۱۴۰۵/۰۶ — وضعیت قرارداد نامعتبر به فراخواننده برگردانده می‌شود
     if contract_fix_lawyer:
@@ -3267,77 +3542,80 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                 paths = await _download_images(bot, group.get("images", []), user_id)
                 groups_with_paths.append({"title": group.get("title", "مستندات"), "paths": paths})
 
+            # ⭐ اصلاحیهٔ کارفرما: بخش منضمات برای «کلیهٔ عناوین» همیشه وارد
+            # می‌شود — ثبت سند «تصوير الكترونيك دادنامه» + شماره پرونده (مرحلهٔ ۴
+            # داخل _upload_tn_attachments) الزامی است؛ قبلاً بدون پیوست/نماینده،
+            # کل این مرحله رد می‌شد و سند دادنامه هرگز ثبت نمی‌گردید.
             attachments_ok = True
-            if has_legal or groups_with_paths:
-                entered = await _enter_attachments_section(sana_page, bot, user_id, bill_no)
-                if not entered:
-                    error_msg = (
-                        f"⚠️ *خطا در بخش منضمات*\nکد رهگیری: `{bill_no}`\n"
-                        f"با شماره *09306186888* در واتساپ پیام دهید.")
-                    await bot.send_message(user_id, error_msg)
+            entered = await _enter_attachments_section(sana_page, bot, user_id, bill_no)
+            if not entered:
+                error_msg = (
+                    f"⚠️ *خطا در بخش منضمات*\nکد رهگیری: `{bill_no}`\n"
+                    f"با شماره *09306186888* در واتساپ پیام دهید.")
+                await bot.send_message(user_id, error_msg)
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"❌ [TN] خطای منضمات (۳ تلاش ناموفق) کاربر {user_id} | کد: {bill_no}")
+                await log_event(
+                    "خطای سامانه", f"دعاوی اعتراضی ({case_type})", str(user_id), user_id,
+                    tracking_code=bill_no, note="خطا در ورود به منضمات (۳ تلاش)")
+                runtime_state.incomplete_tasks[f"tn:{bill_no}"] = {
+                    "bill_no": bill_no, "user_id": user_id, "type": "tn",
+                    "last_completed_step": "ثبت موقت", "next_step": "منضمات",
+                    "task_data": data, "created_at": time.time(),
+                }
+                return
+
+            attachments_ok, contract_fix_lawyer = await _upload_tn_attachments(
+                sana_page, data, groups_with_paths, has_legal, has_lawyer,
+                bot, user_id, bill_no)
+            if attachments_ok == "contract_fix":
+                # ⭐ اصلاحیه ۱۴۰۵/۰۶ — شماره قرارداد وکالت نامعتبر بود:
+                # پنجرهٔ ۴۵ دقیقه‌ای کد قرارداد جدید باز و آماده‌سازی/
+                # هزینه/چاپ تا پس از ثبت قرارداد جدید به تعویق می‌افتد.
+                try:
+                    import nid_fix_window
+                    cf = contract_fix_lawyer or {}
+                    nid_fix_window.start_contract_fix(
+                        user_id, flow="tn", task_data=dict(data),
+                        bill_no=bill_no or "",
+                        old_contract=cf.get("contract_number", ""),
+                        stamp_amount_value=int(cf.get("stamp_amount_value", 0) or 0),
+                        error_text="شماره قرارداد الکترونیک وکالت معتبر نمی باشد")
+                    from contract_fix_handlers import contract_fix_inline_kb
+                    await bot.send_message(
+                        user_id,
+                        f"❌ *شماره قرارداد اشتباه می باشد.*\n\n"
+                        f"شماره قرارداد وکالت «{cf.get('contract_number', '')}» "
+                        f"در سامانه معتبر نیست و ثبت نشد.\n"
+                        f"🔢 کد رهگیری: `{bill_no}`\n\n"
+                        f"{nid_fix_window.contract_fix_deadline_text()}\n\n"
+                        f"پس از ارسال کد قرارداد جدید، ثبت قرارداد و ادامهٔ "
+                        f"آماده‌سازی، هزینه و چاپ به‌صورت خودکار انجام می‌شود.",
+                        parse_mode="Markdown",
+                        reply_markup=contract_fix_inline_kb(user_id))
                     await bot.send_message(
                         ADMIN_ID,
-                        f"❌ [TN] خطای منضمات (۳ تلاش ناموفق) کاربر {user_id} | کد: {bill_no}")
-                    await log_event(
-                        "خطای سامانه", f"دعاوی اعتراضی ({case_type})", str(user_id), user_id,
-                        tracking_code=bill_no, note="خطا در ورود به منضمات (۳ تلاش)")
-                    runtime_state.incomplete_tasks[f"tn:{bill_no}"] = {
-                        "bill_no": bill_no, "user_id": user_id, "type": "tn",
-                        "last_completed_step": "ثبت موقت", "next_step": "منضمات",
-                        "task_data": data, "created_at": time.time(),
-                    }
-                    return
+                        f"⚠️ [TN] شماره قرارداد وکالت «{cf.get('contract_number', '')}» "
+                        f"برای کاربر {user_id} معتبر نبود | کد: {bill_no}\n"
+                        f"پنجرهٔ ۳ ساعته کد قرارداد جدید باز شد.")
+                except Exception as cf_err:
+                    logging.error(f"[TN] خطا در شروع پنجرهٔ کد قرارداد جدید: {cf_err}")
+                return
+            if not attachments_ok:
+                # ⭐ اصلاحیهٔ کارفرما: اطلاع شکست منضمات به مدیر
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"❌ [TN] آپلود منضمات {case_type} کاربر {user_id} ناموفق بود "
+                        f"(کد رهگیری: {bill_no}) — تسک به‌عنوان ناقص ذخیره شد.")
+                except Exception:
+                    pass
+                # خطای کدنویسی — تسک incomplete ذخیره شد داخل تابع
+                return
 
-                attachments_ok, contract_fix_lawyer = await _upload_tn_attachments(
-                    sana_page, data, groups_with_paths, has_legal, has_lawyer,
-                    bot, user_id, bill_no)
-                if attachments_ok == "contract_fix":
-                    # ⭐ اصلاحیه ۱۴۰۵/۰۶ — شماره قرارداد وکالت نامعتبر بود:
-                    # پنجرهٔ ۴۵ دقیقه‌ای کد قرارداد جدید باز و آماده‌سازی/
-                    # هزینه/چاپ تا پس از ثبت قرارداد جدید به تعویق می‌افتد.
-                    try:
-                        import nid_fix_window
-                        cf = contract_fix_lawyer or {}
-                        nid_fix_window.start_contract_fix(
-                            user_id, flow="tn", task_data=dict(data),
-                            bill_no=bill_no or "",
-                            old_contract=cf.get("contract_number", ""),
-                            stamp_amount_value=int(cf.get("stamp_amount_value", 0) or 0),
-                            error_text="شماره قرارداد الکترونیک وکالت معتبر نمی باشد")
-                        from contract_fix_handlers import contract_fix_inline_kb
-                        await bot.send_message(
-                            user_id,
-                            f"❌ *شماره قرارداد اشتباه می باشد.*\n\n"
-                            f"شماره قرارداد وکالت «{cf.get('contract_number', '')}» "
-                            f"در سامانه معتبر نیست و ثبت نشد.\n"
-                            f"🔢 کد رهگیری: `{bill_no}`\n\n"
-                            f"{nid_fix_window.contract_fix_deadline_text()}\n\n"
-                            f"پس از ارسال کد قرارداد جدید، ثبت قرارداد و ادامهٔ "
-                            f"آماده‌سازی، هزینه و چاپ به‌صورت خودکار انجام می‌شود.",
-                            parse_mode="Markdown",
-                            reply_markup=contract_fix_inline_kb(user_id))
-                        await bot.send_message(
-                            ADMIN_ID,
-                            f"⚠️ [TN] شماره قرارداد وکالت «{cf.get('contract_number', '')}» "
-                            f"برای کاربر {user_id} معتبر نبود | کد: {bill_no}\n"
-                            f"پنجرهٔ ۳ ساعته کد قرارداد جدید باز شد.")
-                    except Exception as cf_err:
-                        logging.error(f"[TN] خطا در شروع پنجرهٔ کد قرارداد جدید: {cf_err}")
-                    return
-                if not attachments_ok:
-                    # ⭐ اصلاحیهٔ کارفرما: اطلاع شکست منضمات به مدیر
-                    try:
-                        await bot.send_message(
-                            ADMIN_ID,
-                            f"❌ [TN] آپلود منضمات {case_type} کاربر {user_id} ناموفق بود "
-                            f"(کد رهگیری: {bill_no}) — تسک به‌عنوان ناقص ذخیره شد.")
-                    except Exception:
-                        pass
-                    # خطای کدنویسی — تسک incomplete ذخیره شد داخل تابع
-                    return
-
-                await _click_goto_main(sana_page, bot, user_id)
-                await resilient_sleep(sana_page, 4, bot, user_id)
+            await _click_goto_main(sana_page, bot, user_id)
+            await resilient_sleep(sana_page, 4, bot, user_id)
 
             # ── ۱۴. «آماده‌سازی» — تایید اطلاعات ─────────────────────
             await _click_step_box(sana_page, "آماده سازي جهت دريافت وجه", bot, user_id)

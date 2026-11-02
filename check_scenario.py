@@ -264,6 +264,12 @@ async def process_check_task(data: dict, bot: Bot):
     # ⭐ عناوین اعسار — نوع دادگاه از کاربر پرسیده شده (حقوقی / صلح)
     court_type = (data.get("check_court_type") or "").strip()
     is_aasar_title = request_title in CHECK_AASAR_TITLES
+    # ⭐ اعسار از هزینه دادرسی — فیلدهای الزامی (اصلاحیهٔ کارفرما):
+    #   شماره پرونده ۱۶/۱۸ رقمی → مرحلهٔ «دلايل» (#chk3 + #ReferedCaseNo3)
+    #   شماره ابلاغیه → بعد از انتخاب خواسته (#txtOtherData...)
+    is_aasar_hazineh = (request_title == "اعسار از پرداخت هزینه دادرسی")
+    aasar_case_no = (data.get("check_aasar_case_no") or "").strip()
+    aasar_notice_no = (data.get("check_aasar_notice_no") or "").strip()
     tracking_no = data.get("check_tracking_no", "")
     plaintiffs = data.get("check_plainiffs", [])
     defendants = data.get("check_defendants", [])
@@ -531,6 +537,64 @@ async def process_check_task(data: dict, bot: Bot):
                 }
             }''', khasteh_text)
             await asyncio.sleep(1)
+
+            # ══════════════════════════════════════════════════════════
+            # ۴.۴.۵ ⭐ اعسار از هزینه دادرسی — شماره ابلاغیه (اصلاحیهٔ
+            # کارفرما): «حتما بعد از اینکه خواسته را انتخاب کردی» شمارهٔ
+            # ابلاغیه در فیلد otherData (مثل
+            # #txtOtherData45F44C153C3141D28DBE869FD746AB36) درج می‌شود.
+            # این فیلد با انتخاب خواستهٔ «اعسار از پرداخت هزینه دادرسی»
+            # ظاهر می‌شود؛ با پولینگ تا ۳۰ ثانیه منتظر می‌مانیم و سپس با
+            # همگام‌سازی کامل AngularJS ($setViewValue/$render/$apply) درج
+            # و ماندگاری مقدار کنترل می‌شود.
+            # ══════════════════════════════════════════════════════════
+            if is_aasar_hazineh and aasar_notice_no:
+                notice_filled = False
+                for _notice_try in range(10):
+                    notice_filled = await sana_page.evaluate('''(val) => {
+                        // فقط فیلد نمایان (ممکن است چند نمونهٔ مخفی در DOM باشد)
+                        const all = Array.from(
+                            document.querySelectorAll('input[id^="txtOtherData"]'));
+                        const inp = all.find(el => el.offsetParent !== null
+                            && window.getComputedStyle(el).visibility !== 'hidden'
+                            && !el.disabled);
+                        if (!inp) return false;
+                        inp.focus();
+                        inp.value = val;
+                        inp.dispatchEvent(new Event("input", { bubbles: true }));
+                        inp.dispatchEvent(new Event("change", { bubbles: true }));
+                        try {
+                            if (typeof angular !== 'undefined') {
+                                const ctrl = angular.element(inp).controller('ngModel');
+                                if (ctrl) { ctrl.$setViewValue(val); ctrl.$render(); }
+                                const scope = angular.element(inp).scope();
+                                if (scope) scope.$apply();
+                            }
+                        } catch (e) {}
+                        inp.dispatchEvent(new Event("blur", { bubbles: true }));
+                        return String(inp.value || '').trim() === String(val);
+                    }''', aasar_notice_no)
+                    if notice_filled:
+                        break
+                    # شاید فرم هنوز رندر نشده — کمی صبر و دوباره
+                    await asyncio.sleep(3)
+                if notice_filled:
+                    logging.info(
+                        f"[CHECK] شماره ابلاغیه «{aasar_notice_no}» در فیلد otherData "
+                        f"خواسته درج شد (user={user_id})")
+                else:
+                    logging.warning(
+                        "[CHECK] فیلد شماره ابلاغیه (txtOtherData) پس از انتخاب خواستهٔ "
+                        f"اعسار پیدا/پر نشد — ادامه بدون آن (user={user_id})")
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"⚠️ [CHECK] فیلد «شماره ابلاغیه» برای کاربر {user_id} "
+                            f"(اعسار از هزینه دادرسی) در صفحهٔ خواسته پیدا نشد — "
+                            "لطفاً پس از ثبت، در سامانه دستی بررسی کنید.")
+                    except Exception:
+                        pass
+                await asyncio.sleep(1)
 
             # ⭐ برای طلاق×۳ و «الزام به تمکین» گزینهٔ مبلغ حذف می‌شود
             # ⭐ عناوین اعسار نیز مبلغ ندارند (گزینهٔ مبلغ حذف شده است)
@@ -874,7 +938,12 @@ async def process_check_task(data: dict, bot: Bot):
             await resilient_sleep(sana_page, 2, bot, user_id)
 
             # ── ۱۰. مرحله «دلايل» ────────────────────────────────────────
-            if extra_text:
+            # ⭐ اعسار از هزینه دادرسی (اصلاحیهٔ کارفرما): ورود به «دلايل»
+            # الزامی است — تیک #chk3 زده و شماره پروندهٔ ۱۶/۱۸ رقمی کاربر در
+            # #ReferedCaseNo3 درج می‌شود (فیلد پس از تیک فعال می‌شود). برای
+            # این عنوان حتی بدون extra_text هم وارد این مرحله می‌شویم.
+            need_dalael = bool(extra_text) or (is_aasar_hazineh and aasar_case_no)
+            if need_dalael:
                 clicked = await sana_page.evaluate('''() => {
                     const steps = Array.from(document.querySelectorAll('.step'));
                     const t = steps.find(el => el.innerText && el.innerText.trim() === "دلايل");
@@ -885,22 +954,111 @@ async def process_check_task(data: dict, bot: Bot):
                     await safe_click_by_text(sana_page, "دلايل", bot, user_id)
                 await resilient_sleep(sana_page, 4, bot, user_id)
 
-                # تیک چک‌باکس و وارد کردن متن دلایل
-                await sana_page.evaluate('''() => {
-                    const chk = document.querySelector('input[type="checkbox"][id^="chk"]');
-                    if (chk && !chk.checked && !chk.disabled) chk.click();
-                }''')
-                await asyncio.sleep(1)
+                # ════════════════════════════════════════════════════════
+                # ⭐ اعسار از هزینه دادرسی — تیک #chk3 + شماره پرونده در
+                # #ReferedCaseNo3 (با همگام‌سازی کامل AngularJS؛ فیلد تا قبل
+                # از تیک disabled است).
+                # ════════════════════════════════════════════════════════
+                if is_aasar_hazineh and aasar_case_no:
+                    case_no_ok = await sana_page.evaluate('''(val) => {
+                        const all = Array.from(
+                            document.querySelectorAll('input#ReferedCaseNo3'));
+                        const inp = all.find(el => el.offsetParent !== null
+                            && window.getComputedStyle(el).visibility !== 'hidden') || all[0];
+                        if (!inp) return {chk: false, reason: 'no_input'};
+                        // تیک چک‌باکس #chk3 (فعال‌سازی فیلد شماره پروندهٔ مرجوع)
+                        const chks = Array.from(
+                            document.querySelectorAll('input#chk3[type="checkbox"]'));
+                        const chk = chks.find(el => el.offsetParent !== null
+                            && window.getComputedStyle(el).visibility !== 'hidden') || chks[0];
+                        if (chk && !chk.checked && !chk.disabled) chk.click();
+                        if (chk && !chk.checked) return {chk: false, reason: 'chk_not_checked'};
+                        // فیلد ممکن است هنوز disabled باشد — یک فرصت کوتاه
+                        inp.removeAttribute('disabled');
+                        inp.removeAttribute('ng-disabled');
+                        inp.focus();
+                        inp.value = val;
+                        inp.dispatchEvent(new Event("input", { bubbles: true }));
+                        inp.dispatchEvent(new Event("change", { bubbles: true }));
+                        try {
+                            if (typeof angular !== 'undefined') {
+                                const ctrl = angular.element(inp).controller('ngModel');
+                                if (ctrl) { ctrl.$setViewValue(val); ctrl.$render(); }
+                                const scope = angular.element(inp).scope();
+                                if (scope) scope.$apply();
+                            }
+                        } catch (e) {}
+                        inp.dispatchEvent(new Event("blur", { bubbles: true }));
+                        return {chk: true, kept: String(inp.value || '').trim() === String(val)};
+                    }''', aasar_case_no)
+                    if case_no_ok and case_no_ok.get("chk") and case_no_ok.get("kept", True):
+                        logging.info(
+                            f"[CHECK] تیک #chk3 زده شد و شماره پرونده «{aasar_case_no}» در "
+                            f"#ReferedCaseNo3 درج شد (user={user_id})")
+                    else:
+                        # فیلد ممکن است با تاخیر انگولار فعال شود — یک تلاش مجدد
+                        await asyncio.sleep(3)
+                        case_no_ok = await sana_page.evaluate('''(val) => {
+                            const all = Array.from(
+                                document.querySelectorAll('input#ReferedCaseNo3'));
+                            const inp = all.find(el => el.offsetParent !== null
+                                && window.getComputedStyle(el).visibility !== 'hidden') || all[0];
+                            if (!inp) return false;
+                            const chks = Array.from(
+                                document.querySelectorAll('input#chk3[type="checkbox"]'));
+                            const chk = chks.find(el => el.offsetParent !== null) || chks[0];
+                            if (chk && !chk.checked && !chk.disabled) chk.click();
+                            inp.removeAttribute('disabled');
+                            inp.removeAttribute('ng-disabled');
+                            inp.focus();
+                            inp.value = val;
+                            inp.dispatchEvent(new Event("input", { bubbles: true }));
+                            inp.dispatchEvent(new Event("change", { bubbles: true }));
+                            try {
+                                if (typeof angular !== 'undefined') {
+                                    const ctrl = angular.element(inp).controller('ngModel');
+                                    if (ctrl) { ctrl.$setViewValue(val); ctrl.$render(); }
+                                    const scope = angular.element(inp).scope();
+                                    if (scope) scope.$apply();
+                                }
+                            } catch (e) {}
+                            return String(inp.value || '').trim() === String(val);
+                        }''', aasar_case_no)
+                        if case_no_ok:
+                            logging.info(
+                                f"[CHECK] (تلاش دوم) شماره پرونده «{aasar_case_no}» در "
+                                f"#ReferedCaseNo3 درج شد (user={user_id})")
+                        else:
+                            logging.warning(
+                                "[CHECK] درج شماره پرونده در #ReferedCaseNo3 (دلايل) ناموفق — "
+                                f"ادامه بدون آن (user={user_id})")
+                            try:
+                                await bot.send_message(
+                                    ADMIN_ID,
+                                    f"⚠️ [CHECK] درج «شماره پرونده {aasar_case_no}» در بخش دلايل "
+                                    f"(#ReferedCaseNo3) برای کاربر {user_id} ناموفق بود — "
+                                    "لطفاً در سامانه دستی بررسی کنید.")
+                            except Exception:
+                                pass
+                    await asyncio.sleep(1)
 
-                await sana_page.evaluate('''(text) => {
-                    const ta = document.querySelector('textarea[id^="ReasonAttach"]');
-                    if (ta) {
-                        ta.value = text;
-                        ta.dispatchEvent(new Event("input", { bubbles: true }));
-                        ta.dispatchEvent(new Event("change", { bubbles: true }));
-                    }
-                }''', extra_text)
-                await asyncio.sleep(1)
+                # تیک چک‌باکس و وارد کردن متن دلایل (فقط اگر متن دلایل موجود است)
+                if extra_text:
+                    await sana_page.evaluate('''() => {
+                        const chk = document.querySelector('input[type="checkbox"][id^="chk"]');
+                        if (chk && !chk.checked && !chk.disabled) chk.click();
+                    }''')
+                    await asyncio.sleep(1)
+
+                    await sana_page.evaluate('''(text) => {
+                        const ta = document.querySelector('textarea[id^="ReasonAttach"]');
+                        if (ta) {
+                            ta.value = text;
+                            ta.dispatchEvent(new Event("input", { bubbles: true }));
+                            ta.dispatchEvent(new Event("change", { bubbles: true }));
+                        }
+                    }''', extra_text)
+                    await asyncio.sleep(1)
 
             # ── ۱۱. ثبت موقت ──────────────────────────────────────────────
             # ⭐ فلو جدید (طبق دستور کارفرما):
@@ -4509,6 +4667,26 @@ async def _process_check_attachments(
                     f"کد: {bill_no} | خطا: {(upload_result.get('error') or 'نامشخص')[:200]}")
             else:
                 logging.info("[CHECK][منضمات] پیوست «لیست اموال» (ساير ضمائم) آپلود شد")
+        elif bool(group.get("is_aasar_notice")):
+            # ⭐ اعسار از هزینه دادرسی — تصویر ابلاغیه (الزامی کارفرما):
+            #   در منضمات گزینهٔ «ساير ضمائم» انتخاب و تصویر (۱ تا ۲) پیوست
+            #   می‌شود (عین مسیر لیست اموال — فرم _fill_extra_attachment_form
+            #   برای عناوین غیرنمایندگی «ساير ضمائم» را انتخاب می‌کند).
+            upload_result = await resilient_upload_attachment(
+                page, "ابلاغیه", group_paths, bot, user_id,
+                prefix="CHECK", form_fill_fn=_fill_extra_attachment_form)
+            if not upload_result.get("success"):
+                logging.error(
+                    f"[CHECK][منضمات] آپلود تصویر ابلاغیه ناموفق: "
+                    f"{upload_result.get('error')}")
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"❌ [CHECK] آپلود *تصویر ابلاغیه* ناموفق — کاربر {user_id} | "
+                    f"کد: {bill_no} | خطا: {(upload_result.get('error') or 'نامشخص')[:200]}")
+            else:
+                logging.info(
+                    f"[CHECK][منضمات] پیوست «ابلاغیه» (ساير ضمائم — "
+                    f"{len(group_paths)} تصویر) آپلود شد")
         else:
             # آپلود با resilient_upload_attachment (فرم سفارشی: نمایندگی/سایر ضمائم)
             upload_result = await resilient_upload_attachment(

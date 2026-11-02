@@ -370,6 +370,13 @@ class Form(StatesGroup):
     # ⭐ عناوین اعسار — تصاویر لیست اموال
     check_assets_list_image = State()     # تصاویر لیست اموال (الزامی)
     check_assets_list_more = State()      # ادامه / تصویر دیگر لیست اموال
+    # ⭐ اعسار از هزینه دادرسی — فیلدهای الزامی (اصلاحیهٔ کارفرما):
+    #   شماره پروندهٔ ۱۶/۱۸ رقمی (دلايل → chk3 + ReferedCaseNo3) +
+    #   شماره ابلاغیه (txtOtherData...) + تصویر ابلاغیه (۱ تا ۲ عکس — ساير ضمائم)
+    check_aasar_case_no = State()         # شماره پرونده ۱۶ یا ۱۸ رقمی (الزامی)
+    check_aasar_notice_no = State()       # شماره ابلاغیه (الزامی — حداکثر ۱۸ رقم)
+    check_aasar_notice_image = State()    # تصویر ابلاغیه (۱ تا ۲ عکس — الزامی)
+    check_aasar_notice_more = State()     # ادامه / تصویر دیگر ابلاغیه
     # ⭐ عناوین اعسار — تصاویر دادنامه یا اجرائیه + فیلدهای سند
     check_judgment_image = State()        # تصاویر دادنامه/اجرائیه (الزامی)
     check_judgment_more = State()         # ادامه / تصویر دیگر دادنامه

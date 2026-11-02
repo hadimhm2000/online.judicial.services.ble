@@ -87,6 +87,14 @@ CHECK_TALAGH_TOAFIGHI_TITLE = "دادخواست طلاق توافقی"
 CHECK_AASAR_TITLES = ["اعسار از پرداخت هزینه دادرسی",
                       "اعسار از پرداخت محکوم به",
                       "اعسار از پرداخت مهریه"]
+# ⭐ اصلاحیهٔ کارفرما — «اعسار از هزینه دادرسی»: این سه فیلد الزامی و از
+#   کاربر دریافت می‌شود (فقط برای همین عنوان):
+#     ۱. شماره پروندهٔ ۱۶ یا ۱۸ رقمی → در سامانه: مرحلهٔ «دلايل» → تیک #chk3
+#        و درج در #ReferedCaseNo3
+#     ۲. شماره ابلاغیه → بعد از انتخاب خواسته، درج در
+#        #txtOtherData45F44C153C3141D28DBE869FD746AB36 (حداکثر ۱۸ رقم)
+#     ۳. تصویر ابلاغیه → در منضمات با نوع «ساير ضمائم» (حداقل ۱، حداکثر ۲ تصویر)
+CHECK_AASAR_HAZINEH_TITLE = "اعسار از پرداخت هزینه دادرسی"
 # ⭐ عناوین مجاز انتخاب عنوان خواسته (شامل عناوین اعسار)
 CHECK_ALL_VALID_TITLES = CHECK_FAMILY_TITLES + list(CHECK_AASAR_TITLES) + [
     "صدور اجرائیه چک", "مطالبه وجه چک", "مطالبه وجه بابت..."]
@@ -2431,6 +2439,159 @@ async def check_birth_cert_more_handler(message: Message, state: FSMContext):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# ⭐ مرحله ۸.۷ — «اعسار از هزینه دادرسی»: شماره پرونده ۱۶/۱۸ رقمی +
+#   شماره ابلاغیه + تصویر ابلاغیه (۱ تا ۲ عکس) — الزامی (اصلاحیهٔ کارفرما)
+# ══════════════════════════════════════════════════════════════════════════════
+@check_router.message(Form.check_aasar_case_no)
+async def check_aasar_case_no_handler(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+
+    if text == "🔙 بازگشت":
+        # بازگشت به شرح متن (مرحلهٔ قبل از شروع فلوی تصاویر اعسار)
+        await _ask_check_text(message, state)
+        return
+
+    normalized = _to_en(text)
+    # ⭐ شماره پرونده باید ۱۶ یا ۱۸ رقم باشد (الزامی کارفرما)
+    if not re.fullmatch(r"\d{16}|\d{18}", normalized):
+        await message.answer(
+            "⚠️ *شماره پرونده* باید *۱۶ یا ۱۸ رقم* (فقط عدد) باشد.\n\n"
+            "_(۱۴۰۰ به بعد: ۱۸ رقمی | ۹۹ و قبل‌تر: ۱۶ رقمی)_\n\n"
+            "لطفاً مجدداً وارد فرمایید:",
+            reply_markup=back_only_kb)
+        return
+
+    await state.update_data(check_aasar_case_no=normalized)
+    await message.answer(
+        f"✅ شماره پرونده `{normalized}` ثبت شد.\n\n"
+        "۲/۳ — لطفاً *شماره ابلاغیه* را وارد فرمایید:\n"
+        "_(فقط عدد — حداکثر ۱۸ رقم)_",
+        reply_markup=back_only_kb)
+    await state.set_state(Form.check_aasar_notice_no)
+
+
+@check_router.message(Form.check_aasar_notice_no)
+async def check_aasar_notice_no_handler(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+
+    if text == "🔙 بازگشت":
+        await message.answer(
+            "۱/۳ — لطفاً *شماره پرونده* را وارد فرمایید:\n"
+            "_(۱۶ یا ۱۸ رقم — فقط عدد)_",
+            reply_markup=back_only_kb)
+        await state.set_state(Form.check_aasar_case_no)
+        return
+
+    normalized = _to_en(text)
+    # ⭐ شماره ابلاغیه عددی با حداکثر ۱۸ رقم (محدودیت فیلد سامانه)
+    if not re.fullmatch(r"\d{1,18}", normalized):
+        await message.answer(
+            "⚠️ *شماره ابلاغیه* باید فقط *عدد* و حداکثر *۱۸ رقم* باشد.\n\n"
+            "لطفاً مجدداً وارد فرمایید:",
+            reply_markup=back_only_kb)
+        return
+
+    await state.update_data(check_aasar_notice_no=normalized)
+    await message.answer(
+        f"✅ شماره ابلاغیه `{normalized}` ثبت شد.\n\n"
+        "📷 ۳/۳ — لطفاً *تصویر ابلاغیه* را ارسال فرمایید:\n"
+        "_(الزامی — حداقل ۱ و حداکثر ۲ تصویر)_",
+        reply_markup=check_images_continue_kb)
+    await state.set_state(Form.check_aasar_notice_image)
+
+
+@check_router.message(Form.check_aasar_notice_image)
+async def check_aasar_notice_image_handler(message: Message, state: FSMContext):
+    if not message.photo:
+        text = (message.text or "").strip()
+        if text in ("✅ ادامه", "➕ افزودن تصویر دیگر", "🔙 بازگشت"):
+            await check_aasar_notice_more_handler(message, state)
+            return
+        await message.answer("⚠️ لطفاً *عکس* ابلاغیه را ارسال فرمایید.")
+        return
+
+    data = await state.get_data()
+    images = data.get("check_aasar_notice_images", [])
+    # ⭐ حداکثر ۲ تصویر برای این بخش (الزامی کارفرما)
+    if len(images) >= 2:
+        await message.answer(
+            "⚠️ برای بخش ابلاغیه حداکثر *۲ تصویر* مجاز است.\n\n"
+            "لطفاً *«ادامه»* را بفشارید:",
+            reply_markup=check_images_continue_kb)
+        return
+
+    images.append(message.photo[-1].file_id)
+    await state.update_data(check_aasar_notice_images=images)
+
+    if len(images) >= 2:
+        await message.answer(
+            f"✅ تصویر {len(images)} ابلاغیه دریافت شد (حداکثر مجاز).\n\n"
+            "لطفاً *«ادامه»* را بفشارید:",
+            reply_markup=check_images_continue_kb)
+    else:
+        await message.answer(
+            f"✅ تصویر {len(images)} ابلاغیه دریافت شد.\n\n"
+            "در صورت وجود تصویر دیگر، ارسال فرمایید یا *«ادامه»* را بفشارید:",
+            reply_markup=check_images_continue_kb)
+    await state.set_state(Form.check_aasar_notice_more)
+
+
+@check_router.message(Form.check_aasar_notice_more)
+async def check_aasar_notice_more_handler(message: Message, state: FSMContext):
+    # ⭐ عکس در این state هم پذیرفته می‌شود — همان منطق هندلر تصویر اجرا می‌شود
+    if message.photo:
+        await check_aasar_notice_image_handler(message, state)
+        return
+
+    text = message.text.strip() if message.text else ""
+
+    if text == "➕ افزودن تصویر دیگر":
+        data = await state.get_data()
+        images = data.get("check_aasar_notice_images", [])
+        if len(images) >= 2:
+            await message.answer(
+                "⚠️ برای بخش ابلاغیه حداکثر *۲ تصویر* مجاز است.\n\n"
+                "لطفاً *«ادامه»* را بفشارید:",
+                reply_markup=check_images_continue_kb)
+            return
+        await message.answer(
+            "📷 تصویر دیگر *ابلاغیه* را ارسال فرمایید:",
+            reply_markup=check_images_continue_kb)
+        await state.set_state(Form.check_aasar_notice_image)
+        return
+
+    if text == "✅ ادامه":
+        data = await state.get_data()
+        images = data.get("check_aasar_notice_images", [])
+        # ⭐ حداقل یک تصویر الزامی است (الزامی کارفرما)
+        if not images:
+            await message.answer(
+                "⚠️ ارسال *حداقل یک تصویر* ابلاغیه الزامی است. "
+                "لطفاً تصویر آن را ارسال فرمایید:",
+                reply_markup=check_images_continue_kb)
+            await state.set_state(Form.check_aasar_notice_image)
+            return
+        # ادامهٔ زنجیرهٔ عناوین اعسار → استشهادیه (از همان روتر مشترک)
+        await _ask_check_next_after_images(message, state)
+        return
+
+    if text == "🔙 بازگشت":
+        data = await state.get_data()
+        images = data.get("check_aasar_notice_images", [])
+        if images:
+            images.pop()
+            await state.update_data(check_aasar_notice_images=images)
+        await message.answer(
+            "📷 لطفاً *تصویر ابلاغیه* را ارسال فرمایید:\n"
+            "_(حداقل ۱ و حداکثر ۲ تصویر — در صورت حذف تصویر آخر، دوباره ارسال کنید)_",
+            reply_markup=check_images_continue_kb)
+        await state.set_state(Form.check_aasar_notice_image)
+        return
+
+    await message.answer("⚠️ لطفاً از دکمه‌ها استفاده کنید:")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # مرحله ۸.۵ — تصاویر استشهادیه (اعسار=بله یا عناوین اعسار — الزامی)
 # ══════════════════════════════════════════════════════════════════════════════
 @check_router.message(Form.check_esteshahadieh_image)
@@ -2987,6 +3148,33 @@ async def _ask_check_next_after_images(message: Message, state: FSMContext):
     # (دستور کارفرما: سوال پیوست دیگر بعد از تکمیل اطلاعات دادنامه پرسیده
     # می‌شود، نه بعد از صلاحیت دادگاه)
     if request_title in CHECK_AASAR_TITLES:
+        # ⭐ اصلاحیهٔ کارفرما — «اعسار از هزینه دادرسی»: در ابتدای فلوی تصاویر،
+        #   سه فیلد الزامی گرفته می‌شود: شماره پروندهٔ ۱۶/۱۸ رقمی → شماره ابلاغیه →
+        #   تصویر ابلاغیه (۱ تا ۲ عکس). (فلگ‌ها با data.get چک می‌شوند تا در
+        #   مسیر بازگشت/ویرایش دوباره پرسیده نشود.)
+        if request_title == CHECK_AASAR_HAZINEH_TITLE:
+            if not data.get("check_aasar_case_no"):
+                await message.answer(
+                    "🔢 *اطلاعات اعسار از هزینه دادرسی:*\n\n"
+                    "۱/۳ — لطفاً *شماره پرونده* (کارتابل/دادنامه صادرکننده) را وارد فرمایید:\n"
+                    "_(۱۶ یا ۱۸ رقم — فقط عدد)_",
+                    reply_markup=back_only_kb)
+                await state.set_state(Form.check_aasar_case_no)
+                return
+            if not data.get("check_aasar_notice_no"):
+                await message.answer(
+                    "۲/۳ — لطفاً *شماره ابلاغیه* را وارد فرمایید:\n"
+                    "_(فقط عدد — حداکثر ۱۸ رقم)_",
+                    reply_markup=back_only_kb)
+                await state.set_state(Form.check_aasar_notice_no)
+                return
+            if not data.get("check_aasar_notice_images"):
+                await message.answer(
+                    "📷 ۳/۳ — لطفاً *تصویر ابلاغیه* را ارسال فرمایید:\n"
+                    "_(الزامی — حداقل ۱ و حداکثر ۲ تصویر)_",
+                    reply_markup=check_images_continue_kb)
+                await state.set_state(Form.check_aasar_notice_image)
+                return
         if not esteshahadieh_done:
             await message.answer(
                 "📷 *مرحله ۹:* لطفاً تصاویر *استشهادیه* را ارسال فرمایید:\n"
@@ -3631,6 +3819,17 @@ async def _go_to_check_preview(message: Message, state: FSMContext):
         lines.append(f"📷 تصاویر چک: {len(images)} تصویر")
     # ⭐ عناوین اعسار — مستندات الزامی
     if is_aasar_title:
+        # ⭐ اعسار از هزینه دادرسی — فیلدهای الزامی (اصلاحیهٔ کارفرما)
+        if request_title == CHECK_AASAR_HAZINEH_TITLE:
+            aasar_case_no = data.get("check_aasar_case_no", "")
+            aasar_notice_no = data.get("check_aasar_notice_no", "")
+            aasar_notice_imgs = data.get("check_aasar_notice_images", [])
+            if aasar_case_no:
+                lines.append(f"\n🔢 شماره پرونده: `{aasar_case_no}`")
+            if aasar_notice_no:
+                lines.append(f"📮 شماره ابلاغیه: `{aasar_notice_no}`")
+            if aasar_notice_imgs:
+                lines.append(f"📷 تصویر ابلاغیه: {len(aasar_notice_imgs)} تصویر")
         if esteshahadieh:
             lines.append(f"\n📷 استشهادیه: {len(esteshahadieh)} تصویر")
         if assets_list:
@@ -3758,6 +3957,18 @@ async def _submit_check_request(message: Message, state: FSMContext, bot: Bot):
             "dadnameh_branch": data.get("check_judgment_branch_no", ""),
         })
 
+    # ⭐ اعسار از هزینه دادرسی — تصویر ابلاغیه (ساير ضمائم — الزامی):
+    # حداقل ۱ و حداکثر ۲ تصویر (اعتبارسنجی تعداد در هندلرهای مربوطه انجام
+    # شده؛ اینجا برای اطمینان دوباره بریده می‌شود).
+    if request_title == CHECK_AASAR_HAZINEH_TITLE:
+        notice_ids = list(data.get("check_aasar_notice_images") or [])[:2]
+        if notice_ids:
+            attachment_groups.append({
+                "title": "ابلاغیه",
+                "images": notice_ids,
+                "is_aasar_notice": True,
+            })
+
     # دانلود فایل ورد
     docx_path = None
     docx_id = data.get("check_docx_file_id")
@@ -3804,6 +4015,12 @@ async def _submit_check_request(message: Message, state: FSMContext, bot: Bot):
         "check_khasteh_text": data.get("check_khasteh_text", ""),
         "check_tamin_khasteh": data.get("check_tamin_khasteh", False),
         "check_aasar": data.get("check_aasar", False),
+        # ⭐ اعسار از هزینه دادرسی — فیلدهای الزامی (اصلاحیهٔ کارفرما):
+        # شماره پرونده (دلايل → chk3 + ReferedCaseNo3) و شماره ابلاغیه
+        # (بعد از خواسته → txtOtherData...)؛ تصویر ابلاغیه در
+        # check_attachment_groups (ساير ضمائم) ارسال می‌شود.
+        "check_aasar_case_no": data.get("check_aasar_case_no", ""),
+        "check_aasar_notice_no": data.get("check_aasar_notice_no", ""),
         "check_text": full_text,
         "check_text_html": data.get("check_text_html", ""),
         "check_extra_text": data.get("check_extra_text", ""),

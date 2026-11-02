@@ -2146,6 +2146,34 @@ async def _raise_lavayeh_sana_data_error(bot: Bot, user_id: int, error_text: str
         person_index=person_index)
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# ⭐ اصلاحیهٔ کارفرما: خطای «در ذخیره سازی لایحه اشکالی بوجود آمد» موقتی است —
+# دکمهٔ «ثبت موقت» باید مجدداً زده شود (نه قطعی اعلام شدن فرآیند).
+# این خطا دو مسیر ورود دارد:
+#   ۱) متن خطای برگشده از wait_for_horizontal_loading_bar
+#      («page error after loading: در ذخیره سازی لایحه اشکالی بوجود آمد.»)
+#   ۲) پاپ‌آپ خطای سویت‌الرت پس از کلیک (error_text)
+# ════════════════════════════════════════════════════════════════════════════
+LAVAYEH_SAVE_STORAGE_ERROR_MAX_RETRIES = 3  # حداکثر تعداد کلیک مجدد «ثبت موقت»
+
+
+def _is_lavayeh_save_storage_error(error_text) -> bool:
+    """
+    تشخیص خطای «در ذخیره سازی لایحه اشکالی بوجود آمد» با نرمال‌سازی
+    نویسه‌های عربی/فارسی (متن سامانه با «ي/ك» عربی هم نوشته می‌شود).
+    """
+    if not error_text:
+        return False
+    table = str.maketrans({
+        "\u064A": "\u06CC",  # ي (عربی) → ی (فارسی)
+        "\u0649": "\u06CC",  # ى (الف مقصوره) → ی
+        "\u0643": "\u06A9",  # ك (عربی) → ک (فارسی)
+        "\u200C": " ",       # نیم‌فاصله → فاصله
+    })
+    t = str(error_text).translate(table)
+    return ("ذخیره" in t) and ("لایحه" in t) and ("اشکال" in t)
+
+
 async def _raise_fatal_temp_save_error(bot: Bot, user_id: int, error_text: str):
     """
     ارسال پیام خطای «ثبت موقت» به کاربر و raise کردن LavayehFatalError.
@@ -2201,6 +2229,9 @@ async def _raise_fatal_temp_save_error(bot: Bot, user_id: int, error_text: str):
 
 async def _click_save_temp_with_retry(page, bot: Bot, user_id: int, max_retries: int = 5):
     service_delay_count = 0
+    # ⭐ اصلاحیهٔ کارفرما: شمارندهٔ خطای «در ذخیره سازی لایحه اشکالی بوجود آمد» —
+    # این خطا موقتی است و دکمهٔ «ثبت موقت» تا ۳ بار مجدداً زده می‌شود.
+    save_storage_error_count = 0
     for attempt in range(max_retries):
         # بررسی session expiry قبل از هر تلاش
         had_expiry = await check_and_handle_expiry(page, bot, user_id)
@@ -2245,6 +2276,19 @@ async def _click_save_temp_with_retry(page, bot: Bot, user_id: int, max_retries:
             logging.info(f"[LAVAYEH] session renewed after save attempt {attempt+1} (during loading wait)")
             continue
         elif loading_result:
+            # ⭐ اصلاحیهٔ کارفرما: خطای «در ذخیره سازی لایحه اشکالی بوجود آمد»
+            # موقتی است — دکمهٔ «ثبت موقت» مجدداً زده می‌شود (تا ۳ بار) و فقط
+            # پس از اتمام تلاش‌ها، خطا قطعی اعلام می‌گردد.
+            if _is_lavayeh_save_storage_error(loading_result):
+                save_storage_error_count += 1
+                logging.warning(
+                    f"[LAVAYEH] خطای «در ذخیره سازی لایحه اشکالی بوجود آمد» در ثبت موقت "
+                    f"(تلاش {save_storage_error_count}/{LAVAYEH_SAVE_STORAGE_ERROR_MAX_RETRIES}) — "
+                    f"کلیک مجدد «ثبت موقت»...")
+                if save_storage_error_count > LAVAYEH_SAVE_STORAGE_ERROR_MAX_RETRIES:
+                    await _raise_fatal_temp_save_error(bot, user_id, loading_result)
+                await asyncio.sleep(3)
+                continue
             # رشتهٔ متن خطای واقعی سامانه — قطعی است، دیگر retry معنی ندارد
             await _raise_fatal_temp_save_error(bot, user_id, loading_result)
 
@@ -2301,6 +2345,22 @@ async def _click_save_temp_with_retry(page, bot: Bot, user_id: int, max_retries:
                     except Exception:
                         pass
                     raise SanaSystemDownError("ثبت موقت لایحه: service_delay persisted")
+                await asyncio.sleep(3)
+                continue
+
+            # ══════════════════════════════════════════════════════════
+            # ⭐ اصلاحیهٔ کارفرما: خطای «در ذخیره سازی لایحه اشکالی بوجود آمد»
+            # (پاپ‌آپ سویت‌الرت) نیز موقتی است — مانند مسیر لودینگ، دکمهٔ
+            # «ثبت موقت» تا ۳ بار مجدداً زده می‌شود.
+            # ══════════════════════════════════════════════════════════
+            if _is_lavayeh_save_storage_error(error_text):
+                save_storage_error_count += 1
+                logging.warning(
+                    f"[LAVAYEH] پاپ‌آپ «در ذخیره سازی لایحه اشکالی بوجود آمد» در ثبت موقت "
+                    f"(تلاش {save_storage_error_count}/{LAVAYEH_SAVE_STORAGE_ERROR_MAX_RETRIES}) — "
+                    f"کلیک مجدد «ثبت موقت»...")
+                if save_storage_error_count > LAVAYEH_SAVE_STORAGE_ERROR_MAX_RETRIES:
+                    await _raise_fatal_temp_save_error(bot, user_id, error_text)
                 await asyncio.sleep(3)
                 continue
 
