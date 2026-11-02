@@ -55,6 +55,10 @@ def _isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(wallet, "STORE_FILE", str(tmp_path / "wallet.json"))
     wallet._store = {"users": {}, "offers": {}, "holds": {}, "autopaid": {}}
     wallet._lock = asyncio.Lock()
+    import refund_approvals
+    monkeypatch.setattr(refund_approvals, "STORE_FILE", str(tmp_path / "refund_approvals.json"))
+    refund_approvals._store = {"items": {}}
+    refund_approvals._lock = asyncio.Lock()
     monkeypatch.setattr(ch, "_panel_update", AsyncMock())
     monkeypatch.setattr(ch, "_panel_register", AsyncMock())
     monkeypatch.setattr(ch, "_set_user_state", AsyncMock())
@@ -153,10 +157,14 @@ def test_wrong_id_gives_45_minute_window_then_refunds_half():
     assert 179 * 60 < req["fix_deadline"] - time.time() <= 180 * 60
     assert "کدملی و تاریخ تولد اشتباه است" in _texts(bot) and "۳ ساعت" in _texts(bot)
 
-    # پایان مهلت → لغو + ۵۰٪ به کیف پول
+    # پایان مهلت → لغو + درخواست بازگشت ۵۰٪ (واریز فقط پس از تایید مدیر)
     req["fix_deadline"] = time.time() - 1
     run(ch._tick(bot))
     assert ch.get_request(rid)["status"] == ch.ST_CANCELLED
+    import refund_approvals
+    assert wallet.balance(500) == 0 and refund_approvals.pending_total_toman(500) == 75_000
+    for it in refund_approvals.pending():
+        assert run(refund_approvals.decide(it["id"], True, 1))[0] == "done"
     assert wallet.balance(500) == 75_000
     ch._panel_update.assert_awaited()
     assert ch._panel_update.await_args.kwargs["fee"] == 75_000

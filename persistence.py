@@ -434,7 +434,7 @@ def load_into_runtime_state():
 
     # 11. incomplete_tasks
     for key, info in data.get("incomplete_tasks", {}).items():
-        runtime_state.incomplete_tasks[key] = info
+        dict.__setitem__(runtime_state.incomplete_tasks, key, info)  # بی‌صدا: درخواست بازگشت دوباره ساخته نشود
 
     # 11-ب. ⭐ recovery_notified — بازیابی وضعیت «پیام بازیابی ارسال شده»
     for uid_str, fp in data.get("recovery_notified", {}).items():

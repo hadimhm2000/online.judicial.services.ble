@@ -634,6 +634,17 @@ async def _fail(bot: Bot, rid: str, phase: str, where: str, info: str, user_text
     req = _update(rid, status=ST_ERROR, failed_phase=phase, last_error=(info or "")[:500])
     if not req:
         return
+    # ⭐ ثبت ناموفق/ناقص: درخواست بازگشت کل مبلغ پرداختی با تایید مدیر (واریز خودکار نیست).
+    # اگر مدیر دوباره تلاش کند و موفق شود، درخواست خودکار لغو می‌شود.
+    try:
+        _paid = int(req.get("paid_toman") or 0)
+        if req.get("paid") and not req.get("exempt") and _paid > 0:
+            import refund_approvals
+            refund_approvals.request_refund_nowait(
+                req["uid"], _paid, f"ثبت ناموفق {SERVICE_LABEL} {rid} (مرحلهٔ {phase})",
+                source="clearance_fail", dedupe_key=f"clr-fail:{rid}")
+    except Exception as _re:
+        logger.error(f"[CLEARANCE] ثبت درخواست بازگشت برای {rid} ناموفق: {_re}")
     await _notify_admin(
         bot,
         f"🚨 [گواهی عدم سوءپیشینه] خطا در «{where}» — درخواست {rid}\n{_who(req)}\n\n"
@@ -685,7 +696,7 @@ async def on_send_code_result(bot: Bot, rid: str, kind: str, info: str):
             "❌ *کدملی و تاریخ تولد اشتباه است.*\n"
             f"پیام سامانه: «{info}»\n\n"
             f"⏰ شما *{duration_label(FIX_WINDOW_MINUTES)}* مهلت دارید تا اطلاعات را ویرایش کنید؛ در غیر این صورت "
-            f"درخواست لغو و {TIMEOUT_REFUND_PERCENT}٪ مبلغ پرداختی به کیف پول شما برمی‌گردد.\n\n"
+            f"درخواست لغو و {TIMEOUT_REFUND_PERCENT}٪ مبلغ پرداختی پس از تایید مدیریت به کیف پول شما برمی‌گردد.\n\n"
             "✏️ لطفاً *کدملی* صحیح را وارد کنید:",
             reply_markup=_back_kb)
         await _notify_admin(bot, f"ℹ️ [گواهی عدم سوءپیشینه] {rid}: کدملی/تاریخ تولد اشتباه — "
@@ -769,6 +780,11 @@ async def on_finalize_result(bot: Bot, rid: str, kind: str, info: str):
             await _fail(bot, rid, "finalize", "ارسال چاپ رسید به کاربر", f"فایل: {info}", None)
             return
         _update(rid, status=ST_DONE, done_at=time.time())
+        try:   # ثبت با موفقیت کامل شد → درخواست بازگشتِ ناشی از خطای قبلی دیگر لازم نیست
+            import refund_approvals
+            refund_approvals.cancel_pending(f"clr-fail:{rid}")
+        except Exception:
+            pass
         await _notify_user(
             bot, uid,
             "✅ *درخواست گواهی عدم سوءپیشینه با موفقیت ثبت و تایید نهایی شد.*\n\n"
@@ -816,17 +832,20 @@ async def _expire_fix_window(bot: Bot, rid: str):
     uid = req["uid"]
     refund = int(req.get("paid_toman") or 0) * TIMEOUT_REFUND_PERCENT // 100
     if refund > 0:
-        import wallet
-        await wallet.credit(uid, refund, "refund", f"لغو {SERVICE_LABEL} {rid} (پایان مهلت ویرایش)")
+        # ⭐ واریز فقط پس از تایید مدیر
+        import refund_approvals
+        refund_approvals.request_refund_nowait(
+            uid, refund, f"لغو {SERVICE_LABEL} {rid} (پایان مهلت ویرایش)",
+            source="clearance_timeout", dedupe_key=f"clr-timeout:{rid}")
     await _notify_user(
         bot, uid,
         f"⌛ مهلت {duration_adj(FIX_WINDOW_MINUTES)} ویرایش کدملی و تاریخ تولد به پایان رسید و درخواست "
         f"{SERVICE_LABEL} لغو شد."
-        + (f"\n👛 مبلغ {refund:,} تومان به کیف پول شما برگشت." if refund else ""),
+        + (f"\n👛 مبلغ {refund:,} تومان پس از تایید مدیریت به کیف پول شما واریز می‌شود." if refund else ""),
         reply_markup=get_flow_type_kb(uid))
     await _set_user_state(bot, uid, Form.waiting_for_flow_type, {})
     await _notify_admin(bot, f"⌛ [گواهی عدم سوءپیشینه] {rid} پس از پایان مهلت ویرایش لغو شد"
-                             + (f"؛ {refund:,} تومان به کیف پول کاربر برگشت." if refund else ".")
+                             + (f"؛ درخواست بازگشت {refund:,} تومان منتظر تایید شماست." if refund else ".")
                              + f"\n{_who(req)}")
     kept = int(req.get("paid_toman") or 0) - refund
     await _panel_update(rid, status="CANCELLED", fee=kept, systemCost=0,

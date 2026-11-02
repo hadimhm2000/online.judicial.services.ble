@@ -69,6 +69,9 @@ from history_handlers import history_router
 dp.include_router(history_router)
 import wallet
 wallet.setup_wallet(dp)
+# ⭐ بازگشت وجه به کیف پول فقط پس از تایید مدیر (دکمهٔ تایید/رد + /refunds)
+import refund_approvals
+refund_approvals.setup_refunds(dp)
 # ⭐ PDF «راهنمای جامع ربات» — ارسال در اولین /start + ارسال همگانی با دستور مدیر
 import guide_handlers
 guide_handlers.setup_guide(dp)
@@ -279,6 +282,10 @@ async def state_persister(bot: Bot):
                 await nid_fix_window.sweep_expired(bot)
             except Exception as _sw_err:
                 logging.error(f"[PERSIST] خطا در sweep پنجره‌های ویرایش: {_sw_err}")
+            try:   # درخواست‌های بازگشتی که هنوز به مدیر اطلاع داده نشده‌اند
+                await refund_approvals.notify_pending(bot)
+            except Exception as _rf_err:
+                logging.error(f"[PERSIST] خطا در اطلاع درخواست‌های بازگشت: {_rf_err}")
             cleanup_expired_pending_entries()
             # ⭐ سوئیپر بی‌کاری ۱ ساعته — کاربران غایب (>۱ ساعت) به منوی
             # اصلی برگردانده می‌شوند و منوی اصلی برایشان ارسال می‌شود
@@ -519,6 +526,7 @@ async def main():
     except Exception:
         pass
     wallet.set_bot(bot)
+    refund_approvals.set_bot(bot)
 
     # ارسال پیام تستی به ادمین برای اطمینان از صحت ADMIN_ID
     try:

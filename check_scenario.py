@@ -1432,6 +1432,10 @@ async def process_check_task(data: dict, bot: Bot):
             await bot.send_message(
                 ADMIN_ID,
                 f"⛔ [CHECK] فرآیند کاربر {user_id} قطع شد ({abort_err.step}): {str(abort_err)[:400]}")
+            if not is_bulk_check:   # ⭐ بازگشت پیش‌پرداخت فقط با تایید مدیر
+                import refund_approvals
+                refund_approvals.request_failure_refund(
+                    user_id, f"check:{tracking_no or user_id}", "ثبت دادخواست چک")
             try:
                 from panel_sync import upsert_case_to_panel
                 await upsert_case_to_panel(
@@ -1477,6 +1481,10 @@ async def process_check_task(data: dict, bot: Bot):
                     "⚠️ ثبت دادخواست چک با اختلال مواجه شد. پشتیبانی پیگیری خواهد کرد."
                 )
                 await bot.send_message(ADMIN_ID, f"❌ [CHECK] کاربر {user_id} پس از {max_attempts} تلاش ناموفق.")
+                if not is_bulk_check:   # ⭐ بازگشت پیش‌پرداخت فقط با تایید مدیر
+                    import refund_approvals
+                    refund_approvals.request_failure_refund(
+                        user_id, f"check:{tracking_no or user_id}", "ثبت دادخواست چک")
                 try:
                     from panel_sync import upsert_case_to_panel
                     await upsert_case_to_panel(

@@ -340,7 +340,25 @@ prepaid_registrations: dict = {}
 #   "task_data": dict,           — داده‌های کامل تسک
 #   "created_at": float,         — زمان ایجاد
 # }
-incomplete_tasks: dict = {}
+
+
+class _IncompleteTasks(dict):
+    """⭐ هر تسک ناقصِ تازه = یک شکست ثبت. درخواست بازگشت پیش‌پرداخت (فقط با تایید مدیر)
+    ساخته می‌شود (refund_approvals). بارگذاری از فایل با dict.__setitem__ بی‌صدا انجام می‌شود."""
+
+    def __setitem__(self, key, value):
+        is_new = key not in self
+        super().__setitem__(key, value)
+        if is_new:
+            try:
+                import refund_approvals
+                refund_approvals.on_incomplete_task(key, value)
+            except Exception as _e:
+                import logging
+                logging.getLogger(__name__).error(f"[REFUND] هوک تسک ناقص {key} ناموفق: {_e}")
+
+
+incomplete_tasks: dict = _IncompleteTasks()
 
 # =========================================================
 # سیستم محدودیت تلاش‌های ناموفق استعلام (حداکثر ۲ تلاش)

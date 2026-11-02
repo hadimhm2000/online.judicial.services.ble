@@ -106,16 +106,16 @@ def deceased_message(error_text: str) -> str:
         f"⚠️ *خطای استعلام ثنا:*\n\n«{(error_text or '').strip()[:300]}»\n\n"
         "لطفاً *شماره کدملی جدید* را وارد کنید.\n\n"
         f"⏰ شما *{duration_label(NID_FIX_WINDOW_MINUTES)}* فرصت دارید کدملی جدید را وارد کنید. "
-        "در صورت انصراف (یا پایان مهلت)، *۵۰ درصد مبلغ پیش‌پرداخت* به کیف پول "
-        "شما بازگردانده می‌شود.")
+        "در صورت انصراف (یا پایان مهلت)، *۵۰ درصد مبلغ پیش‌پرداخت* پس از تایید مدیریت "
+        "به کیف پول شما بازگردانده می‌شود.")
 
 
 def penalty_line(new_rial: int) -> str:
     """یک خط پیام جریمه (نصف پیش‌پرداخت به کیف پول برای موارد بعدی) — خالی اگر مبلغی نبود."""
     if new_rial <= 0:
         return ""
-    return (f"💰 نصف مبلغ پیش‌پرداخت شما ({new_rial // 10:,} تومان) به کیف پول شما واریز شد "
-            "و به‌صورت خودکار از هزینهٔ موارد بعدی کسر می‌گردد.\n")
+    return (f"💰 نصف مبلغ پیش‌پرداخت شما ({new_rial // 10:,} تومان) پس از تایید مدیریت به "
+            "کیف پول شما واریز می‌شود و به‌صورت خودکار از هزینهٔ موارد بعدی کسر می‌گردد.\n")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -195,13 +195,16 @@ def halve_prepaid(user_id: int) -> int:
         return 0
     new_rial = paid_rial // 2
     try:
-        import wallet
-        if new_rial >= 10:
-            wallet.credit_nowait(user_id, new_rial // 10, "refund",
-                                 "نصف پیش‌پرداخت (جریمهٔ عدم ویرایش کدملی)")
-        if credit_rial >= 10:
-            wallet.credit_nowait(user_id, credit_rial // 10, "refund",
-                                 "مانده/بستانکاری قبلی")
+        # ⭐ واریز فقط پس از تایید مدیر (refund_approvals)؛ نصف پیش‌پرداخت + مانده قبلی در یک درخواست
+        import refund_approvals
+        total_toman = (new_rial // 10 if new_rial >= 10 else 0) + \
+                      (credit_rial // 10 if credit_rial >= 10 else 0)
+        if total_toman > 0:
+            refund_approvals.request_refund_nowait(
+                user_id, total_toman,
+                "نصف پیش‌پرداخت (جریمهٔ عدم ویرایش کدملی)"
+                + (" + مانده/بستانکاری قبلی" if credit_rial >= 10 else ""),
+                source="nid_fix_penalty")
     except Exception as e:
         # کیف پول در دسترس نیست → رفتار قبلی (نصف رکورد برای موارد بعدی)
         logger.error(f"[NID-FIX] واریز جریمه به کیف پول کاربر {user_id} ناموفق: {e}")
@@ -235,13 +238,15 @@ async def refund_half_prepay_to_wallet(user_id: int) -> int:
         return 0
     refund_toman = (paid_rial // 2) // 10
     try:
-        import wallet
-        if refund_toman > 0:
-            await wallet.credit(user_id, refund_toman, "refund",
-                                "بازگشت ۵۰٪ پیش‌پرداخت (خطای فوت ثبت احوال)")
-        # ⭐ ماندهٔ قبلی (بستانکاری) هم به کیف پول می‌رود
-        if credit_rial >= 10:
-            await wallet.credit(user_id, credit_rial // 10, "refund", "مانده/بستانکاری قبلی")
+        # ⭐ واریز فقط پس از تایید مدیر (refund_approvals)
+        import refund_approvals
+        total_toman = max(0, refund_toman) + (credit_rial // 10 if credit_rial >= 10 else 0)
+        if total_toman > 0:
+            refund_approvals.request_refund_nowait(
+                user_id, total_toman,
+                "بازگشت ۵۰٪ پیش‌پرداخت (خطای فوت ثبت احوال)"
+                + (" + مانده/بستانکاری قبلی" if credit_rial >= 10 else ""),
+                source="nid_fix_deceased")
     except Exception as e:
         logger.error(f"[NID-FIX] خطا در واریز به کیف پول کاربر {user_id}: {e}")
         return 0
@@ -255,8 +260,8 @@ async def refund_half_prepay_to_wallet(user_id: int) -> int:
 def refund_line(refund_toman: int) -> str:
     if refund_toman <= 0:
         return ""
-    return (f"💰 ۵۰ درصد مبلغ پیش‌پرداخت ({refund_toman:,} تومان) به کیف پول "
-            "شما بازگردانده شد.\n")
+    return (f"💰 ۵۰ درصد مبلغ پیش‌پرداخت ({refund_toman:,} تومان) پس از تایید مدیریت به "
+            "کیف پول شما بازگردانده می‌شود.\n")
 
 
 async def settle_cancel(user_id: int, win) -> str:
@@ -458,11 +463,11 @@ async def sweep_expired(bot) -> int:
                 await bot.send_message(
                     ADMIN_ID,
                     (f"⌛ [NID-FIX] مهلت ورود کدملی جدید کاربر {uid} ({label}، خطای فوت) "
-                     f"به پایان رسید؛ ۵۰٪ پیش‌پرداخت به کیف پول بازگشت.")
+                     f"به پایان رسید؛ درخواست بازگشت ۵۰٪ پیش‌پرداخت ثبت شد (منتظر تایید شما).")
                     if deceased else
                     (f"⌛ [NID-FIX] مهلت ویرایش کدملی کاربر {uid} ({label}) به پایان "
                      f"رسید و جریمهٔ نصف پیش‌پرداخت اعمال شد "
-                     f"({new_rial // 10:,} تومان به کیف پول کاربر رفت)."))
+                     f"(درخواست بازگشت {new_rial // 10:,} تومان منتظر تایید شماست)."))
             except Exception:
                 pass
             closed += 1
