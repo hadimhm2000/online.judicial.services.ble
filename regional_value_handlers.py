@@ -1551,7 +1551,7 @@ async def _rv_start_payment(message: Message, state: FSMContext, bot: Bot):
     try:
         import json as _json
         invoice_payload = _json.dumps({"type": "regional_value", "uid": message.from_user.id})
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT), timeout=aiohttp.ClientTimeout(total=40)) as session:
             invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
             invoice_data = {
                 "chat_id": message.from_user.id,

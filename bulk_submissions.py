@@ -1122,7 +1122,7 @@ async def _send_bulk_settlement_invoice(bot, user_id: int, tracking_code: str, a
         import json as _json
 
         invoice_payload = _json.dumps({"type": "bulk_settlement", "uid": user_id, "tracking_code": tracking_code})
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT), timeout=aiohttp.ClientTimeout(total=40)) as session:
             invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
             invoice_data = {
                 "chat_id": user_id,

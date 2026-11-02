@@ -624,7 +624,7 @@ async def _topup_via_gateway(callback: CallbackQuery, amount_toman: int):
     uid = callback.from_user.id
     invoice_data = _topup_invoice(uid, amount_toman)
     try:
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT), timeout=aiohttp.ClientTimeout(total=40)) as session:
             async with session.post(f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice", json=invoice_data) as resp:
                 result = await resp.json()
         if not result.get("ok"):

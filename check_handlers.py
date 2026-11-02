@@ -4140,19 +4140,31 @@ async def check_prepay_successful_payment(message: Message, state: FSMContext, b
 
     logging.info(f"[CHECK-PREPAY] پرداخت خودکار تشخیص داده شد برای کاربر {user_id}")
 
-    # ⚠️ داده‌های FSM از بین رفته — بدون ثبت؛ اطلاع به مدیر
+    # ⚠️ داده‌های FSM از بین رفته. ⭐ رفع باگ ۱۴۰۵/۰۸ (لاگ ۱۴۰۵/۰۸/۰۶): پول
+    # دیگر گم نمی‌شود — مبلغ به‌عنوان پیش‌پرداخت/اعتبار کاربر ثبت می‌شود و
+    # در فاکتور پایان کارِ ثبتِ بعدی او کسر می‌گردد.
     if not data.get("check_request_title"):
-        logging.error(f"[CHECK-PREPAY] داده FSM یافت نشد — user={user_id}")
+        logging.error(f"[CHECK-PREPAY] داده FSM یافت نشد — user={user_id} "
+                      f"(مبلغ به‌عنوان اعتبار ثبت می‌شود)")
+        try:
+            from prepay_registration import register_orphan_prepay
+            register_orphan_prepay(user_id, fee, "check",
+                                   payment.telegram_payment_charge_id)
+        except Exception as _orph_err:
+            logging.error(f"[CHECK-PREPAY] ثبت اعتبار بازیافتی ناموفق: {_orph_err}",
+                          exc_info=True)
         await message.answer(
             "⚠️ اطلاعات درخواست شما یافت نشد؛ لطفاً دوباره ثبت را شروع کنید.\n"
-            "پرداخت شما به مدیریت اطلاع داده شد و در هزینه ثبت بعدی لحاظ می‌گردد.")
+            "✅ مبلغ پرداختی شما به‌عنوان اعتبار ثبت شد و به‌صورت خودکار از "
+            "فاکتور ثبت بعدی شما کسر می‌شود.")
         try:
             from config import ADMIN_ID
             await bot.send_message(
                 ADMIN_ID,
                 f"⚠️ [CHECK-PREPAY] پرداخت بدون داده FSM — user={user_id}\n"
                 f"🎫 payment_id: {payment.telegram_payment_charge_id}\n"
-                f"💰 مبلغ: {fee:,} تومان")
+                f"💰 مبلغ: {fee:,} تومان\n"
+                f"✅ مبلغ به‌عنوان اعتبار کاربر ثبت شد (در فاکتور پایان کار بعدی کسر می‌شود).")
         except Exception:
             pass
         await state.clear()

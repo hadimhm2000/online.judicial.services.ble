@@ -38,6 +38,18 @@ from persistence import (
     mark_crash_and_save)
 
 dp = Dispatcher(storage=MemoryStorage())
+# ⭐ نظم و شفافیت پردازش آپدیت‌ها (۱۴۰۵/۰۸ — لاگ ۱۴۰۵/۰۸/۰۶):
+# ۱) آپدیت‌های «هر کاربر» به ترتیب رسیدن و پشت‌سرهم پردازش می‌شوند (رفع
+#    شرط رقابتی FSM — آپدیت ۳۵۱۵۱ قبل از ۳۵۱۵۰ اجرا شده بود). کاربران
+#    مختلف همچنان موازی‌اند.
+# ۲) آپدیت‌های کند (>۵ ثانیه) با شناسه و کاربر لاگ می‌شوند (قبلاً زمان
+#    پردازش فقط در DEBUG دیده می‌شد و آپدیت ۴۶ ثانیه‌ای بی‌رد بود).
+# بیرونی‌ترین لایه، قبل از ناظر فاکتور/کارت‌به‌کارت/کیف پول ثبت می‌شود؛
+# بازپخش‌های مصنوعی (WALLET-/CARD- با dp.feed_update) درون همان تسکِ
+# جاری اجرا می‌شوند و قفل برای همان تسک re-entrant است (بن‌بست ندارد).
+import update_pipeline
+dp.update.outer_middleware(update_pipeline.UserSerialMiddleware())
+dp.update.outer_middleware(update_pipeline.SlowUpdateLogMiddleware())
 # ⭐ رد پرداخت فاکتور قدیمی/نامربوط — باید پیش از ناظر کارت‌به‌کارت و کیف پول ثبت شود
 import invoice_guard
 dp.message.outer_middleware(invoice_guard.InvoiceGuardMiddleware())
@@ -652,6 +664,11 @@ async def main():
     # ⭐ یادآوری فاکتورهای پرداخت‌نشده (۱ ساعت پس از فاکتور + ۲۴ ساعت پیش از حذف)
     from invoice_reminders import invoice_reminder_loop
     _start_bg(invoice_reminder_loop(bot), "invoice_reminder_loop", bot)
+    # ⭐ آشتی‌سازی پرداخت‌های بی‌پیگیری (لاگ ۱۴۰۵/۰۸/۰۶ — کاربر ۲۷۲۶۶۰۵۴۹):
+    # پیش‌پرداختِ پرداخت‌شده‌ای که ۱۰ دقیقه پس از پرداخت هنوز هیچ فرآیند فعالی
+    # (صف ثبت/امضا/اصلاح/پروندهٔ باز) ندارد، فقط یک بار به مدیر هشدار داده می‌شود.
+    from pay_reconcile import pay_reconcile_loop
+    _start_bg(pay_reconcile_loop(bot), "pay_reconcile_loop", bot)
 
     # ⭐ آزادسازی صف خارج از ساعت کاری / پس از رفع قطعی سامانه
     _start_bg(sana_gate.gate_loop(bot), "gate_loop", bot)

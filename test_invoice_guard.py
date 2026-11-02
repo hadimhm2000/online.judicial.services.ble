@@ -50,10 +50,33 @@ def test_payload_routed_types_allowed_in_any_state():
         assert invoice_guard.check(1, payload, 10_000, LAV) is None, ptype
 
 
-def test_prepay_allowed_outside_guarded_states():
+def test_prepay_allowed_only_in_its_own_waiting_state():
+    """⭐ اصلاحیهٔ ۱۴۰۵/۰۸ (لاگ ۱۴۰۵/۰۸/۰۶ — کاربر ۲۷۲۶۶۰۵۴۹):
+
+    فاکتور پیش‌پرداخت (reg_prepay) فقط در state انتظارِ «همان سرویس» قابل
+    پرداخت است. اگر state از بین رفته باشد (None — مثلاً شروع مجدد/ری‌استارت
+    ربات) یا کاربر در state سرویس دیگری باشد، پرداختِ آن فاکتور دیگر قابل
+    مصرف نیست و باید همان‌جا رد شود تا پول کاربر اصلاً کسر نشود.
+    (قبلاً با state=None عبور می‌کرد و بعداً به خطای «داده FSM یافت نشد» و
+    گم‌شدن پول منجر می‌شد — برداشت دوگانه.)
+    """
     _, payload = _inv(1, "reg_prepay", 10_000, svc="lavayeh")
+    # در state درست همان سرویس → مجاز
     assert invoice_guard.check(1, payload, 10_000, Form.waiting_for_lavayeh_prepay.state) is None
-    assert invoice_guard.check(1, payload, 10_000, None) is None
+    # اعلام وکالت هم در همان state لایحه پردازش می‌شود → مجاز
+    assert invoice_guard.check(1, json.dumps({"type": "reg_prepay", "uid": 1, "svc": "ealam"}),
+                               10_000, Form.waiting_for_lavayeh_prepay.state) is None
+    # state از بین رفته (فاکتور قدیمی/بی‌اقدام) → رد
+    assert invoice_guard.check(1, payload, 10_000, None) is not None
+    # کاربر در state پیش‌پرداخت سرویس دیگر → رد (ارجاع اشتباهی ممنوع)
+    assert invoice_guard.check(1, payload, 10_000, Form.waiting_for_ezhhar_prepay.state) is not None
+    assert invoice_guard.check(1, payload, 10_000, Form.waiting_for_check_prepay.state) is not None
+    # فاکتور پیش‌پرداخت سرویس دیگر در state انتظار لایحه → رد
+    _, ez_payload = _inv(1, "reg_prepay", 10_000, svc="ezhharnameh")
+    assert invoice_guard.check(1, ez_payload, 10_000, Form.waiting_for_lavayeh_prepay.state) is not None
+    # payload قدیمی بدون svc → بررسی svc انجام نمی‌شود (سایر قواعد عادی اعمال می‌شوند)
+    assert invoice_guard.check(1, json.dumps({"type": "reg_prepay", "uid": 1}), 10_000,
+                               Form.waiting_for_lavayeh_prepay.state) is None
 
 
 def test_older_cheaper_invoice_same_payload_rejected():

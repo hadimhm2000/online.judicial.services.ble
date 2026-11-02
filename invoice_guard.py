@@ -9,13 +9,21 @@ invoice_guard.py — جلوگیری از پرداخت «فاکتور قدیمی/
 ارزان و قدیمی (استعلام، پیش‌پرداخت، …) را پرداخت کند و سرویس گران «پرداخت‌شده»
 ثبت شود.
 
-این ماژول فقط دو حالت مشخصاً اشتباه را رد می‌کند و بقیهٔ پرداخت‌ها را
+این ماژول فقط حالت‌های مشخصاً اشتباه را رد می‌کند و بقیهٔ پرداخت‌ها را
 دست‌نخورده عبور می‌دهد:
 
   ۱) فاکتور از نوع سرویس دیگری است و کاربر در state انتظار پرداختِ یک سرویس
      state-محور است (مسیر پردازش، پرداخت را اشتباهی به آن سرویس می‌داد).
   ۲) مبلغ فاکتور پرداخت‌شده «کمتر» از آخرین فاکتوری است که ربات با همان
      payload برای همان کاربر فرستاده (فاکتور قدیمی‌تر و ارزان‌تر).
+  ۳) ⭐ اصلاحیهٔ ۱۴۰۵/۰۸ (لاگ ۱۴۰۵/۰۸/۰۶ — کاربر ۲۷۲۶۶۰۵۴۹): فاکتور
+     پیش‌پرداخت ثبت (reg_prepay) وقتی قابل پرداخت است که کاربر «همان لحظه»
+     در state انتظار پیش‌پرداخت همان سرویس باشد. داده‌های فرم داخل FSM
+     (MemoryStorage) است؛ اگر state از بین رفته باشد (شروع مجدد، ری‌استارت
+     ربات، ورود به فلوی دیگر) پرداختِ آن فاکتور دیگر قابل مصرف نیست و فقط
+     به خطای «داده FSM یافت نشد» و گم‌شدن پول منجر می‌شد. حالا همان‌جا در
+     pre_checkout رد می‌شود تا اصلاً پول کسر نشود (پرداخت‌های سرخ‌خوردهٔ
+     بازپخش کیف پول/کارت‌به‌کارت با پیشوند WALLET-/CARD- معاف‌اند).
 
 بررسی در دو جا انجام می‌شود:
   - pre_checkout_query (handlers.py): پیش از کسر پول؛ فاکتور رد می‌شود.
@@ -108,6 +116,26 @@ def payload_type(payload) -> str:
         return ""
 
 
+def payload_obj(payload) -> dict:
+    """پارس payload فاکتور به dict — در خطا {} برمی‌گردد (هرگز exception نمی‌دهد)."""
+    try:
+        obj = json.loads(payload or "{}")
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+
+# ⭐ سرویسِ فاکتور پیش‌پرداخت → stateای که پرداختش در آن «قابل مصرف» است.
+# (lavayeh و ealam هر دو در waiting_for_lavayeh_prepay پردازش می‌شوند.)
+PREPAY_STATE_FOR_SVC = {
+    "lavayeh": Form.waiting_for_lavayeh_prepay.state,
+    "ealam": Form.waiting_for_lavayeh_prepay.state,
+    "ezhharnameh": Form.waiting_for_ezhhar_prepay.state,
+    "tn": Form.waiting_for_tn_prepay.state,
+    "check": Form.waiting_for_check_prepay.state,
+}
+
+
 def record(invoice_data: dict) -> None:
     """پس از هر فاکتور ارسالی (از card_payment.track_invoice) صدا زده می‌شود. هرگز استثنا نمی‌دهد."""
     try:
@@ -139,6 +167,16 @@ def check(uid, payload: str, total_amount: int, current_state) -> str | None:
                 and (ptype in STATE_FOR_TYPE or ptype in OTHER_KNOWN_TYPES) \
                 and STATE_FOR_TYPE.get(ptype) != current_state:
             return f"نوع فاکتور «{ptype}» با مرحلهٔ فعلی کاربر ({current_state}) نمی‌خواند"
+        # ⭐ رفع باگ برداشت دوگانه (لاگ ۱۴۰۵/۰۸/۰۶): فاکتور پیش‌پرداخت فقط در
+        # state انتظارِ همان سرویس معتبر است. اگر state کاربر چیز دیگری است
+        # (None / منوی اصلی / فلوی سرویس دیگر)، داده‌های فرم در FSM موجود
+        # نیست و پرداخت عملاً غیرقابل مصرف است — همان‌جا رد می‌شود.
+        if ptype == "reg_prepay":
+            svc = str(payload_obj(payload).get("svc") or "")
+            expected_state = PREPAY_STATE_FOR_SVC.get(svc)
+            if expected_state and current_state != expected_state:
+                return (f"فاکتور پیش‌پرداخت «{svc}» با مرحلهٔ فعلی کاربر "
+                        f"({current_state or 'بدون state'}) نمی‌خواند — فاکتور قدیمی/بی‌اقدام")
         if ptype in LATEST_ONLY_TYPES:
             rec = _store.get(_key(uid, payload))
             if rec and int(total_amount or 0) < int(rec.get("amount", 0)):

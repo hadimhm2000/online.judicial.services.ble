@@ -166,7 +166,8 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
             "uid": user_id,
         })
         async with aiohttp.ClientSession(
-                connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
+                connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT),
+                timeout=aiohttp.ClientTimeout(total=40)) as session:
             invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
             invoice_data = {
                 "chat_id": user_id,
@@ -317,6 +318,29 @@ async def cover_prepay_from_credit(bot, user_id: int, service_key: str,
     except Exception:
         pass
     return True
+
+
+def register_orphan_prepay(user_id: int, amount_toman: int, service_key: str,
+                           charge_id: str = "") -> None:
+    """⭐ رفع باگ برداشت دوگانه (لاگ ۱۴۰۵/۰۸/۰۶ — کاربر ۲۷۲۶۶۰۵۴۹):
+    ثبت امن پرداختِ پیش‌پرداختی که داده‌های FSM آن از بین رفته است.
+
+    قبلاً چنین پرداختی فقط به مدیر اطلاع داده می‌شد و مبلغ عملاً گم می‌شد —
+    کاربر فاکتور پایان کار را کامل می‌پرداخت (برداشت دوگانه). حالا مبلغ مثل
+    هر پیش‌پرداخت دیگری ثبت می‌شود:
+      - اگر کاربر همان سرویس را دوباره شروع کند، در فاکتور پایان کارش کسر
+        می‌شود (adjust_final_fee_with_prepay)؛
+      - اگر مصرف نشود، مازادش طبق روال موجود (refund_approvals) پس از تایید
+        مدیر به کیف پول کاربر برمی‌گردد یا برای خدمات بعدی می‌ماند.
+    هیچ پولی گم نمی‌شود و هیچ فلویی تغییر نمی‌کند.
+    """
+    register_prepaid(
+        user_id, amount_toman, service_key,
+        f"پیش‌پرداخت بازیافتی ({service_key})", charge_id)
+    logging.info(
+        f"[REG-PREPAY] پرداخت بدون داده FSM به‌عنوان اعتبار ثبت شد: "
+        f"user={user_id}, svc={service_key}, مبلغ={amount_toman:,} تومان, "
+        f"charge={charge_id} — در فاکتور پایان کار بعدی کسر می‌شود")
 
 
 def register_prepaid(user_id: int, amount_toman: int, service_key: str,

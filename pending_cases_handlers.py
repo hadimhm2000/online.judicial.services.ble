@@ -165,7 +165,7 @@ async def _send_invoice(bot: Bot, it: dict) -> str:
             from card_payment import track_card_only_invoice as _cp_track_card
             _cp_track_card(invoice_data)
             return "card"
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT), timeout=aiohttp.ClientTimeout(total=40)) as session:
             async with session.post(f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice", json=invoice_data) as resp:
                 result = await resp.json()
         if not result.get("ok"):

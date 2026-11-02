@@ -509,8 +509,11 @@ async def _upsert_case_impl(
 async def _mark_ready_by_tracking_impl(bale_user_id, service_type, tracking_code):
     case = await find_case_in_panel(bale_user_id, service_type, tracking_code)
     if not case:
-        logger.warning(
-            f"[PANEL_SYNC] پرونده‌ای برای ready-to-send پیدا نشد: "
+        # ⭐ اصلاحیهٔ لاگ ۱۴۰۵/۰۸: این حالت طبق طراحی رخ می‌دهد (پروندهٔ برخی
+        # سرویس‌ها/فلوها از ابتدا در پنل ثبت نمی‌شود) — از WARNING به INFO
+        # تنزل یافت تا نویز لاگ کاهش یابد؛ جزئیات برای ردیابی حفظ شده است.
+        logger.info(
+            f"[PANEL_SYNC] پرونده‌ای برای ready-to-send پیدا نشد (طبیعی برای برخی سرویس‌ها): "
             f"user={bale_user_id} type={service_type} tracking={tracking_code or '(خالی)'}"
         )
         return None
@@ -569,8 +572,10 @@ async def mark_case_signed_by_tracking(bale_user_id: int | str, service_type: st
 async def _mark_signed_by_tracking_impl(bale_user_id, service_type, tracking_code):
     case = await find_case_in_panel(bale_user_id, service_type, tracking_code)
     if not case:
-        logger.warning(
-            f"[PANEL_SYNC] پرونده‌ای برای ثبت امضا پیدا نشد: "
+        # ⭐ اصلاحیهٔ لاگ ۱۴۰۵/۰۸: مثل ready-to-send — طبق طراحی ممکن است
+        # پرونده‌ای در پنل نباشد؛ WARNING → INFO.
+        logger.info(
+            f"[PANEL_SYNC] پرونده‌ای برای ثبت امضا پیدا نشد (طبیعی برای برخی سرویس‌ها): "
             f"user={bale_user_id} type={service_type} tracking={tracking_code or '(خالی)'}"
         )
         return None

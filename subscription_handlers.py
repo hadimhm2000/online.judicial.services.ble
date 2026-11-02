@@ -105,7 +105,7 @@ async def subscription_online_payment(message: Message, state: FSMContext, bot: 
 
     try:
         invoice_payload = _json.dumps({"type": "subscription", "uid": user_id})
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT), timeout=aiohttp.ClientTimeout(total=40)) as session:
             invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
             invoice_data = {
                 "chat_id": user_id,

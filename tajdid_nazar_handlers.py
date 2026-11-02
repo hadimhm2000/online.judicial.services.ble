@@ -2912,18 +2912,30 @@ async def tn_prepay_successful_payment(message: Message, state: FSMContext, bot:
 
     logging.info(f"[TN-PREPAY] پرداخت خودکار تشخیص داده شد برای کاربر {user_id}")
 
-    # ⚠️ داده‌های FSM از بین رفته (مثلاً /start زده شده) — بدون ثبت
+    # ⚠️ داده‌های FSM از بین رفته (مثلاً /start زده شده). ⭐ رفع باگ ۱۴۰۵/۰۸
+    # (لاگ ۱۴۰۵/۰۸/۰۶): پول دیگر گم نمی‌شود — مبلغ به‌عنوان پیش‌پرداخت/اعتبار
+    # کاربر ثبت می‌شود و در فاکتور پایان کارِ ثبتِ بعدی او کسر می‌گردد.
     if not case_type:
-        logging.error(f"[TN-PREPAY] داده FSM یافت نشد — user={user_id}")
+        logging.error(f"[TN-PREPAY] داده FSM یافت نشد — user={user_id} "
+                      f"(مبلغ به‌عنوان اعتبار ثبت می‌شود)")
+        try:
+            from prepay_registration import register_orphan_prepay
+            register_orphan_prepay(user_id, amount_toman, "tn",
+                                   payment.telegram_payment_charge_id)
+        except Exception as _orph_err:
+            logging.error(f"[TN-PREPAY] ثبت اعتبار بازیافتی ناموفق: {_orph_err}",
+                          exc_info=True)
         await message.answer(
             "⚠️ اطلاعات درخواست شما یافت نشد؛ لطفاً دوباره ثبت را شروع کنید.\n"
-            "پرداخت شما به مدیریت اطلاع داده شد و در هزینه ثبت بعدی لحاظ می‌گردد.")
+            "✅ مبلغ پرداختی شما به‌عنوان اعتبار ثبت شد و به‌صورت خودکار از "
+            "فاکتور ثبت بعدی شما کسر می‌شود.")
         try:
             await bot.send_message(
                 ADMIN_ID,
                 f"⚠️ [TN-PREPAY] پرداخت بدون داده FSM — user={user_id}\n"
                 f"🎫 payment_id: {payment.telegram_payment_charge_id}\n"
-                f"💰 مبلغ: {amount_toman:,} تومان")
+                f"💰 مبلغ: {amount_toman:,} تومان\n"
+                f"✅ مبلغ به‌عنوان اعتبار کاربر ثبت شد (در فاکتور پایان کار بعدی کسر می‌شود).")
         except Exception:
             pass
         await state.clear()
@@ -3577,7 +3589,7 @@ async def send_tajdid_nazar_result(
     # ── ارسال فاکتور بله (sendInvoice) ──────────────────────────────────
     try:
         invoice_payload = _json.dumps({"type": "tajdid_nazar", "uid": user_id})
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT), timeout=aiohttp.ClientTimeout(total=40)) as session:
             invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
             invoice_data = {
                 "chat_id": user_id,

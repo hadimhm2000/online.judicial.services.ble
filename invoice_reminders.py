@@ -182,7 +182,17 @@ async def run_once(bot: Bot, now: datetime.datetime | None = None) -> int:
     for it, stage in due:
         uid = it["user_id"]
         fresh = pending_cases.is_open(uid, it["tracking_code"])
-        if not fresh or fresh.get("paid") or await _busy(bot, uid):
+        if not fresh or fresh.get("paid"):
+            # ⭐ اصلاحیهٔ لاگ ۱۴۰۵/۰۸ (فاکتور 6bef83a2): رها شدن بی‌صدا یادآور
+            # قابل بررسی نبود — حالا صریح لاگ می‌شود که چرا ارسال نشد.
+            logger.info(
+                f"[INVOICE_REMINDER] یادآوری {stage} برای {it.get('tracking_code')} "
+                f"ارسال نشد — پرونده بسته شده یا پرداخت شده است (user={uid})")
+            continue
+        if await _busy(bot, uid):
+            logger.info(
+                f"[INVOICE_REMINDER] یادآوری {stage} برای {it.get('tracking_code')} "
+                f"رد شد — کاربر {uid} وسط روند امضا/بررسی مدیر است")
             continue
         text, kb = build_message(fresh, stage)
         try:
@@ -196,6 +206,12 @@ async def run_once(bot: Bot, now: datetime.datetime | None = None) -> int:
 
     # کلیدهای پرونده‌های بسته‌شده پاک شوند
     open_keys = {_key(it) for it in items}
+    dropped = [k for k in state if k not in open_keys]
+    if dropped:
+        # ⭐ اصلاحیهٔ لاگ ۱۴۰۵/۰۸: حذف وضعیت یادآورِ پرونده‌های بسته‌شده هم
+        # صریح لاگ می‌شود (قبلاً بی‌صدا پاک می‌شد و قابل ردیابی نبود).
+        logger.info(f"[INVOICE_REMINDER] وضعیت یادآور {len(dropped)} پروندهٔ "
+                    f"بسته‌شده پاک شد: {', '.join(dropped[:10])}")
     state = {k: v for k, v in state.items() if k in open_keys}
     _save_state(state)
     if sent_count:

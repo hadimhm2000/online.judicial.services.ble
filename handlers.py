@@ -461,9 +461,23 @@ async def successful_payment_handler(message: types.Message, state: FSMContext, 
 # ================= هندلر global successful_payment — بدون فیلتر حالت (برای دیباگ بله) =================
 @router.message(F.successful_payment)
 async def global_successful_payment_handler(message: types.Message, state: FSMContext, bot: Bot):
-    """هندلر سراسری — اگر بله successful_payment بفرسته ولی حالت FSM نامطبق باشن"""
+    """هندلر سراسری — اگر بله successful_payment بفرسته ولی حالت FSM نامطبق باشن
+
+    ⭐ اصلاحیهٔ لاگ ۱۴۰۵/۰۸: این هندلر «مسیریابِ» پرداخت‌های بله است و در
+    مسیر درست هم اجرا می‌شود؛ ورود به آن دیگر به‌عنوان WARNING (انگار خطاست)
+    لاگ نمی‌شود. WARNING فقط وقتی ثبت می‌شود که پرداخت واقعاً به هیچ مسیر
+    شناخته‌شده‌ای نگشت و به شاخهٔ عمومی سبد/تک‌موردی افتاد (state از بین
+    رفته یا payload نامشخص — نیازمند بررسی مدیر).
+    """
     current_state = await state.get_state()
-    logging.warning(f"[GLOBAL-PAYMENT] successful_payment دریافت شد. user={message.from_user.id}, state={current_state}")
+    try:
+        _pl0 = _json.loads(getattr(message.successful_payment, "invoice_payload", "") or "{}")
+        _ptype0 = str(_pl0.get("type") or "?") if isinstance(_pl0, dict) else "?"
+    except Exception:
+        _ptype0 = "?"
+    logging.info(
+        f"[GLOBAL-PAYMENT] successful_payment دریافت شد. "
+        f"user={message.from_user.id}, state={current_state}, payload_type={_ptype0}")
 
     # پارس payload فاکتور — «معتبرترین سیگنال» برای تشخیص نوع پرداخت
     try:
@@ -603,6 +617,9 @@ async def global_successful_payment_handler(message: types.Message, state: FSMCo
     # ── سایر حالت‌های اختصاصی — بدون مداخله ──
     if current_state in (Form.waiting_for_ealam_payment_receipt,
                          Form.stamp_calc_waiting_payment):
+        logging.info(
+            f"[GLOBAL-PAYMENT] پرداخت در حالت اختصاصی ({current_state}) به هندلر "
+            f"همان بخش سپرده شد — user={message.from_user.id}")
         return
 
     # ── پرداخت اشتراک ماهیانه ──
@@ -625,6 +642,16 @@ async def global_successful_payment_handler(message: types.Message, state: FSMCo
         await state.clear()
         return
 
+    # ⭐ هیچ مسیر شناخته‌شده‌ای مطابقت نکرد — پرداخت به شاخهٔ عمومی سبد/تک‌موردی
+    # می‌افتد. اگر داده‌های FSM هم نباشد، این دقیقاً همان حالت «فاکتور قدیمی/
+    # بی‌اقدام» است که باید بررسی شود (پیش از این بی‌صدا و به‌عنوان «مسیر عادی»
+    # لاگ می‌شد).
+    if current_state != Form.waiting_for_payment_receipt:
+        logging.warning(
+            f"[GLOBAL-PAYMENT] پرداخت به شاخهٔ عمومی افتاد — user={message.from_user.id}, "
+            f"state={current_state}, payload_type={_ptype0}، charge="
+            f"{getattr(message.successful_payment, 'telegram_payment_charge_id', '')} "
+            f"(احتمال فاکتور قدیمی/بی‌اقدام — بررسی شود)")
     await successful_payment_handler(message, state, bot)
 
 
@@ -1390,7 +1417,7 @@ async def process_main_menu(message: types.Message, state: FSMContext):
         total_rial = total_sum * 10  # تومان به ریال
         try:
             invoice_payload = _json.dumps({"type": "cart", "uid": message.from_user.id})
-            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT), timeout=aiohttp.ClientTimeout(total=40)) as session:
                 invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
                 invoice_data = {
                     "chat_id": message.from_user.id,
@@ -1994,7 +2021,7 @@ async def confirm_opt_process(message: types.Message, state: FSMContext, bot: Bo
         fee_rial = fee * 10  # تومان به ریال
         try:
             invoice_payload = _json.dumps({"type": "single", "uid": message.from_user.id})
-            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT), timeout=aiohttp.ClientTimeout(total=40)) as session:
                 invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
                 invoice_data = {
                     "chat_id": message.from_user.id,
@@ -3008,7 +3035,7 @@ async def bulk_inquiry_confirm_handler(message: types.Message, state: FSMContext
     total_rial = total_sum * 10
     try:
         invoice_payload = _json.dumps({"type": "bulk_inquiry", "uid": message.from_user.id})
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT), timeout=aiohttp.ClientTimeout(total=40)) as session:
             invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
             invoice_data = {
                 "chat_id": message.from_user.id,

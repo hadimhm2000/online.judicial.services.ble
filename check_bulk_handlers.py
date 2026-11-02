@@ -336,7 +336,7 @@ def build_check_bulk_job(item: dict, user_id: int, tracking_code: str, row_index
 async def _send_invoice(invoice_data: dict):
     from config import BALE_API_BASE, BOT_TOKEN, BALE_SSL_CONTEXT
     import aiohttp
-    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
+    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT), timeout=aiohttp.ClientTimeout(total=40)) as session:
         async with session.post(f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice", json=invoice_data) as resp:
             result = await resp.json()
             if not result.get("ok"):

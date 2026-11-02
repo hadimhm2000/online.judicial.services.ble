@@ -377,7 +377,7 @@ async def _send_invoice(message: Message, state: FSMContext, rid: str):
             "currency": "IRR",
             "prices": [{"label": f"درخواست {SERVICE_LABEL}", "amount": fee_rial}],
         }
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT)) as session:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT), timeout=aiohttp.ClientTimeout(total=40)) as session:
             from wallet import prepare_invoice as _wl_prep; invoice_data = _wl_prep(invoice_data)  # ⭐ کسر خودکار موجودی کیف پول
             async with session.post(f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice", json=invoice_data) as resp:
                 result = await resp.json()
