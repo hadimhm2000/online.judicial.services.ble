@@ -156,6 +156,154 @@ def test_reinvoice_does_not_reset_shortfall():
     assert entry["status"] == cp.S_SHORTFALL
 
 
+# ── ⭐ اصلاحیه ۱۴۰۵/۰۸: انقضای کسری پرداخت‌نشده ───────────────────────────
+
+def test_shortfall_expires_after_window_and_fresh_invoice_gets_new_entry():
+    """کسری که کاربر هرگز نپرداخت → پس از CARD_PAY_EXPIRE_HOURS منقضی می‌شود؛
+    فاکتور جدید همان payload دیگر «در حال بررسی» نیست و ورودی تازه می‌گیرد
+    (قبلاً ورودی برای همیشه فعال می‌ماند و کاربر دیگر پیشنهاد کارت نمی‌گرفت)."""
+    entry, payload = _review_entry()
+    entry.update({"status": cp.S_SHORTFALL, "shortfall_rial": 250_000,
+                  "shortfall_at": time.time() - (cp.CARD_PAY_EXPIRE_HOURS * 3600 + 60)})
+    cp._expire_stale_entries(time.time())
+    assert entry["status"] == cp.S_EXPIRED
+
+    # فاکتور جدید با همان payload → ورودی تازه (نه بازنویسی ورودی منقضی)
+    cp.track_invoice({"chat_id": UID, "payload": payload,
+                      "prices": [{"label": "x", "amount": 1_000_000}]})
+    fresh = cp._find_active(UID, payload)
+    assert fresh is not None and fresh["id"] != entry["id"]
+    assert fresh["status"] == cp.S_INVOICE
+
+
+def test_fresh_shortfall_survives_and_still_blocks_reinvoice():
+    """کسری تازه منقضی نمی‌شود و یادآوری همان فاکتور همچنان نادیده گرفته می‌شود."""
+    entry, payload = _review_entry()
+    entry.update({"status": cp.S_SHORTFALL, "shortfall_rial": 250_000,
+                  "shortfall_at": time.time()})
+    cp._expire_stale_entries(time.time())
+    assert entry["status"] == cp.S_SHORTFALL
+    cp.track_invoice({"chat_id": UID, "payload": payload,
+                      "prices": [{"label": "x", "amount": 1_000_000}]})
+    assert cp._find_active(UID, payload)["id"] == entry["id"]
+
+
+def test_shortfall_expiry_measured_from_shortfall_declaration():
+    """سن کسری از «اعلام کسری» حساب می‌شود، نه از فاکتور اصلی."""
+    entry, payload = _review_entry()
+    old_invoice = time.time() - (cp.CARD_PAY_EXPIRE_HOURS * 3600 + 3600)
+    entry["invoice_at"] = old_invoice          # فاکتور قدیمی است
+    entry.update({"status": cp.S_SHORTFALL, "shortfall_rial": 250_000,
+                  "shortfall_at": time.time() - 60})   # کسری همین حالا اعلام شده
+    cp._expire_stale_entries(time.time())
+    assert entry["status"] == cp.S_SHORTFALL   # هنوز معتبر است
+
+
+# ── ⭐ اصلاحیه ۱۴۰۵/۰۸: بررسی state در تأیید کارتی reg_prepay ──────────────
+
+def _reg_prepay_review_entry():
+    payload = json.dumps({"type": "reg_prepay", "svc": "lavayeh", "uid": UID})
+    cp.track_invoice({"chat_id": UID, "title": "پیش پرداخت لایحه", "payload": payload,
+                      "prices": [{"label": "x", "amount": 1_000_000}]})
+    entry = next(iter(cp._store.values()))
+    entry.update({"status": cp.S_REVIEW, "full_name": "علی",
+                  "receipt": {"file_id": "f1", "kind": "photo", "msg_id": 5, "at": time.time()},
+                  "admin_msg_id": 78})
+    return entry, payload
+
+
+def test_reg_prepay_approval_with_changed_state_warns_not_applies(monkeypatch):
+    """reg_prepay وابسته به state است: اگر کاربر سراغ سرویس دیگری رفته باشد،
+    تایید بدون force انجام نمی‌شود (قبلاً چون payload-محور تلقی می‌شد، بدون
+    بررسی state اعمال می‌شد و پرداخت سرویس قدیمی به سرویس جدید می‌رفت)."""
+
+    async def fake_get_state(bot, uid):
+        return "Form:waiting_for_ezhhar_prepay", {}   # کاربر در سرویس دیگری است
+
+    async def scenario():
+        bot = Bot("1:x")
+        bot.edit_message_caption = AsyncMock()
+        monkeypatch.setattr(cp, "_get_state", fake_get_state)
+        monkeypatch.setattr(cp, "_restore_state", AsyncMock())
+        entry, _ = _reg_prepay_review_entry()
+        entry["state_snapshot"] = "Form:waiting_for_lavayeh_prepay"
+        cb = _admin_cb(f"cpay:ok:{entry['id']}")
+        cb.message.photo = [object()]
+        cb.message.edit_caption = AsyncMock()
+        await cp.cb_approve(cb, bot)
+        # تایید انجام نشد؛ هشدار «وضعیت تغییر کرده» + دکمهٔ بازگردانی نمایش داده شد
+        assert entry["status"] == cp.S_REVIEW
+        assert cb.message.edit_caption.await_count == 1
+        assert "وضعیت کاربر تغییر کرده است" in cb.message.edit_caption.await_args.kwargs["caption"]
+        # بدون force هیچ stateای بازگردانی و پرداختی اعمال نمی‌شود
+        assert cp._restore_state.await_count == 0
+        await bot.session.close()
+
+    asyncio.run(scenario())
+
+
+def test_reg_prepay_approval_with_matching_state_applies(monkeypatch):
+    """کاربر هنوز در همان state پیش‌پرداخت → تایید مستقیم انجام می‌شود."""
+
+    async def fake_get_state(bot, uid):
+        return "Form:waiting_for_lavayeh_prepay", {}
+
+    async def scenario():
+        bot = Bot("1:x")
+        bot.edit_message_caption = AsyncMock()
+        seen = []
+        svc = Router()
+
+        @svc.message(F.successful_payment)
+        async def paid(message):
+            seen.append(message.successful_payment)
+
+        # ⚠️ card_router یک singleton ماژولی است و در تست‌های قبلی همین فایل به
+        # Dispatcher دیگری چسبیده — برای بازپخش فقط dp با روتر ضبط‌کننده کافی است.
+        dp = Dispatcher(storage=MemoryStorage())
+        dp.include_router(svc)
+        runtime_state.dp = dp
+        monkeypatch.setattr(cp, "_get_state", fake_get_state)
+        entry, _ = _reg_prepay_review_entry()
+        entry["state_snapshot"] = "Form:waiting_for_lavayeh_prepay"
+        await cp.cb_approve(_admin_cb(f"cpay:ok:{entry['id']}"), bot)
+        assert entry["status"] == cp.S_APPROVED and len(seen) == 1
+        await bot.session.close()
+
+    asyncio.run(scenario())
+
+
+def test_payload_routed_types_still_skip_state_check(monkeypatch):
+    """نوع‌های payload-محور واقعی (مثل wallet_topup) همچنان بدون بررسی state
+    تایید می‌شوند — فقط reg_prepay از مجموعهٔ معاف خارج شد."""
+
+    async def fake_get_state(bot, uid):
+        return "SomeOther:state", {}
+
+    async def scenario():
+        bot = Bot("1:x")
+        bot.edit_message_caption = AsyncMock()
+        monkeypatch.setattr(cp, "_get_state", fake_get_state)
+        # dp تازه برای بازپخش (بدون وابستگی به تست‌های قبلی)
+        dp = Dispatcher(storage=MemoryStorage())
+        runtime_state.dp = dp
+        payload = json.dumps({"type": "wallet_topup", "amt": 100_000, "uid": UID})
+        cp.track_invoice({"chat_id": UID, "title": "شارژ کیف پول", "payload": payload,
+                          "prices": [{"label": "x", "amount": 1_000_000}]})
+        entry = next(iter(cp._store.values()))
+        entry.update({"status": cp.S_REVIEW, "full_name": "علی",
+                      "receipt": {"file_id": "f1", "kind": "photo", "msg_id": 5,
+                                  "at": time.time()},
+                      "admin_msg_id": 79, "state_snapshot": None})
+        cb = _admin_cb(f"cpay:ok:{entry['id']}")
+        cb.message.photo = [object()]
+        await cp.cb_approve(cb, bot)
+        assert entry["status"] == cp.S_APPROVED
+        await bot.session.close()
+
+    asyncio.run(scenario())
+
+
 def test_admin_command_cancels_shortfall_wait():
     async def scenario():
         cp._shortfall_wait = {"eid": "x", "until": time.time() + 60}

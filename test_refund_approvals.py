@@ -151,7 +151,7 @@ def _prepay(uid, paid_rial, credit_rial=0, discount_rial=0, charge="c1"):
 
 
 def test_incomplete_task_creates_pending_refund_not_credit():
-    _prepay(7, 20_000)                    # ۲,۰۰۰ تومان
+    _prepay(7, 20_000)                    # ۲,۰۰۰ تومان (مبلغ تست)
     runtime_state.incomplete_tasks["lavayeh:B1"] = {"bill_no": "B1", "user_id": 7, "type": "lavayeh"}
     assert wallet.balance(7) == 0 and ra.pending_total_toman(7) == 2_000
     assert ra.pending()[0]["source"] == "service_fail"

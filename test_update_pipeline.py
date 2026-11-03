@@ -28,6 +28,21 @@ def _make_update(uid: int, update_id: int, text: str = "hi"):
     return Update(update_id=update_id, message=msg)
 
 
+def _make_pre_checkout_update(uid: int, update_id: int):
+    from aiogram.types import PreCheckoutQuery, Update, User
+
+    return Update(
+        update_id=update_id,
+        pre_checkout_query=PreCheckoutQuery(
+            id=str(update_id),
+            from_user=User(id=uid, is_bot=False, first_name="u"),
+            currency="IRR",
+            total_amount=10000,
+            invoice_payload="{}",
+        ),
+    )
+
+
 @pytest.mark.asyncio
 async def test_same_user_updates_run_in_order():
     """دو آپدیت یک کاربر که هم‌زمان می‌رسند → ترتیب حفظ می‌شود."""
@@ -99,6 +114,79 @@ async def test_reentrant_replay_does_not_deadlock():
 
 
 @pytest.mark.asyncio
+async def test_pre_checkout_query_bypasses_user_lock():
+    """⭐ اصلاحیه ۱۴۰۵/۰۸: pre_checkout_query بدون انتظار برای قفل کاربر عبور
+    می‌کند — مهلت ~۱۰ ثانیه‌ای پاسخ بله پشت هندلر کندِ همان کاربر نمی‌گذرد."""
+    mw = UserSerialMiddleware()
+    slow_started = asyncio.Event()
+    release_slow = asyncio.Event()
+
+    async def slow_handler(event, data):
+        slow_started.set()
+        # هندلر کند همان کاربر (مثل آپدیت ۴۶ ثانیه‌ای لاگ ۱۴۰۵/۰۸/۰۶)
+        try:
+            await asyncio.wait_for(release_slow.wait(), timeout=3)
+        except asyncio.TimeoutError:
+            pass
+        return "slow"
+
+    async def checkout_handler(event, data):
+        return "checkout-ok"
+
+    async def run_slow():
+        return await mw(slow_handler, _make_update(10, 1), {})
+
+    task = asyncio.create_task(run_slow())
+    await asyncio.wait_for(slow_started.wait(), timeout=2)
+    try:
+        # کاربر ۱۰ هنوز در هندلر کند قفل است؛ pre_checkout همان کاربر
+        # نباید منتظر قفل بماند (در مهلت ~۱۰ ثانیه‌ای بله جواب داده می‌شود)
+        res = await asyncio.wait_for(
+            mw(checkout_handler, _make_pre_checkout_update(10, 2), {}), timeout=1.0)
+        assert res == "checkout-ok"
+    finally:
+        release_slow.set()
+    assert await asyncio.wait_for(task, timeout=2) == "slow"
+
+
+@pytest.mark.asyncio
+async def test_normal_message_waits_for_busy_user_lock():
+    """پیام عادی همان کاربرِ مشغول، همچنان صف می‌شود (سریال‌سازی حفظ می‌شود)."""
+    mw = UserSerialMiddleware()
+    slow_started = asyncio.Event()
+    release_slow = asyncio.Event()
+    order = []
+
+    async def slow_handler(event, data):
+        slow_started.set()
+        order.append("slow-start")
+        try:
+            await asyncio.wait_for(release_slow.wait(), timeout=3)
+        except asyncio.TimeoutError:
+            pass
+        order.append("slow-end")
+        return "slow"
+
+    async def queued_handler(event, data):
+        order.append("queued")
+        return "queued"
+
+    async def run_slow():
+        return await mw(slow_handler, _make_update(10, 1), {})
+
+    task = asyncio.create_task(run_slow())
+    await asyncio.wait_for(slow_started.wait(), timeout=2)
+    # پیام عادی همان کاربر: هنوز شروع نشده چون قفل در اختیار هندلر کند است
+    inner = asyncio.create_task(mw(queued_handler, _make_update(10, 2), {}))
+    await asyncio.sleep(0.15)
+    assert order == ["slow-start"]
+    release_slow.set()
+    assert await asyncio.wait_for(task, timeout=2) == "slow"
+    assert await asyncio.wait_for(inner, timeout=2) == "queued"
+    assert order == ["slow-start", "slow-end", "queued"]
+
+
+@pytest.mark.asyncio
 async def test_slow_update_logged(caplog):
     """هندلر کند → لاگ [UPDATE-TIMING] با هشدار مناسب."""
     import logging
@@ -133,16 +221,32 @@ async def test_fast_update_not_logged(caplog):
     assert not any("[UPDATE-TIMING]" in r.message for r in caplog.records)
 
 
-def _user_of_update_covers_all_event_types():
-    from aiogram.types import CallbackQuery, PreCheckoutQuery
+def test_user_of_update_covers_all_event_types():
+    """⭐ اصلاحیه ۱۴۰۵/۰۸: این تابع پیشوند test_ نداشت و هرگز اجرا نمی‌شد."""
+    from aiogram.types import CallbackQuery, Chat, Message, Update, User
 
-    cb = _make_update(5, 1).model_copy(deep=True)
-    assert update_pipeline._user_of_update(cb) == 5
+    u = _make_update(5, 1)
+    assert update_pipeline._user_of_update(u) == 5
 
-    u = _make_update(6, 2)
-    u.message.text = None
-    assert update_pipeline._user_of_update(u) == 6
+    # callback_query
+    cb = CallbackQuery(id="1", from_user=User(id=7, is_bot=False, first_name="u"),
+                       chat_instance="ci", data="x",
+                       message=Message(message_id=1, date=datetime.datetime.now(datetime.timezone.utc),
+                                       chat=Chat(id=7, type="private")))
+    assert update_pipeline._user_of_update(
+        Update(update_id=2, callback_query=cb)) == 7
+
+    # pre_checkout_query (مهم برای عبور بدون قفل)
+    assert update_pipeline._user_of_update(_make_pre_checkout_update(8, 3)) == 8
+
+    # پیام بدون متن (مثلاً فقط عکس) — مدل‌های aiogram فروزن‌اند؛ مستقیم ساخته می‌شود
+    from aiogram.types import Chat as _Chat, Message as _Message, Update as _Update, User as _User
+    plain = _Update(update_id=4, message=_Message(
+        message_id=4, date=datetime.datetime.now(datetime.timezone.utc),
+        chat=_Chat(id=6, type="private"),
+        from_user=_User(id=6, is_bot=False, first_name="u")))
+    assert update_pipeline._user_of_update(plain) == 6
 
     # آپدیت بدون کاربر → None (نباید خطا بدهد)
-    empty = _make_update(1, 3).model_copy(update={"message": None})
+    empty = _make_update(1, 5).model_copy(update={"message": None})
     assert update_pipeline._user_of_update(empty) is None

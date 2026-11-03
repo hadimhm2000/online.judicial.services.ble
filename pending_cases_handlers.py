@@ -140,6 +140,14 @@ async def pending_sign_locked(callback: CallbackQuery):
 
 # ───────────────────────── پرداخت ─────────────────────────
 
+def _invoice_payload(user_id: int, it: dict) -> str:
+    """payload فاکتور پرونده — شامل نوع سرویس (st) برای ثبت درست در پنل/شیت
+    (اصلاحیه ۱۴۰۵/۰۸: قبلاً بدون st، پرداخت کارتیِ این فاکتورها در پنل با
+    UNKNOWN/DIRECT ثبت می‌شد و کل مبلغ سود حساب می‌شد)."""
+    return json.dumps({"type": PAYLOAD_TYPE, "uid": user_id, "tc": it["tracking_code"],
+                       "st": it.get("service_type") or ""})
+
+
 async def _send_invoice(bot: Bot, it: dict) -> str:
     """فاکتور پرونده؛ خروجی "gateway" | "card" | "" (خطا)."""
     user_id = it["user_id"]
@@ -150,7 +158,7 @@ async def _send_invoice(bot: Bot, it: dict) -> str:
         "title": f"فاکتور {label}",
         "description": (f"هزینه خدمات {label} — کد رهگیری {it['tracking_code']}\n"
                         f"مبلغ: {amount // 10:,} تومان ({amount:,} ریال)"),
-        "payload": json.dumps({"type": PAYLOAD_TYPE, "uid": user_id, "tc": it["tracking_code"]}),
+        "payload": _invoice_payload(user_id, it),
         "provider_token": BALE_WALLET_TOKEN,
         "currency": "IRR",
         "prices": [{"label": label, "amount": amount}],
@@ -221,7 +229,15 @@ def _is_pending_case_payment(message: Message) -> bool:
 
 @pending_router.message(_is_pending_case_payment)
 async def pending_case_successful_payment(message: Message, state: FSMContext, bot: Bot):
-    """پرداخت فاکتور پرونده — dict همان فاکتور بازسازی و هندلر پرداخت موجود صدا زده می‌شود."""
+    """پرداخت فاکتور پرونده — dict همان فاکتور بازسازی و هندلر پرداخت موجود صدا زده می‌شود.
+
+    ⭐ اصلاحیه ۱۴۰۵/۰۸ (پرداخت تکراری/idempotency):
+      - اگر دو فاکتور برای یک پرونده صادر شده باشد و کاربر هر دو را بپردازد،
+        فقط اولی پردازش می‌شود؛ پرداخت دوم به کیف پول کاربر برمی‌گردد.
+      - mark_paid «پیش از» اجرای هندلر انجام می‌شود: اگر هندلر خطا بدهد،
+        پرداخت ثبت‌شده می‌ماند (پرداخت دوم تکراری شناخته می‌شود) و کاربر
+        می‌تواند از دکمهٔ «درج امضا» ادامه دهد؛ نه اینکه بتواند دوباره بپردازد.
+    """
     user_id = message.from_user.id
     payload = json.loads(message.successful_payment.invoice_payload or "{}")
     tc = str(payload.get("tc") or "")
@@ -238,12 +254,54 @@ async def pending_case_successful_payment(message: Message, state: FSMContext, b
             pass
         return
 
+    # ⭐ پرداخت تکراری همان پرونده (مثلاً دو فاکتور صادرشده و هر دو پرداخت‌شده):
+    # پرونده قبلاً پرداخت شده → این پرداخت به کیف پول کاربر برمی‌گردد و
+    # هیچ پردازش تکراری (ثبت/امضا/پنل) انجام نمی‌شود.
+    if it.get("paid"):
+        total = int(message.successful_payment.total_amount or 0)
+        charge = str(message.successful_payment.telegram_payment_charge_id or "")
+        logger.warning(
+            f"[PENDING_CASES] پرداخت تکراری پرونده {tc} کاربر {user_id} به کیف پول برگشت "
+            f"({total:,} ریال، charge={charge})")
+        balance_line = ""
+        try:
+            import wallet
+            await wallet.credit(user_id, total // 10, "refund",
+                                f"پرداخت تکراری پرونده {tc} {charge[:30]}")
+            balance_line = f"\n👛 موجودی کیف پول: {wallet.balance(user_id):,} تومان"
+        except Exception as e:
+            logger.error(f"[PENDING_CASES] برگشت پرداخت تکراری به کیف پول ناموفق: {e}",
+                         exc_info=True)
+        try:
+            await message.answer(
+                f"ℹ️ هزینهٔ این پرونده قبلاً پرداخت شده بود.\n"
+                f"مبلغ {total // 10:,} تومان به کیف پول شما برگشت و از فاکتورهای بعدی "
+                f"کسر می‌شود.{balance_line}\n"
+                "برای ادامه، از منوی «پرونده‌های در انتظار» گزینهٔ «درج امضا» را بزنید.")
+        except Exception:
+            pass
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"⚠️ [PENDING_CASES] پرداخت تکراری — کاربر {user_id}، پرونده {tc}: "
+                f"{total // 10:,} تومان به کیف پول او برگشت (charge={charge})")
+        except Exception:
+            pass
+        await state.clear()
+        return
+
     if it.get("kind") == pending_cases.KIND_TN:
         store = runtime_state.pending_tn_payments
         from tajdid_nazar_handlers import tn_successful_payment as _handler
     else:
         store = runtime_state.pending_lavayeh_payments
         from lavayeh_handlers import lavayeh_successful_payment as _handler
+
+    # ⭐ mark_paid پیش از هندلر: در صورت خطای هندلر، پرداخت «ثبت‌شده» می‌ماند
+    # (پرداخت دوم تکراری شناخته و برگشت داده می‌شود) و کاربر می‌تواند از
+    # دکمهٔ «درج امضا» ادامه دهد. خطای هندلر از مسیر خطاگیر سراسری به مدیر
+    # گزارش می‌شود.
+    pending_cases.mark_paid(user_id, tc)
 
     # فاکتور باز دیگری که کاربر همین حالا دارد نباید گم شود
     prev = store.get(user_id)
@@ -253,7 +311,6 @@ async def pending_case_successful_payment(message: Message, state: FSMContext, b
     finally:
         if prev and str(prev.get("tracking_code")) != tc and user_id not in store:
             store[user_id] = prev
-    pending_cases.mark_paid(user_id, tc)
 
 
 # ───────────────────────── درج امضا ─────────────────────────

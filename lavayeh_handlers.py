@@ -2433,7 +2433,7 @@ async def lavayeh_confirm_handler(message: Message, state: FSMContext, bot: Bot)
         # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): پیش‌پرداخت قبل از شروع ثبت —
         # فاکتور و درگاه پرداخت ارسال می‌شود؛ پس از تایید خودکار پرداخت،
         # درخواست به صف ثبت ارسال خواهد شد (lavayeh_prepay_successful_payment).
-        # لایحه: ۱,۰۰۰ تومان — اعلام وکالت: ۲,۰۰۰ تومان (اصلاحیهٔ ۱۴۰۵/۰۶/۲۵).
+        # لایحه: ۱۰۰,۰۰۰ تومان — اعلام وکالت: ۲۰۰,۰۰۰ تومان (تعرفهٔ تأییدشدهٔ کارفرما ۱۴۰۵/۰۸).
         if title == "اعلام وکالت":
             prepay_svc_key, prepay_label = "ealam", "اعلام وکالت"
         else:
@@ -2559,7 +2559,7 @@ async def lavayeh_prepay_successful_payment(message: Message, state: FSMContext,
     data = await state.get_data()
     title = data.get("lavayeh_title", "لایحه")
     payment = message.successful_payment
-    # مبلغ واقعی پرداخت‌شده (total_amount ریال است) — تعرفه: لایحه ۱,۰۰۰، اعلام وکالت ۲,۰۰۰ تومان
+    # مبلغ واقعی پرداخت‌شده (total_amount ریال است) — تعرفه: لایحه/اظهارنامه ۱۰۰,۰۰۰، اعلام وکالت ۲۰۰,۰۰۰ تومان
     from prepay_registration import register_prepaid, get_prepay_amount_toman
     if title == "اعلام وکالت":
         _svc_key = "ealam"

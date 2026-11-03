@@ -237,9 +237,12 @@ def save_runtime_state():
     data["pending_subscription_payments"] = sub_payments
 
     # 9-ب. ⭐ فاکتورهای «هزینه دستی مدیر» (/fee) در انتظار پرداخت
+    # ⭐ اصلاحیه ۱۴۰۵/۰۸: کلید رکوردها fid یکتای هر فاکتور است (فاکتور دوم
+    # اولی را بازنویسی نمی‌کند)؛ کاربر در فیلد uid داخل رکورد. رکوردهای
+    # قدیمیِ بدون fid با کلید user_id هم برای سازگاری بارگذاری می‌شوند.
     admin_fee_payments = {}
-    for uid, info in runtime_state.pending_admin_fee_payments.items():
-        admin_fee_payments[str(uid)] = info
+    for key, info in runtime_state.pending_admin_fee_payments.items():
+        admin_fee_payments[str(key)] = info
     data["pending_admin_fee_payments"] = admin_fee_payments
 
     # 10. اطلاعات FSM کاربران فعال (برای بازیابی پس از کرش)
@@ -419,12 +422,25 @@ def load_into_runtime_state():
         runtime_state.pending_subscription_payments[uid] = info
 
     # 9-ب. ⭐ pending_admin_fee_payments — فاکتورهای هزینه دستی مدیر (/fee)
-    for uid_str, info in data.get("pending_admin_fee_payments", {}).items():
-        uid = int(uid_str)
+    # کلید جدید = fid یکتای فاکتور (کاربر در info["uid"])؛ رکورد قدیمی = کلید user_id
+    for key, info in data.get("pending_admin_fee_payments", {}).items():
+        if not isinstance(info, dict):
+            continue
         info = _deserialize_all_datetimes(info, ["invoice_time"])
-        runtime_state.pending_admin_fee_payments[uid] = info
-        # کاربر در انتظار پرداخت فاکتور مدیر است → ثبت‌نشده (نیاز به اقدام مجدد)
-        active_unsubmitted.append(uid)
+        if info.get("fid"):
+            runtime_state.pending_admin_fee_payments[str(info["fid"])] = info
+            try:
+                active_unsubmitted.append(int(info.get("uid") or 0))
+            except (TypeError, ValueError):
+                pass
+        else:
+            try:
+                uid = int(key)
+            except (TypeError, ValueError):
+                continue
+            runtime_state.pending_admin_fee_payments[uid] = info
+            # کاربر در انتظار پرداخت فاکتور مدیر است → ثبت‌نشده (نیاز به اقدام مجدد)
+            active_unsubmitted.append(uid)
 
     # 10. user_sessions — بازسازی active_lavayeh_users
     for uid_str, info in data.get("user_sessions", {}).items():

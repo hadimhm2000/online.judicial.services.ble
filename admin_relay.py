@@ -30,6 +30,7 @@ import datetime
 import json
 import logging
 import os
+import secrets
 import tempfile
 
 import aiohttp
@@ -346,7 +347,11 @@ async def _finalize_send_fee_invoice(message: Message, state: FSMContext):
     sign_label = sign_cfg.get("label", "")
 
     try:
-        invoice_payload = json.dumps({"type": "admin_fee", "uid": target_user_id, "source": "send"})
+        # ⭐ هر فاکتور شناسهٔ یکتای خودش را دارد (fid) — فاکتور دوم اولی را
+        # بازنویسی نمی‌کند و پرداخت از روی payload به همان رکورد خودش می‌رسد
+        fee_id = secrets.token_hex(4)
+        invoice_payload = json.dumps(
+            {"type": "admin_fee", "uid": target_user_id, "source": "send", "fid": fee_id})
         url = f"{BALE_API_BASE.rstrip('/')}/bot{BOT_TOKEN}/sendInvoice"
         invoice_title = f"فاکتور {sign_label}" if sign_label else "فاکتور ارسال پیام"
         invoice_desc = (
@@ -389,8 +394,10 @@ async def _finalize_send_fee_invoice(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    # ذخیره context پرداخت برای هندلر successful_payment (مثل /fee)
-    runtime_state.pending_admin_fee_payments[target_user_id] = {
+    # ذخیره context پرداخت برای هندلر successful_payment (مثل /fee) — با کلید fid
+    runtime_state.pending_admin_fee_payments[fee_id] = {
+        "fid": fee_id,
+        "uid": target_user_id,
         "invoice_time": datetime.datetime.now(),
         "final_fee": amount,
         "service_type": service_type,
@@ -879,7 +886,11 @@ async def _finalize_admin_fee_invoice(message: Message, state: FSMContext):
     label = cfg.get("label", "سرویس")
 
     try:
-        invoice_payload = json.dumps({"type": "admin_fee", "uid": target_user_id})
+        # ⭐ هر فاکتور شناسهٔ یکتای خودش را دارد (fid) — فاکتور دوم اولی را
+        # بازنویسی نمی‌کند و پرداخت از روی payload به همان رکورد خودش می‌رسد
+        fee_id = secrets.token_hex(4)
+        invoice_payload = json.dumps(
+            {"type": "admin_fee", "uid": target_user_id, "fid": fee_id})
         url = f"{BALE_API_BASE.rstrip('/')}/bot{BOT_TOKEN}/sendInvoice"
         invoice_data = {
             "chat_id": target_user_id,
@@ -913,8 +924,10 @@ async def _finalize_admin_fee_invoice(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    # ذخیره context پرداخت برای هندلر successful_payment
-    runtime_state.pending_admin_fee_payments[target_user_id] = {
+    # ذخیره context پرداخت برای هندلر successful_payment — با کلید fid (یکتا per فاکتور)
+    runtime_state.pending_admin_fee_payments[fee_id] = {
+        "fid": fee_id,
+        "uid": target_user_id,
         "invoice_time": datetime.datetime.now(),
         "final_fee": amount,
         "service_type": svc,
@@ -944,6 +957,12 @@ async def _finalize_admin_fee_invoice(message: Message, state: FSMContext):
 async def admin_fee_successful_payment(message: Message, state: FSMContext, bot: Bot):
     """پرداخت موفق فاکتور «هزینه دستی مدیر» — تشخیص خودکار توسط بله.
 
+    ⭐ اصلاحیه ۱۴۰۵/۰۸: هر فاکتور با fid یکتا در payload و رکورد خودش تطبیق
+    می‌شود (فاکتور دوم اولی را بازنویسی نمی‌کند). فاکتورهای قدیمی بدون fid
+    با «آخرین فاکتور فعال همان کاربر» تطبیق داده می‌شوند. پرداختِ فاکتوری
+    که رکوردی برایش نیست، به کیف پول کاربر برمی‌گردد و به مدیر هشدار داده
+    می‌شود (قبلاً فقط پیام «فاکتور فعالی ثبت نشده» می‌گرفت و پول گم می‌شد).
+
     پس از پرداخت:
       - ⭐ ارسال پیام مدیریت (ADMIN_SEND) → فقط ثبت پرداخت + اطلاع مدیر (امضا ندارد)
       - استعلام (INQUIRY) → فقط ثبت پرداخت (امضا ندارد)
@@ -956,17 +975,66 @@ async def admin_fee_successful_payment(message: Message, state: FSMContext, bot:
     from sheets import log_event
 
     user_id = message.from_user.id
-    pending = runtime_state.pending_admin_fee_payments.get(user_id)
+    payment = message.successful_payment
+    try:
+        pl = json.loads(getattr(payment, "invoice_payload", "") or "{}")
+    except Exception:
+        pl = {}
+    fee_id = str(pl.get("fid") or "")
+
+    pending = None
+    if fee_id:
+        rec = runtime_state.pending_admin_fee_payments.get(fee_id)
+        if rec and rec.get("uid") == user_id:
+            pending = rec
+    else:
+        # فاکتور قدیمی بدون fid → آخرین فاکتور فعال همین کاربر
+        candidates = [p for p in runtime_state.pending_admin_fee_payments.values()
+                      if isinstance(p, dict) and p.get("uid") == user_id]
+        if candidates:
+            candidates.sort(key=lambda p: str(p.get("invoice_time") or ""))
+            pending = candidates[-1]
+
     if not pending:
-        await message.answer("⚠️ فاکتور فعالی برای شما ثبت نشده است.")
+        # ⭐ رکوردی برای این فاکتور نیست (حذف پس از پرداخت قبلی/ری‌استارت/بدون
+        # فاکتور): مبلغ به کیف پول کاربر برمی‌گردد و مدیر هشدار می‌گیرد.
+        total = int(payment.total_amount or 0)
+        charge = str(payment.telegram_payment_charge_id or "")
+        logger.error(f"[ADMIN-FEE] پرداخت فاکتور بدون رکورد — user={user_id}, "
+                     f"payload={pl}, charge={charge}, مبلغ={total:,} ریال")
+        balance_line = ""
+        try:
+            import wallet
+            await wallet.credit(user_id, total // 10, "refund",
+                                f"فاکتور مدیر بدون رکورد {charge[:30]}")
+            balance_line = f"\n👛 موجودی کیف پول: {wallet.balance(user_id):,} تومان"
+        except Exception as e:
+            logger.error(f"[ADMIN-FEE] برگشت پرداخت بدون رکورد به کیف پول ناموفق: {e}",
+                         exc_info=True)
+        try:
+            await message.answer(
+                "✅ پرداخت شما دریافت شد.\n"
+                "⚠️ فاکتور فعالی برای شما ثبت نشده بود؛ مبلغ به کیف پول شما برگشت "
+                f"و از فاکتورهای بعدی کسر می‌شود.{balance_line}")
+        except Exception:
+            pass
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"⚠️ [ADMIN-FEE] پرداخت فاکتور بدون رکورد — کاربر {user_id}، "
+                f"{total // 10:,} تومان به کیف پول او برگشت.\n"
+                f"payload={pl}\ncharge_id={charge}\n"
+                "در صورت نیاز با /wallet_add یا /send رسیدگی کنید.")
+        except Exception:
+            pass
         await state.clear()
         return
 
-    payment = message.successful_payment
     svc = pending.get("service_type", "LAVAYEH")
     amount = pending.get("final_fee", 0)
     tracking_code = pending.get("tracking_code", "")
     sign_menu_path = pending.get("sign_menu_path")
+    fee_id = str(pending.get("fid") or fee_id or "")
     if svc == "ADMIN_SEND":
         label = ADMIN_SEND_SERVICE_LABEL
     else:
@@ -1046,7 +1114,9 @@ async def admin_fee_successful_payment(message: Message, state: FSMContext, bot:
     except Exception as e:
         logger.warning(f"[ADMIN-FEE] خطا در ثبت پرونده در پنل: {e}")
 
-    runtime_state.pending_admin_fee_payments.pop(user_id, None)
+    # حذف رکورد همین فاکتور (با کلید یکتای fid؛ رکوردهای قدیمی با کلید user_id)
+    runtime_state.pending_admin_fee_payments.pop(
+        pending.get("fid") or user_id, None)
 
     # ۵) ادامه روند — به‌جز استعلام و ارسال پیام مدیریت که امضا ندارند
     if svc == "ADMIN_SEND":

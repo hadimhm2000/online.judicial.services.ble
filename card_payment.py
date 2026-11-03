@@ -255,6 +255,22 @@ def _panel_service_type(entry: dict) -> str:
     pl = entry.get("payload_obj") or {}
     if pl.get("svc") in _SVC_TO_PANEL_SERVICE:
         return _SVC_TO_PANEL_SERVICE[pl["svc"]]
+    # ⭐ فاکتور «پروندهٔ در انتظار پرداخت» (pending_case): هزینهٔ پایان کارِ یک
+    # پروندهٔ واقعی است؛ نوع سرویس واقعی (LAVAYEH/TAJDID_NAZAR/CHECK/...) از
+    # payload (st) یا دفتر pending_cases خوانده می‌شود — قبلاً با UNKNOWN/DIRECT
+    # ثبت می‌شد و کل مبلغ سود حساب می‌شد.
+    if pl.get("type") == "pending_case":
+        st = str(pl.get("st") or "").strip()
+        if not st:
+            try:
+                import pending_cases
+                case = pending_cases.get(int(pl.get("uid") or entry.get("uid") or 0),
+                                         str(pl.get("tc") or ""))
+                st = str((case or {}).get("service_type") or "").strip()
+            except Exception:
+                st = ""
+        if st:
+            return st
     return _TYPE_TO_PANEL_SERVICE.get(pl.get("type", ""), "UNKNOWN")
 
 
@@ -481,13 +497,33 @@ def _is_payment_wait_state(raw_state) -> bool:
         return any(k in low for k in ("prepay", "payment", "settlement", "receipt"))
 
 
+def _expire_stale_entries(now: float) -> None:
+    """انقضای ورودی‌های رها‌شده — از حلقهٔ پس‌زمینه صدا زده می‌شود (تست‌پذیر).
+
+    ⭐ کسری پرداخت‌نشده (S_SHORTFALL) هم منقضی می‌شود — وگرنه کاربری که
+    باقی‌ماندهٔ مبلغ را هرگز واریز نکند، برای همان نوع فاکتور دیگر هرگز
+    پیشنهاد کارت‌به‌کارت نمی‌گرفت (ورودی برای همیشه فعال می‌ماند و
+    track_invoice فاکتورهای جدید همان payload را نادیده می‌گرفت)."""
+    expire = CARD_PAY_EXPIRE_HOURS * 3600
+    for e in list(_store.values()):
+        if e.get("status") == S_SHORTFALL:
+            started = e.get("shortfall_at") or e.get("invoice_at", now)
+            if now - started > expire:
+                e["status"] = S_EXPIRED
+                e["updated_at"] = now
+                _mark_dirty()
+        elif e.get("status") in (S_INVOICE, S_CARD_SENT) and now - e.get("invoice_at", now) > expire:
+            e["status"] = S_EXPIRED
+            e["updated_at"] = now
+            _mark_dirty()
+
+
 async def card_payment_loop(bot: Bot) -> None:
     """حلقهٔ دائمی؛ در main() با asyncio.create_task اجرا می‌شود."""
     if not CARD_PAY_ENABLED:
         logger.info("[CARD-PAY] غیرفعال است (CARD_PAY_ENABLED=0)")
         return
     delay = CARD_PAY_DELAY_MINUTES * 60
-    expire = CARD_PAY_EXPIRE_HOURS * 3600
     logger.info(f"[CARD-PAY] حلقه فعال شد — تاخیر {CARD_PAY_DELAY_MINUTES} دقیقه")
     while True:
         try:
@@ -497,12 +533,8 @@ async def card_payment_loop(bot: Bot) -> None:
             for entry in due:
                 await _send_card_offer(bot, entry)
 
-            # انقضای ورودی‌های رها‌شده
-            for e in list(_store.values()):
-                if e.get("status") in (S_INVOICE, S_CARD_SENT) and now - e.get("invoice_at", now) > expire:
-                    e["status"] = S_EXPIRED
-                    e["updated_at"] = now
-                    _mark_dirty()
+            # انقضای ورودی‌های رها‌شده (فاکتور، پیام کارت و کسری پرداخت‌نشده)
+            _expire_stale_entries(now)
             # پاک‌سازی ورودی‌های بستهٔ قدیمی (بیش از ۱۴ روز)
             for k, e in list(_store.items()):
                 if e.get("status") not in _ACTIVE and now - e.get("updated_at", now) > 14 * 86400:
@@ -991,7 +1023,13 @@ async def cb_approve(callback: CallbackQuery, bot: Bot):
     ptype = (entry.get("payload_obj") or {}).get("type", "")
     raw_state, _ = await _get_state(bot, uid)
     snapshot = entry.get("state_snapshot")
-    state_ok = ptype in _PAYLOAD_ROUTED_TYPES or raw_state == snapshot
+    # ⭐ reg_prepay وابسته به state کاربر است (داده‌های فرم در FSM): مثل فاکتورهای
+    # state-محور بررسی می‌شود. قبلاً چون در _PAYLOAD_ROUTED_TYPES بود، بدون هیچ
+    # بررسی state تأیید می‌شد و اگر کاربر سراغ سرویس دیگری رفته بود، پرداختِ
+    # سرویس قدیمی به سرویس جدید اعمال می‌شد. بقیهٔ نوع‌های payload-محور
+    # (شارژ کیف پول، پروندهٔ در انتظار، پیام پنل و ...) state انتظار ندارند.
+    _STATE_CHECK_EXEMPT = _PAYLOAD_ROUTED_TYPES - {"reg_prepay"}
+    state_ok = ptype in _STATE_CHECK_EXEMPT or raw_state == snapshot
     if not state_ok and not force:
         await callback.answer()
         kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -1221,7 +1259,15 @@ async def _replay_successful_payment(bot: Bot, entry: dict) -> tuple[bool, str]:
             ),
         )
         update = Update(update_id=int(time.time() * 1000) % 2_000_000_000, message=msg)
-        await dp.feed_update(bot, update)
+        # ⭐ حالت «بازپخش»: خطاگیر سراسری (bot.py) استثنای هندلر پرداخت را
+        # دوباره پرتاب می‌کند تا شکستِ اعمال پرداخت به همین‌جا برسد و پیام
+        # «تایید شد ولی اعمال خودکار با خطا» برای مدیر ارسال شود (در aiogram 3
+        # بدون این، feed_update هرگز خطا نمی‌داد و بازپخش همیشه «موفق» دیده می‌شد).
+        token = runtime_state.replay_payment_mode.set(True)
+        try:
+            await dp.feed_update(bot, update)
+        finally:
+            runtime_state.replay_payment_mode.reset(token)
         logger.info(f"[CARD-PAY] پرداخت کارت‌به‌کارت id={entry['id']} برای uid={uid} بازپخش شد")
         return True, ""
     except Exception as e:
@@ -1240,7 +1286,10 @@ _PANEL_STATUS = {
 
 # نوع پرداخت برای محاسبهٔ سود در پنل (src/lib/profit.ts → computeCardPaymentProfit)
 _PREPAY_TYPES = {"reg_prepay", "bulk_prepay"}
-_FINAL_TYPES = {"lavayeh", "tajdid_nazar", "bulk_settlement", "admin_fee", "clearance"}
+# ⭐ pending_case = هزینهٔ پایان کار پرونده (پس از کسر پیش‌پرداخت) → مثل
+# فاکتور نهایی: سود = مبلغ − هزینهٔ سامانهٔ پروندهٔ پیوندخورده
+_FINAL_TYPES = {"lavayeh", "tajdid_nazar", "bulk_settlement", "admin_fee",
+                "clearance", "pending_case"}
 
 
 def _payment_kind(entry: dict) -> str:

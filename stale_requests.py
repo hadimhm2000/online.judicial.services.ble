@@ -83,6 +83,15 @@ def _latest_ts(info):
     return ts
 
 
+def _entry_user_id(name: str, key, info) -> str | None:
+    """شناسهٔ کاربرِ یک رکورد مخزن — pending_admin_fee_payments با fid یکتای
+    فاکتور کلید می‌خورد (اصلاحیه ۱۴۰۵/۰۸)؛ کاربر داخل خود رکورد است."""
+    if isinstance(info, dict) and name == "pending_admin_fee_payments":
+        uid = info.get("uid")
+        return str(uid) if uid else None
+    return str(key) if key is not None else None
+
+
 def _excluded_users() -> set:
     """کاربرانی که هنوز فرآیند زنده (تازه‌تر از ۲۴ ساعت) دارند."""
     now = datetime.datetime.now()
@@ -92,7 +101,9 @@ def _excluded_users() -> set:
         for uid, info in list((getattr(runtime_state, name, None) or {}).items()):
             ts = _latest_ts(info)
             if ts is not None and now - ts < limit:
-                out.add(str(uid))
+                u = _entry_user_id(name, uid, info)
+                if u:
+                    out.add(u)
     for name in _DEADLINE_STORES:
         for uid, info in list((getattr(runtime_state, name, None) or {}).items()):
             dl = info.get("deadline") if isinstance(info, dict) else None
@@ -155,7 +166,13 @@ async def _clear_user_memory(bot: Bot, uid_str: str):
     for name in _CLEAR_STORES:
         store = getattr(runtime_state, name, None)
         if isinstance(store, dict):
-            store.pop(uid, None)
+            if name == "pending_admin_fee_payments":
+                # ⭐ کلید = fid یکتای فاکتور؛ همهٔ فاکتورهای «همین کاربر» پاک شوند
+                for key, info in list(store.items()):
+                    if isinstance(info, dict) and str(info.get("uid")) == uid_str:
+                        store.pop(key, None)
+            else:
+                store.pop(uid, None)
     runtime_state.active_lavayeh_users.discard(uid)
     for key, info in list(runtime_state.incomplete_tasks.items()):
         if isinstance(info, dict) and str(info.get("user_id")) == uid_str:

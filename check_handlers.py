@@ -4183,7 +4183,7 @@ async def check_confirm_handler(message: Message, state: FSMContext):
     # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): پیش‌پرداخت قبل از شروع ثبت —
     # فاکتور و درگاه پرداخت ارسال می‌شود؛ پس از تایید خودکار پرداخت،
     # ثبت آغاز خواهد شد (check_prepay_successful_payment).
-    # ثبت دادخواست: ۲,۰۰۰ تومان (اصلاحیهٔ ۱۴۰۵/۰۶/۲۵ — حداقلِ مبلغ فاکتور API).
+    # ثبت دادخواست: ۲۰۰,۰۰۰ تومان (تعرفهٔ تأییدشدهٔ کارفرما ۱۴۰۵/۰۸).
     # ⭐ مانده/بستانکاری کاربر کل پیش‌پرداخت را پوشش می‌دهد → بدون فاکتور،
     # ثبت مستقیم (مانده در فاکتور نهایی کسر می‌شود)
     from prepay_registration import cover_prepay_from_credit
@@ -4215,7 +4215,7 @@ async def check_prepay_successful_payment(message: Message, state: FSMContext, b
     data = await state.get_data()
     request_title = data.get("check_request_title", "")
 
-    # مبلغ واقعی پرداخت‌شده (total_amount ریال است) — تعرفه: ۲,۰۰۰ تومان
+    # مبلغ واقعی پرداخت‌شده (total_amount ریال است) — تعرفه: ۲۰۰,۰۰۰ تومان
     from prepay_registration import register_prepaid, get_prepay_amount_toman
     fee = int((getattr(payment, "total_amount", 0) or 0) // 10) \
         or get_prepay_amount_toman("check")

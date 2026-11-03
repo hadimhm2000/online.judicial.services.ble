@@ -1048,7 +1048,7 @@ async def ezhhar_confirm_handler(message: Message, state: FSMContext, bot: Bot):
         # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): پیش‌پرداخت قبل از شروع ثبت —
         # فاکتور و درگاه پرداخت ارسال می‌شود؛ پس از تایید خودکار پرداخت،
         # درخواست به صف ثبت ارسال خواهد شد (ezhhar_prepay_successful_payment).
-        # اظهارنامه: ۱,۰۰۰ تومان (اصلاحیهٔ ۱۴۰۵/۰۶/۲۵ — حداقلِ مبلغ فاکتور API).
+        # اظهارنامه: ۱۰۰,۰۰۰ تومان (تعرفهٔ تأییدشدهٔ کارفرما ۱۴۰۵/۰۸).
         # ⭐ مانده/بستانکاری کاربر کل پیش‌پرداخت را پوشش می‌دهد → بدون فاکتور،
         # ثبت مستقیم (مانده در فاکتور نهایی کسر می‌شود)
         from prepay_registration import cover_prepay_from_credit
@@ -1130,7 +1130,7 @@ async def ezhhar_prepay_successful_payment(message: Message, state: FSMContext, 
     user_id = message.from_user.id
     data = await state.get_data()
     payment = message.successful_payment
-    # مبلغ واقعی پرداخت‌شده (total_amount ریال است) — تعرفه اظهارنامه: ۱,۰۰۰ تومان
+    # مبلغ واقعی پرداخت‌شده (total_amount ریال است) — تعرفه اظهارنامه: ۱۰۰,۰۰۰ تومان
     from prepay_registration import register_prepaid, get_prepay_amount_toman
     fee = int((getattr(payment, "total_amount", 0) or 0) // 10) \
         or get_prepay_amount_toman("ezhharnameh")

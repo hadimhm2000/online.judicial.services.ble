@@ -21,6 +21,13 @@ def _tmp_store(tmp_path, monkeypatch):
     monkeypatch.setattr(wallet, "STORE_FILE", str(tmp_path / "wallet.json"))
     wallet._store = {"users": {}, "offers": {}, "holds": {}, "autopaid": {}}
     wallet._lock = asyncio.Lock()
+    # ⭐ ایزوله‌سازی صف بازگشت وجه — مهاجرت مبالغ قدیمی اکنون از این صف
+    # عبور می‌کند (بازگشت وجه فقط با تایید مدیر)
+    import refund_approvals as _ra
+    monkeypatch.setattr(_ra, "STORE_FILE", str(tmp_path / "refund_approvals.json"))
+    _ra._store = {"items": {}}
+    _ra._lock = asyncio.Lock()
+    _ra._bot = None
 
 
 def test_pay_from_wallet_replays_original_invoice():
@@ -176,18 +183,59 @@ def test_full_balance_auto_pays_and_duplicate_payment_returns_to_wallet(monkeypa
     asyncio.run(scenario())
 
 
-def test_leftover_after_final_invoice_goes_to_wallet():
+def test_auto_pay_payload_routed_types_include_single_use_and_pending_case(monkeypatch):
+    """⭐ اصلاحیه ۱۴۰۵/۰۸: نوع‌های payload-محور (single_use / pending_case)
+    مثل card_payment شناخته می‌شوند؛ پرداخت خودکار بدون state انجام می‌شود و
+    دکمهٔ دستی دیگر با «مرحله تغییر کرده» رد نمی‌شود."""
+    monkeypatch.setattr(wallet, "AUTOPAY_FIRST_DELAY", 0)
+    monkeypatch.setattr(wallet, "AUTOPAY_STABLE_DELAY", 0)
+
+    async def scenario():
+        bot = Bot("1:x")
+        bot.send_message = AsyncMock()
+
+        async def no_chat(uid):
+            raise RuntimeError("آفلاین")
+
+        bot.get_chat = no_chat
+        seen = []
+        dp = _dp_with_service(seen)
+        wallet.set_bot(bot)
+        wallet._apply(9, 20_000, "topup")
+        for ptype in ("single_use", "pending_case"):
+            payload = json.dumps({"type": ptype, "uid": 9, "tc": "T1"})
+            await wallet._auto_pay(9, payload, ptype, 100_000, f"فاکتور {ptype}")
+            assert len(seen) == ("single_use", "pending_case").index(ptype) + 1
+        # بدون state هم پرداخت خودکار انجام شد؛ دکمهٔ دستی «پرداخت از کیف پول»
+        # پیشنهاد نشد (رکوردهای offer با used=True/auto=True فقط رسید پرداخت خودکارند)
+        assert len(seen) == 2
+        assert all(o.get("used") and o.get("auto") for o in wallet._store["offers"].values())
+        assert wallet.balance(9) == 0
+        await bot.session.close()
+
+    asyncio.run(scenario())
+
+
+def test_leftover_after_final_invoice_goes_to_refund_queue():
+    """⭐ مطابق سیاست «بازگشت وجه فقط با تایید مدیر»: مازاد پیش‌پرداخت به صف
+    تایید می‌رود، نه واریز مستقیم به کیف پول (تست قبلی مستقیم کیف پول را
+    می‌خواست و از زمان سیاست جدیدِ refund_approvals منسوخ شده بود)."""
     import prepay_registration as pr
+    import refund_approvals as ra
     runtime_state.prepaid_registrations[21] = {"amount_rial": 150_000, "amount_toman": 15_000,
                                                "prepay_paid_rial": 150_000}
     adjusted, info = pr.adjust_final_fee_with_prepay(21, 100_000)
     assert adjusted == 0 and info["leftover_rial"] == 50_000
-    assert wallet.balance(21) == 5_000
+    assert wallet.balance(21) == 0            # هنوز واریز نشده
+    assert ra.pending_total_toman(21) == 5_000  # در انتظار تایید مدیر
     assert 21 not in runtime_state.prepaid_registrations
-    assert "کیف پول" in pr.build_prepay_fee_text(0, info, 100_000)
+    assert "تایید مدیریت" in pr.build_prepay_fee_text(0, info, 100_000)
 
 
-def test_migrate_legacy_credits_moves_credit_and_keeps_inflight_prepay():
+def test_migrate_legacy_credits_requests_refund_and_keeps_inflight_prepay():
+    """⭐ اصلاحیه ۱۴۰۵/۰۸: مهاجرت مبالغ قدیمی به «صف تایید مدیر» می‌رود، نه
+    واریز مستقیم به کیف پول (هم‌راستا با سیاست «بازگشت وجه فقط با تایید»)."""
+    import refund_approvals as ra
     from bulk_submissions import BULK_TASKS
     runtime_state.prepaid_registrations.clear()
     runtime_state.prepaid_registrations[31] = {"amount_rial": 300_000, "manual": True}
@@ -195,11 +243,25 @@ def test_migrate_legacy_credits_moves_credit_and_keeps_inflight_prepay():
     BULK_TASKS["T-MIG"] = {"user_id": 33, "finalized": True, "surplus_rial": 70_000}
     try:
         assert wallet.migrate_legacy_credits() == 3
-        assert wallet.balance(31) == 30_000 and 31 not in runtime_state.prepaid_registrations
-        assert wallet.balance(32) == 3_000
+        # هنوز چیزی به کیف پول واریز نشده — همه در انتظار تایید مدیر
+        assert wallet.balance(31) == 0 and 31 not in runtime_state.prepaid_registrations
+        assert ra.pending_total_toman(31) == 30_000
+        assert wallet.balance(32) == 0
+        assert ra.pending_total_toman(32) == 3_000
         assert runtime_state.prepaid_registrations[32]["amount_rial"] == 20_000
-        assert wallet.balance(33) == 7_000 and BULK_TASKS["T-MIG"]["surplus_rial"] == 0
+        assert wallet.balance(33) == 0 and BULK_TASKS["T-MIG"]["surplus_rial"] == 0
+        assert ra.pending_total_toman(33) == 7_000
         assert wallet.migrate_legacy_credits() == 0  # تکرار بی‌اثر
+        # تایید مدیر → واریز به کیف پول (فقط همان مبلغ مهاجرت‌شده)
+        rid31 = next(v["id"] for v in ra._store["items"].values() if v.get("uid") == 31)
+        assert asyncio.run(ra.decide(rid31, True, 1))[0] == "done"
+        assert wallet.balance(31) == 30_000
+        # رد پس از مهاجرت → در ری‌استارت بعدی درخواست تازه ساخته نمی‌شود
+        rid32 = next(v["id"] for v in ra._store["items"].values() if v.get("uid") == 32)
+        assert asyncio.run(ra.decide(rid32, False, 1))[0] == "done"
+        assert wallet.balance(32) == 0
+        runtime_state.prepaid_registrations[31] = {"amount_rial": 500_000, "manual": True}
+        assert wallet.migrate_legacy_credits() == 0  # fid/کلید یگانه جلوی تکرار را می‌گیرد
     finally:
         BULK_TASKS.pop("T-MIG", None)
         runtime_state.prepaid_registrations.clear()

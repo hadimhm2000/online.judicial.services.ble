@@ -23,6 +23,11 @@ def _tmp_store(tmp_path, monkeypatch):
     monkeypatch.setattr(pending_cases, "STORE_FILE", str(tmp_path / "pc.json"))
     runtime_state.pending_lavayeh_payments.clear()
     runtime_state.pending_tn_payments.clear()
+    # ⭐ ایزوله‌سازی کیف پول (برگشت پرداخت تکراری به کیف پول)
+    import wallet
+    monkeypatch.setattr(wallet, "STORE_FILE", str(tmp_path / "wallet.json"))
+    wallet._store = {"users": {}, "offers": {}, "holds": {}, "autopaid": {}}
+    wallet._lock = asyncio.Lock()
 
 
 def _lavayeh_ctx(tc="111", svc="LAVAYEH", fee=500_000):
@@ -117,6 +122,111 @@ def test_payment_restores_invoice_and_keeps_other_open_invoice(monkeypatch):
     assert seen["tracking_code"] == "111" and seen["final_fee"] == 500_000
     assert runtime_state.pending_lavayeh_payments[7] is other   # فاکتور دیگر گم نشد
     assert pending_cases.open_cases(7)[0]["paid"]
+
+
+# ── ⭐ اصلاحیه ۱۴۰۵/۰۸: پرداخت تکراری / خطای هندلر ─────────────────────
+
+def _pay_msg(uid, tc, amount_rial=500_000):
+    msg = MagicMock()
+    msg.from_user.id = uid
+    msg.answer = AsyncMock()
+    msg.successful_payment.total_amount = amount_rial
+    msg.successful_payment.telegram_payment_charge_id = "BALE-DUP"
+    msg.successful_payment.invoice_payload = json.dumps(
+        {"type": "pending_case", "uid": uid, "tc": tc})
+    return msg
+
+
+def test_duplicate_payment_of_paid_case_refunds_and_skips_processing(monkeypatch):
+    """دو فاکتور برای یک پرونده و هر دو پرداخت شوند → فقط اولی پردازش می‌شود؛
+    دومی به کیف پول کاربر برمی‌گردد و مدیر مطلع می‌شود."""
+    import lavayeh_handlers
+    import pending_cases_handlers
+    import wallet
+    from config import ADMIN_ID
+
+    pending_cases.record_unpaid(7, pending_cases.KIND_LAVAYEH, _lavayeh_ctx("111"))
+    pending_cases.mark_paid(7, "111")            # پرداخت اول انجام شده
+    calls = []
+
+    async def fake_pay(message, state, bot):
+        calls.append(1)
+
+    monkeypatch.setattr(lavayeh_handlers, "lavayeh_successful_payment", fake_pay)
+    msg = _pay_msg(7, "111")
+    state = MagicMock()
+    state.clear = AsyncMock()
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+    asyncio.run(pending_cases_handlers.pending_case_successful_payment(msg, state, bot))
+
+    assert calls == []                            # پردازش تکراری انجام نشد
+    assert wallet.balance(7) == 50_000            # مبلغ به کیف پول برگشت
+    assert "برگشت" in msg.answer.call_args.args[0]
+    admin_texts = [c.args[1] for c in bot.send_message.await_args_list
+                   if c.args and c.args[0] == ADMIN_ID and len(c.args) > 1]
+    assert admin_texts and "تکراری" in admin_texts[0]
+    state.clear.assert_awaited()
+
+
+def test_handler_failure_still_marks_case_paid(monkeypatch):
+    """mark_paid پیش از هندلر است: اگر هندلر پرداخت خطا بدهد، پرونده
+    «پرداخت‌شده» می‌ماند و پرداخت دوم تکراری شناخته می‌شود (کاربر دو بار
+    هزینه نمی‌دهد و از دکمهٔ «درج امضا» ادامه می‌دهد)."""
+    import lavayeh_handlers
+    import pending_cases_handlers
+
+    pending_cases.record_unpaid(7, pending_cases.KIND_LAVAYEH, _lavayeh_ctx("222"))
+
+    async def boom(message, state, bot):
+        raise RuntimeError("شکست هندلر پرداخت")
+
+    monkeypatch.setattr(lavayeh_handlers, "lavayeh_successful_payment", boom)
+    with pytest.raises(RuntimeError):
+        asyncio.run(pending_cases_handlers.pending_case_successful_payment(
+            _pay_msg(7, "222"), MagicMock(), MagicMock()))
+    # با وجود خطا، پرداخت ثبت شد
+    assert pending_cases.get(7, "222")["paid"] is True
+
+
+# ── ⭐ اصلاحیه ۱۴۰۵/۰۸: ثبت درست pending_case در پنل ───────────────────
+
+def test_pending_case_card_payment_maps_to_real_panel_service():
+    """پرداخت کارتی فاکتور پروندهٔ در انتظار → serviceType واقعی پرونده و
+    paymentKind=FINAL (قبلاً UNKNOWN/DIRECT ثبت می‌شد و کل مبلغ سود حساب می‌شد)."""
+    import card_payment as cp
+
+    pending_cases.record_unpaid(7, pending_cases.KIND_TN, {
+        "final_fee": 900_000, "tracking_code": "555", "case_type": "تجدیدنظرخواهی",
+        "tn_persons": [{"name": "x"}]})
+
+    # فاکتور جدید (payload دارای st)
+    entry = {"uid": 7, "payload_obj": {"type": "pending_case", "uid": 7, "tc": "555",
+                                       "st": "TAJDID_NAZAR"}}
+    assert cp._panel_service_type(entry) == "TAJDID_NAZAR"
+    assert cp._payment_kind(entry) == "FINAL"
+
+    # فاکتور قدیمی بدون st → از دفتر pending_cases خوانده می‌شود
+    entry2 = {"uid": 7, "payload_obj": {"type": "pending_case", "uid": 7, "tc": "555"}}
+    assert cp._panel_service_type(entry2) == "TAJDID_NAZAR"
+    assert cp._payment_kind(entry2) == "FINAL"
+
+    # پروندهٔ ناشناخته → UNKNOWN (بدون تغییر رفتار پیشین در این حالت مرزی)
+    entry3 = {"uid": 7, "payload_obj": {"type": "pending_case", "uid": 7, "tc": "nope"}}
+    assert cp._panel_service_type(entry3) == "UNKNOWN"
+
+
+def test_pending_case_invoice_payload_carries_service_type():
+    """فاکتور پرونده، نوع سرویس (st) را در payload می‌برد تا پنل و شیت درست ثبت شوند."""
+    import pending_cases_handlers
+
+    pending_cases.record_unpaid(7, pending_cases.KIND_TN, {
+        "final_fee": 900_000, "tracking_code": "555", "case_type": "تجدیدنظرخواهی",
+        "tn_persons": []})
+    it = pending_cases.get(7, "555")
+    payload = json.loads(pending_cases_handlers._invoice_payload(7, it))
+    assert payload["type"] == "pending_case" and payload["tc"] == "555"
+    assert payload["st"] == "TAJDID_NAZAR"
 
 
 # ── ۴) چاپ درخواستی کاربر ─────────────────────────────────────────────

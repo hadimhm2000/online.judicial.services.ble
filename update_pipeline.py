@@ -17,8 +17,13 @@ update_pipeline.py — نظم و شفافیت پردازش آپدیت‌های �
      dp.feed_update «درون همان تسکِ» هندلر جاری اجرا می‌شوند؛ قفل برای
      همان تسک re-entrant است (بن‌بست/DEADLOCK ندارد).
    - اگر ربات هنوز به اولین آپدیتِ یک کاربر مشغول باشد، آپدیت بعدی همان
-     کاربر فقط «صف» می‌شود؛ دریافت و جواب سریع (callback.answer) توسط
-     بله مستقل از این صف انجام می‌شود.
+     کاربر فقط «صف» می‌شود. توجه: پاسخ سریع به کاربر (مثل callback.answer)
+     هم «درون هندلر» صدا زده می‌شود و بنابراین همان‌قدر صف می‌شود.
+   - ⭐ pre_checkout_query بدون قفل و خارج از این صف پردازش می‌شود:
+     مهلت پاسخ بله به آن حدود ۱۰ ثانیه است و اگر پشت یک هندلر کندِ همان
+     کاربر (مثلاً ۴۶ ثانیه‌ای) صف شود، پنجرهٔ تأیید پرداخت می‌گذرد و
+     پرداخت کاربر بی‌دلیل لغو می‌شود. هندلر pre_checkout فقط payload را
+     اعتبارسنجی می‌کند و state کاربر را تغییر نمی‌دهد؛ عبور موازی امن است.
    - هیچ state، داده یا پرداختی تغییر نمی‌کند؛ فقط ترتیب اجراست.
 
 ۲) SlowUpdateLogMiddleware — لاگ زمان پردازش آپدیت‌ها
@@ -69,7 +74,14 @@ class UserSerialMiddleware(BaseMiddleware):
 
     re-entrant برای همان تسک: بازپخش‌های مصنوعی (wallet/card_payment با
     dp.feed_update) درون تسکِ در حال اجرا بدون قفل دوباره عبور می‌کنند.
+
+    ⭐ pre_checkout_query مستثناست و بدون قفل عبور می‌کند: مهلت پاسخ بله
+    به آن حدود ۱۰ ثانیه است و نباید پشت هندلر کندِ همان کاربر صف شود.
     """
+
+    # آپدیت‌هایی که بدون صف سریال‌سازی عبور می‌کنند — فقط موارد حساس به
+    # زمان که state کاربر را تغییر نمی‌دهند (اعتبارسنجی + پاسخ فوری).
+    BYPASS_UPDATE_ATTRS = ("pre_checkout_query",)
 
     def __init__(self):
         super().__init__()
@@ -90,6 +102,11 @@ class UserSerialMiddleware(BaseMiddleware):
     async def __call__(self, handler, event: Update, data: dict):
         uid = _user_of_update(event)
         if uid is None:
+            return await handler(event, data)
+        # ⭐ آپدیت‌های حساس به زمان (pre_checkout_query): بدون قفل و بدون
+        # صف — مهلت ~۱۰ ثانیه‌ای تأیید پرداخت پشت هندلر کندِ همان کاربر
+        # نمی‌گذرد. هندلرش فقط payload را اعتبارسنجی می‌کند (بدون تغییر state).
+        if any(getattr(event, attr, None) is not None for attr in self.BYPASS_UPDATE_ATTRS):
             return await handler(event, data)
         lock = self._get_lock(uid)
         if self._holders.get(uid) == id(asyncio.current_task()):

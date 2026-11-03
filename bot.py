@@ -113,6 +113,13 @@ runtime_state.dp = dp
 # اجرا می‌شود که یک هندلر استثنای مدیریت‌نشده پرتاب کرده باشد.
 @dp.errors()
 async def _unhandled_flow_error(event: ErrorEvent, bot: Bot, state: FSMContext = None):
+    # ⭐ بازپخش مصنوعی پرداخت (WALLET-… / CARD-…): در aiogram 3 «وجودِ» هندلر
+    # خطا به‌تنهایی استثنا را سرکوب می‌کند (مقدار برگشتی True/False تفاوتی
+    # ندارد) و dp.feed_update هرگز خطا نمی‌دهد؛ تنها راه رساندن شکستِ اعمال
+    # پرداخت به فراخوانِ بازپخش (wallet/card_payment برای برگشت خودکار وجه
+    # و اطلاع به کاربر و مدیر) پرتاب دوبارهٔ استثناست.
+    if runtime_state.replay_payment_mode.get():
+        raise event.exception
     try:
         update = event.update
         user = None
@@ -271,9 +278,12 @@ def cleanup_expired_pending_entries():
                 continue  # تاریخ نامشخص — محافظت می‌شود
             if (now - ts).total_seconds() > _PENDING_TTL_HOURS * 3600:
                 store.pop(uid, None)
-                getattr(runtime_state, "recovery_notified", {}).pop(uid, None)
+                # ⭐ pending_admin_fee_payments با fid فاکتور کلید می‌خورد؛
+                # کاربر داخل رکورد است (برای پاک‌کردن recovery_notified)
+                owner = info.get("uid") if (isinstance(info, dict) and store_name == "pending_admin_fee_payments") else uid
+                getattr(runtime_state, "recovery_notified", {}).pop(owner, None)
                 removed += 1
-                logging.info(f"[CLEANUP] {store_name}: entry کاربر {uid} پس از {_PENDING_TTL_HOURS} ساعت عدم فعالیت حذف شد.")
+                logging.info(f"[CLEANUP] {store_name}: entry کاربر {owner} پس از {_PENDING_TTL_HOURS} ساعت عدم فعالیت حذف شد.")
     if removed:
         logging.info(f"[CLEANUP] مجموع {removed} entry منقضی از صف‌ها حذف شد.")
 
@@ -482,12 +492,13 @@ async def main():
     # ── بررسی کرش قبلی و بارگذاری حالت ──
     crashed, crash_data = was_crash()
     active_submitted, active_unsubmitted = load_into_runtime_state()
-    # ⭐ مانده/بستانکاری‌های قدیمی و مازاد بچ‌های تمام‌شده → کیف پول کاربر (یک‌بار؛ تکرار بی‌اثر)
+    # ⭐ مانده/بستانکاری‌های قدیمی و مازاد بچ‌های تمام‌شده → صف «بازگشت وجه
+    # با تایید مدیر» (refund_approvals)؛ پس از تایید به کیف پول واریز می‌شود
     try:
         if wallet.migrate_legacy_credits():
             save_runtime_state()
     except Exception as _e:
-        logging.error(f"[WALLET] انتقال مبالغ قدیمی به کیف پول ناموفق: {_e}")
+        logging.error(f"[WALLET] انتقال مبالغ قدیمی به صف بازگشت وجه ناموفق: {_e}")
     # ⭐ پیشنهاد تکمیلی: پاکسازی entryهای منقضی (TTL) بلافاصله پس از بارگذاری،
     # تا پرونده‌های ماه‌ها-گذشته نه تنها پیام نگیرند، بلکه از صف‌ها هم پاک شوند.
     cleanup_expired_pending_entries()

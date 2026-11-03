@@ -79,13 +79,18 @@ AUTOPAID_KEEP_SECONDS = 24 * 3600    # تشخیص پرداخت تکراری فا
 AUTOPAY_FIRST_DELAY = 3.0            # صبر تا هندلر فرستندهٔ فاکتور state انتظار پرداخت را بگذارد
 AUTOPAY_STABLE_DELAY = 2.0
 
-# payloadهایی که هندلرشان مستقل از state کاربر مسیریابی می‌شود (مثل card_payment)
-_PAYLOAD_ROUTED_TYPES = {"admin_fee", "panel_message", "reg_prepay", "clearance"}
+# payloadهایی که هندلرشان مستقل از state کاربر مسیریابی می‌شود — باید با
+# card_payment._PAYLOAD_ROUTED_TYPES هم‌راستا بماند (single_use و pending_case
+# هم هندلر payload-محور دارند؛ wallet_topup برای کامل بودن مجموعه)
+_PAYLOAD_ROUTED_TYPES = {"admin_fee", "panel_message", "reg_prepay", "clearance",
+                         "single_use", "pending_case", "wallet_topup"}
 
 _store: dict = {"users": {}, "offers": {}, "holds": {}, "autopaid": {}}
 _lock = asyncio.Lock()
 _bot: Bot | None = None
 _load_problem: str = ""
+# کش کوچک مشخصات کاربران برای بازپخش پرداخت خودکار (ثبت نام واقعی در پنل/شیت)
+_user_name_cache: dict = {}
 
 wallet_router = Router()
 
@@ -362,6 +367,29 @@ async def _wait_stable_state(uid: int) -> str | None:
     return prev
 
 
+async def _user_for_replay(uid: int) -> User:
+    """کاربر واقعی برای بازپخش پرداخت خودکار — نام درست در پنل/شیت ثبت شود،
+    نه نام جایگزین «کاربر». ترتیب: کش درون‌حافظه → get_chat از بله → «کاربر»."""
+    cached = _user_name_cache.get(uid)
+    if cached is not None:
+        return cached
+    user = None
+    if _bot is not None:
+        try:
+            chat = await _bot.get_chat(uid)
+            user = User(id=uid, is_bot=False,
+                        first_name=chat.first_name or None,
+                        last_name=chat.last_name or None,
+                        username=chat.username or None)
+        except Exception as e:
+            logger.warning(f"[WALLET] دریافت مشخصات کاربر {uid} برای بازپخش ناموفق: {e}")
+    if user is None or not (user.first_name or user.last_name or user.username):
+        user = User(id=uid, is_bot=False, first_name="کاربر")
+    if len(_user_name_cache) < 5000:
+        _user_name_cache[uid] = user
+    return user
+
+
 async def _auto_pay(uid: int, payload: str, ptype: str, amount_rial: int, title: str):
     """پرداخت خودکار کل فاکتور از کیف پول (بازپخش successful_payment)."""
     try:
@@ -382,7 +410,7 @@ async def _auto_pay(uid: int, payload: str, ptype: str, amount_rial: int, title:
             }
             _store.setdefault("autopaid", {})[key] = {"at": time.time(), "amount_rial": amount_rial, "oid": oid}
             _apply(uid, -amount_toman, "pay", title)
-        ok, err = await _replay_payment(_bot, uid, User(id=uid, is_bot=False, first_name="کاربر"),
+        ok, err = await _replay_payment(_bot, uid, await _user_for_replay(uid),
                                         payload, amount_rial, oid)
         if ok:
             await _bot.send_message(
@@ -452,7 +480,15 @@ async def _replay_payment(bot: Bot, uid: int, user: User, payload: str, amount_r
                 provider_payment_charge_id=f"{CHARGE_PREFIX}{oid}",
             ),
         )
-        await dp.feed_update(bot, Update(update_id=int(time.time() * 1000) % 2_000_000_000, message=msg))
+        # ⭐ حالت «بازپخش»: خطاگیر سراسری (bot.py) استثنای هندلر پرداخت را
+        # دوباره پرتاب می‌کند تا شکست اعمال پرداخت به همین‌جا برسد و مبلغ
+        # خودکار به کیف پول برگردد (در aiogram 3 بدون این، feed_update هرگز
+        # خطا نمی‌دهد و بازپخش همیشه «موفق» دیده می‌شد).
+        token = runtime_state.replay_payment_mode.set(True)
+        try:
+            await dp.feed_update(bot, Update(update_id=int(time.time() * 1000) % 2_000_000_000, message=msg))
+        finally:
+            runtime_state.replay_payment_mode.reset(token)
         return True, ""
     except Exception as e:
         logger.error(f"[WALLET] بازپخش پرداخت {oid} ناموفق: {e}", exc_info=True)
@@ -489,6 +525,8 @@ async def cb_wallet_pay(callback: CallbackQuery, bot: Bot):
     except Exception:
         pass
 
+    # نام واقعی کاربر برای بازپخش‌های بعدی کش شود (به‌جای «کاربر» در پنل/شیت)
+    _user_name_cache[uid] = callback.from_user
     ok, err = await _replay_payment(bot, uid, callback.from_user, offer["payload"], offer["amount_rial"], oid)
     if ok:
         await callback.message.answer(
@@ -829,19 +867,48 @@ class WalletPaymentMiddleware(BaseMiddleware):
 
 # ── انتقال مبالغ قدیمی به کیف پول ────────────────────────────────────────
 
+def _legacy_refund_requested(dedupe_key: str) -> bool:
+    """آیا برای این کلید یگانه درخواستی (در هر وضعیتی: انتظار/تایید/رد) ثبت شده؟
+
+    برای مهاجرت یک‌بارهٔ مبالغ قدیمی: پس از «رد» مدیر هم در ری‌استارت بعدی
+    درخواست تازه‌ای ساخته نشود (request_refund_nowait فقط انتظار/تایید را
+    الگو می‌گیرد)."""
+    try:
+        import refund_approvals
+        return any(v.get("dedupe_key") == dedupe_key
+                   for v in refund_approvals._store.get("items", {}).values())
+    except Exception:
+        return False
+
+
 def migrate_legacy_credits() -> int:
     """یک‌بار در شروع ربات (پس از load_into_runtime_state): مانده/بستانکاری‌های
-    قدیمیِ prepaid_registrations و مازاد بچ‌های دسته‌جمعیِ تمام‌شده به کیف پول
-    منتقل می‌شوند. خروجی: تعداد موارد منتقل‌شده (۰ = چیزی نبود؛ تکرار بی‌اثر است)."""
+    قدیمیِ prepaid_registrations و مازاد بچ‌های دسته‌جمعیِ تمام‌شده به صف
+    «بازگشت وجه با تایید مدیر» (refund_approvals) منتقل می‌شوند — نه واریز
+    مستقیم به کیف پول؛ هم‌راستا با سیاست «بازگشت وجه فقط با تایید مدیر».
+    پس از تایید مدیر، مبلغ به کیف پول واریز و مثل قبل از فاکتورهای بعدی
+    کسر می‌شود. خروجی: تعداد موارد درخواست‌شده (۰ = چیزی نبود؛ تکرار بی‌اثر
+    است — رکوردها هم‌زمان تفکیک می‌شوند تا مبلغ دوبار حساب نشود)."""
     moved = 0
     try:
+        import refund_approvals
         from prepay_registration import _split_record
         prepaid = getattr(runtime_state, "prepaid_registrations", {})
         for uid, rec in list(prepaid.items()):
             paid, credit_rial = _split_record(rec)
             if credit_rial < 10:
                 continue
-            _apply(uid, credit_rial // 10, "refund", "انتقال مانده/بستانکاری قبلی به کیف پول")
+            # مهاجرت هر کاربر «دقیقاً یک‌بار» انجام می‌شود (در هر وضعیتی: انتظار/
+            # تایید/رد) — مانده‌های جدیدی که مدیر بعداً ثبت می‌کند (/prepaid_set)
+            # دست نمی‌خورند و مثل قبل از فاکتور نهایی کسر می‌شوند.
+            if _legacy_refund_requested(f"legacy-prepaid:{uid}"):
+                continue
+            refund_approvals.request_refund_nowait(
+                uid, credit_rial // 10,
+                "انتقال مانده/بستانکاری قدیمی به کیف پول (مهاجرت یک‌باره)",
+                source="legacy_migration", dedupe_key=f"legacy-prepaid:{uid}")
+            # تفکیک رکورد: فقط بخش پیش‌پرداختِ در جریان بماند تا مبلغ دوبار
+            # (هم در رکورد و هم در کیف پول پس از تایید) حساب نشود
             if paid > 0:
                 rec.update({"amount_rial": paid, "amount_toman": paid // 10, "prepay_paid_rial": paid})
                 rec.pop("manual", None)
@@ -851,17 +918,23 @@ def migrate_legacy_credits() -> int:
     except Exception as e:
         logger.error(f"[WALLET] انتقال مانده‌های قبلی ناموفق: {e}", exc_info=True)
     try:
+        import refund_approvals as _ra
         from bulk_submissions import BULK_TASKS
         for tc, td in BULK_TASKS.items():
             sr = int(td.get("surplus_rial", 0) or 0)
             if td.get("finalized") and sr >= 10 and td.get("user_id"):
-                _apply(td["user_id"], sr // 10, "refund", f"مازاد پیش‌پرداخت دسته‌جمعی {tc}")
+                # مهاجرت هر بچ «دقیقاً یک‌بار» (در هر وضعیتی)
+                if _legacy_refund_requested(f"legacy-bulk:{tc}"):
+                    continue
+                _ra.request_refund_nowait(
+                    td["user_id"], sr // 10, f"مازاد پیش‌پرداخت دسته‌جمعی {tc}",
+                    source="legacy_migration", dedupe_key=f"legacy-bulk:{tc}")
                 td["surplus_rial"] = 0
                 moved += 1
     except Exception as e:
         logger.error(f"[WALLET] انتقال مازاد دسته‌جمعی ناموفق: {e}", exc_info=True)
     if moved:
-        logger.info(f"[WALLET] {moved} مبلغ قدیمی به کیف پول کاربران منتقل شد")
+        logger.info(f"[WALLET] {moved} مبلغ قدیمی به صف بازگشت وجه (تایید مدیر) منتقل شد")
     return moved
 
 

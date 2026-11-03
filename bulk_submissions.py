@@ -1176,8 +1176,12 @@ async def handle_late_bulk_item(bot, user_id: int, tracking_code: str, item: dic
     covered = min(surplus, court_total)
     task_data["surplus_rial"] = surplus - covered
     remaining = court_total - covered
-    # ⭐ مازاد بچ اکنون در کیف پول کاربر است — اگر کیف پول کل هزینه را بپوشاند، مثل
-    # قبل بدون فاکتور کسر می‌شود؛ وگرنه فاکتور تسویه (با کسر خودکار کیف پول) صادر می‌شود.
+    # ⭐ مازاد بچ پس از جمع‌بندی «منتظر تایید مدیر» است (refund_approvals،
+    # منبع bulk_surplus) و تا پیش از تایید در کیف پول نیست؛ فقط اگر ثبت
+    # درخواست ناموفق بوده باشد، همان مازاد در surplus_rial بچ مانده و
+    # ابتدا از آن کسر می‌شود. اگر کیف پول کاربر (مثلاً پس از تایید مازاد)
+    # کل هزینه را بپوشاند، بدون فاکتور کسر می‌شود؛ وگرنه فاکتور تسویهٔ
+    # همان مقدار (با کسر خودکار کیف پول) صادر می‌شود.
     if remaining > 0:
         try:
             import wallet

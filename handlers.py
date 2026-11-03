@@ -525,37 +525,54 @@ async def global_successful_payment_handler(message: types.Message, state: FSMCo
     # ═══════════════════════════════════════════════════════════════════
     # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): پیش‌پرداخت ثبت — برای تمام بخش‌های
     # ربات به‌جز استعلامات؛ پس از تایید خودکار پرداخت، تسک به صف ثبت
-    # ارسال می‌شود. state معتبرترین سیگنال است؛ payload فاکتور
-    # {"type": "reg_prepay", "svc": ...} مسیر پشتیبان وقتی state از بین
-    # رفته باشد.
+    # ارسال می‌شود. ⭐ اصلاحیه ۱۴۰۵/۰۸: «سرویسِ فاکتور» (svc در payload)
+    # بر state فعلی مقدم است — بازپخش‌های کارت‌به‌کارت/کیف پول از
+    # invoice_guard معاف‌اند و اگر کاربر سراغ سرویس دیگری رفته باشد،
+    # state فعلی سرویسِ دیگری است؛ پرداخت باید به همان سرویسی برود که
+    # فاکتورش برایش صادر شده (در نبود داده‌های FSM، هندلرِ همان سرویس
+    # مبلغ را به‌عنوان اعتبار بازیافتی ثبت می‌کند — register_orphan_prepay).
+    # state فقط برای فاکتورهای قدیمیِ بدون svc مسیر را تعیین می‌کند.
     # ═══════════════════════════════════════════════════════════════════
     _prepay_states = (
-        Form.waiting_for_lavayeh_prepay,    # لایحه / اعلام وکالت (۱,۰۰۰/۲,۰۰۰ تومان)
-        Form.waiting_for_ezhhar_prepay,     # اظهارنامه (۱,۰۰۰ تومان)
-        Form.waiting_for_tn_prepay,         # دعاوی اعتراضی / اعاده دادرسی (۲,۰۰۰ تومان)
-        Form.waiting_for_check_prepay,      # ثبت دادخواست (۲,۰۰۰ تومان)
+        Form.waiting_for_lavayeh_prepay,    # لایحه / اعلام وکالت (۱۰۰,۰۰۰ تومان)
+        Form.waiting_for_ezhhar_prepay,     # اظهارنامه (۱۰۰,۰۰۰ تومان)
+        Form.waiting_for_tn_prepay,         # دعاوی اعتراضی / اعاده دادرسی (۲۰۰,۰۰۰ تومان)
+        Form.waiting_for_check_prepay,      # ثبت دادخواست (۲۰۰,۰۰۰ تومان)
     )
     if current_state in _prepay_states or _pl.get("type") == "reg_prepay":
         _svc = _pl.get("svc")
         _routed = False
         try:
-            if current_state == Form.waiting_for_lavayeh_prepay or (
-                    current_state not in _prepay_states and _svc in ("lavayeh", "ealam")):
+            if _svc in ("lavayeh", "ealam"):
                 from lavayeh_handlers import lavayeh_prepay_successful_payment as _lv_prepay
                 await _lv_prepay(message, state, bot)
                 _routed = True
-            elif current_state == Form.waiting_for_ezhhar_prepay or (
-                    current_state not in _prepay_states and _svc == "ezhharnameh"):
+            elif _svc == "ezhharnameh":
                 from ezhharnameh_handlers import ezhhar_prepay_successful_payment as _ez_prepay
                 await _ez_prepay(message, state, bot)
                 _routed = True
-            elif current_state == Form.waiting_for_tn_prepay or (
-                    current_state not in _prepay_states and _svc == "tn"):
+            elif _svc == "tn":
                 from tajdid_nazar_handlers import tn_prepay_successful_payment as _tn_prepay
                 await _tn_prepay(message, state, bot)
                 _routed = True
-            elif current_state == Form.waiting_for_check_prepay or (
-                    current_state not in _prepay_states and _svc == "check"):
+            elif _svc == "check":
+                from check_handlers import check_prepay_successful_payment as _ck_prepay
+                await _ck_prepay(message, state, bot)
+                _routed = True
+            elif current_state == Form.waiting_for_lavayeh_prepay:
+                # فاکتور قدیمی بدون svc → بر اساس state فعلی
+                from lavayeh_handlers import lavayeh_prepay_successful_payment as _lv_prepay
+                await _lv_prepay(message, state, bot)
+                _routed = True
+            elif current_state == Form.waiting_for_ezhhar_prepay:
+                from ezhharnameh_handlers import ezhhar_prepay_successful_payment as _ez_prepay
+                await _ez_prepay(message, state, bot)
+                _routed = True
+            elif current_state == Form.waiting_for_tn_prepay:
+                from tajdid_nazar_handlers import tn_prepay_successful_payment as _tn_prepay
+                await _tn_prepay(message, state, bot)
+                _routed = True
+            elif current_state == Form.waiting_for_check_prepay:
                 from check_handlers import check_prepay_successful_payment as _ck_prepay
                 await _ck_prepay(message, state, bot)
                 _routed = True

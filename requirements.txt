@@ -20,3 +20,8 @@ python-docx>=1.1.0
 beautifulsoup4
 # تاریخ شمسی دقیق در تاریخچه، محاسبهٔ خسارت و PDF ارزش منطقه‌ای
 jdatetime
+# ── تست (pytest) — اجرا: BOT_TOKEN=1:x ADMIN_ID=1 ADMIN_API_SECRET=x python -m pytest ──
+# ⭐ pytest-asyncio برای تست‌های async (test_update_pipeline.py، test_pay_reconcile.py، ...)
+# پیکربندی در pytest.ini (asyncio_mode=auto) است.
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
