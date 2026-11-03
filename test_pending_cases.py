@@ -182,9 +182,14 @@ def test_handler_failure_still_marks_case_paid(monkeypatch):
         raise RuntimeError("شکست هندلر پرداخت")
 
     monkeypatch.setattr(lavayeh_handlers, "lavayeh_successful_payment", boom)
-    with pytest.raises(RuntimeError):
-        asyncio.run(pending_cases_handlers.pending_case_successful_payment(
-            _pay_msg(7, "222"), MagicMock(), MagicMock()))
+    # ⭐ خطا به بیرون (بازپخش کیف پول/کارت) نمی‌رسد — وگرنه مبلغ خودکار به
+    # کیف پول برمی‌گشت در حالی که پرونده پرداخت‌شده می‌ماند (دریافت دوگانه)
+    msg = _pay_msg(7, "222")
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+    asyncio.run(pending_cases_handlers.pending_case_successful_payment(
+        msg, MagicMock(), bot))
+    bot.send_message.assert_awaited()  # مدیر مطلع شد
     # با وجود خطا، پرداخت ثبت شد
     assert pending_cases.get(7, "222")["paid"] is True
 

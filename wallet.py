@@ -84,6 +84,10 @@ AUTOPAY_STABLE_DELAY = 2.0
 # هم هندلر payload-محور دارند؛ wallet_topup برای کامل بودن مجموعه)
 _PAYLOAD_ROUTED_TYPES = {"admin_fee", "panel_message", "reg_prepay", "clearance",
                          "single_use", "pending_case", "wallet_topup"}
+# ⭐ reg_prepay مسیرش payload-محور است ولی داده‌های فرمش در FSM است؛ مثل
+# card_payment.cb_approve، پرداخت از کیف پول فقط وقتی مجاز است که state کاربر
+# همان state زمان ارسال فاکتور باشد (فاکتور قدیمی در فلوی دیگر پرداخت نشود).
+_STATE_CHECK_EXEMPT = _PAYLOAD_ROUTED_TYPES - {"reg_prepay"}
 
 _store: dict = {"users": {}, "offers": {}, "holds": {}, "autopaid": {}}
 _lock = asyncio.Lock()
@@ -394,7 +398,7 @@ async def _auto_pay(uid: int, payload: str, ptype: str, amount_rial: int, title:
     """پرداخت خودکار کل فاکتور از کیف پول (بازپخش successful_payment)."""
     try:
         st = await _wait_stable_state(uid)
-        if st is None and ptype not in _PAYLOAD_ROUTED_TYPES:
+        if st is None and ptype not in _STATE_CHECK_EXEMPT:
             # مسیر پرداخت به state وابسته است و state در دسترس نیست → دکمهٔ دستی
             await _send_offer(uid, payload, ptype, amount_rial, title)
             return
@@ -507,7 +511,7 @@ async def cb_wallet_pay(callback: CallbackQuery, bot: Bot):
         if time.time() - offer.get("at", 0) > OFFER_TTL_SECONDS:
             await callback.answer("مهلت این فاکتور تمام شده است.", show_alert=True)
             return
-        if offer["ptype"] not in _PAYLOAD_ROUTED_TYPES and await _current_state(uid) != offer.get("state"):
+        if offer["ptype"] not in _STATE_CHECK_EXEMPT and await _current_state(uid) != offer.get("state"):
             await callback.answer(
                 "مرحلهٔ درخواست شما تغییر کرده و این فاکتور دیگر معتبر نیست.", show_alert=True)
             return

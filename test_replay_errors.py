@@ -71,6 +71,16 @@ def _dp_with_payment_handler(raise_on_pay: bool, re_raise_in_errors: bool):
     return dp
 
 
+
+async def _set_prepay_state(uid):
+    """⭐ reg_prepay فقط در state انتظار پیش‌پرداخت به‌صورت خودکار از کیف پول
+    پرداخت می‌شود (همان وضعیتی که هندلر فرستندهٔ فاکتور می‌گذارد)."""
+    from aiogram.fsm.storage.base import StorageKey
+    from states import Form
+    dp = runtime_state.dp
+    await dp.storage.set_state(StorageKey(bot_id=1, chat_id=uid, user_id=uid),
+                               Form.waiting_for_lavayeh_prepay.state)
+
 def test_wallet_replay_failure_is_visible():
     """شکست هندلر پرداخت → _replay_payment نتیجهٔ False می‌دهد (برگشت وجه فعال می‌شود)."""
 
@@ -169,6 +179,7 @@ def test_auto_pay_failure_refunds_and_notifies(monkeypatch):
         wallet._apply(9, 20_000, "topup", "t")
 
         payload = json.dumps({"type": "reg_prepay", "svc": "lavayeh", "uid": 9})
+        await _set_prepay_state(9)
         await wallet._auto_pay(9, payload, "reg_prepay", 100_000, "پیش پرداخت")
 
         # مبلغ خودکار برگشت خورد و رکورد «خودکار پرداخت‌شده» پاک شد

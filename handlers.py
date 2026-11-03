@@ -542,6 +542,34 @@ async def global_successful_payment_handler(message: types.Message, state: FSMCo
     if current_state in _prepay_states or _pl.get("type") == "reg_prepay":
         _svc = _pl.get("svc")
         _routed = False
+        # ⭐ ایمنی مسیریابی بر اساس svc: داده‌های فرم فقط وقتی متعلق به همین
+        # فاکتور است که کاربر «الان» در state انتظارِ پیش‌پرداخت همان سرویس
+        # باشد. اگر نباشد (بازپخش کارت‌به‌کارت/کیف پولِ فاکتور قدیمی در حالی
+        # که کاربر وسط فلوی دیگری است)، هندلر سرویس داده‌های ناقص/نامربوط را
+        # ثبت می‌کرد یا با state.clear() فلوی جاری کاربر را از بین می‌برد.
+        # حالا مبلغ فقط به‌عنوان اعتبار ثبت می‌شود و state کاربر دست نمی‌خورد.
+        try:
+            from invoice_guard import PREPAY_STATE_FOR_SVC as _PREPAY_STATE_FOR_SVC
+            _exp_state = _PREPAY_STATE_FOR_SVC.get(_svc)
+        except Exception:
+            _exp_state = None
+        if _exp_state and current_state != _exp_state:
+            try:
+                from prepay_registration import credit_orphan_prepay_payment
+                await credit_orphan_prepay_payment(message, bot, str(_svc))
+            except Exception as _orph_err:
+                logging.error(f"[REG-PREPAY] ثبت اعتبار پرداخت بی‌state ناموفق: {_orph_err}",
+                              exc_info=True)
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🚨 [REG-PREPAY] پرداخت پیش‌پرداخت بدون state معتبر و ثبت اعتبار "
+                        f"ناموفق — user={message.from_user.id}, state={current_state}, "
+                        f"payload={_pl}, charge="
+                        f"{getattr(message.successful_payment, 'telegram_payment_charge_id', '')}")
+                except Exception:
+                    pass
+            return
         try:
             if _svc in ("lavayeh", "ealam"):
                 from lavayeh_handlers import lavayeh_prepay_successful_payment as _lv_prepay

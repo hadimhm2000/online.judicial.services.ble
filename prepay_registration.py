@@ -343,6 +343,37 @@ def register_orphan_prepay(user_id: int, amount_toman: int, service_key: str,
         f"charge={charge_id} — در فاکتور پایان کار بعدی کسر می‌شود")
 
 
+async def credit_orphan_prepay_payment(message, bot, service_key: str) -> None:
+    """پرداخت پیش‌پرداختی که به state فعلی کاربر تعلق ندارد (بازپخش فاکتور
+    قدیمی در حالی که کاربر در فلوی دیگری است) → فقط ثبت به‌عنوان اعتبار.
+
+    برخلاف مسیر «داده FSM یافت نشد» در هندلرهای سرویس، state و داده‌های
+    فلوی جاری کاربر دست نمی‌خورد (state.clear() صدا زده نمی‌شود).
+    """
+    payment = message.successful_payment
+    user_id = message.from_user.id
+    charge_id = str(getattr(payment, "telegram_payment_charge_id", "") or "")
+    amount_toman = int((getattr(payment, "total_amount", 0) or 0) // 10) \
+        or get_prepay_amount_toman(service_key)
+    register_orphan_prepay(user_id, amount_toman, service_key, charge_id)
+    try:
+        await message.answer(
+            "✅ پرداخت شما دریافت شد اما مربوط به مرحلهٔ فعلی درخواست شما نبود.\n"
+            "💵 مبلغ به‌عنوان اعتبار شما ثبت شد و به‌صورت خودکار از فاکتور ثبت "
+            "بعدی شما کسر می‌شود.")
+    except Exception:
+        pass
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"⚠️ [REG-PREPAY] پرداخت پیش‌پرداخت «{service_key}» در مرحلهٔ نامربوط — "
+            f"user={user_id}\n🎫 payment_id: {charge_id}\n"
+            f"💰 مبلغ: {amount_toman:,} تومان\n"
+            f"✅ به‌عنوان اعتبار کاربر ثبت شد (فلوی جاری کاربر دست نخورد).")
+    except Exception:
+        pass
+
+
 def register_prepaid(user_id: int, amount_toman: int, service_key: str,
                      service_label: str, charge_id: str = "") -> None:
     """ثبت پیش‌پرداخت کاربر برای کسر در پایان کار.

@@ -30,6 +30,16 @@ def _tmp_store(tmp_path, monkeypatch):
     _ra._bot = None
 
 
+
+async def _set_prepay_state(uid):
+    """⭐ reg_prepay فقط در state انتظار پیش‌پرداخت به‌صورت خودکار از کیف پول
+    پرداخت می‌شود (همان وضعیتی که هندلر فرستندهٔ فاکتور می‌گذارد)."""
+    from aiogram.fsm.storage.base import StorageKey
+    from states import Form
+    dp = runtime_state.dp
+    await dp.storage.set_state(StorageKey(bot_id=1, chat_id=uid, user_id=uid),
+                               Form.waiting_for_lavayeh_prepay.state)
+
 def test_pay_from_wallet_replays_original_invoice():
     async def scenario():
         bot = Bot("1:x")
@@ -165,6 +175,7 @@ def test_full_balance_auto_pays_and_duplicate_payment_returns_to_wallet(monkeypa
         wallet._apply(9, 20_000, "topup")
         inv = wallet.prepare_invoice(_inv(9, 100_000, ptype="reg_prepay"))
         assert inv["prices"][0]["amount"] == 100_000  # موجودی کافی → فاکتور دست‌نخورده
+        await _set_prepay_state(9)
         await wallet._auto_pay(9, inv["payload"], "reg_prepay", 100_000, "پیش پرداخت")
         assert len(seen) == 1 and seen[0].total_amount == 100_000
         assert wallet.balance(9) == 10_000

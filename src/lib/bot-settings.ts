@@ -19,8 +19,8 @@ export const BOT_SETTING_DEFS: BotSettingDef[] = [
   { key: 'fee.inquiry.tracking', group: 'تعرفهٔ استعلام (تومان)', label: 'استعلام کد رهگیری ساده', kind: 'number', defaultValue: '50000' },
   { key: 'fee.inquiry.tracking_attach', group: 'تعرفهٔ استعلام (تومان)', label: 'استعلام کد رهگیری با منضمات (پایه)', kind: 'number', defaultValue: '50000', hint: 'به‌علاوهٔ هزینهٔ هر صفحهٔ منضمات' },
 
-  { key: 'prepay.lavayeh_ezhhar_toman', group: 'پیش‌پرداخت ثبت (تومان)', label: 'لایحه و اظهارنامه', kind: 'number', defaultValue: '1000', hint: 'حداقل ۱,۰۰۰ تومان (محدودیت فاکتور بله)' },
-  { key: 'prepay.other_toman', group: 'پیش‌پرداخت ثبت (تومان)', label: 'سایر خدمات (دادخواست، دعاوی اعتراضی، اعلام وکالت و ...)', kind: 'number', defaultValue: '2000', hint: 'حداقل ۱,۰۰۰ تومان (محدودیت فاکتور بله)' },
+  { key: 'prepay.lavayeh_ezhhar_toman', group: 'پیش‌پرداخت ثبت (تومان)', label: 'لایحه و اظهارنامه', kind: 'number', defaultValue: '100000', hint: 'تعرفهٔ فعلی: ۱۰۰,۰۰۰ تومان — حداقل ۱,۰۰۰ تومان (محدودیت فاکتور بله)' },
+  { key: 'prepay.other_toman', group: 'پیش‌پرداخت ثبت (تومان)', label: 'سایر خدمات (دادخواست، دعاوی اعتراضی، اعلام وکالت و ...)', kind: 'number', defaultValue: '200000', hint: 'تعرفهٔ فعلی: ۲۰۰,۰۰۰ تومان — حداقل ۱,۰۰۰ تومان (محدودیت فاکتور بله)' },
 
   { key: 'rating.enabled', group: 'نظرسنجی و گزارش', label: 'نظرسنجی پس از تحویل فعال باشد', kind: 'boolean', defaultValue: 'true' },
   { key: 'report.hour', group: 'نظرسنجی و گزارش', label: 'ساعت ارسال گزارش شبانه به مدیر (۰ تا ۲۳)', kind: 'number', defaultValue: '23' },

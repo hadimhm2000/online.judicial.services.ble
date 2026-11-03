@@ -91,21 +91,63 @@ def _run(payload: dict, state, bot, dp) -> None:
     asyncio.run(scenario())
 
 
-def test_payment_routes_by_payload_svc_not_current_state(_bot_dp, _recorders):
+@pytest.fixture
+def _orphans(monkeypatch):
+    """ثبت اعتبار پرداخت‌های بی‌state ضبط می‌شود (بدون ارسال پیام واقعی)."""
+    import prepay_registration
+    credited = []
+
+    async def rec(message, bot, service_key):
+        credited.append(service_key)
+    monkeypatch.setattr(prepay_registration, "credit_orphan_prepay_payment", rec)
+    yield credited
+
+
+def _state_after(bot, dp):
+    async def get():
+        key = StorageKey(bot_id=bot.id, chat_id=UID, user_id=UID)
+        return await dp.storage.get_state(key)
+    return asyncio.run(get())
+
+
+def test_payment_for_other_service_is_credited_not_routed(_bot_dp, _recorders, _orphans):
     """پرداخت فاکتور لایحه (svc=lavayeh) وقتی کاربر در state پیش‌پرداخت
-    اظهارنامه است → باید به «لایحه» برود، نه اظهارنامه."""
+    اظهارنامه است → نه به هندلر لایحه (داده‌های FSM مال اظهارنامه است و
+    state.clear() فلوی جاری را از بین می‌برد) و نه به اظهارنامه؛ مبلغ فقط
+    به‌عنوان اعتبار «لایحه» ثبت می‌شود و state کاربر دست نمی‌خورد."""
     bot, dp = _bot_dp
     _run({"type": "reg_prepay", "svc": "lavayeh", "uid": UID},
          Form.waiting_for_ezhhar_prepay.state, bot, dp)
-    assert _recorders == ["lavayeh"]
+    assert _recorders == []
+    assert _orphans == ["lavayeh"]
+    assert _state_after(bot, dp) == Form.waiting_for_ezhhar_prepay.state
 
 
-def test_payment_routes_by_payload_svc_reverse(_bot_dp, _recorders):
+def test_payment_for_other_service_reverse(_bot_dp, _recorders, _orphans):
     """برعکس: پرداخت فاکتور اظهارنامه وقتی کاربر در state لایحه است."""
     bot, dp = _bot_dp
     _run({"type": "reg_prepay", "svc": "ezhharnameh", "uid": UID},
          Form.waiting_for_lavayeh_prepay.state, bot, dp)
-    assert _recorders == ["ezhharnameh"]
+    assert _recorders == []
+    assert _orphans == ["ezhharnameh"]
+    assert _state_after(bot, dp) == Form.waiting_for_lavayeh_prepay.state
+
+
+def test_payment_without_state_is_credited(_bot_dp, _recorders, _orphans):
+    """فاکتور پیش‌پرداخت قدیمی پس از پایان فلو (state=None) → اعتبار."""
+    bot, dp = _bot_dp
+    _run({"type": "reg_prepay", "svc": "check", "uid": UID}, None, bot, dp)
+    assert _recorders == []
+    assert _orphans == ["check"]
+
+
+def test_ealam_routes_to_lavayeh_handler_in_lavayeh_state(_bot_dp, _recorders, _orphans):
+    """اعلام وکالت در state پیش‌پرداخت لایحه پردازش می‌شود."""
+    bot, dp = _bot_dp
+    _run({"type": "reg_prepay", "svc": "ealam", "uid": UID},
+         Form.waiting_for_lavayeh_prepay.state, bot, dp)
+    assert _recorders == ["lavayeh"]
+    assert _orphans == []
 
 
 def test_matching_state_and_svc_still_routes_correctly(_bot_dp, _recorders):

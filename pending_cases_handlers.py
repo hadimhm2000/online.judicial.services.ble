@@ -308,6 +308,26 @@ async def pending_case_successful_payment(message: Message, state: FSMContext, b
     store[user_id] = pending_cases.payment_context(it)
     try:
         await _handler(message, state, bot)
+    except Exception as e:
+        # ⭐ پرونده «پرداخت‌شده» علامت خورده است؛ استثنا نباید به بازپخش کیف
+        # پول/کارت‌به‌کارت برسد — وگرنه مبلغ خودکار به کیف پول برمی‌گشت در حالی
+        # که پرونده پرداخت‌شده می‌ماند (دریافت هم‌زمان خدمت و بازگشت وجه).
+        logger.error(f"[PENDING_CASES] خطای اعمال پرداخت پرونده {tc} کاربر {user_id}: {e}",
+                     exc_info=True)
+        try:
+            await message.answer(
+                "✅ پرداخت شما ثبت شد.\n⚠️ در ادامهٔ خودکار مشکلی پیش آمد؛ از منوی "
+                "«پرونده‌های در انتظار» گزینهٔ «درج امضا» را بزنید یا منتظر پیگیری مدیر بمانید.")
+        except Exception:
+            pass
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"🚨 [PENDING_CASES] پرداخت پرونده {tc} کاربر {user_id} ثبت شد ولی اعمال "
+                f"خودکار خطا داد: {repr(e)[:300]}\n"
+                f"charge={message.successful_payment.telegram_payment_charge_id}")
+        except Exception:
+            pass
     finally:
         if prev and str(prev.get("tracking_code")) != tc and user_id not in store:
             store[user_id] = prev

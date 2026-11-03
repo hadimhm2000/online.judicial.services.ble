@@ -2629,9 +2629,17 @@ async def check_aasar_notice_more_handler(message: Message, state: FSMContext):
     if text == "🔙 بازگشت":
         data = await state.get_data()
         images = data.get("check_aasar_notice_images", [])
-        if images:
-            images.pop()
-            await state.update_data(check_aasar_notice_images=images)
+        if not images:
+            # ⭐ تصویری نمانده → بازگشت به مرحلهٔ قبل (شماره ابلاغیه)؛ قبلاً
+            # کاربر در حلقهٔ «ارسال تصویر» گیر می‌کرد و راه برگشتی نداشت.
+            await message.answer(
+                "۲/۳ — لطفاً *شماره ابلاغیه* را وارد فرمایید:\n"
+                "_(فقط عدد — حداکثر ۱۸ رقم)_",
+                reply_markup=back_only_kb)
+            await state.set_state(Form.check_aasar_notice_no)
+            return
+        images.pop()
+        await state.update_data(check_aasar_notice_images=images)
         await message.answer(
             "📷 لطفاً *تصویر ابلاغیه* را ارسال فرمایید:\n"
             "_(حداقل ۱ و حداکثر ۲ تصویر — در صورت حذف تصویر آخر، دوباره ارسال کنید)_",
