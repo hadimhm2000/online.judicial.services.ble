@@ -2976,6 +2976,361 @@ async def lav_nid_receive_new_nid(message: Message, state: FSMContext, bot: Bot)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# ⭐ اصلاحیهٔ کارفرما — انتخاب ارائه‌دهنده(های) لایحه از «فهرست اشخاص پرونده»
+# پس از خطای «شخص ارائه‌کننده لایحه ... در فهرست اشخاص پرونده نیست» هنگام
+# ثبت موقت: ربات فهرست اشخاص پرونده (کدملی + نام + سمت) را از خود سامانه
+# ثنا می‌خواند و به کاربر نشان می‌دهد؛ کاربر صرفاً از همین لیست انتخاب
+# می‌کند. اطلاعات کدملی قبلی به‌طور کامل حذف و با انتخاب کاربر جایگزین
+# می‌شود و ثبت با همان اطلاعات سیو شده از سر گرفته می‌شود. گزینهٔ «انصراف»
+# نیز وجود دارد: با انصراف، ۳۰,۰۰۰ تومان از مبلغ پیش‌پرداخت (پس از تایید
+# مدیر) به کیف پول کاربر بازگردانده می‌شود و باقی پیش‌پرداخت مصرف می‌گردد.
+# (پنجره در nid_fix_window با کلیدهای case_persons / case_persons_selected
+# نگه‌داری و در persistence ذخیره می‌شود.)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_CASE_PICK_PENDING_MSG = "⚠️ درخواستی یافت نشد (مهلت ۳ ساعته به پایان رسیده است)."
+_CASE_PICK_EXPIRED_MSG = "⚠️ مهلت انتخاب به پایان رسیده است. درخواست حذف و جریمه طبق قواعد اعمال شد."
+
+
+def _case_pick_person_key(p: dict) -> tuple:
+    return (str((p or {}).get("national_id") or ""), str((p or {}).get("company_id") or ""))
+
+
+def _case_pick_full_name(p: dict) -> str:
+    full = f"{(p or {}).get('first_name', '')} {(p or {}).get('last_name', '')}".strip()
+    return full or ((p or {}).get("national_id") or "شخص")
+
+
+def _case_pick_window(user_id: int):
+    """پنجرهٔ فعالِ «انتخاب از فهرست اشخاص پرونده» یا None."""
+    win = _nfw.get_window(user_id)
+    if win and win.get("flow") == _nfw.FLOW_LAVAYEH and win.get("case_persons"):
+        return win
+    return None
+
+
+async def _case_pick_show_list(bot: Bot, user_id: int, win: dict,
+                               state: FSMContext = None):
+    """نمایش مجدد فهرست اشخاص پرونده + دکمه‌های انتخاب/پایان/انصراف."""
+    from lavayeh_scenario import _build_case_person_pick_ui
+    case_persons = win.get("case_persons") or []
+    selected = win.get("case_persons_selected") or []
+    text, kb = _build_case_person_pick_ui(user_id, case_persons, selected)
+    await bot.send_message(user_id, text, reply_markup=kb, parse_mode="Markdown")
+    if state is not None:
+        await state.set_state(Form.lavayeh_case_pick_wait)
+
+
+@lavayeh_router.callback_query(F.data.startswith("lav_cpk_pick:"))
+async def lav_case_pick_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """کاربر یکی از اشخاص «فهرست اشخاص پرونده» را به‌عنوان ارائه‌دهنده انتخاب کرد."""
+    try:
+        parts = callback.data.split(":")
+        target_user_id = int(parts[1])
+        idx = int(parts[2])
+    except (IndexError, ValueError):
+        await callback.answer("⚠️ درخواست نامعتبر است.")
+        return
+
+    if callback.from_user.id != target_user_id:
+        await callback.answer("⚠️ این دکمه مربوط به شما نیست.")
+        return
+
+    win = _case_pick_window(target_user_id)
+    if not win:
+        await callback.answer(_CASE_PICK_PENDING_MSG)
+        return
+    if _nfw.is_expired(win):
+        await callback.answer(_CASE_PICK_EXPIRED_MSG)
+        return
+
+    case_persons = win["case_persons"]
+    if idx < 0 or idx >= len(case_persons):
+        await callback.answer("⚠️ شخص مورد نظر در فهرست نیست.")
+        return
+    person = case_persons[idx]
+    nid = _to_en(str(person.get("national_id", "")))
+    role = str(person.get("role", ""))
+
+    # جلوگیری از انتخاب تکراری
+    selected = win.setdefault("case_persons_selected", [])
+    if any(_case_pick_person_key(p) == (nid, "") or
+           str(p.get("national_id") or "") == nid for p in selected):
+        await callback.answer("⚠️ این شخص قبلاً انتخاب شده است.")
+        return
+
+    await callback.answer()
+    full_name = _case_pick_full_name(person)
+
+    # تعیین نوع شخص:
+    #   سمتِ «وکیل» → وکیل | کدملی ۱۰ رقمی → شخص حقیقی |
+    #   سایر (شناسه ملی ۱۱ رقمی / کدهای ویژه مثل دادستان) → شخص حقوقی
+    if "وکیل" in role or "وكيل" in role:
+        selected.append({
+            "person_type": "وکیل",
+            "national_id": nid,
+            "name": full_name,
+            "case_role": role,
+        })
+        win["case_persons_selected"] = selected
+        logging.info(
+            f"[LAVAYEH] ارائه‌دهنده از فهرست اشخاص پرونده انتخاب شد (user={target_user_id}): "
+            f"{full_name} ({nid}) — وکیل")
+        await _case_pick_show_list(bot, target_user_id, win, state)
+        return
+
+    if re.fullmatch(r"\d{10}", nid):
+        selected.append({
+            "person_type": "شخص حقیقی",
+            "national_id": nid,
+            "name": full_name,
+            "case_role": role,
+        })
+        win["case_persons_selected"] = selected
+        logging.info(
+            f"[LAVAYEH] ارائه‌دهنده از فهرست اشخاص پرونده انتخاب شد (user={target_user_id}): "
+            f"{full_name} ({nid}) — شخص حقیقی")
+        await _case_pick_show_list(bot, target_user_id, win, state)
+        return
+
+    # شخص حقوقی → نوع نماینده و کدملی نماینده لازم است (مانند فلوی اصلی)
+    await state.update_data(_case_pick_entity={
+        "company_id": nid,
+        "name": full_name,
+        "case_role": role,
+    })
+    await state.set_state(Form.lavayeh_case_pick_rep_type)
+    _safe_name = full_name
+    for _ch in "*_`[]":
+        _safe_name = _safe_name.replace(_ch, " ")
+    await bot.send_message(
+        target_user_id,
+        f"🏢 «{_safe_name}» *شخص حقوقی* است.\n\n"
+        "👔 لایحه توسط چه کسی ارائه می‌گردد؟",
+        reply_markup=representative_type_kb)
+
+
+@lavayeh_router.message(Form.lavayeh_case_pick_rep_type)
+async def lav_case_pick_rep_type(message: Message, state: FSMContext):
+    """نوع نمایندهٔ شخص حقوقی انتخاب‌شده از فهرست اشخاص پرونده."""
+    text = message.text or ""
+    if text not in ["مدیرعامل", "نماینده"]:
+        await message.answer(
+            "⚠️ لطفاً یکی از گزینه‌ها را انتخاب کنید:",
+            reply_markup=representative_type_kb)
+        return
+    await state.update_data(_case_pick_rep_type=text)
+    await message.answer(
+        f"🔢 لطفاً *کد ملی {text}* را وارد کنید:\n_(۱۰ رقمی)_",
+        reply_markup=back_only_kb)
+    await state.set_state(Form.lavayeh_case_pick_rep_nid)
+
+
+@lavayeh_router.message(Form.lavayeh_case_pick_rep_nid)
+async def lav_case_pick_rep_nid(message: Message, state: FSMContext, bot: Bot):
+    """دریافت کدملی نمایندهٔ شخص حقوقی و بازگشت به فهرست انتخاب."""
+    if not message.text:
+        return
+    user_id = message.from_user.id
+
+    if message.text == "🔙 بازگشت":
+        win = _case_pick_window(user_id)
+        if win:
+            await state.update_data(_case_pick_entity=None, _case_pick_rep_type=None)
+            await _case_pick_show_list(bot, user_id, win, state)
+        else:
+            await message.answer(_CASE_PICK_PENDING_MSG, reply_markup=restart_kb)
+            await state.clear()
+        return
+
+    nid = _to_en(message.text)
+    if not re.match(r"^[0-9]{10}$", nid):
+        await message.answer("⚠️ کدملی باید *۱۰ رقمی* باشد:")
+        return
+
+    fsm = await state.get_data()
+    entity = fsm.get("_case_pick_entity") or {}
+    rep_type = fsm.get("_case_pick_rep_type") or "نماینده"
+
+    win = _case_pick_window(user_id)
+    if not win:
+        await message.answer(_CASE_PICK_PENDING_MSG, reply_markup=restart_kb)
+        await state.clear()
+        return
+    if _nfw.is_expired(win):
+        _nfw.pop_window(user_id)
+        runtime_state.pending_lavayeh_sana_fix.pop(user_id, None)
+        await message.answer(_CASE_PICK_EXPIRED_MSG, reply_markup=restart_kb)
+        await state.clear()
+        return
+
+    selected = win.setdefault("case_persons_selected", [])
+    company_id = str(entity.get("company_id", ""))
+    # تکراری نبودن: نه با اشخاص انتخاب‌شده و نه کدملی نماینده با سایر اشخاص
+    if any(_case_pick_person_key(p) == (nid, "") for p in selected) or \
+       any(str(p.get("company_id") or "") == company_id for p in selected):
+        await message.answer("⚠️ این شخص قبلاً به‌عنوان ارائه‌دهنده انتخاب شده است:")
+        return
+
+    selected.append({
+        "person_type": "شخص حقوقی",
+        "company_id": company_id,
+        "representative_type": rep_type,
+        "national_id": nid,
+        "name": entity.get("name", ""),
+        "case_role": entity.get("case_role", ""),
+    })
+    win["case_persons_selected"] = selected
+    logging.info(
+        f"[LAVAYEH] ارائه‌دهنده از فهرست اشخاص پرونده انتخاب شد (user={user_id}): "
+        f"{entity.get('name')} ({company_id}) — شخص حقوقی، نماینده: {rep_type} {nid}")
+    await state.update_data(_case_pick_entity=None, _case_pick_rep_type=None)
+    await _case_pick_show_list(bot, user_id, win, state)
+
+
+@lavayeh_router.callback_query(F.data.startswith("lav_cpk_done:"))
+async def lav_case_pick_done_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """پایان انتخاب — جایگزینی کامل اطلاعات اشخاص قبلی با انتخاب کاربر و
+    ارسال مجدد تسک به صف (ثبت با همان اطلاعات سیو شده ادامه می‌یابد)."""
+    try:
+        target_user_id = int(callback.data.split(":")[1])
+    except (IndexError, ValueError):
+        await callback.answer("⚠️ درخواست نامعتبر است.")
+        return
+    if callback.from_user.id != target_user_id:
+        await callback.answer("⚠️ این دکمه مربوط به شما نیست.")
+        return
+
+    win = _case_pick_window(target_user_id)
+    if not win:
+        await callback.answer(_CASE_PICK_PENDING_MSG)
+        return
+    if _nfw.is_expired(win):
+        await callback.answer(_CASE_PICK_EXPIRED_MSG)
+        return
+    selected = win.get("case_persons_selected") or []
+    if not selected:
+        await callback.answer("⚠️ ابتدا حداقل یک شخص را از فهرست انتخاب کنید.")
+        return
+    await callback.answer()
+
+    task_data = win.get("task_data") or {}
+    # ⭐ اطلاعات کدملی قبلی کامل حذف و با انتخاب کاربر (از فهرست اشخاص
+    # پرونده) جایگزین می‌شود.
+    old_persons = task_data.get("lavayeh_persons") or []
+    task_data["lavayeh_persons"] = selected
+    task_data.pop("_sana_error_national_id", None)
+    task_data.pop("_sana_error_person_index", None)
+    task_data.pop("_sana_error_kind", None)
+
+    _nfw.pop_window(target_user_id)
+    runtime_state.pending_lavayeh_sana_fix.pop(target_user_id, None)
+
+    _names = "، ".join(
+        str(p.get("name") or p.get("national_id") or p.get("company_id"))
+        for p in selected)
+    logging.info(
+        f"[LAVAYEH] ارائه‌دهندگان لایحه کاربر {target_user_id} از فهرست اشخاص پرونده "
+        f"جایگزین شدند (قبلی: {len(old_persons)} شخص → جدید: {selected}): {_names}")
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"👥 [LAVAYEH] کاربر {target_user_id} ارائه‌دهنده(های) لایحه را از فهرست "
+            f"اشخاص پرونده انتخاب کرد و ثبت از سر گرفته می‌شود: {_names}")
+    except Exception:
+        pass
+
+    try:
+        await callback.message.edit_text(
+            (callback.message.text or "")
+            + "\n\n✅ _ارائه‌دهنده(های) لایحه از فهرست اشخاص پرونده انتخاب شد._",
+            parse_mode="Markdown")
+    except Exception:
+        pass
+
+    def _safe(s) -> str:
+        s = str(s or "")
+        for ch in "*_`[]":
+            s = s.replace(ch, " ")
+        return s.strip()
+
+    await bot.send_message(
+        target_user_id,
+        "✅ ارائه‌دهنده(های) لایحه با موفقیت از *فهرست اشخاص پرونده* انتخاب شد:\n\n"
+        + "\n".join(
+            f"  • {_safe(p.get('name') or p.get('national_id') or p.get('company_id'))}"
+            for p in selected)
+        + "\n\n⏳ ثبت لایحه با *همان اطلاعات سیو شده* ادامه می‌یابد...",
+        reply_markup=restart_kb, parse_mode="Markdown")
+
+    # ارسال مجدد تسک — بدون طی مجدد سایر مراحل
+    if not hasattr(runtime_state, "active_lavayeh_users"):
+        runtime_state.active_lavayeh_users = set()
+    runtime_state.active_lavayeh_users.add(target_user_id)
+    await runtime_state.job_queue.put(task_data)
+    await state.clear()
+
+
+@lavayeh_router.callback_query(F.data.startswith("lav_cpk_cancel:"))
+async def lav_case_pick_cancel_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """انصراف — حذف درخواست + بازگشت ۳۰,۰۰۰ تومان از مبلغ پیش‌پرداخت به
+    کیف پول کاربر (پس از تایید مدیر)؛ باقی پیش‌پرداخت مصرف می‌شود."""
+    try:
+        target_user_id = int(callback.data.split(":")[1])
+    except (IndexError, ValueError):
+        await callback.answer("⚠️ درخواست نامعتبر است.")
+        return
+    if callback.from_user.id != target_user_id:
+        await callback.answer("⚠️ این دکمه مربوط به شما نیست.")
+        return
+
+    _win = _nfw.pop_window(target_user_id)
+    runtime_state.pending_lavayeh_sana_fix.pop(target_user_id, None)
+    await callback.answer("انصراف ثبت شد.")
+
+    # ⭐ بازگشت ۳۰,۰۰۰ تومان از پیش‌پرداخت (پس از تایید مدیر) + مصرف باقی
+    refund_note = await _nfw.settle_case_pick_cancel(target_user_id)
+
+    try:
+        await callback.message.edit_text(
+            (callback.message.text or "") + "\n\n❌ _انصراف ثبت شد._")
+    except Exception:
+        pass
+
+    await bot.send_message(
+        target_user_id,
+        "❌ *انصراف از ثبت لایحه ثبت شد.*\n\n"
+        f"{refund_note}"
+        "در صورت نیاز، از منوی اصلی مجدداً اقدام فرمایید.",
+        reply_markup=restart_kb, parse_mode="Markdown")
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"❌ [LAVAYEH] کاربر {target_user_id} در مرحلهٔ انتخاب ارائه‌دهنده از فهرست "
+            f"اشخاص پرونده انصراف زد — درخواست بازگشت ۳۰,۰۰۰ تومان از پیش‌پرداخت ثبت شد "
+            f"(منتظر تایید شما)؛ باقی پیش‌پرداخت مصرف شد.")
+    except Exception:
+        pass
+    await state.clear()
+
+
+@lavayeh_router.message(Form.lavayeh_case_pick_wait)
+async def lav_case_pick_wait_message(message: Message, state: FSMContext, bot: Bot):
+    """در حالت انتخاب از فهرست اشخاص پرونده، فقط دکمه‌های اینلاین معتبرند."""
+    user_id = message.from_user.id
+    win = _case_pick_window(user_id)
+    if not win:
+        await message.answer(
+            _CASE_PICK_PENDING_MSG, reply_markup=restart_kb)
+        await state.clear()
+        return
+    await message.answer(
+        "⚠️ لطفاً ارائه‌دهنده(های) لایحه را از دکمه‌های فهرست بالا انتخاب کنید؛\n"
+        "برای پایان، دکمهٔ «✅ پایان انتخاب و ادامه ثبت» و برای انصراف، دکمهٔ "
+        "«❌ انصراف» را بزنید.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # ⭐ پنجرهٔ ۳ ساعته اصلاح اطلاعات پرونده لایحه — پس از ناموفق ماندن صحت‌سنجی
 # («با اطلاعات ارسالی پرونده یافت نشد»). کاربر می‌تواند شماره پرونده/استان/
 # ردیف فرعی یا شماره بایگانی/شعبه را اصلاح کند یا روش ورود پرونده را تغییر

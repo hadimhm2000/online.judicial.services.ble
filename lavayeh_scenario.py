@@ -185,15 +185,25 @@ class LavayehSanaDataError(LavayehFatalError):
     طبق دستور کارفرما: کاربر ۳۰ دقیقه فرصت دارد کدملی شخص را ویرایش کند؛
     در غیر این صورت پس از ۳۰ دقیقه نصف مبلغ پیش‌پرداخت برای موارد بعدی او
     از هزینه کسر می‌گردد (مدیریت در nid_fix_window + هندلرهای lavayeh_handlers).
+
+    ⭐️ اصلاحیهٔ جدید کارفرما (فلو «انتخاب از فهرست اشخاص پرونده»): برای
+    kind="person_not_in_case"، ربات هنگام ثبت موقت خودش به مرحلهٔ
+    «ارائه كننده لايحه» می‌رود، دکمهٔ «انتخاب» (btnAddPersonFromCase*) را
+    می‌زند و فهرست اشخاص پرونده را از مودال #casePersonList استخراج
+    می‌کند؛ این فهرست در case_persons حمل می‌شود تا کاربر صرفاً از همین
+    لیست ارائه‌دهنده(های) لایحه را انتخاب کند.
     """
     def __init__(self, message: str, kind: str = "other",
                  national_id: str = "", person_index: int = -1,
-                 person_name: str = ""):
+                 person_name: str = "", case_persons: list | None = None):
         super().__init__(message)
-        self.kind = kind                    # person_not_in_case | birthdate | other
+        self.kind = kind                    # person_not_in_case | birthdate | deceased | other
         self.national_id = national_id
         self.person_index = person_index
         self.person_name = person_name
+        # فهرست اشخاص پروندهٔ استخراج‌شده از سامانه ({first_name, last_name,
+        # father_name, national_id, role, row}) — فقط برای person_not_in_case
+        self.case_persons = list(case_persons) if case_persons else []
 
 
 # امضای متن‌های خطای سمت سرور سنا که نشان‌دهندهٔ قطعی سرویس (نه خطای داده)
@@ -1196,6 +1206,47 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                 "created_at": asyncio.get_event_loop().time(),
             }
 
+            # ══════════════════════════════════════════════════════════
+            # ⭐️ اصلاحیهٔ جدید کارفرما — فلو «انتخاب ارائه‌دهنده از فهرست
+            # اشخاص پرونده»: برای خطای «شخص ارائه‌کننده لایحه ... در فهرست
+            # اشخاص پرونده نیست» که فهرست اشخاص از خود سامانه استخراج شده،
+            # به‌جای ویرایش کدملی، فهرست برای کاربر ارسال می‌شود تا صرفاً از
+            # همین لیست ارائه‌دهنده(های) لایحه را انتخاب کند (اطلاعات کدملی
+            # قبلی کامل حذف و با انتخاب کاربر جایگزین می‌شود) + گزینهٔ انصراف
+            # (با انصراف ۳۰,۰۰۰ تومان از پیش‌پرداخت برمی‌گردد).
+            # ══════════════════════════════════════════════════════════
+            _case_persons = list(getattr(e, "case_persons", None) or [])
+            if e.kind == "person_not_in_case" and _case_persons and _win is not None:
+                _win["case_persons"] = _case_persons
+                _win["case_persons_selected"] = []
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"👥 [LAVAYEH] فهرست {len(_case_persons)} شخص پرونده برای کاربر "
+                        f"{user_id} ارسال شد تا ارائه‌دهنده(های) لایحه را از همین لیست "
+                        f"انتخاب کند (یا انصراف با بازگشت ۳۰,۰۰۰ تومان).")
+                except Exception:
+                    pass
+                _pick_text, _pick_kb = _build_case_person_pick_ui(
+                    user_id, _case_persons, [], error_text=str(e))
+                await bot.send_message(
+                    user_id, _pick_text, reply_markup=_pick_kb, parse_mode="Markdown")
+
+                runtime_state.active_lavayeh_users.discard(user_id)
+                await log_event(
+                    "خطای سامانه", "لایحه", str(user_id), user_id,
+                    tracking_code=tracking_code, doc_name=title,
+                    note=(f"انتخاب ارائه‌دهنده از فهرست اشخاص پرونده "
+                          f"({len(_case_persons)} شخص) در انتظار کاربر"))
+                await _safe_register_case(
+                    event_type="خطای سامانه", full_name=str(user_id), user_id=user_id,
+                    trackingCode=tracking_code or "", documentCategory=title,
+                    errorDetails=(f"شخص ارائه‌کننده در فهرست اشخاص پرونده نیست — "
+                                  f"در انتظار انتخاب کاربر از فهرست "
+                                  f"({len(_case_persons)} شخص)"),
+                    errorStep="CASE_PERSON_PICK")
+                return
+
             # کیبورد ویرایش — اگر ایندکس شخص مشخص باشد مستقیم کدملی پرسیده
             # می‌شود؛ وگرنه کاربر در هندلر شخص را انتخاب می‌کند.
             from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -2175,7 +2226,234 @@ def _is_lavayeh_save_storage_error(error_text) -> bool:
     return ("ذخیره" in t) and ("لایحه" in t) and ("اشکال" in t)
 
 
-async def _raise_fatal_temp_save_error(bot: Bot, user_id: int, error_text: str):
+# ════════════════════════════════════════════════════════════════════════════
+# ⭐ اصلاحیهٔ کارفرما — فلو «انتخاب ارائه‌دهنده از فهرست اشخاص پرونده»:
+# پس از خطای «شخص ارائه‌کننده لایحه ... در فهرست اشخاص پرونده نیست» در
+# ثبت موقت، ربات خودش به مرحلهٔ «ارائه كننده لايحه» می‌رود، دکمهٔ «انتخاب»
+# (btnAddPersonFromCase*) را کلیک می‌کند و کدملی/نام اشخاص موجود در پرونده
+# را از مودال #casePersonList (theHstCasePersonTempList) استخراج می‌کند تا
+# کاربر صرفاً از همین لیست ارائه‌دهنده(های) لایحه را انتخاب کند.
+# ════════════════════════════════════════════════════════════════════════════
+
+async def _open_case_person_list_and_extract(page, bot: Bot, user_id: int) -> list:
+    """استخراج فهرست اشخاص پرونده از سامانه ثنا.
+
+    مراحل:
+      ۱) رفتن به مرحلهٔ «ارائه كننده لايحه» (متن عربی مطابق UI سامانه)؛
+      ۲) کلیک دکمهٔ «انتخاب» کنار پرونده (btnAddPersonFromCase*) تا مودال
+         فهرست اشخاص پرونده (#casePersonList) باز شود؛
+      ۳) خواندن کدملی/نام/نام‌خانوادگی/نام‌پدر/سمت از جدول
+         theHstCasePersonTempList داخل مودال؛
+      ۴) بستن مودال بدون انتخاب (بدون تغییر در اشخاص ثبت‌شدهٔ فرم).
+
+    خروجی: لیست دیکشنری {row, first_name, last_name, father_name,
+    national_id, role} — لیست خالی یعنی استخراج ناموفق بود (فال‌بک:
+    باز شدن پنجرهٔ ویرایش کدملی طبق روند قبلی).
+    """
+    persons: list = []
+    try:
+        # ۱) رفتن به مرحلهٔ «ارائه كننده لايحه»
+        await _click_step_label(page, "ارائه كننده لايحه", bot, user_id)
+        await resilient_sleep(page, 3, bot, user_id)
+
+        # ۲) کلیک دکمهٔ «انتخاب» کنار پرونده → باز شدن مودال #casePersonList
+        opened = await page.evaluate('''() => {
+            const btns = Array.from(document.querySelectorAll(
+                'button[id^="btnAddPersonFromCase"], button[name^="btnAddPersonFromCase"], ' +
+                'button[ng-click*="getPersonCaseData"]'));
+            const visible = btns.filter(b => b && !b.disabled && b.offsetParent !== null);
+            if (visible.length) { visible[0].click(); return "case-btn"; }
+            const hidden = document.querySelector(
+                '#btnShowPersonCaseListModal0, [data-target="#casePersonList"]');
+            if (hidden) { hidden.click(); return "modal-btn"; }
+            return null;
+        }''')
+        if not opened:
+            logging.warning(
+                f"[LAVAYEH] دکمهٔ «انتخاب» فهرست اشخاص پرونده پیدا نشد (user={user_id})")
+            return []
+
+        # ۳) انتظار برای نمایش کامل مودال (استعلام getPersonCaseData زمان می‌برد)
+        modal_visible = False
+        for _ in range(25):
+            modal_visible = await page.evaluate('''() => {
+                const m = document.querySelector('#casePersonList');
+                if (!m) return false;
+                return m.classList.contains('in') ||
+                       window.getComputedStyle(m).display !== 'none';
+            }''')
+            if modal_visible:
+                break
+            await asyncio.sleep(1)
+        if not modal_visible:
+            logging.warning(
+                f"[LAVAYEH] مودال فهرست اشخاص پرونده (#casePersonList) باز نشد (user={user_id})")
+            return []
+
+        await resilient_sleep(page, 1, bot, user_id)
+        await wait_for_angular_idle(page)
+
+        # ۴) خواندن ردیف‌های جدول اشخاص پرونده (با تلاش مجدد برای رندر Angular)
+        for _read_attempt in range(5):
+            persons = await page.evaluate('''() => {
+                const norm = s => (s || "")
+                    .replace(/\\u064A/g, "\\u06CC")   /* ي (عربی) → ی */
+                    .replace(/\\u0649/g, "\\u06CC")   /* ى → ی */
+                    .replace(/\\u0643/g, "\\u06A9")   /* ك (عربی) → ک */
+                    .replace(/\\u200C/g, " ")          /* نیم‌فاصله → فاصله */
+                    .replace(/\\s+/g, " ")
+                    .trim();
+                const modal = document.querySelector('#casePersonList');
+                if (!modal) return [];
+                let rows = Array.from(modal.querySelectorAll(
+                    'tbody tr[ng-repeat*="theHstCasePersonTempList"]'));
+                if (!rows.length) {
+                    rows = Array.from(modal.querySelectorAll('tbody tr'));
+                }
+                const out = [];
+                for (const tr of rows) {
+                    const tds = tr.querySelectorAll('td');
+                    if (tds.length < 6) continue;
+                    const txt = i => norm(tds[i] ? tds[i].innerText : '');
+                    const nid = txt(4).replace(/[\\s\\u200F\\u200E]/g, '');
+                    if (!nid || nid === '---') continue;
+                    out.push({
+                        "row": txt(0),
+                        "first_name": txt(1),
+                        "last_name": txt(2),
+                        "father_name": txt(3),
+                        "national_id": nid,
+                        "role": txt(5),
+                    });
+                }
+                return out;
+            }''')
+            if persons:
+                break
+            await asyncio.sleep(1)
+
+        # ۵) بستن مودال بدون انتخاب هیچ شخصی
+        await page.evaluate('''() => {
+            const modal = document.querySelector('#casePersonList');
+            if (!modal) return;
+            const closeBtn = modal.querySelector(
+                '.modal-header .close, button.close, .modal-footer button[data-dismiss="modal"]');
+            if (closeBtn) { closeBtn.click(); return; }
+            if (window.jQuery && jQuery.fn && jQuery.fn.modal) {
+                try { jQuery('#casePersonList').modal('hide'); return; } catch (e) {}
+            }
+            modal.classList.remove('in');
+            modal.style.display = 'none';
+            modal.setAttribute('aria-hidden', 'true');
+            document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
+            document.body.classList.remove('modal-open');
+        }''')
+        await resilient_sleep(page, 1, bot, user_id)
+        await wait_for_angular_idle(page)
+
+        logging.info(
+            f"[LAVAYEH] فهرست اشخاص پرونده استخراج شد (user={user_id}، "
+            f"{len(persons)} شخص): "
+            + " | ".join(f"{p.get('national_id')}={p.get('first_name')} {p.get('last_name')}"
+                         for p in persons))
+    except Exception as exc:
+        logging.error(
+            f"[LAVAYEH] خطا در استخراج فهرست اشخاص پرونده (user={user_id}): {exc}",
+            exc_info=True)
+        return []
+    return persons
+
+
+# نگاشت ارقام فارسی برای نمایش ردیف‌ها در پیام کاربر
+_CASE_PICK_FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+
+
+def _case_person_full_name(p: dict) -> str:
+    """نام کامل شخص فهرست اشخاص پرونده (نام + نام خانوادگی)."""
+    full = f"{(p or {}).get('first_name', '')} {(p or {}).get('last_name', '')}".strip()
+    return full or ((p or {}).get("national_id") or "شخص")
+
+
+def _md_safe(text) -> str:
+    """حذف نویسه‌های مارک‌داون از متن‌های سامانه (نام/سمت) تا parse_mode=Markdown نشکند."""
+    s = str(text or "")
+    for ch in "*_`[]":
+        s = s.replace(ch, " ")
+    return s.strip()
+
+
+def _build_case_person_pick_ui(user_id: int, case_persons: list,
+                               selected_persons: list, error_text: str = ""):
+    """ساخت پیام + کیبورد اینلاین «انتخاب ارائه‌دهنده از فهرست اشخاص پرونده».
+
+    - پیام: فهرست کامل اشخاص پرونده (نام + کدملی + سمت) + توضیح اینکه صرفاً
+      همین نام‌ها در پرونده هستند + مهلت ۳ ساعته + اعلام بازگشت ۳۰,۰۰۰
+      تومان از پیش‌پرداخت در صورت انصراف.
+    - کیبورد: یک دکمه برای هر شخصِ انتخاب‌نشده + «پایان انتخاب و ادامه
+      ثبت» (فقط وقتی حداقل یک انتخاب انجام شده) + «انصراف».
+    """
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    from nid_fix_window import case_pick_deadline_text
+
+    selected_persons = selected_persons or []
+    selected_keys = {
+        (str(p.get("national_id") or ""), str(p.get("company_id") or ""))
+        for p in selected_persons
+    }
+
+    def _is_selected(p: dict) -> bool:
+        return (str(p.get("national_id") or ""), str(p.get("company_id") or "")) in selected_keys
+
+    lines = []
+    for i, p in enumerate(case_persons or [], 1):
+        mark = " ✅" if _is_selected(p) else ""
+        lines.append(
+            f"{str(i).translate(_CASE_PICK_FA_DIGITS)}. {_md_safe(_case_person_full_name(p))}{mark}\n"
+            f"    کدملی: `{p.get('national_id', '')}` — سمت: {_md_safe(p.get('role', ''))}")
+
+    text = ""
+    if error_text:
+        _clean = str(error_text).strip()[:250]
+        for ch in "*_`[]":
+            _clean = _clean.replace(ch, " ")
+        text += f"⚠️ *خطای ثبت لایحه در سامانه:*\n\n«{_clean}»\n\n"
+    text += (
+        "👥 *صرفاً این نام‌ها در پرونده حضور دارند.*\n"
+        "از همین لیست موجود، *ارائه‌کننده(های) لایحه* خود را انتخاب کنید:\n\n"
+        + "\n".join(lines)
+        + "\n\n⚠️ توجه داشته باشید که اگر از قبل کدملی وارد کرده‌اید، لطفاً نام "
+        "همان شخص را *مجدداً از همین لیست* انتخاب کنید؛ اطلاعات قبلی حذف و با "
+        "انتخاب شما جایگزین می‌شود.\n\n"
+        "❌ در صورت *انصراف*، ۳۰,۰۰۰ تومان از مبلغ پیش‌پرداخت به کیف پول شما بازگردانده می‌شود.\n"
+        f"{case_pick_deadline_text()}"
+    )
+    if selected_persons:
+        text += (
+            "\n\n✅ *انتخاب‌های شما تاکنون:*\n"
+            + "\n".join(
+                f"  • {_md_safe(p.get('name') or p.get('national_id') or p.get('company_id'))}"
+                for p in selected_persons)
+            + "\n\n➕ در صورت نیاز شخص دیگری انتخاب کنید یا «پایان انتخاب» را بزنید.")
+
+    rows = []
+    for i, p in enumerate(case_persons or []):
+        if _is_selected(p):
+            continue
+        label = f"{_md_safe(_case_person_full_name(p))} ({_md_safe(p.get('role', ''))})".strip()
+        rows.append([InlineKeyboardButton(
+            text=(label or "شخص")[:64],
+            callback_data=f"lav_cpk_pick:{user_id}:{i}")])
+    if selected_persons:
+        rows.append([InlineKeyboardButton(
+            text="✅ پایان انتخاب و ادامه ثبت",
+            callback_data=f"lav_cpk_done:{user_id}")])
+    rows.append([InlineKeyboardButton(
+        text="❌ انصراف",
+        callback_data=f"lav_cpk_cancel:{user_id}")])
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _raise_fatal_temp_save_error(page, bot: Bot, user_id: int, error_text: str):
     """
     ارسال پیام خطای «ثبت موقت» به کاربر و raise کردن LavayehFatalError.
     توجه: پیام به ADMIN_ID اینجا ارسال نمی‌شود — چون در این سطح شمارهٔ
@@ -2188,6 +2466,14 @@ async def _raise_fatal_temp_save_error(bot: Bot, user_id: int, error_text: str):
     تولد ارسالی مربوط به شماره ملی ... اشتباه است» باشد، LavayehSanaDataError
     پرتاب می‌شود تا پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی + جریمهٔ نصف پیش‌پرداخت
     (عین دستور کارفرما) در process_lavayeh_task باز شود.
+
+    ⭐️ اصلاحیهٔ جدید کارفرما — فلو «انتخاب از فهرست اشخاص پرونده»: برای
+    خطای «شخص ارائه‌کننده لایحه ... در فهرست اشخاص پرونده نیست»، ربات
+    ابتدا خودش فهرست اشخاص پرونده را از سامانه می‌خواند (رفتن به مرحلهٔ
+    «ارائه كننده لايحه» + کلیک دکمهٔ «انتخاب» + استخراج از مودال). اگر
+    استخراج موفق بود، فهرست در exception حمل می‌شود تا کاربر صرفاً از همین
+    لیست ارائه‌دهنده(های) لایحه را انتخاب کند؛ در غیر این صورت فال‌بک به
+    همان پنجرهٔ ویرایش کدملی (روند قبلی).
     """
     _kind = _classify_lavayeh_sana_popup(error_text)
     if _kind == "person_not_in_case":
@@ -2200,6 +2486,36 @@ async def _raise_fatal_temp_save_error(bot: Bot, user_id: int, error_text: str):
                 _person_name = m.group(1).strip()
         except Exception:
             pass
+
+        # ⭐️ فلو جدید: استخراج فهرست اشخاص پرونده از خود سامانه ثنا
+        case_persons: list = []
+        if page is not None:
+            try:
+                await bot.send_message(
+                    user_id,
+                    "⏳ در حال دریافت فهرست اشخاص پرونده از سامانه ثنا...\n"
+                    "_لطفاً چند لحظه صبر کنید._",
+                    parse_mode="Markdown")
+            except Exception:
+                pass
+            try:
+                case_persons = await _open_case_person_list_and_extract(
+                    page, bot, user_id)
+            except Exception as exc:
+                logging.error(
+                    f"[LAVAYEH] استخراج فهرست اشخاص پرونده ناموفق (user={user_id}): {exc}",
+                    exc_info=True)
+                case_persons = []
+        if case_persons:
+            # پیام کامل (خطا + فهرست اشخاص + دکمه‌ها) در except
+            # LavayehSanaDataError در process_lavayeh_task ارسال می‌شود.
+            raise LavayehSanaDataError(
+                error_text, kind="person_not_in_case",
+                national_id=_extract_lavayeh_nid(error_text),
+                person_name=_person_name,
+                case_persons=case_persons)
+
+        # فال‌بک: استخراج ناموفق → همان روند قبلی (ویرایش کدملی)
         await bot.send_message(
             user_id,
             f"⚠️ *خطای ثبت لایحه در سامانه:*\n\n«{error_text}»\n\n"
@@ -2287,11 +2603,11 @@ async def _click_save_temp_with_retry(page, bot: Bot, user_id: int, max_retries:
                     f"(تلاش {save_storage_error_count}/{LAVAYEH_SAVE_STORAGE_ERROR_MAX_RETRIES}) — "
                     f"کلیک مجدد «ثبت موقت»...")
                 if save_storage_error_count > LAVAYEH_SAVE_STORAGE_ERROR_MAX_RETRIES:
-                    await _raise_fatal_temp_save_error(bot, user_id, loading_result)
+                    await _raise_fatal_temp_save_error(page, bot, user_id, loading_result)
                 await asyncio.sleep(3)
                 continue
             # رشتهٔ متن خطای واقعی سامانه — قطعی است، دیگر retry معنی ندارد
-            await _raise_fatal_temp_save_error(bot, user_id, loading_result)
+            await _raise_fatal_temp_save_error(page, bot, user_id, loading_result)
 
         # بررسی session expiry بعد از ثبت
         had_expiry = await check_and_handle_expiry(page, bot, user_id)
@@ -2361,7 +2677,7 @@ async def _click_save_temp_with_retry(page, bot: Bot, user_id: int, max_retries:
                     f"(تلاش {save_storage_error_count}/{LAVAYEH_SAVE_STORAGE_ERROR_MAX_RETRIES}) — "
                     f"کلیک مجدد «ثبت موقت»...")
                 if save_storage_error_count > LAVAYEH_SAVE_STORAGE_ERROR_MAX_RETRIES:
-                    await _raise_fatal_temp_save_error(bot, user_id, error_text)
+                    await _raise_fatal_temp_save_error(page, bot, user_id, error_text)
                 await asyncio.sleep(3)
                 continue
 
@@ -2374,7 +2690,7 @@ async def _click_save_temp_with_retry(page, bot: Bot, user_id: int, max_retries:
             # پایان بدون خطا و بدون کد رهگیری برمی‌گشت. حالا هر پیام خطای
             # غیر از انقضای نشست، بلافاصله قطعی در نظر گرفته می‌شود.
             # ══════════════════════════════════════════════════════════
-            await _raise_fatal_temp_save_error(bot, user_id, error_text)
+            await _raise_fatal_temp_save_error(page, bot, user_id, error_text)
 
         # ══════════════════════════════════════════════════════════
         # اگر نه موفقیت و نه خطا: فقط صبر بیشتر و تلاش مجدد
@@ -2390,7 +2706,7 @@ async def _click_save_temp_with_retry(page, bot: Bot, user_id: int, max_retries:
     # قطعی محسوب می‌شود تا کاربر و مدیر بی‌اطلاع نمانند.
     # ══════════════════════════════════════════════════════════════
     timeout_msg = "سامانه پس از چند تلاش، پاسخ قطعی (موفقیت یا خطا) برای «ثبت موقت» نداد."
-    await _raise_fatal_temp_save_error(bot, user_id, timeout_msg)
+    await _raise_fatal_temp_save_error(page, bot, user_id, timeout_msg)
 
 
 async def _click_goto_main(page, bot: Bot, user_id: int, max_retries: int = 5):

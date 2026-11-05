@@ -331,6 +331,95 @@ async def settle_cancel(user_id: int, win) -> str:
     return penalty_line(halve_prepaid(user_id))
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# ⭐ انصراف در فلوی «انتخاب ارائه‌دهنده از فهرست اشخاص پرونده» (اصلاحیهٔ
+# کارفرما) — پس از خطای «شخص ارائه‌کننده لایحه ... در فهرست اشخاص پرونده
+# نیست» هنگام ثبت موقت، ربات فهرست اشخاص پرونده را از خود سامانه ثنا
+# می‌خواند و کاربر ارائه‌دهنده(های) لایحه را صرفاً از همین لیست انتخاب
+# می‌کند. اگر کاربر به‌جای انتخاب، «انصراف» بزند: ۳۰,۰۰۰ تومان از مبلغ
+# پیش‌پرداختِ همین درخواست (پس از تایید مدیر) به کیف پول کاربر برمی‌گردد
+# و باقی پیش‌پرداخت مصرف (جریمهٔ انصراف) می‌شود.
+# ════════════════════════════════════════════════════════════════════════════
+
+CASE_PICK_CANCEL_REFUND_TOMAN = 30_000   # بازگشت وجه بابت انصراف (تومان)
+
+
+def is_case_pick_kind(win) -> bool:
+    """آیا این پنجره از نوع «انتخاب ارائه‌دهنده از فهرست اشخاص پرونده» است؟
+
+    (پنجره‌های این فلو، فهرست استخراج‌شدهٔ اشخاص پرونده را در کلید
+    case_persons نگه می‌دارند.)
+    """
+    return bool((win or {}).get("case_persons"))
+
+
+async def settle_case_pick_cancel(user_id: int) -> str:
+    """انصراف در فلوی «انتخاب از فهرست اشخاص پرونده» — تسویهٔ پیش‌پرداخت.
+
+    ۳۰,۰۰۰ تومان (یا کل مبلغ پیش‌پرداخت اگر کمتر باشد) از پیش‌پرداختِ همین
+    درخواست پس از تایید مدیر به کیف پول کاربر برمی‌گردد؛ باقی پیش‌پرداخت
+    مصرف می‌شود (رزرو → consumed_manual). ماندهٔ آزاد قبلی کاربر هم کامل
+    به کیف پول برمی‌گردد (جریمه نمی‌شود).
+
+    خروجی: یک خط پیام برای کاربر (یا خالی اگر پیش‌پرداخت/رزروی نبود).
+    """
+    res = _active_reservation(user_id)
+    if not res:
+        logger.info(f"[NID-FIX] انصرافِ انتخاب از فهرست: رزرو فعالی برای user={user_id} یافت نشد")
+        return ""
+    paid_rial = int(res.get("paid_rial", 0) or 0)
+    credit_rial = int(res.get("credit_used_rial", 0) or 0)
+    prepay_toman = (paid_rial + credit_rial) // 10
+    refund_toman = min(CASE_PICK_CANCEL_REFUND_TOMAN, prepay_toman)
+    try:
+        import prepay_registration as _pr
+        free_avail = _pr.get_free_credit_rial(user_id)
+    except Exception:
+        free_avail = 0
+    try:
+        # ⭐ واریز فقط پس از تایید مدیر (refund_approvals)
+        import refund_approvals
+        total_toman = max(0, refund_toman) \
+                      + (free_avail // 10 if free_avail >= 10 else 0)
+        if total_toman > 0:
+            refund_approvals.request_refund_nowait(
+                user_id, total_toman,
+                f"بازگشت {refund_toman:,} تومان از پیش‌پرداخت "
+                "(انصراف — انتخاب ارائه‌دهنده لایحه از فهرست اشخاص پرونده)"
+                + (" + ماندهٔ آزاد کیف پول" if free_avail >= 10 else ""),
+                source="lavayeh_case_pick_cancel")
+    except Exception as e:
+        logger.error(f"[NID-FIX] خطا در ثبت درخواست بازگشت ۳۰,۰۰۰ تومان برای کاربر {user_id}: {e}")
+        return ""
+    # باقی پیش‌پرداخت مصرف می‌شود (جریمهٔ انصراف)
+    res["status"] = "consumed_manual"
+    res["consumed_at"] = datetime.datetime.now()
+    res["release_reason"] = "lavayeh_case_pick_cancel"
+    try:
+        import prepay_registration as _pr
+        rec = _pr._rec(user_id)
+        if rec is not None:
+            rec["free_credit_rial"] = 0     # به کیف پول منتقل شد (پس از تایید مدیر)
+            _pr._persist()
+    except Exception:
+        pass
+    logger.info(
+        f"[NID-FIX] انصرافِ انتخاب از فهرست اشخاص پرونده: {refund_toman:,} تومان از "
+        f"پیش‌پرداخت کاربر {user_id} (پس از تایید مدیر) به کیف پول برمی‌گردد؛ باقی مصرف شد")
+    if refund_toman > 0:
+        return (f"💰 {refund_toman:,} تومان از مبلغ پیش‌پرداخت پس از تایید مدیریت به "
+                "کیف پول شما بازگردانده می‌شود.\n")
+    return ""
+
+
+def case_pick_deadline_text() -> str:
+    """متن مهلت انتخاب ارائه‌دهنده از فهرست اشخاص پرونده (مطابق قواعد پنجرهٔ ویرایش کدملی)."""
+    return (
+        f"⏰ مهلت انتخاب: *{duration_label(NID_FIX_WINDOW_MINUTES)}* — پس از پایان مهلت، "
+        "*نصف مبلغ پیش‌پرداخت* برای موارد بعدی شما از هزینه کسر می‌گردد."
+    )
+
+
 def _cleanup_aliases(user_id: int):
     """حذف رکوردهای هم‌خانواده (سازگاری با pending_*_sana_fix قدیمی)."""
     for alias in ("pending_tn_sana_fix", "pending_ezhhar_sana_fix",
@@ -496,6 +585,7 @@ async def sweep_expired(bot) -> int:
 
             label = flow_label(flow)
             deceased = is_deceased_kind(win.get("kind"))
+            case_pick = is_case_pick_kind(win)   # پنجرهٔ «انتخاب از فهرست اشخاص پرونده»
             if deceased:
                 # ⭐ خطای فوت — ۵۰٪ پیش‌پرداخت به کیف پول
                 refund_toman = await refund_half_prepay_to_wallet(uid)
@@ -504,10 +594,21 @@ async def sweep_expired(bot) -> int:
             else:
                 new_rial = halve_prepaid(uid)  # جریمه — نصف پیش‌پرداخت برای موارد بعدی
                 settle_text = penalty_line(new_rial)
+            if case_pick:
+                expired_head = (f"⌛ *مهلت {duration_adj(NID_FIX_WINDOW_MINUTES)} انتخاب "
+                                "ارائه‌دهنده لایحه از فهرست اشخاص پرونده به پایان رسید.*")
+                admin_expired = (f"⌛ [NID-FIX] مهلت انتخاب ارائه‌دهنده از فهرست اشخاص پروندهٔ "
+                                 f"کاربر {uid} ({label}) به پایان رسید و جریمهٔ نصف پیش‌پرداخت "
+                                 f"اعمال شد (درخواست بازگشت {new_rial // 10:,} تومان منتظر تایید شماست).")
+            else:
+                expired_head = f"⌛ *مهلت {duration_adj(NID_FIX_WINDOW_MINUTES)} ویرایش کدملی به پایان رسید.*"
+                admin_expired = (f"⌛ [NID-FIX] مهلت ویرایش کدملی کاربر {uid} ({label}) به پایان "
+                                 f"رسید و جریمهٔ نصف پیش‌پرداخت اعمال شد "
+                                 f"(درخواست بازگشت {new_rial // 10:,} تومان منتظر تایید شماست).")
             try:
                 await bot.send_message(
                     uid,
-                    f"⌛ *مهلت {duration_adj(NID_FIX_WINDOW_MINUTES)} ویرایش کدملی به پایان رسید.*\n\n"
+                    f"{expired_head}\n\n"
                     f"درخواست {label} حذف شد.\n"
                     f"{settle_text}\n"
                     "در صورت تمایل می‌توانید از منوی اصلی مجدداً اقدام فرمایید.",
@@ -520,10 +621,7 @@ async def sweep_expired(bot) -> int:
                     ADMIN_ID,
                     (f"⌛ [NID-FIX] مهلت ورود کدملی جدید کاربر {uid} ({label}، خطای فوت) "
                      f"به پایان رسید؛ درخواست بازگشت ۵۰٪ پیش‌پرداخت ثبت شد (منتظر تایید شما).")
-                    if deceased else
-                    (f"⌛ [NID-FIX] مهلت ویرایش کدملی کاربر {uid} ({label}) به پایان "
-                     f"رسید و جریمهٔ نصف پیش‌پرداخت اعمال شد "
-                     f"(درخواست بازگشت {new_rial // 10:,} تومان منتظر تایید شماست)."))
+                    if deceased else admin_expired)
             except Exception:
                 pass
             closed += 1
