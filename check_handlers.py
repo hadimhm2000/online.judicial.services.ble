@@ -3948,18 +3948,40 @@ async def _go_to_check_preview(message: Message, state: FSMContext):
 
 
 # ── تایید و ارسال ─────────────────────────────────────────────────────────────
-async def _submit_check_request(message: Message, state: FSMContext, bot: Bot):
+async def _submit_check_request(message: Message, state: FSMContext, bot: Bot,
+                                prepay_task_id: str | None = None,
+                                exempt: bool = False):
     """ساخت تسک ثبت دادخواست و ارسال به صف پردازش + اطلاع به مدیر.
 
     (از check_confirm_handler جدا شد تا پس از «تایید و ثبت نهایی» بلافاصله و
     نیز پس از تایید خودکار پیش‌پرداخت — سکشن جدید کارفرما ۱۴۰۵/۰۶ — قابل
     فراخوانی باشد.)
+
+    ⭐️ v2 (سند §۵.۴): گارد رزرو + prepay_task_id در job + mark_queued.
     """
     data = await state.get_data()
     user_id = message.from_user.id
     request_title = data.get("check_request_title", "")
     plaintiffs = data.get("check_plainiffs", [])
     defendants = data.get("check_defendants", [])
+    prepay_task_id = prepay_task_id or data.get("prepay_task_id")
+    if not prepay_task_id and not exempt and not data.get("_is_bulk"):
+        logger.error(
+            f"[CHECK] تلاش enqueue بدون رزرو پیش‌پرداخت — رد شد: user={user_id} "
+            f"(§۴.۱: هیچ تسکی بدون رزرو معتبر وارد صف نمی‌شود)")
+        try:
+            from config import ADMIN_ID as _ADMIN
+            await bot.send_message(
+                _ADMIN,
+                f"⛔ [PREPAY-V2] تسک دادخواست کاربر {user_id} بدون رزرو معتبر به صف نرفت. "
+                f"لطفاً بررسی کنید.")
+        except Exception:
+            pass
+        await state.clear()
+        await message.answer(
+            "⚠️ خطا در ثبت درخواست (رزرو پیش‌پرداخت یافت نشد). لطفاً دوباره تلاش کنید.",
+            reply_markup=main_menu_kb)
+        return
 
     # ⭐ جمع‌بندی متن کامل — اصلاحیه: متن خواسته (khasteh) دیگر دوباره به
     # شرح متن اضافه نمی‌شود؛ سناریوی سامانه این دو را در فیلدهای جداگانه
@@ -4095,6 +4117,7 @@ async def _submit_check_request(message: Message, state: FSMContext, bot: Bot):
         "user_id": user_id,
         "query_type": "دادخواست_چک",
         "task_type": "CHECK_SUBMIT",
+        "prepay_task_id": prepay_task_id,
         "check_request_title": request_title,
         "check_court_type": data.get("check_court_type", ""),  # ⭐ عناوین اعسار
         "check_amount": amount,
@@ -4143,6 +4166,14 @@ async def _submit_check_request(message: Message, state: FSMContext, bot: Bot):
     await runtime_state.job_queue.put(item)
     logger.info(f"[CHECK] Added CHECK_SUBMIT job for user {user_id}")
 
+    # ⭐️ v2 (سند §۵.۴): رزرو → queued (pay_reconcile هشدار نمی‌دهد)
+    if prepay_task_id:
+        try:
+            import prepay_registration
+            prepay_registration.mark_queued(user_id, prepay_task_id)
+        except Exception as _mq_err:
+            logger.warning(f"[CHECK] mark_queued ناموفق: {_mq_err}")
+
     await state.clear()
     await message.answer(
         "✅ درخواست شما با موفقیت ثبت شد.\n\n"
@@ -4182,31 +4213,46 @@ async def check_confirm_handler(message: Message, state: FSMContext):
     user_id = message.from_user.id
     bot: Bot = message.bot
 
-    # ⭐ معافین از پرداخت → مستقیم ثبت (بدون پیش‌پرداخت)
-    from exempt_users import is_exempt_user
-    if await is_exempt_user(user_id):
-        await _submit_check_request(message, state, bot)
-        return
+    # ⭐️ v2 (سند §۴.۴ — رفع کلیک دوبل §۳.۶): فوراً state از confirm خارج شود
+    await state.set_state(Form.check_submitting)
+    from prepay_registration import user_lock
+    async with user_lock(user_id):
+        # ⭐ معافین از پرداخت → مستقیم ثبت (بدون پیش‌پرداخت)
+        from exempt_users import is_exempt_user
+        if await is_exempt_user(user_id):
+            await _submit_check_request(message, state, bot, exempt=True)
+            return
 
-    # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): پیش‌پرداخت قبل از شروع ثبت —
-    # فاکتور و درگاه پرداخت ارسال می‌شود؛ پس از تایید خودکار پرداخت،
-    # ثبت آغاز خواهد شد (check_prepay_successful_payment).
-    # ثبت دادخواست: ۲۰۰,۰۰۰ تومان (تعرفهٔ تأییدشدهٔ کارفرما ۱۴۰۵/۰۸).
-    # ⭐ مانده/بستانکاری کاربر کل پیش‌پرداخت را پوشش می‌دهد → بدون فاکتور،
-    # ثبت مستقیم (مانده در فاکتور نهایی کسر می‌شود)
-    from prepay_registration import cover_prepay_from_credit
-    if await cover_prepay_from_credit(bot, user_id, "check",
-                                      f"ثبت دادخواست ({request_title})"):
-        await _submit_check_request(message, state, bot)
-        return
+        # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): پیش‌پرداخت قبل از شروع ثبت —
+        # فاکتور و درگاه پرداخت ارسال می‌شود؛ پس از تایید خودکار پرداخت،
+        # ثبت آغاز خواهد شد (check_prepay_successful_payment).
+        # ثبت دادخواست: ۲۰۰,۰۰۰ تومان (تعرفهٔ تأییدشدهٔ کارفرما ۱۴۰۵/۰۸).
+        # ⭐️ v2 (سند §۵.۱.۳ — رفع باگ §۳.۳): پوشش با مانده = رزرو اتمیک
+        from prepay_registration import cover_prepay_from_credit
+        prepay_task_id = await cover_prepay_from_credit(
+            bot, user_id, "check", f"ثبت دادخواست ({request_title})")
+        if prepay_task_id:
+            await _submit_check_request(message, state, bot,
+                                        prepay_task_id=prepay_task_id)
+            return
 
-    from prepay_registration import send_prepay_invoice
-    sent = await send_prepay_invoice(bot, user_id, "check",
-                                     f"ثبت دادخواست ({request_title})")
-    if sent:
-        # داده‌های FSM دست‌نخورده می‌مانند تا پس از پرداخت ارسال شوند
-        await state.set_state(Form.waiting_for_check_prepay)
+        from prepay_registration import send_prepay_invoice
+        sent = await send_prepay_invoice(bot, user_id, "check",
+                                         f"ثبت دادخواست ({request_title})")
+        if sent:
+            # داده‌های FSM دست‌نخورده می‌مانند تا پس از پرداخت ارسال شوند
+            await state.set_state(Form.waiting_for_check_prepay)
+        else:
+            # فاکتور ساخته نشد → برگشت به تایید برای تلاش مجدد (hold آزاد شده)
+            await state.set_state(Form.check_confirm)
     return
+
+
+@check_router.message(Form.check_submitting)
+async def check_submitting_wait(message: Message):
+    """⭐️ v2 (§۴.۴): درخواست در حال پردازش است — کلیک/پیام دوباره رد می‌شود."""
+    await message.answer(
+        "⏳ درخواست شما در حال پردازش است؛ لطفاً منتظر بمانید...")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -4229,6 +4275,14 @@ async def check_prepay_successful_payment(message: Message, state: FSMContext, b
         or get_prepay_amount_toman("check")
 
     logging.info(f"[CHECK-PREPAY] پرداخت خودکار تشخیص داده شد برای کاربر {user_id}")
+
+    # ⭐️ v2 (سند §۴.۴): idempotency پرداخت — charge تکراری دوباره ثبت/تسک نمی‌سازد
+    from prepay_registration import charge_processed
+    _charge_id = str(getattr(payment, "telegram_payment_charge_id", "") or "")
+    if charge_processed(_charge_id):
+        logging.info(f"[CHECK-PREPAY] پرداخت تکراری (charge={_charge_id}) — رد شد: user={user_id}")
+        await message.answer("✅ این پرداخت قبلاً ثبت شده است؛ درخواست شما در حال پردازش است.")
+        return
 
     # ⚠️ داده‌های FSM از بین رفته. ⭐ رفع باگ ۱۴۰۵/۰۸ (لاگ ۱۴۰۵/۰۸/۰۶): پول
     # دیگر گم نمی‌شود — مبلغ به‌عنوان پیش‌پرداخت/اعتبار کاربر ثبت می‌شود و
@@ -4260,10 +4314,19 @@ async def check_prepay_successful_payment(message: Message, state: FSMContext, b
         await state.clear()
         return
 
-    # ⭐ ثبت پیش‌پرداخت برای کسر از هزینه کل در پایان کار
-    register_prepaid(user_id, fee, "check",
-                     f"ثبت دادخواست ({request_title})",
-                     payment.telegram_payment_charge_id)
+    # ⭐️ v2 (سند §۵.۴): hold فاکتور (tid از payload) → رزرو reserved؛
+    # task_id رزرو به job وصل است و فقط در فاکتور نهایی همین ثبت کسر می‌شود.
+    from prepay_registration import finalize_paid, mark_charge_processed
+    try:
+        import json as _json_pr
+        _pl = _json_pr.loads(str(getattr(payment, "invoice_payload", "") or "{}"))
+    except Exception:
+        _pl = {}
+    reservation = finalize_paid(
+        user_id, _pl.get("tid"), "check",
+        f"ثبت دادخواست ({request_title})", fee * 10, _charge_id)
+    mark_charge_processed(_charge_id)
+    prepay_task_id = reservation.get("task_id") if reservation else None
 
     await message.answer(
         "✅ *پرداخت پیش‌پرداخت تایید شد!*",
@@ -4291,7 +4354,7 @@ async def check_prepay_successful_payment(message: Message, state: FSMContext, b
         logger.error(f"[CHECK-PREPAY] خطا در ارسال اطلاع به ادمین: {e}")
 
     # ⭐ شروع ثبت — ارسال تسک به صف پردازش
-    await _submit_check_request(message, state, bot)
+    await _submit_check_request(message, state, bot, prepay_task_id=prepay_task_id)
 
 
 @check_router.message(Form.waiting_for_check_prepay)

@@ -1034,35 +1034,45 @@ async def ezhhar_confirm_handler(message: Message, state: FSMContext, bot: Bot):
         data = await state.get_data()
         user_id = message.from_user.id
 
-        # بررسی معافیت از پرداخت خدمات
-        if await is_exempt_user(user_id):
-            await message.answer(
-                "✅ *معافیت از پرداخت خدمات*\n\n"
-                "شما در لیست کاربران معاف هستید."
-                "\nدرخواست اظهارنامه در حال ارسال به صف پردازش...",
-                reply_markup=ReplyKeyboardRemove())
-            await _send_ezhhar_task_to_queue(data, user_id, bot=bot)
-            await state.clear()
-            return
+        # ⭐️ v2 (سند §۴.۴ — رفع کلیک دوبل §۳.۶): فوراً state از confirm خارج شود
+        await state.set_state(Form.ezhhar_submitting)
+        from prepay_registration import user_lock
+        async with user_lock(user_id):
+            # بررسی معافیت از پرداخت خدمات
+            if await is_exempt_user(user_id):
+                await message.answer(
+                    "✅ *معافیت از پرداخت خدمات*\n\n"
+                    "شما در لیست کاربران معاف هستید."
+                    "\nدرخواست اظهارنامه در حال ارسال به صف پردازش...",
+                    reply_markup=ReplyKeyboardRemove())
+                await _send_ezhhar_task_to_queue(data, user_id, bot=bot, exempt=True)
+                await state.clear()
+                return
 
-        # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): پیش‌پرداخت قبل از شروع ثبت —
-        # فاکتور و درگاه پرداخت ارسال می‌شود؛ پس از تایید خودکار پرداخت،
-        # درخواست به صف ثبت ارسال خواهد شد (ezhhar_prepay_successful_payment).
-        # اظهارنامه: ۱۰۰,۰۰۰ تومان (تعرفهٔ تأییدشدهٔ کارفرما ۱۴۰۵/۰۸).
-        # ⭐ مانده/بستانکاری کاربر کل پیش‌پرداخت را پوشش می‌دهد → بدون فاکتور،
-        # ثبت مستقیم (مانده در فاکتور نهایی کسر می‌شود)
-        from prepay_registration import cover_prepay_from_credit
-        if await cover_prepay_from_credit(bot, user_id, "ezhharnameh", "اظهارنامه"):
-            await _send_ezhhar_task_to_queue(data, user_id, bot=bot)
-            await state.clear()
-            return
+            # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): پیش‌پرداخت قبل از شروع ثبت —
+            # فاکتور و درگاه پرداخت ارسال می‌شود؛ پس از تایید خودکار پرداخت،
+            # درخواست به صف ثبت ارسال خواهد شد (ezhhar_prepay_successful_payment).
+            # اظهارنامه: ۱۰۰,۰۰۰ تومان (تعرفهٔ تأییدشدهٔ کارفرما ۱۴۰۵/۰۸).
+            # ⭐️ v2 (سند §۵.۱.۳ — رفع باگ §۳.۳): پوشش با مانده = رزرو اتمیک؛
+            # مانده واقعاً کسر می‌شود و فقط در فاکتور نهایی همین ثبت برمی‌گردد.
+            from prepay_registration import cover_prepay_from_credit
+            prepay_task_id = await cover_prepay_from_credit(
+                bot, user_id, "ezhharnameh", "اظهارنامه")
+            if prepay_task_id:
+                await _send_ezhhar_task_to_queue(data, user_id, bot=bot,
+                                                 prepay_task_id=prepay_task_id)
+                await state.clear()
+                return
 
-        from prepay_registration import send_prepay_invoice
-        sent = await send_prepay_invoice(bot, user_id, "ezhharnameh", "اظهارنامه")
-        if sent:
-            # داده‌های FSM دست‌نخورده می‌مانند تا پس از پرداخت ارسال شوند
-            await state.set_state(Form.waiting_for_ezhhar_prepay)
-        return
+            from prepay_registration import send_prepay_invoice
+            sent = await send_prepay_invoice(bot, user_id, "ezhharnameh", "اظهارنامه")
+            if sent:
+                # داده‌های FSM دست‌نخورده می‌مانند تا پس از پرداخت ارسال شوند
+                await state.set_state(Form.waiting_for_ezhhar_prepay)
+            else:
+                # فاکتور ساخته نشد → برگشت به تایید برای تلاش مجدد (hold آزاد شده)
+                await state.set_state(Form.ezhhar_confirm)
+            return
 
     if text == "✏️ ویرایش اطلاعات":
         # ⭐ اصلاحیه: در حالت ویرایش، بعد از تایید هر بخش باید مستقیماً
@@ -1077,11 +1087,40 @@ async def ezhhar_confirm_handler(message: Message, state: FSMContext, bot: Bot):
     await message.answer("⚠️ لطفاً یکی از گزینه‌های زیر را انتخاب کنید:", reply_markup=ezhhar_confirm_kb)
 
 
+@ezhharnameh_router.message(Form.ezhhar_submitting)
+async def ezhhar_submitting_wait(message: Message):
+    """⭐️ v2 (§۴.۴): درخواست در حال پردازش است — کلیک/پیام دوباره رد می‌شود."""
+    await message.answer(
+        "⏳ درخواست شما در حال پردازش است؛ لطفاً منتظر بمانید...", reply_markup=ReplyKeyboardRemove())
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # تابع کمکی: ارسال تسک اظهارنامه به صف پردازش
 # ══════════════════════════════════════════════════════════════════════════════
-async def _send_ezhhar_task_to_queue(data: dict, user_id: int, bot: Bot = None):
-    """ارسال تسک اظهارنامه به صف پردازش بر اساس داده‌های ذخیره‌شده."""
+async def _send_ezhhar_task_to_queue(data: dict, user_id: int, bot: Bot = None,
+                                    prepay_task_id: str | None = None,
+                                    exempt: bool = False) -> bool:
+    """ارسال تسک اظهارنامه به صف پردازش بر اساس داده‌های ذخیره‌شده.
+
+    ⭐️ v2 (سند §۵.۳): گارد رزرو + prepay_task_id در job + mark_queued.
+    """
+    is_bulk_row = bool(data.get("_is_bulk"))
+    prepay_task_id = prepay_task_id or data.get("prepay_task_id")
+    if not prepay_task_id and not exempt and not is_bulk_row:
+        logging.error(
+            f"[EZHHAR] تلاش enqueue بدون رزرو پیش‌پرداخت — رد شد: user={user_id} "
+            f"(§۴.۱: هیچ تسکی بدون رزرو معتبر وارد صف نمی‌شود)")
+        try:
+            if bot is not None:
+                from config import ADMIN_ID as _ADMIN
+                await bot.send_message(
+                    _ADMIN,
+                    f"⛔ [PREPAY-V2] تسک اظهارنامهٔ کاربر {user_id} بدون رزرو معتبر به صف نرفت. "
+                    f"لطفاً بررسی کنید.")
+        except Exception:
+            pass
+        return False
+
     if bot is not None:
         try:
             from admin_forward import send_generic_submission_to_admin
@@ -1097,6 +1136,7 @@ async def _send_ezhhar_task_to_queue(data: dict, user_id: int, bot: Bot = None):
         "user_id": user_id,
         "query_type": "اظهارنامه_ثبت",
         "task_type": "EZHHARNAMEH_SUBMIT",
+        "prepay_task_id": prepay_task_id,
         "ezhhar_declarants": data.get("ezhhar_declarants", []),
         "ezhhar_addressees": data.get("ezhhar_addressees", []),
         "ezhhar_subject": data.get("ezhhar_subject", "سایر"),
@@ -1104,6 +1144,15 @@ async def _send_ezhhar_task_to_queue(data: dict, user_id: int, bot: Bot = None):
         "ezhhar_text_html": data.get("ezhhar_text_html", ""),
         "ezhhar_attachments": data.get("ezhhar_attachments", []),
     })
+
+    # ⭐️ v2 (سند §۵.۳): رزرو → queued (pay_reconcile هشدار نمی‌دهد)
+    if prepay_task_id:
+        try:
+            import prepay_registration
+            prepay_registration.mark_queued(user_id, prepay_task_id)
+        except Exception as _mq_err:
+            logging.warning(f"[EZHHAR] mark_queued ناموفق: {_mq_err}")
+    return True
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1137,6 +1186,14 @@ async def ezhhar_prepay_successful_payment(message: Message, state: FSMContext, 
 
     logging.info(f"[EZHHAR-PREPAY] پرداخت خودکار تشخیص داده شد برای کاربر {user_id}")
 
+    # ⭐️ v2 (سند §۴.۴): idempotency پرداخت — charge تکراری دوباره ثبت/تسک نمی‌سازد
+    from prepay_registration import charge_processed
+    _charge_id = str(getattr(payment, "telegram_payment_charge_id", "") or "")
+    if charge_processed(_charge_id):
+        logging.info(f"[EZHHAR-PREPAY] پرداخت تکراری (charge={_charge_id}) — رد شد: user={user_id}")
+        await message.answer("✅ این پرداخت قبلاً ثبت شده است؛ درخواست شما در حال پردازش است.")
+        return
+
     # ⚠️ داده‌های FSM از بین رفته. ⭐ رفع باگ ۱۴۰۵/۰۸ (لاگ ۱۴۰۵/۰۸/۰۶): پول
     # دیگر گم نمی‌شود — مبلغ به‌عنوان پیش‌پرداخت/اعتبار کاربر ثبت می‌شود و
     # در فاکتور پایان کارِ ثبتِ بعدی او کسر می‌گردد.
@@ -1166,9 +1223,19 @@ async def ezhhar_prepay_successful_payment(message: Message, state: FSMContext, 
         await state.clear()
         return
 
-    # ⭐ ثبت پیش‌پرداخت برای کسر از هزینه کل در پایان کار (سکشن جدید ۱۴۰۵/۰۶)
-    register_prepaid(user_id, fee, "ezhharnameh", "اظهارنامه",
-                     payment.telegram_payment_charge_id)
+    # ⭐️ v2 (سند §۵.۳): hold فاکتور (tid از payload) → رزرو reserved؛
+    # task_id رزرو به job وصل است و فقط در فاکتور نهایی همین ثبت کسر می‌شود.
+    from prepay_registration import finalize_paid, mark_charge_processed
+    try:
+        import json as _json_pr
+        _pl = _json_pr.loads(str(getattr(payment, "invoice_payload", "") or "{}"))
+    except Exception:
+        _pl = {}
+    reservation = finalize_paid(
+        user_id, _pl.get("tid"), "ezhharnameh", "اظهارنامه",
+        fee * 10, _charge_id)
+    mark_charge_processed(_charge_id)
+    prepay_task_id = reservation.get("task_id") if reservation else None
 
     await message.answer(
         f"✅ *پرداخت پیش‌پرداخت تایید شد!*",
@@ -1200,7 +1267,8 @@ async def ezhhar_prepay_successful_payment(message: Message, state: FSMContext, 
     except Exception as e:
         logging.error(f"[EZHHAR-PREPAY] خطا در ارسال اطلاع به ادمین: {e}", exc_info=True)
 
-    await _send_ezhhar_task_to_queue(data, user_id, bot=bot)
+    await _send_ezhhar_task_to_queue(data, user_id, bot=bot,
+                                     prepay_task_id=prepay_task_id)
     await state.clear()
 
 
@@ -1228,6 +1296,12 @@ async def ezhhar_prepay_done_legacy_reject(callback: CallbackQuery):
 async def ezhhar_prepay_cancel_callback(callback: CallbackQuery, state: FSMContext):
     """انصراف از پرداخت خدمات"""
     await callback.answer()
+    # ⭐️ v2 (سند §۵.۹): انصراف از فاکتور → hold آزاد شود (سهم مانده برمی‌گردد)
+    try:
+        import prepay_registration
+        prepay_registration.release_hold(callback.from_user.id, service_key="ezhharnameh")
+    except Exception:
+        pass
     await callback.message.answer(
         "لغو گردید. لطفاً مجدداً شروع کنید:",
         reply_markup=main_menu_kb

@@ -235,11 +235,15 @@ def test_leftover_after_final_invoice_goes_to_refund_queue():
     import refund_approvals as ra
     runtime_state.prepaid_registrations[21] = {"amount_rial": 150_000, "amount_toman": 15_000,
                                                "prepay_paid_rial": 150_000}
+    pr.migrate_all_to_v2()
     adjusted, info = pr.adjust_final_fee_with_prepay(21, 100_000)
     assert adjusted == 0 and info["leftover_rial"] == 50_000
     assert wallet.balance(21) == 0            # هنوز واریز نشده
     assert ra.pending_total_toman(21) == 5_000  # در انتظار تایید مدیر
-    assert 21 not in runtime_state.prepaid_registrations
+    # ⭐️ v2: رکورد می‌ماند اما رزرو consumed شده — دیگر قابل کسر مجدد نیست
+    rec = runtime_state.prepaid_registrations[21]
+    assert rec.get("version") == 2
+    assert all(r.get("status") in ("consumed", "released") for r in rec.get("reservations", []))
     assert "تایید مدیریت" in pr.build_prepay_fee_text(0, info, 100_000)
 
 
@@ -255,11 +259,18 @@ def test_migrate_legacy_credits_requests_refund_and_keeps_inflight_prepay():
     try:
         assert wallet.migrate_legacy_credits() == 3
         # هنوز چیزی به کیف پول واریز نشده — همه در انتظار تایید مدیر
-        assert wallet.balance(31) == 0 and 31 not in runtime_state.prepaid_registrations
+        # ⭐️ v2: رکورد می‌ماند اما ماندهٔ آزاد صفر شده (رزروی ندارد)
+        assert wallet.balance(31) == 0
+        rec31 = runtime_state.prepaid_registrations[31]
+        assert rec31.get("free_credit_rial") == 0 and rec31.get("reservations") == []
         assert ra.pending_total_toman(31) == 30_000
         assert wallet.balance(32) == 0
         assert ra.pending_total_toman(32) == 3_000
-        assert runtime_state.prepaid_registrations[32]["amount_rial"] == 20_000
+        # ⭐️ v2: رزرو ۲۰٬۰۰۰ ریالیِ در جریان ماند؛ ماندهٔ آزاد صفر شد
+        rec32 = runtime_state.prepaid_registrations[32]
+        assert rec32.get("version") == 2 and rec32.get("free_credit_rial") == 0
+        act32 = [r for r in rec32.get("reservations", []) if r.get("status") in ("reserved", "queued")]
+        assert len(act32) == 1 and act32[0].get("reserved_rial") == 20_000
         assert wallet.balance(33) == 0 and BULK_TASKS["T-MIG"]["surplus_rial"] == 0
         assert ra.pending_total_toman(33) == 7_000
         assert wallet.migrate_legacy_credits() == 0  # تکرار بی‌اثر

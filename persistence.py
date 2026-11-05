@@ -280,10 +280,17 @@ def save_runtime_state():
     data["recovery_notified"] = recovery_notified
 
     # 11-ج. ⭐ پیش‌پرداخت‌های ثبت (سکشن جدید کارفرما ۱۴۰۵/۰۶) — برای کسر در پایان کار
+    # ⭐️ v2 (سند §۴.۲/§۵.۸): ساختار رزرو + شناسه‌های پرداخت پردازش‌شده (§۴.۴)
     prepaid_regs = {}
     for uid, info in getattr(runtime_state, "prepaid_registrations", {}).items():
         prepaid_regs[str(uid)] = info
     data["prepaid_registrations"] = prepaid_regs
+    # ⭐️ v2 — idempotency پرداخت‌ها: charge_id های پردازش‌شده (به‌صورت لیست)
+    try:
+        seen = getattr(runtime_state, "processed_charge_ids", None)
+        data["processed_charge_ids"] = sorted(seen) if isinstance(seen, (set, list)) else []
+    except Exception:
+        data["processed_charge_ids"] = []
 
     # 11-د. ⭐ دسته‌های جمع‌بندی‌شده (لیست کدهای رهگیری برای امضای دسته‌جمعی)
     # تا ری‌استارت ربات منوی امضا و وضعیت امضای کدها را پاک نکند.
@@ -457,10 +464,22 @@ def load_into_runtime_state():
         runtime_state.recovery_notified[int(uid_str)] = fp
 
     # 11-ج. ⭐ prepaid_registrations — پیش‌پرداخت‌های ثبت برای کسر در پایان کار
+    # ⭐️ v2: رزروها هم datetime دارند (paid_at/hold_expires_at/…) — همه بازسازی می‌شوند
     for uid_str, info in data.get("prepaid_registrations", {}).items():
         uid = int(uid_str)
         info = _deserialize_all_datetimes(info, ["paid_at"])
+        if isinstance(info, dict) and info.get("version") == 2:
+            for res in info.get("reservations", []) or []:
+                if isinstance(res, dict):
+                    _deserialize_all_datetimes(
+                        res, ["paid_at", "hold_expires_at", "queued_at",
+                              "consumed_at", "released_at"])
         runtime_state.prepaid_registrations[uid] = info
+
+    # ⭐️ v2 (سند §۴.۴) — شناسه‌های پرداخت پردازش‌شده
+    seen_charges = data.get("processed_charge_ids") or []
+    if isinstance(seen_charges, list):
+        runtime_state.processed_charge_ids = {str(c) for c in seen_charges if c}
 
     # 11-د. ⭐ دسته‌های جمع‌بندی‌شدهٔ دسته‌جمعی (منوی امضا)
     try:

@@ -339,16 +339,24 @@ replay_payment_mode: contextvars.ContextVar[bool] = contextvars.ContextVar(
 # در پایان کار، هزینه کل اعلام و این مبلغ از آن کسر می‌شود و فاکتور
 # مابقی برای کاربر ارسال می‌گردد.
 # =========================================================
+# ⭐️ نسخهٔ ۲ (سند «پیش‌پرداخت ثبت / مانده» — ۱۴۰۵/۱۱، §۴.۲):
 # کلید: user_id (int)
 # مقدار: {
-#   "amount_toman": int,     — مبلغ پیش‌پرداخت (تومان)
-#   "amount_rial": int,      — مبلغ پیش‌پرداخت (ریال)
-#   "service": str,          — کلید سرویس (lavayeh/ezhharnameh/tn/check)
-#   "service_label": str,    — نام نمایشی سرویس
-#   "charge_id": str,        — شناسه تراکنش کیف پول بله
-#   "paid_at": datetime,     — زمان پرداخت
+#   "version": 2,
+#   "free_credit_rial": int,   — ماندهٔ آزاد/بستانکاری (دستی مدیر / بازگشتی‌ها)
+#   "reservations": [ {task_id, service, service_label, reserved_rial,
+#                       paid_rial, credit_used_rial, discount_rial,
+#                       charge_id, paid_at, status, hold_expires_at}, ... ]
 # }
+# هر ثبت = یک رزرو جداگانه؛ رزرو فقط یک بار و فقط توسط همان تسک مصرف می‌شود.
+# (رکوردهای قدیمی v1 هنگام بارگذاری/دسترسی به v2 مهاجرت می‌شوند —
+#  prepay_registration.migrate_all_to_v2 / _rec)
 prepaid_registrations: dict = {}
+
+# ⭐️ v2 (سند §۴.۴): شناسه‌های پرداخت (charge_id) که قبلاً پردازش شده‌اند —
+# پرداخت تکراری (بازپخش کارت‌به‌کارت و ...) دوباره ثبت/تسک نمی‌سازد.
+# ماندگار از طریق persistence (به‌صورت لیست ذخیره می‌شود؛ سقف ۵۰۰۰).
+processed_charge_ids: set = set()
 
 # =========================================================
 # ذخیره کدرهگیری و وضعیت تسک‌های incomplete برای مدیریت

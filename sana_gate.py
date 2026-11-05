@@ -66,6 +66,9 @@ _state = {
     "offhours_log": [],  # [{"uid": int, "type": str, "at": iso, "status": "queued"|"released"|"admin_submitted"}]
     # ⭐ کاربرانی که امضایشان با /outage_on قطع شد — پس از وصل شدن سامانه پیام می‌گیرند
     "outage_sign": [],   # [{"uid": int, "tc": str}]
+    # ⭐ §۸ (۱۴۰۵/۱۱): نسخهٔ کامل تسک‌های تکراری (کلیک دوبل) که پیش از آزادسازی
+    # صف حذف شده‌اند — برای بازگردانی دستی در صورت لزوم (startup_data_fixes)
+    "sec8_removed": [],  # [{"job": {...}, "deferred_at": iso, "removed_at": iso, "why": "sec8-duplicate"}]
 }
 
 OFFHOURS_LOG_DAYS = 7
@@ -1063,6 +1066,8 @@ _STATUS_FA = {
     "admin_submitted": "در صف ثبت به دستور مدیر (هنوز ثبت نشده)",
     "done": "پردازش شد ✅",
     "failed": "ناموفق/قطع‌شده — /pending",
+    # ⭐ §۸ (۱۴۰۵/۱۱): تسک تکراری (کلیک دوبل) که پیش از آزادسازی صف حذف شد
+    "cancelled": "لغو شد — تکراری (نسخه در sec8_removed)",
 }
 
 

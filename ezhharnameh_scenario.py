@@ -813,6 +813,7 @@ async def process_ezhharnameh_task(data: dict, bot: Bot):
                         skip_fee_calc=True,  # هزینه اظهارنامه قبلاً با فرمول جدید محاسبه شده
                     is_ezhharnameh=True,  # برای تمایز لایحه/اظهارنامه در جریان امضا
                     prepaid=is_prepaid,
+                    prepay_task_id=data.get("prepay_task_id"),
                 )
 
                 await bot.send_message(

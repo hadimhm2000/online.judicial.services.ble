@@ -1425,7 +1425,8 @@ async def process_check_task(data: dict, bot: Bot):
                         skip_fee_calc=True,
                         is_ezhharnameh=False,
                         service_type="CHECK",
-                        sign_menu_path=sign_menu_path)
+                        sign_menu_path=sign_menu_path,
+                        prepay_task_id=data.get("prepay_task_id"))
                 await bot.send_message(
                     ADMIN_ID,
                     f"✅ [CHECK] ثبت دادخواست چک کاربر {user_id} موفق."
@@ -1484,7 +1485,8 @@ async def process_check_task(data: dict, bot: Bot):
                             skip_fee_calc=True,
                             is_ezhharnameh=False,
                             service_type="CHECK",
-                            sign_menu_path=sign_menu_path)
+                            sign_menu_path=sign_menu_path,
+                            prepay_task_id=data.get("prepay_task_id"))
                     except Exception as inv_err:
                         logging.error(f"[CHECK] خطا در ارسال فاکتور پس از شکست چاپ: {inv_err}", exc_info=True)
                         await bot.send_message(

@@ -169,22 +169,33 @@ def test_approval_credits_and_removes_prepay_so_it_is_not_deducted_twice():
     rid = ra.pending()[0]["id"]
     assert run(ra.decide(rid, True, 1))[0] == "done"
     assert wallet.balance(7) == 2_000
-    rec = runtime_state.prepaid_registrations[7]     # فقط مانده قبلی ماند
-    assert rec["amount_rial"] == 50_000 and rec["prepay_paid_rial"] == 0
+    # ⭐️ v2: رزرو همین درخواست released شد؛ فقط ماندهٔ آزاد قبلی ماند
+    rec = runtime_state.prepaid_registrations[7]
+    assert rec.get("version") == 2 and rec.get("free_credit_rial") == 50_000
+    assert all(r.get("status") == "released" for r in rec.get("reservations", []))
 
 
 def test_approval_removes_record_when_only_prepay():
     _prepay(7, 20_000)
     runtime_state.incomplete_tasks["lavayeh:B4"] = {"bill_no": "B4", "user_id": 7, "type": "lavayeh"}
     run(ra.decide(ra.pending()[0]["id"], True, 1))
-    assert 7 not in runtime_state.prepaid_registrations
+    # ⭐️ v2: رکورد می‌ماند اما هیچ رزرو فعالی برای کسر مجدد نیست
+    rec = runtime_state.prepaid_registrations[7]
+    active = [r for r in rec.get("reservations", [])
+              if r.get("status") in ("hold", "reserved", "queued")]
+    assert active == [] and rec.get("free_credit_rial") == 0
 
 
 def test_reject_keeps_prepay_for_next_use():
     _prepay(7, 20_000)
     runtime_state.incomplete_tasks["lavayeh:B5"] = {"bill_no": "B5", "user_id": 7, "type": "lavayeh"}
     run(ra.decide(ra.pending()[0]["id"], False, 1))
-    assert wallet.balance(7) == 0 and runtime_state.prepaid_registrations[7]["amount_rial"] == 20_000
+    assert wallet.balance(7) == 0
+    # ⭐️ v2: رزرو همچنان فعال است (برای استفادهٔ بعدی)
+    rec = runtime_state.prepaid_registrations[7]
+    active = [r for r in rec.get("reservations", [])
+              if r.get("status") in ("hold", "reserved", "queued")]
+    assert len(active) == 1 and active[0].get("reserved_rial") == 20_000
 
 
 def test_stale_when_prepay_already_consumed_pays_nothing():
@@ -215,7 +226,12 @@ def test_credit_failure_restores_prepay_record(monkeypatch):
     real = wallet.credit
     monkeypatch.setattr(wallet, "credit", boom)
     assert run(ra.decide(rid, True, 1))[0] == "failed"
-    assert runtime_state.prepaid_registrations[7]["amount_rial"] == 70_000
+    # ⭐️ v2: رزرو به حالت فعال برگشت (مثل قبل از تصمیم)
+    rec = runtime_state.prepaid_registrations[7]
+    active = [r for r in rec.get("reservations", [])
+              if r.get("status") in ("hold", "reserved", "queued")]
+    assert len(active) == 1 and active[0].get("paid_rial") == 20_000
+    assert rec.get("free_credit_rial") == 50_000
     monkeypatch.setattr(wallet, "credit", real)
     assert run(ra.decide(rid, True, 1))[0] == "done"
 

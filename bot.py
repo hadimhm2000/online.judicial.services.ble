@@ -492,6 +492,26 @@ async def main():
     # ── بررسی کرش قبلی و بارگذاری حالت ──
     crashed, crash_data = was_crash()
     active_submitted, active_unsubmitted = load_into_runtime_state()
+    # ⭐️ v2 (سند «پیش‌پرداخت ثبت / مانده» §۵.۸) — مهاجرت یک‌بارهٔ رکوردهای قدیمی
+    # پیش‌پرداخت به مدل رزرو (هر ثبت = یک رزرو جداگانه). باید قبل از اصلاح §۸ و
+    # مهاجرت قدیمی مانده‌ها اجرا شود. idempotent است.
+    try:
+        import prepay_registration
+        prepay_registration.migrate_all_to_v2()
+        prepay_registration.sweep_expired_holds()
+    except Exception as _v2:
+        logging.error(f"[REG-PREPAY] مهاجرت رکوردهای پیش‌پرداخت به نسخهٔ ۲ ناموفق: {_v2}",
+                      exc_info=True)
+    # ⭐ §۸ سند پیش‌پرداخت (۲۰۲۶-۱۱-۰۵) — اصلاح دادهٔ حادثهٔ ۲۰۲۶-۱۱-۰۴ کاربر
+    # ۲۷۲۶۶۰۵۴۹: رکورد معیوب به «یک پیش‌پرداخت ۱٬۰۰۰٬۰۰۰ ریالی + ۱٬۰۰۰ تومان
+    # اعتبار آزاد کیف پول» تبدیل می‌شود. باید «قبل از» مهاجرت قدیمی مانده‌ها
+    # اجرا شود تا رکورد اصلی معیوب دیده شود، نه نسخهٔ تفکیک‌شدهٔ آن.
+    try:
+        import startup_data_fixes
+        startup_data_fixes.apply_prepay_incident_fix()
+    except Exception as _sec8:
+        logging.error(f"[SEC8-FIX] اصلاح رکورد پیش‌پرداخت حادثه ناموفق: {_sec8}",
+                      exc_info=True)
     # ⭐ مانده/بستانکاری‌های قدیمی و مازاد بچ‌های تمام‌شده → صف «بازگشت وجه
     # با تایید مدیر» (refund_approvals)؛ پس از تایید به کیف پول واریز می‌شود
     try:
@@ -525,6 +545,14 @@ async def main():
     # ⭐ دفتر ماندگار تسک‌های ثبت — قبل از هر put روی job_queue
     import pending_jobs
     pending_jobs.load()
+    # ⭐ §۸ — حذف تسک‌های تکراری (کلیک دوبل — §۳.۶ سند) از صف ماندگار، قبل از
+    # اینکه gate_loop ابتدای ساعت کاری صف را آزاد کند. نسخهٔ حذف‌شده‌ها در
+    # sana_gate_state.json (sec8_removed) نگه داشته می‌شود و به مدیر گزارش می‌رود.
+    try:
+        startup_data_fixes.dedup_deferred_queue()
+    except Exception as _sec8:
+        logging.error(f"[SEC8-FIX] حذف تسک‌های تکراری از صف ناموفق: {_sec8}",
+                      exc_info=True)
     logging.info(
         f"[START] کرش قبلی: {crashed} | "
         f"کاربران ثبت‌شده: {len(active_submitted)} | "
@@ -558,6 +586,12 @@ async def main():
     except Exception as e:
         logging.error(f"[START] خطا در ارسال پیام تستی به ادمین (ADMIN_ID={ADMIN_ID}): {e}", exc_info=True)
         logging.error(f"[START] ⚠️ اگر این خطا رخ داد، احتمالاً ADMIN_ID در فایل .env صحیح نیست یا ادمین ربات را استارت نکرده است.")
+
+    # ⭐ §۸ — گزارش اصلاحات دادهٔ استارت (حادثهٔ پیش‌پرداخت + حذف تکراری‌ها) به مدیر
+    try:
+        await startup_data_fixes.report_to_admin(bot)
+    except Exception as _sec8:
+        logging.error(f"[SEC8-FIX] ارسال گزارش به مدیر ناموفق: {_sec8}", exc_info=True)
 
     # تنظیم منوی دستورات (بله ممکن است پشتیبانی نکند)
     try:

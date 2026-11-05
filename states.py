@@ -46,6 +46,9 @@ class Form(StatesGroup):
     lavayeh_attachment_more = State()
     lavayeh_confirm = State()
     lavayeh_edit_choice = State()
+    # ⭐️ v2 (سند §۴.۴): حالت موقت بعد از «تایید» — کلیک دوم دکمهٔ تایید دیگر
+    # وارد هندلر confirm نمی‌شود (رفع باگ کلیک دوبل §۳.۶)
+    lavayeh_submitting = State()
     waiting_for_lavayeh_prepay = State()          # منتظر پرداخت خدمات قبل از ثبت در سامانه
     waiting_for_lavayeh_payment_receipt = State()
     lavayeh_payment_reminder_response = State()
@@ -151,6 +154,7 @@ class Form(StatesGroup):
     # مرحله ۶: پیش‌نمایش و تایید
     ezhhar_confirm = State()
     ezhhar_edit_choice = State()
+    ezhhar_submitting = State()                  # ⭐️ v2 — ضد کلیک دوبل (§۴.۴)
     waiting_for_ezhhar_prepay = State()          # منتظر پرداخت خدمات قبل از ثبت در سامانه
 
     # خطای استعلام ثنا در اظهارنامه — ویرایش شناسه ملی یا حذف درخواست
@@ -242,6 +246,7 @@ class Form(StatesGroup):
     tn_more_reasons = State()
     tn_confirm = State()
     tn_edit_choice = State()
+    tn_submitting = State()                      # ⭐️ v2 — ضد کلیک دوبل (§۴.۴)
     tn_sana_error_action = State()
     tn_sana_error_new_national_id = State()
 
@@ -421,6 +426,7 @@ class Form(StatesGroup):
     check_witness_name = State()          # ⭐ نام و نام‌خانوادگی مطلع/گواه (فیلد جدید)
     check_confirm = State()               # پیش‌نمایش و تایید
     check_edit_choice = State()           # انتخاب بخش ویرایش
+    check_submitting = State()            # ⭐️ v2 — ضد کلیک دوبل (§۴.۴)
 
     # ⭐ پنجرهٔ ۳۰ دقیقه‌ای ویرایش کدملی دادخواست چک — پس از خطای ثنا
     # (تاریخ تولد اشتباه / شناسه ملی ثبت نشده)

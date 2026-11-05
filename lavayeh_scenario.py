@@ -1053,7 +1053,8 @@ async def process_lavayeh_task(data: dict, bot: Bot):
                     lavayeh_province=province,
                     lavayeh_row_number=row_number,
                     lavayeh_persons=persons,
-                    prepaid=is_prepaid)
+                    prepaid=is_prepaid,
+                    prepay_task_id=data.get("prepay_task_id"))
             if lavayeh_bill_no:
                 await bot.send_message(
                     ADMIN_ID,

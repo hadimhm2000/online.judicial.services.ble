@@ -557,9 +557,16 @@ def _menu_kb() -> InlineKeyboardMarkup:
 
 
 def _pending_prepay_rial(uid) -> int:
-    """پیش‌پرداخت/ماندهٔ پروندهٔ در جریان (prepaid_registrations) — در فاکتور نهایی کسر می‌شود."""
-    rec = getattr(runtime_state, "prepaid_registrations", {}).get(int(uid))
-    return max(0, int((rec or {}).get("amount_rial", 0) or 0))
+    """پیش‌پرداخت/ماندهٔ پرونده‌های در جریان — در فاکتور نهایی همان پرونده کسر می‌شود.
+
+    ⭐️ v2 (سند §۵.۶): مدل رزرو — ماندهٔ آزاد + رزروهای فعال.
+    """
+    try:
+        import prepay_registration
+        return prepay_registration.get_total_exposure_rial(uid)
+    except Exception:
+        rec = getattr(runtime_state, "prepaid_registrations", {}).get(int(uid))
+        return max(0, int((rec or {}).get("amount_rial", 0) or 0))
 
 
 @wallet_router.message(StateFilter("*"), F.text == WALLET_MENU_TEXT)
@@ -779,8 +786,27 @@ async def admin_owed(message: Message):
         pass
 
     prepaid = getattr(runtime_state, "prepaid_registrations", {}) or {}
-    pp = [(uid, int((rec or {}).get("amount_rial", 0) or 0), rec) for uid, rec in prepaid.items()]
-    pp = [x for x in pp if x[1] > 0]
+    # ⭐️ v2 (سند §۵.۶): نمایش سازگار با مدل رزرو — ماندهٔ آزاد + رزروهای فعال
+    try:
+        import prepay_registration as _pr
+        pp = []
+        for uid, rec in prepaid.items():
+            rec2 = _pr._rec(uid)
+            if not rec2:
+                continue
+            amt = _pr.get_total_exposure_rial(uid)
+            if amt <= 0:
+                continue
+            n_res = len(_pr._active_reservations(rec2))
+            label = (f"{n_res} رزرو" if n_res else "")
+            free = int(rec2.get("free_credit_rial", 0) or 0)
+            if free > 0:
+                label = (label + " + " if label else "") + f"ماندهٔ آزاد {free // 10:,} ت"
+            pp.append((uid, amt, {"service_label": label or "—"}))
+    except Exception:
+        pp = [(uid, int((rec or {}).get("amount_rial", 0) or 0), rec)
+              for uid, rec in prepaid.items()]
+        pp = [x for x in pp if x[1] > 0]
     if pp:
         lines.append(f"\n💼 پیش‌پرداخت پرونده‌های در جریان (در فاکتور نهایی کسر می‌شود): "
                      f"*{sum(x[1] for x in pp) // 10:,} تومان* ({len(pp)} کاربر)")
@@ -886,20 +912,27 @@ def _legacy_refund_requested(dedupe_key: str) -> bool:
 
 
 def migrate_legacy_credits() -> int:
-    """یک‌بار در شروع ربات (پس از load_into_runtime_state): مانده/بستانکاری‌های
-    قدیمیِ prepaid_registrations و مازاد بچ‌های دسته‌جمعیِ تمام‌شده به صف
-    «بازگشت وجه با تایید مدیر» (refund_approvals) منتقل می‌شوند — نه واریز
-    مستقیم به کیف پول؛ هم‌راستا با سیاست «بازگشت وجه فقط با تایید مدیر».
-    پس از تایید مدیر، مبلغ به کیف پول واریز و مثل قبل از فاکتورهای بعدی
-    کسر می‌شود. خروجی: تعداد موارد درخواست‌شده (۰ = چیزی نبود؛ تکرار بی‌اثر
-    است — رکوردها هم‌زمان تفکیک می‌شوند تا مبلغ دوبار حساب نشود)."""
+    """یک‌بار در شروع ربات (پس از load_into_runtime_state و مهاجرت v2):
+    مانده/بستانکاری‌های قدیمی prepaid_registrations و مازاد بچ‌های دسته‌جمعیِ
+    تمام‌شده به صف «بازگشت وجه با تایید مدیر» (refund_approvals) منتقل می‌شوند —
+    نه واریز مستقیم به کیف پول؛ هم‌راستا با سیاست «بازگشت وجه فقط با تایید
+    مدیر». پس از تایید مدیر، مبلغ به کیف پول واریز و مثل قبل از فاکتورهای
+    بعدی کسر می‌شود. خروجی: تعداد موارد درخواست‌شده (۰ = چیزی نبود؛ تکرار
+    بی‌اثر است — رکوردها هم‌زمان تفکیک می‌شوند تا مبلغ دوبار حساب نشود).
+
+    ⭐️ v2 (سند §۵.۶): فقط «ماندهٔ آزاد» (free_credit_rial) منتقل می‌شود؛
+    رزروهای فعالِ ثبت‌های در جریان دست نمی‌خورند (پول همان ثبت‌هاست).
+    """
     moved = 0
     try:
         import refund_approvals
-        from prepay_registration import _split_record
+        from prepay_registration import _rec, get_free_credit_rial
         prepaid = getattr(runtime_state, "prepaid_registrations", {})
-        for uid, rec in list(prepaid.items()):
-            paid, credit_rial = _split_record(rec)
+        for uid in list(prepaid.keys()):
+            rec = _rec(uid)
+            if not rec:
+                continue
+            credit_rial = get_free_credit_rial(uid)
             if credit_rial < 10:
                 continue
             # مهاجرت هر کاربر «دقیقاً یک‌بار» انجام می‌شود (در هر وضعیتی: انتظار/
@@ -911,13 +944,8 @@ def migrate_legacy_credits() -> int:
                 uid, credit_rial // 10,
                 "انتقال مانده/بستانکاری قدیمی به کیف پول (مهاجرت یک‌باره)",
                 source="legacy_migration", dedupe_key=f"legacy-prepaid:{uid}")
-            # تفکیک رکورد: فقط بخش پیش‌پرداختِ در جریان بماند تا مبلغ دوبار
-            # (هم در رکورد و هم در کیف پول پس از تایید) حساب نشود
-            if paid > 0:
-                rec.update({"amount_rial": paid, "amount_toman": paid // 10, "prepay_paid_rial": paid})
-                rec.pop("manual", None)
-            else:
-                prepaid.pop(uid, None)
+            # تفکیک: فقط بخش ماندهٔ آزاد به صف بازگشت می‌رود؛ رزروها می‌مانند
+            rec["free_credit_rial"] = 0
             moved += 1
     except Exception as e:
         logger.error(f"[WALLET] انتقال مانده‌های قبلی ناموفق: {e}", exc_info=True)

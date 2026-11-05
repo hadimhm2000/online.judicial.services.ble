@@ -81,7 +81,12 @@ def test_cancel_deceased_refunds_half_prepay_to_wallet():
     line = run(nid_fix_window.settle_cancel(7, win))
     # ⭐ تا تایید مدیر چیزی به کیف پول واریز نمی‌شود
     assert wallet.balance(7) == 0 and refund_approvals.pending_total_toman(7) == 100_000
-    assert 7 not in runtime_state.prepaid_registrations
+    # ⭐️ v2 (سند §۵.۶): رکورد حذف نمی‌شود؛ رزرو همین درخواست «مصرف دستی»
+    # علامت می‌خورد تا در فاکتور بعدی دوباره کسر نشود.
+    rec = runtime_state.prepaid_registrations.get(7)
+    assert rec is not None and rec.get("version") == 2
+    statuses = [r.get("status") for r in rec.get("reservations", [])]
+    assert "consumed_manual" in statuses and "reserved" not in statuses and "queued" not in statuses
     assert "100,000" in line and "تایید مدیریت" in line
     approve_all()
     assert wallet.balance(7) == 100_000
@@ -94,14 +99,22 @@ def test_cancel_deceased_moves_previous_credit_to_wallet():
     assert refund_approvals.pending_total_toman(8) == 100_000 + 30_000
     approve_all()
     assert wallet.balance(8) == 100_000 + 30_000
-    assert 8 not in runtime_state.prepaid_registrations
+    # ⭐️ v2: رکورد می‌ماند؛ رزرو consumed_manual و ماندهٔ آزاد صفر
+    rec8 = runtime_state.prepaid_registrations.get(8)
+    assert rec8 is not None
+    assert rec8.get("free_credit_rial") == 0
+    assert all(r.get("status") in ("consumed_manual", "released") for r in rec8.get("reservations", []))
 
 
 def test_cancel_other_errors_keep_half_in_wallet():
     _prepay(9, 2_000_000)
     line = run(nid_fix_window.settle_cancel(9, {"kind": "birthdate"}))
     assert wallet.balance(9) == 0 and refund_approvals.pending_total_toman(9) == 100_000
-    assert 9 not in runtime_state.prepaid_registrations
+    # ⭐️ v2: نصف دیگر در همان رزرو برای ادامهٔ ثبت (ارسال مجدد) می‌ماند
+    rec9 = runtime_state.prepaid_registrations.get(9)
+    assert rec9 is not None
+    act = [r for r in rec9.get("reservations", []) if r.get("status") in ("reserved", "queued")]
+    assert len(act) == 1 and act[0].get("paid_rial") == 1_000_000
     assert "100,000" in line and "کیف پول" in line
     approve_all()
     assert wallet.balance(9) == 100_000
@@ -132,7 +145,11 @@ def test_sweep_expired_deceased_and_normal_windows():
     approve_all()
     assert wallet.balance(10) == 100_000
     assert wallet.balance(11) == 100_000
-    assert 11 not in runtime_state.prepaid_registrations
+    # ⭐️ v2: رکورد ۱۱ می‌ماند؛ رزرو نصف‌شده برای ادامهٔ ثبت (بدون ماندهٔ آزاد)
+    rec11 = runtime_state.prepaid_registrations.get(11)
+    assert rec11 is not None and rec11.get("free_credit_rial") == 0
+    act11 = [r for r in rec11.get("reservations", []) if r.get("status") in ("reserved", "queued")]
+    assert len(act11) == 1 and act11[0].get("paid_rial") == 1_000_000
     user_texts = [c.args[1] for c in bot.send_message.call_args_list if c.args[0] in (10, 11)]
     assert len(user_texts) == 2
 

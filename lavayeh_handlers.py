@@ -294,10 +294,35 @@ async def lavayeh_entry(message: Message, state: FSMContext):
     user_id = message.from_user.id
     active = runtime_state.active_lavayeh_users if hasattr(runtime_state, "active_lavayeh_users") else set()
     if user_id in active:
-        # پاکسازی حالت گیرکرده (مثلاً بعد از قطعی/کرش ربات)
-        active.discard(user_id)
+        # ⭐️ v2 (سند §۵.۲ — رفع §۳.۵): کاربر ممکن است تسکش همین حالا در صف ثبت/
+        # صف ماندگار ساعت غیرکاری باشد؛ در آن حالت نباید از active_lavayeh_users
+        # حذف شود (وگرنه هشدار کاذب PAY-RECONCILE و ناهماهنگی پیش می‌آید).
+        # فقط وقتی پاکسازی کنیم که هیچ نشانه‌ای از تسک در جریان نباشد.
+        _has_followup = False
+        try:
+            import pending_jobs
+            _has_followup = _has_followup or (user_id in pending_jobs.user_ids())
+        except Exception:
+            pass
+        try:
+            import sana_gate
+            _has_followup = _has_followup or (user_id in sana_gate.deferred_by_user())
+        except Exception:
+            pass
+        try:
+            import user_activity
+            _has_followup = _has_followup or user_activity.is_busy(user_id)
+        except Exception:
+            pass
+        if _has_followup:
+            logging.info(
+                f"[LAVAYEH] کاربر {user_id} با تسک در جریان دوباره وارد ثبت لایحه شد — "
+                f"از active_lavayeh_users حذف نشد (§۵.۲ سند)")
+        else:
+            # پاکسازی حالت گیرکرده (مثلاً بعد از قطعی/کرش ربات)
+            active.discard(user_id)
+            logging.warning(f"[LAVAYEH] پاکسازی active_lavayeh_users گیرکرده برای user={user_id}")
         await state.clear()
-        logging.warning(f"[LAVAYEH] پاکسازی active_lavayeh_users گیرکرده برای user={user_id}")
 
     await state.clear()
     await state.update_data(lavayeh_persons=[], lavayeh_attachments=[], service_type="lavayeh")
@@ -2414,48 +2439,63 @@ async def lavayeh_confirm_handler(message: Message, state: FSMContext, bot: Bot)
         user_id = message.from_user.id
         title = data.get("lavayeh_title", "")
 
-        # بررسی معافیت از پرداخت خدمات
-        if await is_exempt_user(user_id):
-            if not hasattr(runtime_state, "active_lavayeh_users"):
-                runtime_state.active_lavayeh_users = set()
-            runtime_state.active_lavayeh_users.add(user_id)
+        # ⭐️ v2 (سند §۴.۴ — رفع کلیک دوبل §۳.۶): بلافاصله بعد از get_data،
+        # state از confirm خارج می‌شود تا کلیک دوم کاربر وارد همین هندلر نشود؛
+        # داده‌های FSM محفوظ می‌مانند (برخلاف state.clear) و در پایان مسیر،
+        # state درست (پرداخت/پاک‌سازی) ست می‌شود.
+        await state.set_state(Form.lavayeh_submitting)
+        from prepay_registration import user_lock
+        async with user_lock(user_id):
+            # بررسی معافیت از پرداخت خدمات
+            if await is_exempt_user(user_id):
+                if not hasattr(runtime_state, "active_lavayeh_users"):
+                    runtime_state.active_lavayeh_users = set()
+                runtime_state.active_lavayeh_users.add(user_id)
 
-            await message.answer(
-                "✅ *معافیت از پرداخت خدمات*\n\n"
-                "شما در لیست کاربران معاف هستید."
-                "\nدرخواست لایحه در حال ارسال به صف پردازش...",
-                reply_markup=ReplyKeyboardRemove())
-            # ارسال مستقیم به صف بدون پرداخت
-            await _send_lavayeh_task_to_queue(data, user_id, title, bot=bot)
-            await state.clear()
+                await message.answer(
+                    "✅ *معافیت از پرداخت خدمات*\n\n"
+                    "شما در لیست کاربران معاف هستید."
+                    "\nدرخواست لایحه در حال ارسال به صف پردازش...",
+                    reply_markup=ReplyKeyboardRemove())
+                # ارسال مستقیم به صف بدون پرداخت
+                await _send_lavayeh_task_to_queue(data, user_id, title, bot=bot,
+                                                  exempt=True)
+                await state.clear()
+                return
+
+            # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): پیش‌پرداخت قبل از شروع ثبت —
+            # فاکتور و درگاه پرداخت ارسال می‌شود؛ پس از تایید خودکار پرداخت،
+            # درخواست به صف ثبت ارسال خواهد شد (lavayeh_prepay_successful_payment).
+            # لایحه: ۱۰۰,۰۰۰ تومان — اعلام وکالت: ۲۰۰,۰۰۰ تومان (تعرفهٔ تأییدشدهٔ کارفرما ۱۴۰۵/۰۸).
+            if title == "اعلام وکالت":
+                prepay_svc_key, prepay_label = "ealam", "اعلام وکالت"
+            else:
+                prepay_svc_key, prepay_label = "lavayeh", f"لایحه ({title})"
+
+            # ⭐️ v2 (سند §۵.۱.۳ — رفع باگ اصلی §۳.۳): ماندهٔ آزاد واقعاً کسر و
+            # در یک رزرو قفل می‌شود؛ task_id رزرو به job وصل است و فقط در
+            # فاکتور نهایی همین ثبت کسر خواهد شد.
+            from prepay_registration import cover_prepay_from_credit
+            prepay_task_id = await cover_prepay_from_credit(
+                bot, user_id, prepay_svc_key, prepay_label)
+            if prepay_task_id:
+                if not hasattr(runtime_state, "active_lavayeh_users"):
+                    runtime_state.active_lavayeh_users = set()
+                runtime_state.active_lavayeh_users.add(user_id)
+                await _send_lavayeh_task_to_queue(data, user_id, title, bot=bot,
+                                                  prepay_task_id=prepay_task_id)
+                await state.clear()
+                return
+
+            from prepay_registration import send_prepay_invoice
+            sent = await send_prepay_invoice(bot, user_id, prepay_svc_key, prepay_label)
+            if sent:
+                # داده‌های FSM دست‌نخورده می‌مانند تا پس از پرداخت ارسال شوند
+                await state.set_state(Form.waiting_for_lavayeh_prepay)
+            else:
+                # فاکتور ساخته نشد → برگشت به تایید برای تلاش مجدد (hold آزاد شده)
+                await state.set_state(Form.lavayeh_confirm)
             return
-
-        # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): پیش‌پرداخت قبل از شروع ثبت —
-        # فاکتور و درگاه پرداخت ارسال می‌شود؛ پس از تایید خودکار پرداخت،
-        # درخواست به صف ثبت ارسال خواهد شد (lavayeh_prepay_successful_payment).
-        # لایحه: ۱۰۰,۰۰۰ تومان — اعلام وکالت: ۲۰۰,۰۰۰ تومان (تعرفهٔ تأییدشدهٔ کارفرما ۱۴۰۵/۰۸).
-        if title == "اعلام وکالت":
-            prepay_svc_key, prepay_label = "ealam", "اعلام وکالت"
-        else:
-            prepay_svc_key, prepay_label = "lavayeh", f"لایحه ({title})"
-
-        # ⭐ مانده/بستانکاری کاربر کل پیش‌پرداخت را پوشش می‌دهد → بدون فاکتور،
-        # ثبت مستقیم (مانده در فاکتور نهایی کسر می‌شود)
-        from prepay_registration import cover_prepay_from_credit
-        if await cover_prepay_from_credit(bot, user_id, prepay_svc_key, prepay_label):
-            if not hasattr(runtime_state, "active_lavayeh_users"):
-                runtime_state.active_lavayeh_users = set()
-            runtime_state.active_lavayeh_users.add(user_id)
-            await _send_lavayeh_task_to_queue(data, user_id, title, bot=bot)
-            await state.clear()
-            return
-
-        from prepay_registration import send_prepay_invoice
-        sent = await send_prepay_invoice(bot, user_id, prepay_svc_key, prepay_label)
-        if sent:
-            # داده‌های FSM دست‌نخورده می‌مانند تا پس از پرداخت ارسال شوند
-            await state.set_state(Form.waiting_for_lavayeh_prepay)
-        return
 
     if text == "✏️ ویرایش اطلاعات":
         await message.answer(
@@ -2467,11 +2507,43 @@ async def lavayeh_confirm_handler(message: Message, state: FSMContext, bot: Bot)
     await message.answer("⚠️ لطفاً یکی از گزینه‌های زیر را انتخاب کنید:", reply_markup=lavayeh_confirm_kb)
 
 
+@lavayeh_router.message(Form.lavayeh_submitting)
+async def lavayeh_submitting_wait(message: Message):
+    """⭐️ v2 (§۴.۴): درخواست همین حالا در حال پردازش است — کلیک/پیام دوباره رد می‌شود."""
+    await message.answer(
+        "⏳ درخواست شما در حال پردازش است؛ لطفاً منتظر بمانید...", reply_markup=ReplyKeyboardRemove())
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # تابع کمکی: ارسال تسک لایحه به صف پردازش
 # ══════════════════════════════════════════════════════════════════════════════
-async def _send_lavayeh_task_to_queue(data: dict, user_id: int, title: str, bot: Bot = None):
-    """ارسال تسک لایحه به صف پردازش بر اساس داده‌های ذخیره‌شده."""
+async def _send_lavayeh_task_to_queue(data: dict, user_id: int, title: str, bot: Bot = None,
+                                       prepay_task_id: str | None = None,
+                                       exempt: bool = False) -> bool:
+    """ارسال تسک لایحه/اعلام وکالت به صف پردازش بر اساس داده‌های ذخیره‌شده.
+
+    ⭐️ v2 (سند §۴.۱/§۵.۲): هر job شناسهٔ رزرو پیش‌پرداخت خودش (prepay_task_id)
+    را دارد؛ هیچ تسکی (غیر معاف/غیر دسته‌جمعی) بدون رزرو معتبر وارد صف نمی‌شود
+    و پس از enqueue وضعیت رزرو queued می‌شود (برای pay_reconcile).
+    """
+    # ردیف دسته‌جمعی حساب پیش‌پرداخت خودش را دارد (bulk_submissions) — §۶.۴ سند
+    is_bulk_row = bool(data.get("_is_bulk"))
+    prepay_task_id = prepay_task_id or data.get("prepay_task_id")
+    if not prepay_task_id and not exempt and not is_bulk_row:
+        logging.error(
+            f"[LAVAYEH] تلاش enqueue بدون رزرو پیش‌پرداخت — رد شد: user={user_id}, "
+            f"title={title!r} (§۴.۱: هیچ تسکی بدون رزرو معتبر وارد صف نمی‌شود)")
+        try:
+            if bot is not None:
+                from config import ADMIN_ID as _ADMIN
+                await bot.send_message(
+                    _ADMIN,
+                    f"⛔ [PREPAY-V2] تسک لایحهٔ کاربر {user_id} بدون رزرو معتبر به صف نرفت "
+                    f"({title or 'بدون عنوان'}). لطفاً بررسی کنید.")
+        except Exception:
+            pass
+        return False
+
     # 📥 کپی کامل درخواست برای ادمین — همین لحظه، مستقل از موفقیت/شکست
     # پردازش خودکار بعدی در سنا.
     if bot is not None:
@@ -2491,6 +2563,7 @@ async def _send_lavayeh_task_to_queue(data: dict, user_id: int, title: str, bot:
             "user_id": user_id,
             "query_type": "اعلام_وکالت",
             "task_type": "EALAM_VAKALAHT_SUBMIT",
+            "prepay_task_id": prepay_task_id,
             "ealam_lawyers": data.get("ealam_lawyers", []),
             "ealam_contracts": data.get("ealam_contracts", []),
             "ealam_stamp_amount": data.get("ealam_stamp_amount", 0),
@@ -2511,6 +2584,7 @@ async def _send_lavayeh_task_to_queue(data: dict, user_id: int, title: str, bot:
             "user_id": user_id,
             "query_type": "لایحه_ثبت",
             "task_type": "LAVAYEH_SUBMIT",
+            "prepay_task_id": prepay_task_id,
             "lavayeh_title": data.get("lavayeh_title"),
             "lavayeh_system_title": data.get("lavayeh_system_title"),
             # ⭐ رفع باگ lavayeh_None.pdf: بدون «or ""» اگر کلید در FSM نبود
@@ -2532,6 +2606,15 @@ async def _send_lavayeh_task_to_queue(data: dict, user_id: int, title: str, bot:
             "_bulk_row_index": data.get("_bulk_row_index"),
             "_bulk_row_key": data.get("_bulk_row_key", ""),
         })
+
+    # ⭐️ v2 (سند §۵.۲): رزرو → queued (pay_reconcile دیگر برای این رزرو هشدار نمی‌دهد)
+    if prepay_task_id:
+        try:
+            import prepay_registration
+            prepay_registration.mark_queued(user_id, prepay_task_id)
+        except Exception as _mq_err:
+            logging.warning(f"[LAVAYEH] mark_queued ناموفق: {_mq_err}")
+    return True
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2570,6 +2653,15 @@ async def lavayeh_prepay_successful_payment(message: Message, state: FSMContext,
 
     logging.info(f"[LAVAYEH-PREPAY] پرداخت خودکار تشخیص داده شد برای کاربر {user_id}")
 
+    # ⭐️ v2 (سند §۴.۴): idempotency پرداخت — charge تکراری (بازپخش کارت‌به‌کارت و ...)
+    # دوباره ثبت/تسک نمی‌سازد.
+    from prepay_registration import charge_processed
+    _charge_id = str(getattr(payment, "telegram_payment_charge_id", "") or "")
+    if charge_processed(_charge_id):
+        logging.info(f"[LAVAYEH-PREPAY] پرداخت تکراری (charge={_charge_id}) — رد شد: user={user_id}")
+        await message.answer("✅ این پرداخت قبلاً ثبت شده است؛ درخواست شما در حال پردازش است.")
+        return
+
     # ⚠️ داده‌های FSM از بین رفته (مثلاً پرداختِ فاکتور قدیمی پس از پایان فلوی
     # قبلی — لاگ ۱۴۰۵/۰۸/۰۶ کاربر ۲۷۲۶۶۰۵۴۹). ⭐ رفع باگ: پول دیگر گم نمی‌شود؛
     # مبلغ به‌عنوان پیش‌پرداخت/اعتبار کاربر ثبت می‌شود و در فاکتور پایان کارِ
@@ -2601,10 +2693,20 @@ async def lavayeh_prepay_successful_payment(message: Message, state: FSMContext,
         await state.clear()
         return
 
-    # ⭐ ثبت پیش‌پرداخت برای کسر از هزینه کل در پایان کار (سکشن جدید ۱۴۰۵/۰۶)
-    register_prepaid(user_id, fee, _svc_key,
-                     f"لایحه ({title})" if title != "اعلام وکالت" else "اعلام وکالت",
-                     payment.telegram_payment_charge_id)
+    # ⭐️ v2 (سند §۵.۲): ثبت رزرو برای همین ثبت — hold فاکتور با task_id ای که در
+    # payload فاکتور آمده، به رزرو reserved تبدیل می‌شود و همان task_id به job وصل است.
+    from prepay_registration import finalize_paid, mark_charge_processed
+    try:
+        _pl = _json.loads(str(getattr(payment, "invoice_payload", "") or "{}"))
+    except Exception:
+        _pl = {}
+    _tid = _pl.get("tid")
+    reservation = finalize_paid(
+        user_id, _tid, _svc_key,
+        f"لایحه ({title})" if title != "اعلام وکالت" else "اعلام وکالت",
+        fee * 10, _charge_id)
+    mark_charge_processed(_charge_id)
+    prepay_task_id = reservation.get("task_id") if reservation else None
 
     await message.answer(
         f"✅ *پرداخت پیش‌پرداخت تایید شد!*",
@@ -2642,7 +2744,8 @@ async def lavayeh_prepay_successful_payment(message: Message, state: FSMContext,
     if not hasattr(runtime_state, "active_lavayeh_users"):
         runtime_state.active_lavayeh_users = set()
     runtime_state.active_lavayeh_users.add(user_id)
-    await _send_lavayeh_task_to_queue(data, user_id, title, bot=bot)
+    await _send_lavayeh_task_to_queue(data, user_id, title, bot=bot,
+                                      prepay_task_id=prepay_task_id)
     await state.clear()
 
 
@@ -3642,6 +3745,13 @@ async def lavayeh_prepay_done_legacy_reject(callback: CallbackQuery):
 async def lavayeh_prepay_cancel_callback(callback: CallbackQuery, state: FSMContext):
     """انصراف از پرداخت خدمات"""
     await callback.answer()
+    # ⭐️ v2 (سند §۵.۹): انصراف از فاکتور → hold آزاد شود تا سهم ماندهٔ
+    # نگه‌داشته‌شده برای همین فاکتور به ماندهٔ آزاد کاربر برگردد.
+    try:
+        import prepay_registration
+        prepay_registration.release_hold(callback.from_user.id, service_key="lavayeh")
+    except Exception:
+        pass
     await callback.message.answer(
         "لغو گردید. لطفاً مجدداً شروع کنید:",
         reply_markup=flow_type_kb
@@ -4069,7 +4179,8 @@ async def send_lavayeh_result(
     prepaid: bool = False,
     service_type: str | None = None,
     sign_menu_path: list = None,
-    admin_manual: bool = False):
+    admin_manual: bool = False,
+    prepay_task_id: str | None = None):
     """ارسال نتیجهٔ ثبت به کاربر + فاکتور پرداخت (درگاه) + شروع فلوی امضا.
 
     ⭐ sign_menu_path: مسیر منوی سامانه برای ناوبری به صفحهٔ امضا — برای
@@ -4086,6 +4197,10 @@ async def send_lavayeh_result(
     document_category («نوع») و fee («درآمد») در ثبت‌های پنل ادمین خالی
     گذاشته می‌شوند، چون این آمار برای سنجش عملکرد خودِ اتوماسیون است و
     ثبت دستی ادمین نباید در آن لحاظ شود.
+
+    ⭐️ v2 (سند §۵.۲): prepay_task_id — شناسهٔ رزوی همین ثبت (از job).
+    کسر پایان کار فقط از همین رزرو انجام می‌شود (رفع §۳.۴: قبلاً کل
+    رکورد کاربر با اولین پایان کار pop می‌شد و بقیهٔ ثبت‌ها بدون کسر می‌ماندند).
     """
     if lavayeh_persons is None:
         lavayeh_persons = []
@@ -4124,8 +4239,11 @@ async def send_lavayeh_result(
     # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): کسر پیش‌پرداخت از هزینه کل —
     # هزینه کل اعلام می‌شود، ذکر می‌گردد که فلان مبلغ به عنوان پیش پرداخت
     # پرداخت شده است و مابقی به‌عنوان «مبلغ قابل پرداخت شما» + فاکتور ارسال می‌شود.
+    # ⭐️ v2 (سند §۵.۲): فقط رزرو همین ثبت (task_id) یا قدیمی‌ترین رزرو همان
+    # گروه سرویس (FIFO) کسر می‌شود.
     from prepay_registration import adjust_final_fee_with_prepay, build_prepay_fee_text
-    adjusted_fee, prepay_info = adjust_final_fee_with_prepay(user_id, final_fee)
+    adjusted_fee, prepay_info = adjust_final_fee_with_prepay(
+        user_id, final_fee, service_key=service_type, task_id=prepay_task_id)
     if prepay_info:
         total_fee_rial = final_fee
         final_fee = adjusted_fee
@@ -4327,6 +4445,19 @@ async def send_lavayeh_result(
     except Exception as e:
         logging.error(f"[LAVAYEH] خطا در ارسال فاکتور بله: {e}", exc_info=True)
         await bot.send_message(user_id, "⚠️ خطا در ساخت فاکتور پرداخت. لطفاً کمی بعد دوباره تلاش کنید.")
+        # ⭐️ v2 (سند §۵.۹): فاکتور پایانی ساخته نشد → رزرو همین تسک آزاد شود
+        # تا پول کاربر برای فاکتور بعدی/بازگشت آزاد بماند.
+        if prepay_task_id:
+            try:
+                import prepay_registration as _pr
+                _released = _pr.release_reservation(user_id, prepay_task_id)
+                if _released:
+                    await bot.send_message(
+                        user_id,
+                        "💰 پیش‌پرداخت این ثبت به ماندهٔ قابل استفادهٔ شما برگشت؛ "
+                        "به‌صورت خودکار از فاکتور بعدی شما کسر می‌شود.")
+            except Exception as _rel_err:
+                logging.error(f"[LAVAYEH] آزادسازی رزرو پس از شکست فاکتور ناموفق: {_rel_err}")
         runtime_state.active_lavayeh_users.discard(user_id)
         return
 

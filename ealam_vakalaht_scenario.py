@@ -463,7 +463,8 @@ async def process_ealam_vakalaht_task(data: dict, bot: Bot):
                 # ⭐ v1.3: قبلاً service_type پاس داده نمی‌شد و پروندهٔ اعلام وکالت
                 # در پنل با نوع «LAVAYEH» ثبت می‌شد؛ حالا با نوع صحیح خودش ثبت می‌شود
                 # تا در ممیزی اتصال بخش‌ها و محاسبه سود، درست دسته‌بندی شود.
-                service_type="EALAM_VAKALAHT")
+                service_type="EALAM_VAKALAHT",
+                prepay_task_id=data.get("prepay_task_id"))
 
             await bot.send_message(
                 ADMIN_ID,

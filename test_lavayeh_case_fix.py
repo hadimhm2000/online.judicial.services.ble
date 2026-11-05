@@ -189,13 +189,16 @@ def test_expired_window_blocks_steps():
 # ── اسوئپر: انقضا بدون جریمه ────────────────────────────────────────────
 
 def test_sweep_expires_without_touching_prepay():
+    import prepay_registration as _pr
     runtime_state.prepaid_registrations[UID] = {"amount_rial": 10000, "prepay_paid_rial": 10000}
+    _pr.migrate_all_to_v2()
     win = nid_fix_window.start_lavayeh_case_fix(UID, _task(), NOT_FOUND)
     win["deadline"] = datetime.datetime.now() - datetime.timedelta(seconds=1)
     bot = SimpleNamespace(send_message=AsyncMock())
     closed = run(nid_fix_window.sweep_expired(bot))
     assert closed >= 1
     assert nid_fix_window.get_lavayeh_case_fix(UID) is None
-    assert runtime_state.prepaid_registrations[UID]["amount_rial"] == 10000
+    # ⭐️ v2: رزرو همان‌طور که بود می‌ماند (۱۰٬۰۰۰ ریال قابل کسر)
+    assert _pr.get_total_exposure_rial(UID) == 10000
     user_text = bot.send_message.await_args_list[0].args[1]
     assert "پیش‌پرداخت شما حفظ شده" in user_text

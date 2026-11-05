@@ -874,7 +874,8 @@ async def _send_result(bot: Bot, user_id: int, flow: str, task_data: dict,
                     lavayeh_row_number=task_data.get("lavayeh_row_number", 1),
                     lavayeh_persons=persons,
                     skip_fee_calc=True,
-                    service_type=service_type)
+                    service_type=service_type,
+                    prepay_task_id=task_data.get("prepay_task_id"))
             elif flow == "ezhharnameh":
                 declarants = task_data.get("ezhhar_declarants", [])
                 subject = task_data.get("ezhharnameh_subject", "اظهارنامه")
@@ -888,7 +889,8 @@ async def _send_result(bot: Bot, user_id: int, flow: str, task_data: dict,
                     lavayeh_persons=declarants,
                     skip_fee_calc=True,
                     is_ezhharnameh=True,
-                    prepaid=task_data.get("prepaid", False))
+                    prepaid=task_data.get("prepaid", False),
+                    prepay_task_id=task_data.get("prepay_task_id"))
             elif flow == "check":
                 plaintiffs = task_data.get("check_plainiffs", [])
                 request_title = task_data.get("check_request_title", "دادخواست")
@@ -905,7 +907,8 @@ async def _send_result(bot: Bot, user_id: int, flow: str, task_data: dict,
                     skip_fee_calc=True,
                     is_ezhharnameh=False,
                     service_type="CHECK",
-                    sign_menu_path=sign_menu_path)
+                    sign_menu_path=sign_menu_path,
+                    prepay_task_id=task_data.get("prepay_task_id"))
             elif flow == "tn":
                 # دعاوی اعتراضی — روال مستقل خودش (send_tajdid_nazar_result)
                 from tajdid_nazar_handlers import send_tajdid_nazar_result
@@ -919,7 +922,8 @@ async def _send_result(bot: Bot, user_id: int, flow: str, task_data: dict,
                     case_type=case_type,
                     file_no=file_no,
                     tn_persons=appellants,
-                    cost_info={})
+                    cost_info={},
+                    prepay_task_id=task_data.get("prepay_task_id"))
         else:
             raise ValueError(f"flow نامشخص: {flow}")
 

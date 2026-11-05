@@ -402,6 +402,37 @@ async def successful_payment_handler(message: types.Message, state: FSMContext, 
         need_attachments = data.get('need_attachments', False)
         doc_name = f"{doc_category} - {doc_subcategory}" if doc_subcategory else doc_category
 
+        # ⭐️ §۶.۱ سند (لاگ ۲۰۲۶-۱۱-۰۴ کاربر 1216814542): اگر داده‌های FSM از
+        # بین رفته باشد (state به شاخهٔ عمومی افتاده)، قبلاً یک تسک بی‌عنوان
+        # («تسک  کاربر») به صف می‌رفت. حالا: هیچ تسکی ساخته نمی‌شود؛ مبلغ به
+        # کیف پول کاربر برمی‌گردد و به مدیر اطلاع داده می‌شود.
+        if not query_type and not tracking_code:
+            logging.warning(
+                f"[SINGLE-PAY] پرداخت بدون داده FSM — تسک ساخته نشد: user={user_id}, "
+                f"charge={payment.telegram_payment_charge_id} (مبلغ به کیف پول برمی‌گردد)")
+            _fee_rial_single = int((getattr(payment, "total_amount", 0) or 0))
+            if _fee_rial_single >= 10:
+                try:
+                    import wallet
+                    await wallet.credit(user_id, _fee_rial_single // 10, "refund",
+                                        f"بازگشت پرداخت بدون داده (فاکتور قدیمی) {payment.telegram_payment_charge_id[:30]}")
+                except Exception as _w_err:
+                    logging.error(f"[SINGLE-PAY] واریز بازگشتی به کیف پول ناموفق: {_w_err}")
+            await message.answer(
+                "✅ پرداخت شما دریافت شد اما درخواست مربوطه یافت نشد (فاکتور قدیمی).\n"
+                "👛 مبلغ به کیف پول شما برگشت و به‌صورت خودکار از فاکتورهای بعدی شما کسر می‌شود.")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"⚠️ [SINGLE-PAY] پرداخت بدون داده FSM — user={user_id}\n"
+                    f"🎫 payment_id: {payment.telegram_payment_charge_id}\n"
+                    f"💰 مبلغ: {fee:,} تومان\n"
+                    f"✅ بدون ساخت تسک؛ مبلغ به کیف پول کاربر برگشت.")
+            except Exception:
+                pass
+            await state.clear()
+            return
+
         queue_position = runtime_state.job_queue.qsize()
         queue_note = f"\n📊 موقعیت شما در صف: {queue_position + 1}" if queue_position > 0 else "\n▶️ پردازش بلافاصله آغاز می‌شود."
 
@@ -729,6 +760,13 @@ async def pay_done_legacy_reject(callback: CallbackQuery):
 async def pay_cancel_callback(callback: CallbackQuery, state: FSMContext):
     """کاربر انصراف از پرداخت"""
     await callback.answer()
+    # ⭐️ §۶.۳: انصراف → ورودی‌های فعالِ پرداخت‌نشدهٔ تک‌موردی بسته شوند تا
+    # قاعدهٔ «فاکتور تکراری صادر نمی‌شود» کاربر را بلاک نکند.
+    try:
+        from card_payment import close_active_entries as _cp_close
+        _cp_close(callback.from_user.id, "single")
+    except Exception:
+        pass
     data = await state.get_data()
     cart = data.get("cart", [])
     await log_event(
@@ -749,6 +787,12 @@ async def process_payment_receipt_text_only(message: types.Message, state: FSMCo
     if not message.text:
         return
     if "انصراف" in message.text:
+        # ⭐️ §۶.۳: انصراف → بستن ورودی‌های فعالِ پرداخت‌نشدهٔ تک‌موردی
+        try:
+            from card_payment import close_active_entries as _cp_close
+            _cp_close(message.from_user.id, "single")
+        except Exception:
+            pass
         data = await state.get_data()
         cart = data.get("cart", [])
         await log_event(
@@ -881,37 +925,67 @@ async def admin_reject_bulk(message: types.Message, bot: Bot):
 # دیگر آن‌ها را برای موارد بعدی محاسبه نکند.
 @router.message(F.from_user.id == ADMIN_ID, F.text == "/prepaid")
 async def admin_list_prepaid(message: types.Message):
-    """نمایش لیست مبالغ ماندهٔ کاربران (پیش‌پرداخت‌های در انتظار کسر)"""
+    """نمایش لیست مبالغ ماندهٔ کاربران (پیش‌پرداخت‌های در انتظار کسر)
+
+    ⭐️ v2 (سند §۵.۶): مدل رزرو — ماندهٔ آزاد + رزروهای هر کاربر با وضعیت.
+    """
     prepaid = getattr(runtime_state, "prepaid_registrations", {})
     if not prepaid:
         await message.answer("✅ هیچ مبلغ مانده‌ای ثبت نشده است.")
         return
 
+    try:
+        import prepay_registration as _pr
+    except Exception:
+        _pr = None
+
     lines = ["💰 *مبالغ ماندهٔ ثبت‌شده (قابل کسر در موارد بعدی):*\n"]
     for uid, info in prepaid.items():
-        amount_rial = int(info.get("amount_rial", 0) or 0)
-        amount_toman = int(info.get("amount_toman", amount_rial // 10) or 0)
-        svc = info.get("service_label") or info.get("service", "؟")
-        paid_at = info.get("paid_at", "")
-        paid_str = paid_at.strftime("%Y/%m/%d %H:%M") if hasattr(paid_at, "strftime") else str(paid_at)
-        try:
-            from prepay_registration import _split_record
-            _paid, _credit = _split_record(info)
-            _parts = f" (پیش‌پرداخت: {_paid:,} + مانده/بستانکاری: {_credit:,})"
-        except Exception:
-            _parts = ""
-        lines.append(
-            f"• کاربر `{uid}` — {amount_rial:,} ریال ({amount_toman:,} تومان){_parts} | "
-            f"سرویس: {svc} | زمان: {paid_str}")
+        if _pr is not None and isinstance(info, dict) and info.get("version") == 2:
+            free = max(0, int(info.get("free_credit_rial", 0) or 0))
+            res_lines = []
+            for r in info.get("reservations", []):
+                st = str(r.get("status", ""))
+                if st in ("consumed", "released"):
+                    continue
+                res_lines.append(
+                    f"     • رزرو {int(r.get('reserved_rial', 0) or 0):,} ریال "
+                    f"({st}) — {r.get('service_label') or r.get('service') or '؟'}"
+                    + (f" | charge={r.get('charge_id')}" if r.get("charge_id") else "")
+                    + (f" | task={r.get('task_id')}" if r.get("task_id") else ""))
+            total = _pr.get_total_exposure_rial(uid) if _pr else free
+            lines.append(
+                f"• کاربر `{uid}` — جمع قابل کسر: {total:,} ریال "
+                f"(ماندهٔ آزاد: {free:,} ریال)")
+            lines.extend(res_lines)
+        else:
+            amount_rial = int(info.get("amount_rial", 0) or 0)
+            amount_toman = int(info.get("amount_toman", amount_rial // 10) or 0)
+            svc = info.get("service_label") or info.get("service", "؟")
+            paid_at = info.get("paid_at", "")
+            paid_str = paid_at.strftime("%Y/%m/%d %H:%M") if hasattr(paid_at, "strftime") else str(paid_at)
+            try:
+                from prepay_registration import _split_record
+                _paid, _credit = _split_record(info)
+                _parts = f" (پیش‌پرداخت: {_paid:,} + مانده/بستانکاری: {_credit:,})"
+            except Exception:
+                _parts = ""
+            lines.append(
+                f"• کاربر `{uid}` — {amount_rial:,} ریال ({amount_toman:,} تومان){_parts} | "
+                f"سرویس: {svc} | زمان: {paid_str}")
     lines.append(
         "\n🗑 حذف: `/prepaid_clear <user_id>`\n"
-        "✏️ ویرایش مبلغ (ریال): `/prepaid_set <user_id> <مبلغ_ریال>`")
+        "✏️ ویرایش ماندهٔ آزاد (ریال): `/prepaid_set <user_id> <مبلغ_ریال>`")
     await message.answer("\n".join(lines), parse_mode="Markdown")
 
 
 @router.message(F.from_user.id == ADMIN_ID, F.text.startswith("/prepaid_clear"))
 async def admin_clear_prepaid(message: types.Message):
-    """حذف مبلغ ماندهٔ یک کاربر — دیگر از هزینه موارد بعدی کسر نمی‌شود"""
+    """حذف مبلغ ماندهٔ یک کاربر — دیگر از هزینه موارد بعدی کسر نمی‌شود
+
+    ⭐️ v2: رزروهای فعال هم لغو می‌شوند (released بدون برگشت پول — تصمیم مدیر)
+    و ماندهٔ آزاد صفر می‌شود.
+    """
     parts = message.text.split()
     if len(parts) < 2 or not parts[1].lstrip("-").isdigit():
         await message.answer("⚠️ فرمت صحیح: `/prepaid_clear <user_id>`")
@@ -923,6 +997,11 @@ async def admin_clear_prepaid(message: types.Message):
         await message.answer(f"⚠️ مبلغ مانده‌ای برای کاربر `{target_uid}` ثبت نشده است.")
         return
     amount_rial = int(removed.get("amount_rial", 0) or 0)
+    if removed.get("version") == 2:
+        amount_rial = sum(int(r.get("reserved_rial", 0) or 0)
+                          for r in removed.get("reservations", [])
+                          if r.get("status") in ("hold", "reserved", "queued")) \
+                      + max(0, int(removed.get("free_credit_rial", 0) or 0))
     await message.answer(
         f"✅ مبلغ ماندهٔ کاربر `{target_uid}` ({amount_rial:,} ریال) حذف شد.\n"
         f"دیگر از هزینه موارد بعدی این کاربر کسر نمی‌شود.")
@@ -933,7 +1012,11 @@ async def admin_clear_prepaid(message: types.Message):
 
 @router.message(F.from_user.id == ADMIN_ID, F.text.startswith("/prepaid_set"))
 async def admin_set_prepaid(message: types.Message):
-    """ویرایش مبلغ ماندهٔ یک کاربر (مبلغ جدید به ریال)"""
+    """ویرایش مبلغ ماندهٔ آزاد یک کاربر (مبلغ جدید به ریال)
+
+    ⭐️ v2 (سند §۵.۶): مقدار جدید روی «ماندهٔ آزاد» (free_credit_rial) اعمال
+    می‌شود؛ رزروهای ثبت‌های در جریان دست نمی‌خورند (پول همان ثبت‌هاست).
+    """
     parts = message.text.split()
     if len(parts) < 3 or not parts[1].lstrip("-").isdigit() or not parts[2].lstrip("-").isdigit():
         await message.answer("⚠️ فرمت صحیح: `/prepaid_set <user_id> <مبلغ_ریال>`\n"
@@ -954,8 +1037,15 @@ async def admin_set_prepaid(message: types.Message):
         await message.answer(
             f"✅ {new_rial // 10:,} تومان به کیف پول کاربر `{target_uid}` واریز شد "
             f"(موجودی: {wallet.balance(target_uid):,} تومان).")
+    elif isinstance(existing, dict) and existing.get("version") == 2:
+        old_rial = max(0, int(existing.get("free_credit_rial", 0) or 0))
+        existing["free_credit_rial"] = new_rial
+        await message.answer(
+            f"✅ ماندهٔ آزاد کاربر `{target_uid}` ویرایش شد: "
+            f"{old_rial:,} → {new_rial:,} ریال.\n"
+            f"(رزروهای ثبت‌های در جریان دست نخوردند — /prepaid برای جزئیات)")
     else:
-        # ویرایش پیش‌پرداخت پروندهٔ در جریان (در فاکتور نهایی همان پرونده کسر می‌شود)
+        # رکورد قدیمی v1 — همان رفتار قبلی
         old_rial = int(existing.get("amount_rial", 0) or 0)
         existing["amount_rial"] = new_rial
         existing["amount_toman"] = new_rial // 10
@@ -2064,6 +2154,25 @@ async def confirm_opt_process(message: types.Message, state: FSMContext, bot: Bo
 
         # ═══ ارسال فاکتور بله با استفاده از sendInvoice API ═══
         fee_rial = fee * 10  # تومان به ریال
+        # ⭐️ §۶.۳ سند (لاگ ۲۰۲۶-۱۱-۰۴ کاربر 272660549 — دو فاکتور ۶۵۰٬۰۰۰ ریالی
+        # پشت‌سرهم): اگر همین کاربر همین لحظه فاکتور پرداخت‌نشدهٔ فعالی دارد،
+        # فاکتور جدید صادر نمی‌شود (قاعدهٔ ایدمپوتنسی §۴.۴ برای فاکتورهای single).
+        try:
+            from card_payment import has_active_invoice as _cp_has_active
+            _active_single = _cp_has_active(message.from_user.id, "single")
+        except Exception:
+            _active_single = None
+        if _active_single is not None:
+            logging.warning(
+                f"[SINGLE-PAY] فاکتور فعال پرداخت‌نشده موجود — فاکتور جدید صادر نشد: "
+                f"user={message.from_user.id}, مبلغ={_active_single.get('amount_rial', 0):,} ریال")
+            await message.answer(
+                "⏳ شما همین حالا یک فاکتور پرداخت‌نشدهٔ فعال دارید.\n"
+                "لطفاً ابتدا همان فاکتور را پرداخت کنید یا منتظر بمانید؛ "
+                "پس از پرداخت/انقضای آن می‌توانید فاکتور جدید بگیرید.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="❌ انصراف", callback_data="pay_cancel")]]))
+            return
         try:
             invoice_payload = _json.dumps({"type": "single", "uid": message.from_user.id})
             async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT), timeout=aiohttp.ClientTimeout(total=40)) as session:

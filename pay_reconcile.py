@@ -42,13 +42,23 @@ _alerted: set = set()
 def _user_has_followup(uid: int) -> bool:
     """آیا برای این کاربر نشانه‌ای از پیگیریِ پرداختش وجود دارد؟
 
-    نشانه‌ها: وجود در صف ثبت (pending_jobs)، مخازن فرآیند فعال
+    نشانه‌ها: وجود در صف ثبت (pending_jobs)، صف ماندگار خارج از ساعت کاری
+    (sana_gate — تسک در نوبتِ ثبتِ ابتدای ساعت کاری است)، مخازن فرآیند فعال
     (امضا/اصلاح/پرداخت/قطعی — user_activity.is_busy)، کاربران فعال لایحه،
     یا پروندهٔ بازِ قابل پرداخت در دفتر pending_cases.
     """
     try:
         import pending_jobs
         if uid in pending_jobs.user_ids():
+            return True
+    except Exception:
+        pass
+    try:
+        # ⭐ §۸ (۱۴۰۵/۱۱): تسک‌های در صف ماندگار sana_gate هم «پیگیری» هستند —
+        # ثبت ابتدای ساعت کاری بعدی انجام می‌شود؛ هشدار «پرداخت بدون پیگیری»
+        # برای این کاربران کاذب است (رفع §۳.۵ سند به‌صورت حداقلی).
+        import sana_gate
+        if uid in sana_gate.deferred_by_user():
             return True
     except Exception:
         pass
@@ -78,14 +88,66 @@ def _user_has_followup(uid: int) -> bool:
 
 
 async def run_once(bot: Bot, now: datetime.datetime | None = None) -> int:
-    """یک دور بررسی؛ خروجی: تعداد هشدارهای ارسال‌شده."""
+    """یک دور بررسی؛ خروجی: تعداد هشدارهای ارسال‌شده.
+
+    ⭐️ v2 (سند §۵.۷): فقط رزروهای «reserved» (پرداخت شده ولی هنوز job نشده)
+    بررسی می‌شوند؛ رزروهای queued هشدار نمی‌دهند (تسک در صف است). رزروهای
+    hold هم بی‌صدا منقضی می‌شوند (سهم مانده برمی‌گردد) و هشدار ندارند.
+    """
     now = now or datetime.datetime.now()
-    prepaid = getattr(runtime_state, "prepaid_registrations", None) or {}
     sent = 0
+    prepaid = getattr(runtime_state, "prepaid_registrations", None) or {}
+    try:
+        import prepay_registration as _pr
+        _pr.sweep_expired_holds()
+    except Exception:
+        pass
     for uid, rec in list(prepaid.items()):
         try:
             if not isinstance(rec, dict):
                 continue
+            if rec.get("version") == 2:
+                # ⭐️ v2 — رزروهای reserved بدون job (queued نشده) بررسی می‌شوند
+                for res in rec.get("reservations", []):
+                    if res.get("status") != "reserved":
+                        continue
+                    paid_at = res.get("paid_at")
+                    if not isinstance(paid_at, datetime.datetime):
+                        continue
+                    age_min = (now - paid_at).total_seconds() / 60
+                    if age_min < MIN_AGE_MINUTES or age_min > MAX_AGE_MINUTES:
+                        continue
+                    if _user_has_followup(int(uid)):
+                        continue
+                    amount_rial = int(res.get("paid_rial", 0) or 0)
+                    key = (int(uid), paid_at.isoformat(), amount_rial)
+                    if key in _alerted:
+                        continue
+                    _alerted.add(key)
+                    logger.warning(
+                        f"[PAY-RECONCILE] پرداخت بدون پیگیری: user={uid} "
+                        f"مبلغ={amount_rial:,} ریال svc={res.get('service')} "
+                        f"charge={res.get('charge_id') or '—'} سن={int(age_min)} دقیقه "
+                        f"(رزرو {res.get('task_id')} هنوز وارد صف نشده)")
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            "🔎 [PAY-RECONCILE] پرداخت ثبت‌شده بدون پیگیری\n\n"
+                            f"👤 کاربر: {uid}\n"
+                            f"💰 مبلغ: {amount_rial // 10:,} تومان"
+                            f" ({amount_rial:,} ریال)\n"
+                            f"🧾 سرویس: {res.get('service_label') or res.get('service') or '—'}\n"
+                            f"🎫 charge: {res.get('charge_id') or '—'}\n"
+                            f"⏱ زمان پرداخت: {paid_at.strftime('%Y/%m/%d %H:%M')}"
+                            f" (حدود {int(age_min)} دقیقه پیش)\n\n"
+                            "این کاربر پیش‌پرداخت پرداخته اما رزرو آن هنوز وارد صف ثبت "
+                            "نشده است. لطفاً بررسی کنید؛ مبلغ به‌عنوان اعتبار کاربر "
+                            "ثبت است و در فاکتور بعدی او کسر می‌شود.")
+                        sent += 1
+                    except Exception as e:
+                        logger.warning(f"[PAY-RECONCILE] ارسال هشدار به مدیر ناموفق: {e}")
+                continue
+            # ── رکورد قدیمی v1 (پیش از مهاجرت) — همان روال قبلی ──
             paid_at = rec.get("paid_at")
             if not isinstance(paid_at, datetime.datetime):
                 continue

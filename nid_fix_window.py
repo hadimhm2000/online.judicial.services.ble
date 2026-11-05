@@ -173,6 +173,22 @@ def is_expired(win: dict, now: datetime.datetime = None) -> bool:
     return (now or datetime.datetime.now()) >= deadline
 
 
+def _active_reservation(user_id: int):
+    """قدیمی‌ترین رزرو فعال کاربر (FIFO) — یا None. (v2 — سند §۵.۶)"""
+    try:
+        import prepay_registration as _pr
+        rec = _pr._rec(user_id)
+        if not rec:
+            return None
+        _pr.sweep_expired_holds(user_id)
+        active = [r for r in rec.get("reservations", [])
+                  if r.get("status") in ("reserved", "queued")]
+        active.sort(key=lambda r: r.get("paid_at") or datetime.datetime.min)
+        return active[0] if active else None
+    except Exception:
+        return None
+
+
 def halve_prepaid(user_id: int) -> int:
     """جریمه: نصف پیش‌پرداختِ همین درخواست کسر و نیمهٔ دیگر برای موارد بعدی نگه داشته می‌شود.
 
@@ -181,41 +197,61 @@ def halve_prepaid(user_id: int) -> int:
     prepaid_registrations می‌ماند و فقط در پایان کارِ درخواست بعدی کسر می‌شد).
     ماندهٔ قبلی (بستانکاری) کاربر کامل به کیف پول می‌رود و جریمه نمی‌شود.
 
+    ⭐️ v2 (سند §۵.۶): روی «رزرو همین درخواست» کار می‌کند (نه کل رکورد کاربر)؛
+    نصف بخش پرداخت‌شدهٔ رزرو برمی‌گردد و نصف دیگر در همان رزرو برای ادامهٔ
+    ثبت (ارسال مجدد پس از ویرایش کدملی) نگه داشته می‌شود.
+
     خروجی: مبلغ نگه‌داشته‌شدهٔ پیش‌پرداخت (ریال) — ۰ اگر پیش‌پرداختی نبود.
     """
-    prepaid = runtime_state.prepaid_registrations.get(user_id)
-    if not prepaid:
+    res = _active_reservation(user_id)
+    if not res:
         return 0
+    paid_rial = int(res.get("paid_rial", 0) or 0)
+    credit_rial = int(res.get("credit_used_rial", 0) or 0)
+    # ⭐️ v2: «ماندهٔ قبلی» کاربر (free_credit) هم طبق رفتار قبلی کامل به کیف
+    # پول می‌رود (پس از تایید مدیر) — همان‌طور که در v1 کل بخش بستانکاریِ رکورد
+    # می‌رفت.
     try:
-        from prepay_registration import _split_record
-        paid_rial, credit_rial = _split_record(prepaid)
+        import prepay_registration as _pr
+        free_avail = _pr.get_free_credit_rial(user_id)
     except Exception:
-        paid_rial, credit_rial = int(prepaid.get("amount_rial", 0) or 0), 0
-    if paid_rial + credit_rial <= 0:
+        free_avail = 0
+    if paid_rial + credit_rial + free_avail <= 0:
         return 0
     new_rial = paid_rial // 2
     try:
-        # ⭐ واریز فقط پس از تایید مدیر (refund_approvals)؛ نصف پیش‌پرداخت + مانده قبلی در یک درخواست
+        # ⭐ واریز فقط پس از تایید مدیر (refund_approvals)؛ نصف پیش‌پرداخت + مانده‌ها
         import refund_approvals
-        total_toman = (new_rial // 10 if new_rial >= 10 else 0) + \
-                      (credit_rial // 10 if credit_rial >= 10 else 0)
+        total_toman = (new_rial // 10 if new_rial >= 10 else 0) \
+                      + (credit_rial // 10 if credit_rial >= 10 else 0) \
+                      + (free_avail // 10 if free_avail >= 10 else 0)
         if total_toman > 0:
             refund_approvals.request_refund_nowait(
                 user_id, total_toman,
                 "نصف پیش‌پرداخت (جریمهٔ عدم ویرایش کدملی)"
-                + (" + مانده/بستانکاری قبلی" if credit_rial >= 10 else ""),
+                + (" + مانده/بستانکاری قبلی" if credit_rial + free_avail >= 10 else ""),
                 source="nid_fix_penalty")
     except Exception as e:
-        # کیف پول در دسترس نیست → رفتار قبلی (نصف رکورد برای موارد بعدی)
+        # کیف پول در دسترس نیست → رفتار قبلی (نصف در همان رزرو می‌ماند)
         logger.error(f"[NID-FIX] واریز جریمه به کیف پول کاربر {user_id} ناموفق: {e}")
-        prepaid["amount_rial"] = new_rial + credit_rial
-        prepaid["amount_toman"] = prepaid["amount_rial"] // 10
-        prepaid["prepay_paid_rial"] = new_rial
+        res["paid_rial"] = new_rial
+        res["reserved_rial"] = new_rial + credit_rial
         return new_rial
-    runtime_state.prepaid_registrations.pop(user_id, None)
+    # نصف دیگر در همان رزرو برای ادامهٔ همان ثبت می‌ماند (بدون سهم مانده)
+    res["paid_rial"] = new_rial
+    res["credit_used_rial"] = 0
+    res["reserved_rial"] = new_rial
+    try:
+        import prepay_registration as _pr
+        rec = _pr._rec(user_id)
+        if rec is not None:
+            rec["free_credit_rial"] = 0     # به کیف پول منتقل شد (پس از تایید مدیر)
+            _pr._persist()
+    except Exception:
+        pass
     logger.info(
         f"[NID-FIX] جریمه: پیش‌پرداخت کاربر {user_id}: {paid_rial:,} ریال → "
-        f"{new_rial:,} ریال به کیف پول؛ مانده قبلی {credit_rial:,} ریال هم به کیف پول")
+        f"{new_rial:,} ریال به کیف پول (پس از تایید مدیر)؛ مانده قبلی {credit_rial:,} ریال هم به کیف پول")
     return new_rial
 
 
@@ -224,33 +260,53 @@ async def refund_half_prepay_to_wallet(user_id: int) -> int:
     کیف پول کاربر. نیمهٔ دیگر کسر می‌شود؛ ماندهٔ قبلی (بستانکاری) کاربر
     کامل به کیف پول منتقل می‌شود.
 
+    ⭐️ v2 (سند §۵.۶): روی «رزرو همین درخواست» کار می‌کند؛ نیمهٔ دیگر
+    «مصرف دستی» علامت می‌خورد (consumed_manual) تا در فاکتور بعدی دوباره
+    کسر نشود.
+
     خروجی: مبلغ بازگردانده‌شده (تومان) — ۰ اگر پیش‌پرداختی نبود.
     """
-    rec = runtime_state.prepaid_registrations.get(user_id)
-    if not rec:
+    res = _active_reservation(user_id)
+    if not res:
         return 0
-    try:
-        from prepay_registration import _split_record
-        paid_rial, credit_rial = _split_record(rec)
-    except Exception:
-        paid_rial, credit_rial = int(rec.get("amount_rial", 0) or 0), 0
+    paid_rial = int(res.get("paid_rial", 0) or 0)
+    credit_rial = int(res.get("credit_used_rial", 0) or 0)
     if paid_rial <= 0:
         return 0
     refund_toman = (paid_rial // 2) // 10
+    # ⭐️ v2: ماندهٔ آزاد کاربر هم طبق رفتار قبلی کامل به کیف پول می‌رود
+    try:
+        import prepay_registration as _pr
+        free_avail = _pr.get_free_credit_rial(user_id)
+    except Exception:
+        free_avail = 0
     try:
         # ⭐ واریز فقط پس از تایید مدیر (refund_approvals)
         import refund_approvals
-        total_toman = max(0, refund_toman) + (credit_rial // 10 if credit_rial >= 10 else 0)
+        total_toman = max(0, refund_toman) \
+                      + (credit_rial // 10 if credit_rial >= 10 else 0) \
+                      + (free_avail // 10 if free_avail >= 10 else 0)
         if total_toman > 0:
             refund_approvals.request_refund_nowait(
                 user_id, total_toman,
                 "بازگشت ۵۰٪ پیش‌پرداخت (خطای فوت ثبت احوال)"
-                + (" + مانده/بستانکاری قبلی" if credit_rial >= 10 else ""),
+                + (" + مانده/بستانکاری قبلی" if credit_rial + free_avail >= 10 else ""),
                 source="nid_fix_deceased")
     except Exception as e:
         logger.error(f"[NID-FIX] خطا در واریز به کیف پول کاربر {user_id}: {e}")
         return 0
-    runtime_state.prepaid_registrations.pop(user_id, None)
+    # نیمهٔ دیگر: مصرف دستی (کسرشده) — سهم مانده‌ها از مسیر کیف پول برمی‌گردد
+    res["status"] = "consumed_manual"
+    res["consumed_at"] = datetime.datetime.now()
+    res["release_reason"] = "nid_fix_deceased"
+    try:
+        import prepay_registration as _pr
+        rec = _pr._rec(user_id)
+        if rec is not None:
+            rec["free_credit_rial"] = 0     # به کیف پول منتقل شد (پس از تایید مدیر)
+            _pr._persist()
+    except Exception:
+        pass
     logger.info(
         f"[NID-FIX] خطای فوت: {refund_toman:,} تومان (۵۰٪ پیش‌پرداخت) به کیف پول "
         f"کاربر {user_id} بازگشت؛ مانده قبلی={credit_rial:,} ریال")
@@ -409,8 +465,8 @@ def pop_lavayeh_case_fix(user_id: int):
 
 
 def lavayeh_case_fix_prepay_line(user_id: int) -> str:
-    """یک خط «پیش‌پرداخت حفظ شد» — خالی اگر کاربر پیش‌پرداختی ندارد (مثلاً معاف)."""
-    if not runtime_state.prepaid_registrations.get(user_id):
+    """یک خط «پیش‌پرداخت حفظ شد» — خالی اگر رزرو فعالی ندارد (مثلاً معاف)."""
+    if _active_reservation(user_id) is None:
         return ""
     return "💰 مبلغ پیش‌پرداخت شما حفظ شده و در هزینه ثبت بعدی شما لحاظ می‌گردد.\n"
 

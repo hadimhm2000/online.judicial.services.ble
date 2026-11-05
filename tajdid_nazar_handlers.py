@@ -2759,13 +2759,35 @@ async def _go_to_tn_preview(message: Message, state: FSMContext):
 # تایید یا ویرایش
 # ══════════════════════════════════════════════════════════════════════════════
 async def _submit_tn_request(message: Message, state: FSMContext, bot: Bot,
-                             data: dict, user_id: int, case_type: str):
+                             data: dict, user_id: int, case_type: str,
+                             prepay_task_id: str | None = None,
+                             exempt: bool = False):
     """ساخت تسک دعاوی اعتراضی و ارسال به صف پردازش + اطلاع به مدیر/پنل.
 
     (از tn_confirm_handler جدا شد تا پس از «تایید اطلاعات» بلافاصله و نیز
     پس از تایید خودکار پیش‌پرداخت — سکشن جدید کارفرما ۱۴۰۵/۰۶ — قابل
     فراخوانی باشد.)
+
+    ⭐️ v2 (سند §۵.۵): گارد رزرو + prepay_task_id در job + mark_queued.
     """
+    prepay_task_id = prepay_task_id or data.get("prepay_task_id")
+    if not prepay_task_id and not exempt and not data.get("_is_bulk"):
+        logging.error(
+            f"[TN] تلاش enqueue بدون رزرو پیش‌پرداخت — رد شد: user={user_id}, "
+            f"case={case_type!r} (§۴.۱: هیچ تسکی بدون رزرو معتبر وارد صف نمی‌شود)")
+        try:
+            from config import ADMIN_ID as _ADMIN
+            await bot.send_message(
+                _ADMIN,
+                f"⛔ [PREPAY-V2] تسک دعاوی اعتراضی کاربر {user_id} بدون رزرو معتبر "
+                f"به صف نرفت ({case_type}). لطفاً بررسی کنید.")
+        except Exception:
+            pass
+        await state.clear()
+        await message.answer(
+            "⚠️ خطا در ارسال درخواست (رزرو پیش‌پرداخت یافت نشد). لطفاً دوباره تلاش کنید.",
+            reply_markup=ReplyKeyboardRemove())
+        return
     # تعیین task_type
     TASK_TYPE_MAP = {
         "تجدیدنظرخواهی": "TN_APPEAL",
@@ -2782,6 +2804,7 @@ async def _submit_tn_request(message: Message, state: FSMContext, bot: Bot,
         "user_id": user_id,
         "query_type": f"دعاوی_اعتراضی_{case_type}",
         "task_type": task_type,
+        "prepay_task_id": prepay_task_id,
         "case_type": case_type,
         "tn_judge_no": data.get("tn_judge_no", ""),
         "tn_file_no": data.get("tn_file_no", ""),
@@ -2820,6 +2843,14 @@ async def _submit_tn_request(message: Message, state: FSMContext, bot: Bot,
 
     await runtime_state.job_queue.put(job_data)
 
+    # ⭐️ v2 (سند §۵.۵): رزرو → queued (pay_reconcile هشدار نمی‌دهد)
+    if prepay_task_id:
+        try:
+            import prepay_registration
+            prepay_registration.mark_queued(user_id, prepay_task_id)
+        except Exception as _mq_err:
+            logging.warning(f"[TN] mark_queued ناموفق: {_mq_err}")
+
     try:
         from panel_sync import upsert_case_to_panel
         await upsert_case_to_panel(
@@ -2848,26 +2879,36 @@ async def tn_confirm_handler(message: Message, state: FSMContext, bot: Bot):
         user_id = message.from_user.id
         case_type = data.get("case_type", "")
 
-        # ⭐ معافین از پرداخت → مستقیم ثبت (بدون پیش‌پرداخت)
-        if await is_exempt_user(user_id):
-            await _submit_tn_request(message, state, bot, data, user_id, case_type)
-            return
+        # ⭐️ v2 (سند §۴.۴ — رفع کلیک دوبل §۳.۶): فوراً state از confirm خارج شود
+        await state.set_state(Form.tn_submitting)
+        from prepay_registration import user_lock
+        async with user_lock(user_id):
+            # ⭐ معافین از پرداخت → مستقیم ثبت (بدون پیش‌پرداخت)
+            if await is_exempt_user(user_id):
+                await _submit_tn_request(message, state, bot, data, user_id, case_type,
+                                         exempt=True)
+                return
 
-        # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): پیش‌پرداخت قبل از شروع ثبت —
-        # فاکتور و درگاه پرداخت ارسال می‌شود؛ پس از تایید خودکار پرداخت،
-        # ثبت آغاز خواهد شد (tn_prepay_successful_payment).
-        # ⭐ مانده/بستانکاری کاربر کل پیش‌پرداخت را پوشش می‌دهد → بدون فاکتور،
-        # ثبت مستقیم (مانده در فاکتور نهایی کسر می‌شود)
-        from prepay_registration import cover_prepay_from_credit
-        if await cover_prepay_from_credit(bot, user_id, "tn", f"دعاوی اعتراضی ({case_type})"):
-            await _submit_tn_request(message, state, bot, data, user_id, case_type)
-            return
+            # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): پیش‌پرداخت قبل از شروع ثبت —
+            # فاکتور و درگاه پرداخت ارسال می‌شود؛ پس از تایید خودکار پرداخت،
+            # ثبت آغاز خواهد شد (tn_prepay_successful_payment).
+            # ⭐️ v2 (سند §۵.۱.۳ — رفع باگ §۳.۳): پوشش با مانده = رزرو اتمیک
+            from prepay_registration import cover_prepay_from_credit
+            prepay_task_id = await cover_prepay_from_credit(
+                bot, user_id, "tn", f"دعاوی اعتراضی ({case_type})")
+            if prepay_task_id:
+                await _submit_tn_request(message, state, bot, data, user_id, case_type,
+                                         prepay_task_id=prepay_task_id)
+                return
 
-        sent = await send_prepay_invoice(
-            bot, user_id, "tn", f"دعاوی اعتراضی ({case_type})")
-        if sent:
-            # داده‌های FSM دست‌نخورده می‌مانند تا پس از پرداخت ارسال شوند
-            await state.set_state(Form.waiting_for_tn_prepay)
+            sent = await send_prepay_invoice(
+                bot, user_id, "tn", f"دعاوی اعتراضی ({case_type})")
+            if sent:
+                # داده‌های FSM دست‌نخورده می‌مانند تا پس از پرداخت ارسال شوند
+                await state.set_state(Form.waiting_for_tn_prepay)
+            else:
+                # فاکتور ساخته نشد → برگشت به تایید برای تلاش مجدد (hold آزاد شده)
+                await state.set_state(Form.tn_confirm)
         return
 
     if text == "✏️ ویرایش اطلاعات":
@@ -2893,6 +2934,13 @@ async def tn_confirm_handler(message: Message, state: FSMContext, bot: Bot):
         reply_markup=tn_confirm_kb)
 
 
+@tajdid_nazar_router.message(Form.tn_submitting)
+async def tn_submitting_wait(message: Message):
+    """⭐️ v2 (§۴.۴): درخواست در حال پردازش است — کلیک/پیام دوباره رد می‌شود."""
+    await message.answer(
+        "⏳ درخواست شما در حال پردازش است؛ لطفاً منتظر بمانید...", reply_markup=ReplyKeyboardRemove())
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # ⭐ سکشن جدید کارفرما (۱۴۰۵/۰۶): پرداخت پیش‌پرداخت دعاوی اعتراضی —
 # پس از تایید خودکار پرداخت بله، ثبت در سامانه آغاز می‌شود.
@@ -2914,6 +2962,14 @@ async def tn_prepay_successful_payment(message: Message, state: FSMContext, bot:
         or get_prepay_amount_toman("tn")
 
     logging.info(f"[TN-PREPAY] پرداخت خودکار تشخیص داده شد برای کاربر {user_id}")
+
+    # ⭐️ v2 (سند §۴.۴): idempotency پرداخت — charge تکراری دوباره ثبت/تسک نمی‌سازد
+    from prepay_registration import charge_processed
+    _charge_id = str(getattr(payment, "telegram_payment_charge_id", "") or "")
+    if charge_processed(_charge_id):
+        logging.info(f"[TN-PREPAY] پرداخت تکراری (charge={_charge_id}) — رد شد: user={user_id}")
+        await message.answer("✅ این پرداخت قبلاً ثبت شده است؛ درخواست شما در حال پردازش است.")
+        return
 
     # ⚠️ داده‌های FSM از بین رفته (مثلاً /start زده شده). ⭐ رفع باگ ۱۴۰۵/۰۸
     # (لاگ ۱۴۰۵/۰۸/۰۶): پول دیگر گم نمی‌شود — مبلغ به‌عنوان پیش‌پرداخت/اعتبار
@@ -2944,10 +3000,19 @@ async def tn_prepay_successful_payment(message: Message, state: FSMContext, bot:
         await state.clear()
         return
 
-    # ⭐ ثبت پیش‌پرداخت برای کسر از هزینه کل در پایان کار
-    register_prepaid(user_id, amount_toman, "tn",
-                     f"دعاوی اعتراضی ({case_type})",
-                     payment.telegram_payment_charge_id)
+    # ⭐️ v2 (سند §۵.۵): hold فاکتور (tid از payload) → رزرو reserved؛
+    # task_id رزرو به job وصل است و فقط در فاکتور نهایی همین ثبت کسر می‌شود.
+    from prepay_registration import finalize_paid, mark_charge_processed
+    try:
+        import json as _json_pr
+        _pl = _json_pr.loads(str(getattr(payment, "invoice_payload", "") or "{}"))
+    except Exception:
+        _pl = {}
+    reservation = finalize_paid(
+        user_id, _pl.get("tid"), "tn",
+        f"دعاوی اعتراضی ({case_type})", amount_toman * 10, _charge_id)
+    mark_charge_processed(_charge_id)
+    prepay_task_id = reservation.get("task_id") if reservation else None
 
     await message.answer(
         "✅ *پرداخت پیش‌پرداخت تایید شد!*",
@@ -2981,7 +3046,8 @@ async def tn_prepay_successful_payment(message: Message, state: FSMContext, bot:
         logging.error(f"[TN-PREPAY] خطا در ارسال اطلاع به ادمین: {e}", exc_info=True)
 
     # ⭐ شروع ثبت — ارسال تسک به صف پردازش
-    await _submit_tn_request(message, state, bot, data, user_id, case_type)
+    await _submit_tn_request(message, state, bot, data, user_id, case_type,
+                             prepay_task_id=prepay_task_id)
 
 
 @tajdid_nazar_router.message(Form.waiting_for_tn_prepay)
@@ -3470,11 +3536,15 @@ async def send_tajdid_nazar_result(
     file_no: str = "",
     tn_persons: list = None,
     cost_info: dict = None,
+    prepay_task_id: str | None = None,
 ):
     """نتیجه ثبت دعوی اعتراضی را ارسال و فلوی پرداخت/امضا را شروع می‌کند.
 
     ⭐ برای اعاده دادرسی مدنی/کیفری، تفکیک هزینه هم اعلام می‌شود:
       مبلغ سامانه + سود ما (ردیف ۳-۶ + ۵۰۰,۰۰۰ ریال) = مبلغ نهایی (رند بالا)
+
+    ⭐️ v2 (سند §۵.۵): prepay_task_id — شناسهٔ رزوی همین ثبت (از job)؛ کسر
+    پایان کار فقط از همین رزرو (یا FIFO گروه tn) انجام می‌شود.
     """
     if tn_persons is None:
         tn_persons = []
@@ -3506,7 +3576,9 @@ async def send_tajdid_nazar_result(
     # می‌شود — نه جزئیات محاسبه (تفکیک مبلغ سامانه/سود حذف شد).
     # ⭐ سکشن جدید (۱۴۰۵/۰۶): اگر کاربر پیش‌پرداخت داشته، هزینه کل اعلام،
     # پیش‌پرداخت ذکر و مابقی به‌عنوان مبلغ قابل پرداخت + فاکتور ارسال می‌شود.
-    adjusted_fee, prepay_info = adjust_final_fee_with_prepay(user_id, final_fee)
+    # ⭐️ v2 (سند §۵.۵): کسر فقط از رزرو همین ثبت (task_id) یا FIFO گروه tn.
+    adjusted_fee, prepay_info = adjust_final_fee_with_prepay(
+        user_id, final_fee, service_key="tn", task_id=prepay_task_id)
     if prepay_info:
         total_fee_rial = final_fee
         final_fee = adjusted_fee

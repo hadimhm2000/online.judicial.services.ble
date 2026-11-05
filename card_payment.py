@@ -274,6 +274,46 @@ def _panel_service_type(entry: dict) -> str:
     return _TYPE_TO_PANEL_SERVICE.get(pl.get("type", ""), "UNKNOWN")
 
 
+def close_active_entries(uid: int, payload_type: str = "single") -> int:
+    """⭐ §۶.۳: بستن ورودی‌های فعالِ پرداخت‌نشدهٔ کاربر (مثلاً هنگام «انصراف»)
+    تا قاعدهٔ جلوگیری از فاکتور تکراری، کاربر را بلاک نکند. خروجی: تعداد."""
+    n = 0
+    for e in _store.values():
+        try:
+            if (e.get("uid") == uid and e.get("status") in (S_INVOICE, S_CARD_SENT)
+                    and (e.get("payload_obj") or {}).get("type") == payload_type):
+                e["status"] = "cancelled"     # خارج از _ACTIVE — ورودی بسته است
+                e["updated_at"] = _now()
+                e["close_reason"] = "user_cancel"
+                n += 1
+        except Exception:
+            continue
+    if n:
+        _mark_dirty()
+    return n
+
+
+def has_active_invoice(uid: int, payload_type: str, max_age_seconds: int = 3600) -> dict | None:
+    """⭐ §۶.۳ سند: آیا فاکتور پرداخت‌نشدهٔ فعال (در انتظار درگاه/کارت‌به‌کارت/رسید)
+    با همین نوع payload برای کاربر هست؟ (جلوی صدور فاکتور تکراری پشت‌سرهم)
+
+    max_age_seconds: سن حداکثر فاکتور فعال — فاکتور‌های قدیمی‌تر عادی در نظر
+    گرفته نمی‌شوند (یادآور/بستن ورودی مسیر خودش را دارد)."""
+    import time as _time
+    now = _time.time()
+    best = None
+    for e in _store.values():
+        try:
+            if (e.get("uid") == uid and e.get("status") in _ACTIVE
+                    and (e.get("payload_obj") or {}).get("type") == payload_type
+                    and now - float(e.get("invoice_at", 0) or 0) <= max_age_seconds):
+                if best is None or float(e.get("invoice_at", 0) or 0) > float(best.get("invoice_at", 0) or 0):
+                    best = e
+        except Exception:
+            continue
+    return best
+
+
 def _find_active(uid: int, payload: str) -> dict | None:
     for e in _store.values():
         if e.get("uid") == uid and e.get("payload") == payload and e.get("status") in _ACTIVE:

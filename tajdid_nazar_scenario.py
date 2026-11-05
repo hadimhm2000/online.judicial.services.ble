@@ -3696,14 +3696,18 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
 
             if cost_error:
                 # جدول هزینه نمایش داده نشد — ارسال PDF + پیام خطا (الگوی اظهارنامه)
-                # ⭐ سکشن جدید (۱۴۰۵/۰۶): اگر پیش‌پرداخت دارد، در پیام ذکر و
-                # رکورد مصرف شود تا مدیر هنگام محاسبه دستی هزینه لحاظ کند.
+                # ⭐️ v2 (سند §۵.۵): رکورد/رزرو حذف نمی‌شود؛ رزرو همین ثبت فقط
+                # «مصرف دستی» علامت می‌خورد تا مدیر هنگام محاسبهٔ دستی هزینه لحاظش کند
+                # و مبلغ در پیام مدیر هم بیاید.
                 _prepay_note = ""
+                _manual_prepay = None
                 try:
-                    from prepay_registration import pop_prepaid, _split_record
-                    _pre = pop_prepaid(user_id)
-                    if _pre:
-                        _paid, _credit = _split_record(_pre)
+                    from prepay_registration import mark_consumed_manual
+                    _manual_prepay = mark_consumed_manual(
+                        user_id, service_key="tn", task_id=data.get("prepay_task_id"))
+                    if _manual_prepay:
+                        _paid = int(_manual_prepay.get("paid_rial", 0) or 0)
+                        _credit = int(_manual_prepay.get("credit_used_rial", 0) or 0)
                         _parts = []
                         if _paid:
                             _parts.append(f"💵 مبلغ *{_paid:,} ریال* به عنوان پیش پرداخت، پرداخت شده است")
@@ -3725,7 +3729,13 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                     await send_document_direct(user_id, pdf_path)
                 await bot.send_message(
                     ADMIN_ID,
-                    f"⚠️ [TN] جدول هزینه نمایش داده نشد. کاربر {user_id} | کد: {bill_no}")
+                    f"⚠️ [TN] جدول هزینه نمایش داده نشد. کاربر {user_id} | کد: {bill_no}"
+                    + (f"\n💵 پیش‌پرداخت رزروشده (مصرف دستی): "
+                       f"{int(_manual_prepay.get('reserved_rial', 0) or 0):,} ریال "
+                       f"(پرداخت‌شده {int(_manual_prepay.get('paid_rial', 0) or 0):,} + "
+                       f"مانده {int(_manual_prepay.get('credit_used_rial', 0) or 0):,}) — "
+                       f"در محاسبهٔ دستی هزینه لحاظ شود (task={_manual_prepay.get('task_id')})"
+                       if _manual_prepay else ""))
             else:
                 if pdf_path:
                     await send_tajdid_nazar_result(
@@ -3735,7 +3745,8 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                         case_type=case_type,
                         file_no=file_no,
                         tn_persons=appellants,
-                        cost_info=cost_info)
+                        cost_info=cost_info,
+                        prepay_task_id=data.get("prepay_task_id"))
                     await bot.send_message(
                         ADMIN_ID,
                         f"✅ [TN] ثبت {case_type} کاربر {user_id} موفق. "
@@ -3748,7 +3759,9 @@ async def process_tajdid_nazar_task(data: dict, bot: Bot):
                     try:
                         from prepay_registration import (
                             adjust_final_fee_with_prepay, build_prepay_fee_text)
-                        _adj, _pre = adjust_final_fee_with_prepay(user_id, final_total)
+                        _adj, _pre = adjust_final_fee_with_prepay(
+                            user_id, final_total, service_key="tn",
+                            task_id=data.get("prepay_task_id"))
                         if _pre:
                             fee_msg = build_prepay_fee_text(_adj, _pre, final_total)
                             _fee_final = _adj

@@ -34,8 +34,9 @@ async def test_credit_orphan_prepay_keeps_state_and_credits(monkeypatch):
     bot = SimpleNamespace(send_message=AsyncMock())
     await prepay_registration.credit_orphan_prepay_payment(msg, bot, "lavayeh")
     rec = runtime_state.prepaid_registrations.pop(99)
-    assert rec["amount_rial"] == 1_000_000
-    assert rec["service"] == "lavayeh"
+    # ⭐️ v2 (سند §۵.۱.۴): پرداخت بی-state به ماندهٔ آزاد اضافه می‌شود (نه رزرو)
+    assert rec.get("version") == 2 and rec.get("free_credit_rial") == 1_000_000
+    assert rec.get("reservations") == []
     msg.answer.assert_awaited()
     bot.send_message.assert_awaited()
 

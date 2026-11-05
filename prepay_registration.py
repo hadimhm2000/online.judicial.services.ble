@@ -21,16 +21,33 @@
   می‌کند (MIN_INVOICE_AMOUNT_RIAL) تا فاکتور، پیام‌های کاربر/مدیر و
   کسرِ پایان کار همیشه روی یک عدد بمانند و خطای 400 برگردد نکند.
 
+⭐️ نسخهٔ ۲ (سند «پیش‌پرداخت ثبت / مانده» — ۱۴۰۵/۱۱، §۴ و §۵.۱):
+  هر ثبت = یک رزرو جداگانه. هیچ تسکی بدون رزرو معتبر وارد صف نمی‌شود
+  (مگر کاربر معاف باشد یا ردیف دسته‌جمعی باشد). رزرو فقط یک بار مصرف
+  می‌شود و فقط توسط همان تسک (task_id یکتا در job و رزرو).
+  ساختار رکورد (runtime_state.prepaid_registrations[user_id]):
+      {
+        "version": 2,
+        "free_credit_rial": int,          # ماندهٔ آزاد (دستی مدیر / بازگشتی‌ها)
+        "reservations": [ {task_id, service, service_label, reserved_rial,
+                           paid_rial, credit_used_rial, discount_rial,
+                           charge_id, paid_at, status, hold_expires_at}, ... ],
+      }
+  وضعیت رزرو: hold → reserved → queued → consumed | released
+  (hold: فاکتور صادر شده و بخشی از مانده نگه داشته شده؛ released: لغو/انقضا
+  ⇒ سهم مانده به free_credit برگشته).
+
 نکته معماری: هندلر successful_payment در aiogram با روتر مادر
-(global_successful_payment_handler در handlers.py) مسیریابی می‌شود؛
-هندلرهای decorated روی روترهای فرعی هرگز فراخوانی نمی‌شوند (رفتار
+(global_successful_payment_handler در handlers.py) مسیریابی می‌شود؛ هندلرهای decorated روی روترهای فرعی هرگز فراخوانی نمی‌شوند (رفتار
 اثبات‌شدهٔ aiogram 3.x: هندلرهای خودِ روتر مادر زودتر از sub-routerها
 بررسی می‌شوند). بنابراین هندلر سراسری، توابع همین ماژول و هندلرهای
 پرداخت هر بخش را مستقیم فراخوانی می‌کند.
 """
 
+import asyncio
 import datetime
 import logging
+import secrets
 
 import aiohttp
 import json as _json
@@ -47,9 +64,6 @@ _LAYEHE_EIZAR_SERVICES = {"lavayeh", "ezhharnameh"}
 # ═══ حداقلِ مبلغ مجاز فاکتور در API بله/تلگرام (۱۰,۰۰۰ ریال) ═══
 # خطای مرجع (لاگ کارفرما ۱۴۰۵/۰۶/۲۵):
 #   "Bad Request: prices: total price must be at least 10000."
-# این گارد در get_prepay_amount_toman اعمال می‌شود تا هر مسیری که مبلغ
-# می‌سازد (فاکتور، پیام کاربر/مدیر، fallback ثبت پس از پرداخت) همیشه
-# منطبق بر یک عددِ مجاز باشد.
 MIN_INVOICE_AMOUNT_RIAL = 10_000
 
 # کلید payload فاکتور — برای تشخیص قطعی نوع پرداخت در هندلر سراسری
@@ -60,18 +74,242 @@ PREPAY_INVOICE_TYPE = "reg_prepay"
 _pending_discounts: dict = {}
 
 
-# ═══ ⭐ مانده/بستانکاری کاربر (مبالغ قابل بازگشت/کسر) ═══
-# رکورد runtime_state.prepaid_registrations[user_id] می‌تواند شامل دو بخش باشد:
-#   - prepay_paid_rial: پیش‌پرداختِ پرداخت‌شده برای همین پرونده
-#   - مابقی (credit): مانده/بستانکاری قبلی — ثبت‌شده توسط مدیر
-#     (/prepaid_set) یا باقی‌ماندهٔ پیش‌پرداختِ پرونده‌های قبلی
-# هر دو بخش در فاکتور نهایی از هزینه کل کسر و به کاربر اعلام می‌شوند؛ مانده
-# در پیام/فاکتور پیش‌پرداخت هم درج می‌شود.
+# ═══════════════════════════════════════════════════════════════════════════
+# ⭐️ نسخهٔ ۲ — مدل رزرو (سند §۴.۲ تا §۴.۴)
+# ═══════════════════════════════════════════════════════════════════════════
 
-def _split_record(rec: dict):
-    """(prepay_paid_rial, credit_rial) یک رکورد — سازگار با رکوردهای قدیمی
-    (بدون prepay_paid_rial: رکورد دستی مدیر = تماماً مانده، وگرنه تماماً
-    پیش‌پرداخت)."""
+RECORD_VERSION = 2
+HOLD_EXPIRE_MINUTES = 30          # مهلت نگه‌داشتن سهم مانده برای فاکتور پرداخت‌نشده
+MAX_PROCESSED_CHARGES = 5000      # سقف مجموعهٔ charge_id های پردازش‌شده (FIFO)
+
+# وضعیت‌های رزرو
+ST_HOLD = "hold"                  # فاکتور صادر شده؛ سهم مانده نگه داشته شده
+ST_RESERVED = "reserved"          # پرداخت/رزرو کامل؛ هنوز job ساخته نشده
+ST_QUEUED = "queued"              # job وارد صف ثبت شد
+ST_CONSUMED = "consumed"          # در فاکتور نهایی مصرف شد
+ST_CONSUMED_MANUAL = "consumed_manual"   # مصرف دستی (مثلاً cost_error دعاوی اعتراضی)
+ST_RELEASED = "released"          # لغو/انقضا/شکست ⇒ سهم مانده برگشت
+
+_ACTIVE_STATUSES = (ST_HOLD, ST_RESERVED, ST_QUEUED)
+
+# نگاشت service_type نهایی فاکتور → گروه رزرو (سند §۴.۳)
+_SERVICE_GROUPS = {
+    "LAVAYEH": ("lavayeh", "ealam"),
+    "EALAM_VAKALAHT": ("lavayeh", "ealam"),
+    "lavayeh": ("lavayeh", "ealam"),
+    "ealam": ("lavayeh", "ealam"),
+    "EZHHARNAMEH": ("ezhharnameh",),
+    "ezhharnameh": ("ezhharnameh",),
+    "CHECK": ("check",),
+    "check": ("check",),
+    "TAJDID_NAZAR": ("tn",),
+    "tn": ("tn",),
+}
+
+# قفل per-user — کل توالی «cover/hold → ساخت job → enqueue» زیر این قفل (سند §۴.۴)
+_locks: dict = {}
+
+
+def user_lock(user_id: int) -> asyncio.Lock:
+    """قفل اتمیک per-user برای توالی‌های چندمرحله‌ای (confirm → enqueue)."""
+    lock = _locks.get(int(user_id))
+    if lock is None:
+        lock = asyncio.Lock()
+        _locks[int(user_id)] = lock
+    return lock
+
+
+def _persist():
+    """ذخیرهٔ وضعیت پس از هر تغییر پولی (سند §۴.۳)."""
+    try:
+        import persistence
+        persistence.save_runtime_state()
+    except Exception:
+        pass   # state_persister هر ۶۰ ثانیه ذخیره می‌کند؛ خطا اینجا مهلک نیست
+
+
+def _group_of(service_key) -> tuple:
+    """گروه رزرو برای service_key/استثنا None (بدون فیلتر گروه)."""
+    if not service_key:
+        return ()
+    return _SERVICE_GROUPS.get(str(service_key), (str(service_key),))
+
+
+# ── دسترسی به رکورد v2 + مهاجرت تنبل v1→v2 (سند §۵.۸) ───────────────────
+
+def _migrate_v1_record(rec: dict) -> dict:
+    """تبدیل رکورد قدیمی (v1) به ساختار نسخهٔ ۲.
+
+    قواعد (سند §۵.۸):
+      - prepay_paid_rial > 0 (رکورد غیردستی) ⇒ یک رزرو reserved با
+        task_id=None (مصرف FIFO)، reserved=paid، service از رکورد.
+      - باقی‌مانده (amount − prepay_paid) ⇒ free_credit_rial.
+      - رکورد دستی مدیر (/prepaid_set قدیمی، بدون prepay_paid_rial) ⇒
+        تماماً free_credit_rial.
+      - نشانگرهای اصلاح §۸ (sec8_fixed/…) حفظ می‌شوند.
+    """
+    now = datetime.datetime.now()
+    paid, credit = _split_record_v1(rec)
+    new_rec = {
+        "version": RECORD_VERSION,
+        "free_credit_rial": credit,
+        "reservations": [],
+    }
+    if paid > 0:
+        new_rec["reservations"].append({
+            "task_id": None,
+            "service": str(rec.get("service", "") or ""),
+            "service_label": str(rec.get("service_label", "") or ""),
+            "reserved_rial": paid,
+            "paid_rial": paid,
+            "credit_used_rial": 0,
+            "discount_rial": int(rec.get("discount_rial", 0) or 0),
+            "charge_id": str(rec.get("charge_id", "") or ""),
+            "paid_at": rec.get("paid_at") if isinstance(rec.get("paid_at"), datetime.datetime) else now,
+            "status": ST_RESERVED,
+            "hold_expires_at": None,
+        })
+    # حفظ نشانگرهای اصلاح §۸ و کلیدهای اطلاعاتی
+    for marker in ("sec8_fixed", "sec8_reported"):
+        if rec.get(marker):
+            new_rec[marker] = True
+    return new_rec
+
+
+def _rec(user_id: int, create: bool = False) -> dict | None:
+    """رکورد v2 کاربر — در صورت لزوم مهاجرت تنبل v1→v2 انجام می‌شود."""
+    uid = int(user_id)
+    rec = runtime_state.prepaid_registrations.get(uid)
+    if rec is None:
+        if not create:
+            return None
+        rec = {"version": RECORD_VERSION, "free_credit_rial": 0, "reservations": []}
+        runtime_state.prepaid_registrations[uid] = rec
+        return rec
+    if not isinstance(rec, dict) or rec.get("version") != RECORD_VERSION:
+        rec = _migrate_v1_record(rec if isinstance(rec, dict) else {})
+        runtime_state.prepaid_registrations[uid] = rec
+    rec.setdefault("reservations", [])
+    rec.setdefault("free_credit_rial", 0)
+    return rec
+
+
+def migrate_all_to_v2() -> int:
+    """مهاجرت همهٔ رکوردهای v1 → v2 (اجرا در شروع ربات، قبل از اصلاح §۸
+    و wallet.migrate_legacy_credits). خروجی: تعداد رکوردهای تبدیل‌شده.
+    idempotent است — رکوردهای v2 دست نمی‌خورند."""
+    n = 0
+    for uid in list(runtime_state.prepaid_registrations.keys()):
+        try:
+            rec = runtime_state.prepaid_registrations.get(uid)
+            if rec is None:
+                continue
+            if isinstance(rec, dict) and rec.get("version") == RECORD_VERSION:
+                continue
+            runtime_state.prepaid_registrations[uid] = _migrate_v1_record(rec)
+            n += 1
+        except Exception as e:
+            logging.warning(f"[REG-PREPAY] مهاجرت v2 رکورد کاربر {uid} ناموفق: {e}")
+    if n:
+        logging.info(f"[REG-PREPAY] {n} رکورد قدیمی پیش‌پرداخت به ساختار نسخهٔ ۲ تبدیل شد")
+        _persist()
+    return n
+
+
+# ── نگهداری مجموعهٔ charge_id های پردازش‌شده (ایدمپوتنسی پرداخت — سند §۴.۴) ──
+
+def charge_processed(charge_id: str) -> bool:
+    """آیا این پرداخت (charge_id) قبلاً ثبت/پردازش شده؟ (جلوی ثبت دوباره)"""
+    if not charge_id:
+        return False
+    seen = getattr(runtime_state, "processed_charge_ids", None)
+    if not isinstance(seen, set):
+        return False
+    return str(charge_id) in seen
+
+
+def mark_charge_processed(charge_id: str) -> None:
+    """ثبت charge_id به‌عنوان پردازش‌شده (ماندگار از طریق persistence)."""
+    if not charge_id:
+        return
+    seen = getattr(runtime_state, "processed_charge_ids", None)
+    if not isinstance(seen, set):
+        seen = set()
+        runtime_state.processed_charge_ids = seen
+    seen.add(str(charge_id))
+    if len(seen) > MAX_PROCESSED_CHARGES:   # سقف رشد — قدیمی‌ها حذف می‌شوند
+        for c in list(seen)[:len(seen) - MAX_PROCESSED_CHARGES]:
+            seen.discard(c)
+    _persist()
+
+
+# ── انقضای hold ها (سهم ماندهٔ نگه‌داشته‌شده برای فاکتور پرداخت‌نشده) ──────
+
+def sweep_expired_holds(user_id: int | None = None) -> int:
+    """بستن hold های منقضی: سهم مانده (credit_used) به free_credit برمی‌گردد.
+
+    اگر user_id بدهید فقط همان کاربر جارو می‌شود؛ وگرنه همهٔ کاربران.
+    خروجی: تعداد hold های بسته‌شده."""
+    now = datetime.datetime.now()
+    uids = [int(user_id)] if user_id is not None else list(runtime_state.prepaid_registrations.keys())
+    closed = 0
+    for uid in uids:
+        rec = _rec(uid)
+        if not rec:
+            continue
+        for r in rec.get("reservations", []):
+            if r.get("status") != ST_HOLD:
+                continue
+            exp = r.get("hold_expires_at")
+            if isinstance(exp, datetime.datetime) and now >= exp:
+                r["status"] = ST_RELEASED
+                r["released_at"] = now
+                back = int(r.get("credit_used_rial", 0) or 0)
+                if back > 0:
+                    rec["free_credit_rial"] = int(rec.get("free_credit_rial", 0) or 0) + back
+                closed += 1
+        if closed:
+            _persist()
+    return closed
+
+
+def _active_reservations(rec: dict) -> list:
+    return [r for r in (rec or {}).get("reservations", [])
+            if r.get("status") in _ACTIVE_STATUSES]
+
+
+# ── توابع خواندن (سند §۵.۱.۱) ─────────────────────────────────────────────
+
+def get_free_credit_rial(user_id: int) -> int:
+    """ماندهٔ آزاد/بستانکاری کاربر (ریال) — فقط بخش قابل مصرف برای ثبت جدید.
+
+    ⭐ رفع باگ فاکتور ۱۰٬۰۰۰ ریالی (§۳.۲ سند): پیش‌پرداختِ پرونده‌های در
+    جریان داخل «رزرو»های همان پرونده‌هاست و از فاکتور ثبت جدید کم نمی‌شود.
+    """
+    rec = _rec(user_id)
+    if not rec:
+        return 0
+    sweep_expired_holds(user_id)
+    return max(0, int(rec.get("free_credit_rial", 0) or 0))
+
+
+def get_total_exposure_rial(user_id: int) -> int:
+    """جمع ماندهٔ آزاد + رزروهای فعال — برای نمایش به کاربر/مدیر."""
+    rec = _rec(user_id)
+    if not rec:
+        return 0
+    sweep_expired_holds(user_id)
+    reserved = sum(int(r.get("reserved_rial", 0) or 0) for r in _active_reservations(rec))
+    return max(0, int(rec.get("free_credit_rial", 0) or 0)) + reserved
+
+
+def get_credit_rial(user_id: int) -> int:
+    """(سازگاری قدیمی) کل مبلغ قابل کسر کاربر = ماندهٔ آزاد + رزروهای فعال."""
+    return get_total_exposure_rial(user_id)
+
+
+def _split_record_v1(rec: dict):
+    """(داخلی/سازگاری) تفکیک رکورد قدیمی v1 به (prepay_paid, credit)."""
     if not rec:
         return 0, 0
     amount = max(0, int(rec.get("amount_rial", 0) or 0))
@@ -83,11 +321,294 @@ def _split_record(rec: dict):
     return paid, amount - paid
 
 
-def get_credit_rial(user_id: int) -> int:
-    """کل مانده/بستانکاری فعلی کاربر (ریال) — ۰ اگر نداشته باشد."""
-    rec = runtime_state.prepaid_registrations.get(user_id)
-    return max(0, int((rec or {}).get("amount_rial", 0) or 0))
+def _split_record(rec: dict):
+    """(سازگاری قدیمی) — روی رکورد v2: (جمع پرداخت‌شدهٔ رزروهای فعال، ماندهٔ آزاد)."""
+    if not isinstance(rec, dict):
+        return 0, 0
+    if rec.get("version") == RECORD_VERSION:
+        active = [r for r in rec.get("reservations", []) if r.get("status") in _ACTIVE_STATUSES]
+        return (sum(int(r.get("paid_rial", 0) or 0) for r in active),
+                max(0, int(rec.get("free_credit_rial", 0) or 0)))
+    return _split_record_v1(rec)
 
+
+# ── عملیات رزرو (سند §۵.۱.۳ و §۴.۳) ──────────────────────────────────────
+
+def reserve_from_credit(user_id: int, service_key: str, service_label: str = "") -> dict | None:
+    """پوشش کامل پیش‌پرداخت از ماندهٔ آزاد — رزرو اتمیک (کسر واقعی).
+
+    خروجی: دیکشنری رزرو (status=reserved) یا None اگر مانده کافی نبود.
+    ⭐️ رفع باگ اصلی §۳.۳: قبلاً رکورد «دست‌نخورده» می‌ماند و هر تعداد ثبت
+    پشت‌سرهم همان مانده را می‌دیدند؛ حالا مانده واقعاً کسر و در رزرو قفل
+    می‌شود و فقط در فاکتور نهایی همین ثبت مصرف خواهد شد."""
+    uid = int(user_id)
+    rec = _rec(uid, create=True)
+    sweep_expired_holds(uid)
+    prepay_rial = get_prepay_amount_rial(service_key)
+    if int(rec.get("free_credit_rial", 0) or 0) < prepay_rial:
+        return None
+    rec["free_credit_rial"] = int(rec["free_credit_rial"]) - prepay_rial
+    res = {
+        "task_id": secrets.token_hex(6),
+        "service": str(service_key),
+        "service_label": str(service_label or service_key),
+        "reserved_rial": prepay_rial,
+        "paid_rial": 0,
+        "credit_used_rial": prepay_rial,
+        "discount_rial": 0,
+        "charge_id": "",
+        "paid_at": datetime.datetime.now(),
+        "status": ST_RESERVED,
+        "hold_expires_at": None,
+    }
+    rec["reservations"].append(res)
+    _persist()
+    return res
+
+
+def hold_for_invoice(user_id: int, service_key: str, service_label: str = "",
+                     discount_rial: int = 0) -> tuple:
+    """ساخت hold برای فاکتور پیش‌پرداخت (سند §۴.۳ hold_for_invoice).
+
+    سهم ماندهٔ آزاد (تا سقف پیش‌پرداخت) همین‌جا از free_credit کسر و در
+    hold نگه داشته می‌شود؛ مبلغ فاکتور = پیش‌پرداخت − مانده − تخفیف
+    (حداقل MIN_INVOICE_AMOUNT_RIAL). خروجی: (مبلغ فاکتور ریال، رزرو hold).
+    اگر کاربر نپردازد، hold بعد از HOLD_EXPIRE_MINUTES منقضی و سهم مانده
+    برمی‌گردد (sweep_expired_holds)."""
+    uid = int(user_id)
+    rec = _rec(uid, create=True)
+    sweep_expired_holds(uid)
+    base_rial = get_prepay_amount_rial(service_key)
+    credit_avail = min(max(0, int(rec.get("free_credit_rial", 0) or 0)), base_rial)
+    discount = max(0, int(discount_rial or 0))
+    invoice_rial = max(base_rial - credit_avail - discount, MIN_INVOICE_AMOUNT_RIAL)
+    invoice_rial = (invoice_rial // 10) * 10
+    # سهم ماندهٔ واقعاً نگه‌داشته‌شده = پیش‌پرداخت − تخفیف − مبلغ فاکتور
+    credit_used = max(0, min(credit_avail, base_rial - discount - invoice_rial))
+    if credit_used > 0:
+        rec["free_credit_rial"] = int(rec["free_credit_rial"]) - credit_used
+    res = {
+        "task_id": secrets.token_hex(6),
+        "service": str(service_key),
+        "service_label": str(service_label or service_key),
+        "reserved_rial": base_rial,
+        "paid_rial": 0,
+        "credit_used_rial": credit_used,
+        "discount_rial": discount,
+        "charge_id": "",
+        "paid_at": datetime.datetime.now(),
+        "status": ST_HOLD,
+        "hold_expires_at": datetime.datetime.now() + datetime.timedelta(minutes=HOLD_EXPIRE_MINUTES),
+    }
+    rec["reservations"].append(res)
+    _persist()
+    return invoice_rial, res
+
+
+def finalize_paid(user_id: int, task_id: str | None, service_key: str,
+                  service_label: str, paid_rial: int, charge_id: str = "",
+                  discount_rial: int = 0) -> dict:
+    """پس از successful_payment: hold → reserved با مبلغ پرداخت‌شده (سند §۴.۳).
+
+    اگر hold متناظر (task_id از payload فاکتور) نبود/منقضی شده بود، یک رزوی
+    تازه با همان مبلغ پرداخت ساخته می‌شود (سهم ماندهٔ hold منقضی به
+    free_credit برگشته و در فاکتور نهایی از همان‌جا کسر خواهد شد)."""
+    uid = int(user_id)
+    rec = _rec(uid, create=True)
+    sweep_expired_holds(uid)
+    paid_rial = max(0, int(paid_rial or 0))
+    discount_rial = max(0, int(discount_rial or 0))
+
+    hold = None
+    if task_id:
+        hold = next((r for r in rec["reservations"]
+                     if r.get("task_id") == task_id and r.get("status") == ST_HOLD), None)
+    if hold is None:
+        # fallback: جدیدترین hold همان سرویس (فاکتور‌های قدیمی بدون tid)
+        holds = [r for r in rec["reservations"]
+                 if r.get("status") == ST_HOLD
+                 and (not service_key or r.get("service") == service_key)]
+        hold = holds[-1] if holds else None
+
+    if hold is not None:
+        hold.update({
+            "status": ST_RESERVED,
+            "paid_rial": paid_rial,
+            "discount_rial": max(discount_rial, int(hold.get("discount_rial", 0) or 0)),
+            "charge_id": str(charge_id or ""),
+            "paid_at": datetime.datetime.now(),
+            "hold_expires_at": None,
+        })
+        hold["reserved_rial"] = (paid_rial + int(hold.get("credit_used_rial", 0) or 0)
+                                 + int(hold.get("discount_rial", 0) or 0))
+        # تخفیف این فاکتور در همین رزرو لحاظ شد — از جدول موقت پاک شود
+        _pending_discounts.pop(uid, None)
+        res = hold
+    else:
+        res = {
+            "task_id": task_id or secrets.token_hex(6),
+            "service": str(service_key),
+            "service_label": str(service_label or service_key),
+            "reserved_rial": paid_rial + discount_rial,
+            "paid_rial": paid_rial,
+            "credit_used_rial": 0,
+            "discount_rial": discount_rial,
+            "charge_id": str(charge_id or ""),
+            "paid_at": datetime.datetime.now(),
+            "status": ST_RESERVED,
+            "hold_expires_at": None,
+        }
+        rec["reservations"].append(res)
+    _persist()
+    return res
+
+
+def release_hold(user_id: int, task_id: str | None = None,
+                 service_key: str | None = None) -> int:
+    """لغو hold (انصراف کاربر از فاکتور): سهم مانده به free_credit برمی‌گردد.
+
+    اگر task_id ندهید، همهٔ hold های فعال همان سرویس (یا همهٔ hold ها،
+    وقتی service_key هم نباشد) لغو می‌شوند. خروجی: تعداد."""
+    uid = int(user_id)
+    rec = _rec(uid)
+    if not rec:
+        return 0
+    n = 0
+    for r in rec.get("reservations", []):
+        if r.get("status") != ST_HOLD:
+            continue
+        if task_id and r.get("task_id") != task_id:
+            continue
+        if service_key and r.get("service") not in _group_of(service_key) + (str(service_key),):
+            continue
+        r["status"] = ST_RELEASED
+        r["released_at"] = datetime.datetime.now()
+        back = int(r.get("credit_used_rial", 0) or 0)
+        if back > 0:
+            rec["free_credit_rial"] = int(rec.get("free_credit_rial", 0) or 0) + back
+        n += 1
+    if n:
+        _persist()
+    return n
+
+
+def mark_queued(user_id: int, task_id: str | None) -> bool:
+    """reserved → queued (هنگام enqueue تسک؛ برای pay_reconcile — سند §۵.۷)."""
+    if not task_id:
+        return False
+    rec = _rec(user_id)
+    if not rec:
+        return False
+    for r in rec.get("reservations", []):
+        if r.get("task_id") == task_id and r.get("status") == ST_RESERVED:
+            r["status"] = ST_QUEUED
+            r["queued_at"] = datetime.datetime.now()
+            _persist()
+            return True
+    return False
+
+
+def has_active_reservation(user_id: int, task_id: str | None) -> bool:
+    """آیا رزرو فعالی (reserved/queued) با این task_id وجود دارد؟ (گارد enqueue)"""
+    if not task_id:
+        return False
+    rec = _rec(user_id)
+    if not rec:
+        return False
+    return any(r.get("task_id") == task_id and r.get("status") in (ST_RESERVED, ST_QUEUED)
+               for r in rec.get("reservations", []))
+
+
+def consume_reservation(user_id: int, service_key=None, task_id: str | None = None) -> dict | None:
+    """برداشتن رزرو برای فاکتور نهایی (سند §۴.۳ consume_reservation).
+
+    اگر task_id باشد همان رزرو (در صورت فعال بودن)؛ وگرنه FIFO قدیمی‌ترین
+    رزروِ فعالِ همان گروه سرویس. رزرو mark می‌شود consumed و برگردانده
+    می‌شود؛ اگر نبود None."""
+    uid = int(user_id)
+    rec = _rec(uid)
+    if not rec:
+        return None
+    sweep_expired_holds(uid)
+    group = _group_of(service_key)
+
+    def _take(r):
+        r["status"] = ST_CONSUMED
+        r["consumed_at"] = datetime.datetime.now()
+        return r
+
+    if task_id:
+        for r in rec.get("reservations", []):
+            if r.get("task_id") == task_id and r.get("status") in (ST_RESERVED, ST_QUEUED):
+                _persist()
+                return _take(r)
+    cands = [r for r in rec.get("reservations", [])
+             if r.get("status") in (ST_RESERVED, ST_QUEUED)
+             and (not group or r.get("service") in group)]
+    # ⭐️ نگاشت گروه (سند §۴.۳/تست §۷-۶): رزرو سرویس دیگر هرگز در فاکتور این
+    # سرویس کسر نمی‌شود — بدون fallback بین‌گروهی.
+    if not cands:
+        return None
+    cands.sort(key=lambda r: r.get("paid_at") or datetime.datetime.min)
+    _persist()
+    return _take(cands[0])
+
+
+def release_reservation(user_id: int, task_id: str | None,
+                        to_free_credit: bool = True) -> dict | None:
+    """آزادسازی رزرو در شکست/لغو تسک (سند §۵.۹).
+
+    سهم مانده همیشه به free_credit برمی‌گردد. بخش پرداخت‌شده:
+      to_free_credit=True  ⇒ به free_credit برمی‌گردد (شکست خودکار —
+                             سند §۵.۹) و به مدیر گزارش می‌شود.
+      to_free_credit=False ⇒ فقط وضعیت released می‌شود؛ خودِ پول از مسیر
+                             دیگری (مثلاً refund_approvals با تایید مدیر)
+                             به کاربر برمی‌گردد."""
+    if not task_id:
+        return None
+    uid = int(user_id)
+    rec = _rec(uid)
+    if not rec:
+        return None
+    for r in rec.get("reservations", []):
+        if r.get("task_id") == task_id and r.get("status") in (ST_RESERVED, ST_QUEUED):
+            r["status"] = ST_RELEASED
+            r["released_at"] = datetime.datetime.now()
+            back = int(r.get("credit_used_rial", 0) or 0)
+            if to_free_credit:
+                back += int(r.get("paid_rial", 0) or 0)
+            if back > 0:
+                rec["free_credit_rial"] = int(rec.get("free_credit_rial", 0) or 0) + back
+                r["released_to_free_rial"] = back
+            _persist()
+            logging.info(
+                f"[REG-PREPAY] رزرو آزاد شد: user={uid}, task={task_id}, "
+                f"svc={r.get('service')}, بازگشت به ماندهٔ آزاد={back:,} ریال")
+            return r
+    return None
+
+
+def mark_consumed_manual(user_id: int, service_key=None, task_id: str | None = None) -> dict | None:
+    """نشانه‌گذاری رزرو به‌عنوان «مصرف دستی» (سند §۵.۵ — حالت cost_error
+    دعاوی اعتراضی): رکورد حذف نمی‌شود؛ مبلغ در پیام مدیر هم می‌آید تا
+    محاسبهٔ دستی انجام شود."""
+    res = consume_reservation(user_id, service_key=service_key, task_id=task_id)
+    if res is not None:
+        res["status"] = ST_CONSUMED_MANUAL
+        _persist()
+    return res
+
+
+def release_for_failed_job(job: dict) -> dict | None:
+    """میزان امن برای مسیرهای شکست (§۵.۹): اگر job رزروی دارد، آزادش کن."""
+    if not isinstance(job, dict) or job.get("_is_bulk"):
+        return None
+    return release_reservation(job.get("user_id"), job.get("prepay_task_id"))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# تعرفه
+# ═══════════════════════════════════════════════════════════════════════════
 
 def get_prepay_amount_toman(service_key: str) -> int:
     """مبلغ پیش‌پرداخت (تومان) بر اساس نوع سرویس.
@@ -118,37 +639,40 @@ def get_prepay_amount_rial(service_key: str) -> int:
     return get_prepay_amount_toman(service_key) * 10
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# فاکتور پیش‌پرداخت و پوشش با مانده
+# ═══════════════════════════════════════════════════════════════════════════
+
 async def send_prepay_invoice(bot, user_id: int, service_key: str,
                               service_label: str) -> bool:
     """ارسال فاکتور پیش‌پرداخت + درگاه پرداخت بله و پیام راهنما.
 
-    خروجی: True اگر فاکتور با موفقیت ارسال شد (در این صورت فراخواننده
-    باید state را روی waiting_for_*_prepay بگذارد)، False در خطا.
+    ⭐️ v2 (سند §۵.۱.۲): پیش از ارسال، سهم ماندهٔ آزاد با hold_for_invoice
+    اتمیک نگه داشته می‌شود و task_id همین hold در payload فاکتور می‌نشیند
+    تا successful_payment بتواند همان hold را به رزرو تبدیل کند
+    (finalize_paid). حساب note_invoice_deduction حفظ شده است.
+
+    خروجی: True اگر فاکتور با موفقیت ارسال شد (فراخواننده باید state را
+    روی waiting_for_*_prepay بگذارد)، False در خطا (hold هم آزاد می‌شود).
     """
-    base_toman = get_prepay_amount_toman(service_key)
-    # ⭐ دستور کارفرما: مانده/بستانکاری کاربر از همین فاکتور پیش‌پرداخت هم
-    # کسر می‌شود. رکورد مانده دست‌نخورده می‌ماند و register_prepaid آن را
-    # کنار مبلغ پرداخت‌شده نگه می‌دارد؛ پس در فاکتور نهایی جمعِ «پرداختی +
-    # مانده» (برابر همان پیش‌پرداخت کامل) کسر می‌شود و چیزی دوبار کم نمی‌شود.
-    # (اگر مانده کل پیش‌پرداخت را بپوشاند، cover_prepay_from_credit قبلاً
-    # این مرحله را حذف کرده است.)
-    credit_rial = get_credit_rial(user_id)
-    amount_rial = max(base_toman * 10 - credit_rial, MIN_INVOICE_AMOUNT_RIAL)
-    amount_rial = (amount_rial // 10) * 10
-    amount_toman = amount_rial // 10
-    credit_used_rial = base_toman * 10 - amount_rial if credit_rial > 0 else 0
     # ⭐ تخفیف اختصاصی کاربر (پنل ادمین) — فقط روی پیش‌پرداخت. کاربر کمتر
-    # می‌پردازد ولی register_prepaid مبلغ تخفیف را هم به رکورد می‌افزاید تا در
-    # فاکتور نهایی کل پیش‌پرداخت کسر شود و تخفیف واقعاً به کاربر برسد.
+    # می‌پردازد ولی رزرو مبلغ تخفیف را هم شامل می‌شود تا در فاکتور نهایی
+    # کل پیش‌پرداخت کسر شود و تخفیف واقعاً به کاربر برسد.
     import user_discounts
-    discount_rial = user_discounts.discount_amount(user_id, amount_rial)
+    base_toman = get_prepay_amount_toman(service_key)
+    credit_rial = get_free_credit_rial(user_id)
+    probe_rial = max(base_toman * 10 - credit_rial, MIN_INVOICE_AMOUNT_RIAL)
+    discount_rial = user_discounts.discount_amount(user_id, probe_rial)
     discount_pct = user_discounts.get_percent(user_id)
+
+    amount_rial, hold = hold_for_invoice(user_id, service_key, service_label,
+                                         discount_rial=discount_rial)
+    credit_used_rial = int(hold.get("credit_used_rial", 0) or 0)
     if discount_rial > 0:
-        amount_rial -= discount_rial
-        amount_toman = amount_rial // 10
         _pending_discounts[user_id] = discount_rial
     else:
         _pending_discounts.pop(user_id, None)
+    amount_toman = amount_rial // 10
     if credit_used_rial > 0:
         # ⭐ اگر کارت‌به‌کارت پرداخت شود، کسر در رسید برای مدیر نمایش داده می‌شود
         try:
@@ -164,6 +688,7 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
             "type": PREPAY_INVOICE_TYPE,
             "svc": service_key,
             "uid": user_id,
+            "tid": hold.get("task_id"),   # ⭐️ v2 — اتصال فاکتور به hold
         })
         async with aiohttp.ClientSession(
                 connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT),
@@ -191,7 +716,8 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
             }
             logging.info(
                 f"[REG-PREPAY] ارسال فاکتور پیش‌پرداخت: user={user_id}, "
-                f"svc={service_key}, مبلغ={amount_rial:,} ریال")
+                f"svc={service_key}, مبلغ={amount_rial:,} ریال "
+                f"(نگه‌داشته از مانده: {credit_used_rial:,} ریال)")
             from wallet import prepare_invoice as _wl_prep; invoice_data = _wl_prep(invoice_data)  # ⭐ کسر خودکار موجودی کیف پول
             async with session.post(invoice_url, json=invoice_data) as resp:
                 result = await resp.json()
@@ -202,6 +728,8 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
     except Exception as e:
         logging.error(f"[REG-PREPAY] خطا در ارسال فاکتور پیش‌پرداخت: {e}",
                       exc_info=True)
+        # فاکتور ارسال نشد → hold آزاد شود تا مانده کاربر قفل نماند
+        release_hold(user_id, hold.get("task_id"))
         try:
             await bot.send_message(
                 user_id,
@@ -257,31 +785,29 @@ async def send_prepay_invoice(bot, user_id: int, service_key: str,
 
 
 async def cover_prepay_from_credit(bot, user_id: int, service_key: str,
-                                   service_label: str) -> bool:
+                                   service_label: str) -> str | None:
     """⭐ دستور کارفرما: اگر مانده/بستانکاری کاربر کل مبلغ پیش‌پرداخت را
     پوشش دهد، مرحلهٔ پرداخت پیش‌پرداخت کلاً حذف و ثبت مستقیم آغاز می‌شود.
 
-    رکورد مانده دست‌نخورده می‌ماند: در فاکتور نهایی کل مانده از هزینه کسر
-    می‌شود — دقیقاً معادل حالتی که کاربر پیش‌پرداخت را بپردازد و همان مبلغ
-    در پایان کسر شود (مبلغ نهایی پرداختی کاربر یکسان است).
+    ⭐️ v2 (سند §۵.۱.۳ — رفع باگ اصلی §۳.۳): مانده واقعاً کسر و در یک رزرو
+    «reserved» قفل می‌شود؛ در فاکتور نهایی همین رزرو (فقط همین ثبت) کسر
+    خواهد شد و دیگر هر تعداد ثبت پشت‌سرهم نمی‌توانند همان مانده را ببینند.
 
-    خروجی: True → پیش‌پرداخت پوشش داده شد و پیام‌ها ارسال شدند؛ فراخوان
-    باید بلافاصله ثبت را شروع کند (مثل مسیر کاربران معاف). False → فاکتور
-    پیش‌پرداخت طبق روال ارسال شود.
+    خروجی: task_id رزرو (truthy) → پیش‌پرداخت پوشش داده شد؛ فراخوان باید
+    بلافاصله ثبت را با همین task_id شروع کند. None → فاکتور پیش‌پرداخت
+    طبق روال ارسال شود.
     """
-    try:
-        rec = runtime_state.prepaid_registrations.get(user_id)
-        _paid, credit_rial = _split_record(rec)
-        prepay_rial = get_prepay_amount_rial(service_key)
-        if credit_rial < prepay_rial:
-            return False
-    except Exception as e:
-        logging.warning(f"[REG-PREPAY] بررسی پوشش پیش‌پرداخت با مانده ناموفق: {e}")
-        return False
+    reservation = reserve_from_credit(user_id, service_key, service_label)
+    if reservation is None:
+        return None
+    prepay_rial = int(reservation["reserved_rial"])
+    credit_rial = prepay_rial
+    task_id = reservation["task_id"]
 
     logging.info(
         f"[REG-PREPAY] پیش‌پرداخت با مانده پوشش داده شد: user={user_id}, "
-        f"svc={service_key}, پیش‌پرداخت={prepay_rial:,}, مانده={credit_rial:,} ریال")
+        f"svc={service_key}, پیش‌پرداخت={prepay_rial:,}, مانده={credit_rial:,} ریال "
+        f"(رزرو task={task_id})")
     try:
         await bot.send_message(
             user_id,
@@ -305,7 +831,8 @@ async def cover_prepay_from_credit(bot, user_id: int, service_key: str,
             ADMIN_ID,
             f"💵 [PREPAY] پیش‌پرداخت {service_label} کاربر {user_id} با مانده/"
             f"بستانکاری ({credit_rial:,} ریال) پوشش داده شد — ثبت بدون پرداخت "
-            f"پیش‌پرداخت آغاز شد (مانده در فاکتور نهایی کسر می‌شود).")
+            f"پیش‌پرداخت آغاز شد (مانده در فاکتور نهایی همین پرونده کسر می‌شود؛ "
+            f"رزرو task={task_id}).")
     except Exception:
         pass
     try:
@@ -317,30 +844,37 @@ async def cover_prepay_from_credit(bot, user_id: int, service_key: str,
             note=f"پیش‌پرداخت {prepay_rial:,} ریال — مانده {credit_rial:,} ریال")
     except Exception:
         pass
-    return True
+    return task_id
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ثبت پرداخت‌های بی‌داده / بازیافتی
+# ═══════════════════════════════════════════════════════════════════════════
 
 def register_orphan_prepay(user_id: int, amount_toman: int, service_key: str,
                            charge_id: str = "") -> None:
-    """⭐ رفع باگ برداشت دوگانه (لاگ ۱۴۰۵/۰۸/۰۶ — کاربر ۲۷۲۶۶۰۵۴۹):
-    ثبت امن پرداختِ پیش‌پرداختی که داده‌های FSM آن از بین رفته است.
+    """⭐ ثبت امن پرداختِ پیش‌پرداختی که داده‌های FSM آن از بین رفته است.
 
-    قبلاً چنین پرداختی فقط به مدیر اطلاع داده می‌شد و مبلغ عملاً گم می‌شد —
-    کاربر فاکتور پایان کار را کامل می‌پرداخت (برداشت دوگانه). حالا مبلغ مثل
-    هر پیش‌پرداخت دیگری ثبت می‌شود:
-      - اگر کاربر همان سرویس را دوباره شروع کند، در فاکتور پایان کارش کسر
-        می‌شود (adjust_final_fee_with_prepay)؛
-      - اگر مصرف نشود، مازادش طبق روال موجود (refund_approvals) پس از تایید
-        مدیر به کیف پول کاربر برمی‌گردد یا برای خدمات بعدی می‌ماند.
-    هیچ پولی گم نمی‌شود و هیچ فلویی تغییر نمی‌کند.
+    ⭐️ v2 (سند §۵.۱.۴): پرداخت بی-state به free_credit_rial اضافه می‌شود
+    (نه رزرو) — چون مشخص نیست برای کدام ثبت است؛ از فاکتور ثبت بعدی یا
+    با تأیید مدیر (refund_approvals) به کاربر برمی‌گردد. هیچ پولی گم
+    نمی‌شود و هیچ فلویی تغییر نمی‌کند.
     """
-    register_prepaid(
-        user_id, amount_toman, service_key,
-        f"پیش‌پرداخت بازیافتی ({service_key})", charge_id)
+    if charge_processed(charge_id):
+        logging.info(
+            f"[REG-PREPAY] پرداخت تکراری (charge={charge_id}) نادیده گرفته شد — "
+            f"user={user_id}")
+        return
+    mark_charge_processed(charge_id)
+    uid = int(user_id)
+    rec = _rec(uid, create=True)
+    add_rial = max(0, int(amount_toman) * 10)
+    rec["free_credit_rial"] = int(rec.get("free_credit_rial", 0) or 0) + add_rial
+    _persist()
     logging.info(
-        f"[REG-PREPAY] پرداخت بدون داده FSM به‌عنوان اعتبار ثبت شد: "
-        f"user={user_id}, svc={service_key}, مبلغ={amount_toman:,} تومان, "
-        f"charge={charge_id} — در فاکتور پایان کار بعدی کسر می‌شود")
+        f"[REG-PREPAY] پرداخت بدون داده FSM به‌عنوان اعتبار آزاد ثبت شد: "
+        f"user={user_id}, svc={service_key}, مبلغ={add_rial:,} ریال, "
+        f"charge={charge_id} — از فاکتور ثبت بعدی کسر می‌شود")
 
 
 async def credit_orphan_prepay_payment(message, bot, service_key: str) -> None:
@@ -369,140 +903,175 @@ async def credit_orphan_prepay_payment(message, bot, service_key: str) -> None:
             f"⚠️ [REG-PREPAY] پرداخت پیش‌پرداخت «{service_key}» در مرحلهٔ نامربوط — "
             f"user={user_id}\n🎫 payment_id: {charge_id}\n"
             f"💰 مبلغ: {amount_toman:,} تومان\n"
-            f"✅ به‌عنوان اعتبار کاربر ثبت شد (فلوی جاری کاربر دست نخورد).")
+            f"✅ به‌عنوان اعتبار آزاد کاربر ثبت شد (فلوی جاری کاربر دست نخورد).")
     except Exception:
         pass
 
 
 def register_prepaid(user_id: int, amount_toman: int, service_key: str,
-                     service_label: str, charge_id: str = "") -> None:
+                     service_label: str, charge_id: str = "") -> dict:
     """ثبت پیش‌پرداخت کاربر برای کسر در پایان کار.
 
-    ⭐ رفع باگ: قبلاً رکورد قبلی کاربر بازنویسی می‌شد و مانده/بستانکاری
-    ثبت‌شده توسط مدیر (/prepaid_set) یا باقی‌ماندهٔ پرونده‌های قبلی با
-    پرداخت پیش‌پرداخت جدید بی‌صدا از بین می‌رفت. حالا پیش‌پرداخت جدید به
-    ماندهٔ موجود افزوده می‌شود و هر دو در فاکتور نهایی کسر می‌شوند.
+    ⭐️ v2 (سند §۵.۱.۴): به‌جای بازنویسی/جمع رکورد، یک «رزرو جدید»
+    reserved ساخته می‌شود (paid + تخفیف). اگر hold فعالی برای همین
+    پرداخت هست (tid از payload)، finalize_paid آن را تبدیل می‌کند؛
+    این تابع مسیر سازگاری قدیمی است (بدون tid).
     """
-    existing = runtime_state.prepaid_registrations.get(user_id)
-    _old_paid, old_credit = _split_record(existing)
-    # پیش‌پرداختِ پرداخت‌نشدهٔ قبلی هم (اگر مصرف نشده) جزو مانده حساب می‌شود
-    carried = _old_paid + old_credit
-    # تخفیف اختصاصی که از فاکتور پیش‌پرداخت کم شده بود، جزو پیش‌پرداخت حساب می‌شود
+    if charge_processed(charge_id):
+        logging.info(
+            f"[REG-PREPAY] پرداخت تکراری (charge={charge_id}) ثبت نشد — "
+            f"user={user_id}, svc={service_key}")
+        rec = _rec(user_id)
+        if rec:
+            for r in rec.get("reservations", []):
+                if str(r.get("charge_id", "") or "") == str(charge_id):
+                    return r
+        return {}
+    mark_charge_processed(charge_id)
     discount_rial = _pending_discounts.pop(user_id, 0)
-    paid_rial = int(amount_toman) * 10 + discount_rial
-    total_rial = paid_rial + carried
-    runtime_state.prepaid_registrations[user_id] = {
-        "amount_toman": total_rial // 10,
-        "amount_rial": total_rial,
-        "prepay_paid_rial": paid_rial,
-        "service": service_key,
-        "service_label": service_label,
-        "charge_id": charge_id,
-        "paid_at": datetime.datetime.now(),
-        "discount_rial": discount_rial,
-    }
+    paid_rial = max(0, int(amount_toman) * 10)
+    res = finalize_paid(user_id, None, service_key, service_label,
+                        paid_rial, charge_id, discount_rial=discount_rial)
     logging.info(
         f"[REG-PREPAY] پیش‌پرداخت ثبت شد: user={user_id}, svc={service_key}, "
-        f"مبلغ={amount_toman:,} تومان, تخفیف={discount_rial:,} ریال, مانده قبلی={carried:,} ریال, "
-        f"جمع قابل کسر={total_rial:,} ریال, charge={charge_id}")
+        f"مبلغ={paid_rial:,} ریال, تخفیف={discount_rial:,} ریال, "
+        f"رزرو={res.get('reserved_rial'):,} ریال (task={res.get('task_id')}), "
+        f"charge={charge_id}")
+    return res
 
 
-def pop_prepaid(user_id: int):
-    """برداشتن رکورد پیش‌پرداخت (یک‌بار مصرف) — None اگر وجود نداشت.
-
-    ⭐ v1.7 — رکورد مصرف‌شده در runtime_state.consumed_prepay_for_panel هم
-    نگه داشته می‌شود تا panel_sync در اولین ثبت/آپدیت پروندهٔ همین کاربر،
-    مبلغ پیش‌پرداخت را روی پرونده (prepayAmount) ثبت کند — مبنای سود پنل.
-    """
-    prepay = runtime_state.prepaid_registrations.pop(user_id, None)
-    if prepay:
-        try:   # پیش‌پرداخت مصرف شد → درخواست بازگشتِ شکست قبلی دیگر معتبر نیست
-            import refund_approvals
-            refund_approvals.cancel_pending_for_user(user_id, "service_fail")
-        except Exception:
-            pass
-        try:
-            stash = getattr(runtime_state, "consumed_prepay_for_panel", None)
-            if not isinstance(stash, dict):
-                stash = {}
-                runtime_state.consumed_prepay_for_panel = stash
-            # مبنای سود پنل: کل مبلغ رکورد (پیش‌پرداخت + مانده/بستانکاری) — مانده
-            # هم پولی است که قبلاً از کاربر دریافت شده (مثلاً نصف پیش‌پرداختِ
-            # نگه‌داشته‌شده از درخواست قبلی) و روی هیچ پرونده‌ای ثبت نشده؛ اگر
-            # فقط پیش‌پرداخت ثبت می‌شد، پرونده‌ای که با مانده تسویه شده بود
-            # سود منفی (−هزینهٔ سامانه) نشان می‌داد. adjust_final_fee_with_prepay
-            # این مبلغ را به «مقدار واقعاً کسرشده» اصلاح می‌کند تا باقی‌ماندهٔ
-            # مانده که به پروندهٔ بعدی می‌رود دوبار شمرده نشود.
-            amount_rial = int(prepay.get("amount_rial", 0) or 0)
-            # تخفیف اختصاصی پولی نیست که از کاربر گرفته شده باشد
-            amount_rial = max(0, amount_rial - int(prepay.get("discount_rial", 0) or 0))
-            stash[user_id] = {
-                "amount_toman": amount_rial // 10,
-                "paid_at": prepay.get("paid_at"),
-                "service": prepay.get("service"),
-                "consumed_at": datetime.datetime.now(),
-            }
-        except Exception as ex:
-            logging.warning(f"[REG-PREPAY] ذخیرهٔ پیش‌پرداخت برای پنل ناموفق: {ex}")
-    return prepay
-
+# ═══════════════════════════════════════════════════════════════════════════
+# کسر پایان کار (سند §۴.۳ و §۵.۱.۵)
+# ═══════════════════════════════════════════════════════════════════════════
 
 # نوع payload فاکتورهای نهایی که پس از adjust_final_fee_with_prepay ارسال می‌شوند
 _FINAL_INVOICE_TYPES = ("lavayeh", "tajdid_nazar")
 
 
-def adjust_final_fee_with_prepay(user_id: int, final_fee_rial: int):
-    """اعمال کسر پیش‌پرداخت از هزینه کل.
+def pop_prepaid(user_id: int, service_key=None):
+    """(سازگاری قدیمی) برداشتن قدیمی‌ترین رزرو فعال — یک‌بار مصرف.
 
-    خروجی: (final_fee_adjusted, prepay_info)
-      - prepay_info=None → کاربر پیش‌پرداختی نداشته؛ مبلغ بدون تغییر.
-      - در غیر این صورت مبلغ جدید = max(0, کل − پیش‌پرداخت) برگردانده می‌شود
-        و رکورد مصرف می‌گردد.
-    """
-    prepay = pop_prepaid(user_id)
-    if not prepay:
-        return final_fee_rial, None
-    paid_rial, credit_rial = _split_record(prepay)
-    available = paid_rial + credit_rial
-    fee = max(0, int(final_fee_rial))
-    applied = min(available, fee)
-    adjusted = fee - applied
-    leftover = available - applied
-    prepay = dict(prepay)
-    prepay["prepay_paid_rial"] = paid_rial
-    prepay["credit_rial"] = credit_rial
-    prepay["applied_rial"] = applied
-    prepay["leftover_rial"] = leftover
-    # ⭐ رفع باگ: اگر مانده بیشتر از هزینه بود، باقی‌مانده حفظ می‌شود تا در
-    # پروندهٔ بعدی کسر گردد (قبلاً کل رکورد حذف و مازاد از بین می‌رفت).
-    # ⭐ مبنای سود پنل = مبلغی که واقعاً از هزینهٔ این پرونده کسر شد
+    ⭐️ v2: روی مدل رزرو کار می‌کند؛ خروجی شکل v1-مانند دارد
+    (amount_rial/prepay_paid_rial/...) تا مصرف‌کننده‌های قدیمی نشکنند.
+    مبنای سود پنل (consumed_prepay_for_panel) هم مثل قبل پر می‌شود."""
+    res = consume_reservation(user_id, service_key=service_key)
+    if not res:
+        return None
+    try:   # رزرو مصرف شد → درخواست بازگشتِ شکست قبلی دیگر معتبر نیست
+        import refund_approvals
+        refund_approvals.cancel_pending_for_user(user_id, "service_fail")
+    except Exception:
+        pass
+    _stash_for_panel(user_id, res, applied_rial=int(res.get("reserved_rial", 0) or 0))
+    return {
+        "amount_toman": int(res.get("reserved_rial", 0)) // 10,
+        "amount_rial": int(res.get("reserved_rial", 0)),
+        "prepay_paid_rial": int(res.get("paid_rial", 0) or 0),
+        "credit_rial": int(res.get("credit_used_rial", 0) or 0),
+        "discount_rial": int(res.get("discount_rial", 0) or 0),
+        "service": res.get("service"),
+        "service_label": res.get("service_label"),
+        "charge_id": res.get("charge_id"),
+        "paid_at": res.get("paid_at"),
+        "task_id": res.get("task_id"),
+    }
+
+
+def _stash_for_panel(user_id: int, res: dict, applied_rial: int) -> None:
+    """مبنای سود پنل: مبلغی که واقعاً از هزینهٔ همین پرونده کسر شد."""
     try:
         stash = getattr(runtime_state, "consumed_prepay_for_panel", None)
-        if isinstance(stash, dict) and user_id in stash:
-            _disc = int(prepay.get("discount_rial", 0) or 0)
-            stash[user_id]["amount_toman"] = max(0, applied - _disc) // 10
+        if not isinstance(stash, dict):
+            stash = {}
+            runtime_state.consumed_prepay_for_panel = stash
+        amount_rial = max(0, int(applied_rial) - int(res.get("discount_rial", 0) or 0))
+        stash[user_id] = {
+            "amount_toman": amount_rial // 10,
+            "paid_at": res.get("paid_at"),
+            "service": res.get("service"),
+            "consumed_at": datetime.datetime.now(),
+        }
     except Exception as ex:
-        logging.warning(f"[REG-PREPAY] اصلاح مبلغ پیش‌پرداخت پنل ناموفق: {ex}")
+        logging.warning(f"[REG-PREPAY] ذخیرهٔ پیش‌پرداخت برای پنل ناموفق: {ex}")
+
+
+def adjust_final_fee_with_prepay(user_id: int, final_fee_rial: int,
+                                 service_key=None, task_id: str | None = None):
+    """اعمال کسر پیش‌پرداخت از هزینه کل (سند §۴.۳).
+
+    ⭐️ v2: رزروِ همین ثبت (task_id) یا قدیمی‌ترین رزرو همان گروه سرویس
+    (FIFO) مصرف می‌شود — دیگر کل رکورد کاربر با اولین پایان کار بلعیده
+    نمی‌شود (رفع §۳.۴). اگر بعد از رزرو هنوز مبلغی از فاکتور مانده و
+    ماندهٔ آزاد کاربر مثبت باشد، از ماندهٔ آزاد هم کسر می‌شود (حفظ رفتار
+    فعلی کسب‌وکار — §۴.۳ گام ۳).
+
+    خروجی: (final_fee_adjusted, prepay_info)
+      - prepay_info=None → رزروی نبود؛ مبلغ بدون تغییر.
+      - در غیر این صورت مبلغ جدید = max(0, کل − کسرشده) برگردانده می‌شود.
+    """
+    res = consume_reservation(user_id, service_key=service_key, task_id=task_id)
+    fee = max(0, int(final_fee_rial))
+    paid_rial = credit_rial = discount_rial = applied = leftover = 0
+    label = None
+    if res is not None:
+        paid_rial = int(res.get("paid_rial", 0) or 0)
+        credit_rial = int(res.get("credit_used_rial", 0) or 0)
+        discount_rial = int(res.get("discount_rial", 0) or 0)
+        available = int(res.get("reserved_rial", 0) or 0)
+        applied = min(available, fee)
+        leftover = available - applied
+        label = res.get("service_label")
+        try:   # رزرو مصرف شد → درخواست بازگشتِ شکست قبلی دیگر معتبر نیست
+            import refund_approvals
+            refund_approvals.cancel_pending_for_user(user_id, "service_fail")
+        except Exception:
+            pass
+
+    # ⭐ حفظ رفتار فعلی: ماندهٔ آزاد هم (بعد از رزرو) از فاکتور کسر می‌شود
+    extra_credit_rial = 0
+    remaining_fee = fee - applied
+    if remaining_fee > 0:
+        sweep_expired_holds(user_id)
+        rec = _rec(user_id)
+        free_avail = min(max(0, int((rec or {}).get("free_credit_rial", 0) or 0)), remaining_fee)
+        if free_avail > 0:
+            rec["free_credit_rial"] = int(rec["free_credit_rial"]) - free_avail
+            extra_credit_rial = free_avail
+            applied += free_avail
+
+    adjusted = fee - applied
+    prepay_info = None
+    if res is not None or extra_credit_rial > 0:
+        prepay_info = {
+            "prepay_paid_rial": paid_rial,
+            "credit_rial": credit_rial + extra_credit_rial,
+            "applied_rial": applied,
+            "leftover_rial": leftover,
+            "discount_rial": discount_rial,
+            "service": (res or {}).get("service"),
+            "service_label": label or "مانده/بستانکاری",
+            "task_id": (res or {}).get("task_id"),
+            "extra_credit_rial": extra_credit_rial,
+        }
+        # ⭐ مبنای سود پنل = مبلغی که واقعاً از هزینهٔ این پرونده کسر شد
+        if res is not None:
+            _stash_for_panel(user_id, res, applied_rial=applied)
+
     if leftover > 0:
-        # ⭐ مازاد فقط پس از تایید مدیر به کیف پول کاربر واریز می‌شود (refund_approvals)
+        # ⭐ مازادِ همان رزرو فقط پس از تایید مدیر به کیف پول کاربر واریز
+        # می‌شود (refund_approvals) — دوبار حساب نمی‌شود چون رزرو consumed شد.
         try:
             import refund_approvals
             if leftover >= 10:
                 refund_approvals.request_refund_nowait(
                     user_id, leftover // 10,
-                    f"مازاد پیش‌پرداخت {prepay.get('service_label') or ''}".strip(),
+                    f"مازاد پیش‌پرداخت {label or ''}".strip(),
                     source="prepay_surplus")
         except Exception as ex:
-            logging.error(f"[REG-PREPAY] واریز مازاد به کیف پول ناموفق — رکورد مانده حفظ شد: {ex}")
-            runtime_state.prepaid_registrations[user_id] = {
-                "amount_toman": leftover // 10,
-                "amount_rial": leftover,
-                "prepay_paid_rial": 0,
-                "service": "leftover",
-                "service_label": "باقی‌ماندهٔ مانده از پروندهٔ قبلی",
-                "charge_id": "",
-                "paid_at": datetime.datetime.now(),
-            }
+            logging.error(f"[REG-PREPAY] واریز مازاد به کیف پول ناموفق — مبلغ به ماندهٔ آزاد برگشت: {ex}")
+            rec = _rec(user_id, create=True)
+            rec["free_credit_rial"] = int(rec.get("free_credit_rial", 0) or 0) + leftover
+
     if applied > 0 and adjusted > 0:
         # ⭐ اگر فاکتور نهایی کارت‌به‌کارت پرداخت شود، کسر برای مدیر نمایش داده می‌شود
         try:
@@ -510,18 +1079,21 @@ def adjust_final_fee_with_prepay(user_id: int, final_fee_rial: int):
             parts = []
             if paid_rial > 0:
                 parts.append("پیش‌پرداخت")
-            if credit_rial > 0:
+            if credit_rial + extra_credit_rial > 0:
                 parts.append("مانده/بستانکاری")
             note_invoice_deduction(user_id, _FINAL_INVOICE_TYPES, fee, applied,
                                    " + ".join(parts))
         except Exception:
             pass
-    logging.info(
-        f"[REG-PREPAY] کسر مانده/پیش‌پرداخت: user={user_id}, کل={fee:,}, "
-        f"پیش‌پرداخت={paid_rial:,}, مانده={credit_rial:,}, کسرشده={applied:,} → "
-        f"قابل پرداخت={adjusted:,} ریال, باقی‌ماندهٔ مانده={leftover:,} "
-        f"(svc={prepay.get('service')})")
-    return adjusted, prepay
+    if applied > 0 or extra_credit_rial > 0:
+        logging.info(
+            f"[REG-PREPAY] کسر مانده/پیش‌پرداخت: user={user_id}, کل={fee:,}, "
+            f"پیش‌پرداخت={paid_rial:,}, مانده={credit_rial + extra_credit_rial:,}, "
+            f"کسرشده={applied:,} → قابل پرداخت={adjusted:,} ریال, "
+            f"باقی‌ماندهٔ رزرو={leftover:,} "
+            f"(svc={(res or {}).get('service')}, task={task_id or '—'})")
+        _persist()
+    return adjusted, prepay_info
 
 
 def build_prepay_fee_text(final_fee_rial: int, prepay_info: dict,
@@ -533,11 +1105,8 @@ def build_prepay_fee_text(final_fee_rial: int, prepay_info: dict,
     اعلام می‌گردد (فاکتورِ همین مبلغ ارسال می‌شود).
     """
     info = prepay_info or {}
-    if "credit_rial" in info:
-        paid_rial = int(info.get("prepay_paid_rial", 0) or 0)
-        credit_rial = int(info.get("credit_rial", 0) or 0)
-    else:
-        paid_rial, credit_rial = _split_record(info)
+    paid_rial = int(info.get("prepay_paid_rial", 0) or 0)
+    credit_rial = int(info.get("credit_rial", 0) or 0)
     leftover = int(info.get("leftover_rial", 0) or 0)
     lines = [f"💰 *مبلغ کل: {total_fee_rial:,} ریال*"]
     if paid_rial > 0:

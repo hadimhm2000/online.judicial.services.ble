@@ -1469,6 +1469,13 @@ async def process_task(data, bot: Bot):
             await bot.send_message(user_id, NATIONAL_ID_ERROR_MSG)
         except Exception as e:
             logging.error(f"[LAVAYEH_SUBMIT] خطا: {e}", exc_info=True)
+            # ⭐️ v2 (سند §۵.۹): شکست قطعی تسک → رزرو پیش‌پرداخت آزاد شود تا
+            # پول کاربر (پرداخت + سهم مانده) به ماندهٔ آزاد برگردد.
+            try:
+                import prepay_registration as _pr
+                _pr.release_for_failed_job(data)
+            except Exception:
+                pass
             await bot.send_message(user_id, f"❌ خطایی در فرآیند ثبت لایحه رخ داد. فرآیند متوقف شد.\nلطفاً مجدداً از ابتدا اقدام فرمایید.")
         finally:
             # پاکسازی وضعیت فعال حتی در صورت خطا
@@ -1493,6 +1500,12 @@ async def process_task(data, bot: Bot):
             await bot.send_message(user_id, NATIONAL_ID_ERROR_MSG)
         except Exception as e:
             logging.error(f"[EALAM_VAKALAHT_SUBMIT] خطا: {e}", exc_info=True)
+            # ⭐️ v2 (سند §۵.۹): شکست قطعی → آزادسازی رزرو پیش‌پرداخت
+            try:
+                import prepay_registration as _pr
+                _pr.release_for_failed_job(data)
+            except Exception:
+                pass
             await bot.send_message(user_id, f"❌ خطایی در فرآیند اعلام وکالت رخ داد. فرآیند متوقف شد.\nلطفاً مجدداً از ابتدا اقدام فرمایید.")
         finally:
             # پاکسازی وضعیت فعال حتی در صورت خطا
@@ -1508,6 +1521,12 @@ async def process_task(data, bot: Bot):
             await bot.send_message(user_id, NATIONAL_ID_ERROR_MSG)
         except Exception as e:
             logging.error(f"[EZHHARNAMEH_SUBMIT] خطا: {e}", exc_info=True)
+            # ⭐️ v2 (سند §۵.۹): شکست قطعی → آزادسازی رزرو پیش‌پرداخت
+            try:
+                import prepay_registration as _pr
+                _pr.release_for_failed_job(data)
+            except Exception:
+                pass
             await bot.send_message(user_id, f"❌ خطایی در فرآیند ثبت اظهارنامه رخ داد. فرآیند متوقف شد.\nلطفاً مجدداً از ابتدا اقدام فرمایید.")
         return
 
@@ -1520,6 +1539,12 @@ async def process_task(data, bot: Bot):
             await bot.send_message(user_id, NATIONAL_ID_ERROR_MSG)
         except Exception as e:
             logging.error(f"[CHECK_SUBMIT] خطا: {e}", exc_info=True)
+            # ⭐️ v2 (سند §۵.۹): شکست قطعی → آزادسازی رزرو پیش‌پرداخت
+            try:
+                import prepay_registration as _pr
+                _pr.release_for_failed_job(data)
+            except Exception:
+                pass
             await bot.send_message(user_id, f"❌ خطایی در فرآیند ثبت دادخواست چک رخ داد. فرآیند متوقف شد.\nلطفاً مجدداً از ابتدا اقدام فرمایید.")
         return
 
@@ -1537,6 +1562,12 @@ async def process_task(data, bot: Bot):
             await bot.send_message(user_id, NATIONAL_ID_ERROR_MSG)
         except Exception as e:
             logging.error(f"[{task_type}] خطا: {e}", exc_info=True)
+            # ⭐️ v2 (سند §۵.۹): شکست قطعی → آزادسازی رزرو پیش‌پرداخت
+            try:
+                import prepay_registration as _pr
+                _pr.release_for_failed_job(data)
+            except Exception:
+                pass
             await bot.send_message(user_id, f"❌ خطایی در فرآیند ثبت دعوی اعتراضی رخ داد. فرآیند متوقف شد.\nلطفاً مجدداً از ابتدا اقدام فرمایید.")
         return
 

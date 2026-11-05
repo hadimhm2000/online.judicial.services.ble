@@ -164,31 +164,35 @@ _TASK_LABELS = {"lavayeh": "لایحه", "ezhhar": "اظهارنامه", "tn": "
 def request_failure_refund(uid, key: str, label: str) -> str | None:
     """⭐ ثبت ناموفق/ناقص: درخواست بازگشت پیش‌پرداختِ پروندهٔ در جریان (با تایید مدیر).
 
-    فقط «پیش‌پرداختِ پرداخت‌شده» برمی‌گردد (نه تخفیف و نه مانده/بستانکاری قبلی). با تایید
-    مدیر، همان مبلغ از رکورد پیش‌پرداخت هم حذف می‌شود تا در فاکتور بعدی دوباره کسر نشود.
-    اگر پیش‌پرداخت قبل از تایید مصرف شود، درخواست خودکار لغو می‌شود. خروجی: شناسه یا None.
+    ⭐️ v2 (سند §۵.۶): روی مدل رزرو کار می‌کند — قدیمی‌ترین رزرو فعال (FIFO)
+    همان کاربر؛ فقط «بخش پرداخت‌شده» (منهای تخفیف) برمی‌گردد و با تایید مدیر،
+    همان رزرو (با task_id) آزاد می‌شود تا در فاکتور بعدی دوباره کسر نشود.
+    اگر رزرو قبل از تایید مصرف شود، درخواست خودکار لغو می‌شود (stale).
+    خروجی: شناسه یا None.
     """
     try:
         import runtime_state
-        rec = runtime_state.prepaid_registrations.get(int(uid))
+        import prepay_registration as _pr
+        rec = _pr._rec(int(uid))
         if not rec:
             return None
-        # عین prepay_registration._split_record: بخش «پیش‌پرداخت» جدا از «مانده/بستانکاری»
-        amount = max(0, int(rec.get("amount_rial", 0) or 0))
-        if "prepay_paid_rial" in rec:
-            paid_rial = int(rec.get("prepay_paid_rial", 0) or 0)
-        else:
-            paid_rial = 0 if rec.get("manual") else amount
-        paid_rial = max(0, min(paid_rial, amount))
-        discount = int(rec.get("discount_rial", 0) or 0)
-        money_rial = max(0, paid_rial - discount)       # پولی که واقعاً از کاربر گرفته شده
+        _pr.sweep_expired_holds(int(uid))
+        active = [r for r in rec.get("reservations", [])
+                  if r.get("status") in ("reserved", "queued")]
+        if not active:
+            return None
+        active.sort(key=lambda r: r.get("paid_at") or datetime.datetime.min)
+        res = active[0]
+        discount = int(res.get("discount_rial", 0) or 0)
+        money_rial = max(0, int(res.get("paid_rial", 0) or 0) - discount)
         if money_rial < 10:
             return None
         return request_refund_nowait(
             uid, money_rial // 10, f"ثبت ناموفق {label} ({key}) — بازگشت پیش‌پرداخت",
             source="service_fail", dedupe_key=f"svc-fail:{key}",
-            extra={"consume_prepaid_rial": paid_rial,
-                   "prepaid_charge_id": str(rec.get("charge_id", "") or "")})
+            extra={"consume_prepaid_rial": int(res.get("paid_rial", 0) or 0),
+                   "prepaid_charge_id": str(res.get("charge_id", "") or ""),
+                   "prepay_task_id": res.get("task_id")})
     except Exception as e:
         logger.error(f"[REFUND] ثبت درخواست بازگشت شکست {key} ناموفق: {e}", exc_info=True)
         return None
@@ -258,22 +262,38 @@ async def decide(rid: str, approve: bool, by: int = 0) -> tuple[str, dict | None
             return "closed", it
         backup = None
         if approve and it.get("consume_prepaid_rial"):
-            # بازگشت پیش‌پرداخت: باید هنوز همان رکورد پیش‌پرداخت موجود باشد؛ وگرنه
+            # بازگشت پیش‌پرداخت: باید هنوز همان رزرو موجود/فعال باشد؛ وگرنه
             # (مصرف شده یا جایگزین شده) واریز، پول را دوبار به کاربر می‌دهد.
             import runtime_state
-            rec = runtime_state.prepaid_registrations.get(int(it["uid"]))
-            if not rec or str(rec.get("charge_id", "") or "") != it.get("prepaid_charge_id", ""):
+            import prepay_registration as _pr
+            rec = _pr._rec(int(it["uid"]))
+            res = None
+            if rec:
+                cands = [r for r in rec.get("reservations", [])
+                         if r.get("status") in ("reserved", "queued")]
+                _tid = it.get("prepay_task_id")
+                if _tid:
+                    res = next((r for r in cands if r.get("task_id") == _tid), None)
+                if res is None:
+                    res = next((r for r in cands
+                                if str(r.get("charge_id", "") or "") == it.get("prepaid_charge_id", "")), None)
+            if res is None:
                 it["status"] = ST_CANCELLED
                 it["decided_at"] = time.time()
                 _save()
                 return "stale", it
-            backup = dict(rec)
-            left = max(0, int(rec.get("amount_rial", 0) or 0) - int(it["consume_prepaid_rial"]))
-            if left <= 0:
-                runtime_state.prepaid_registrations.pop(int(it["uid"]), None)
-            else:
-                rec.update({"amount_rial": left, "amount_toman": left // 10,
-                            "prepay_paid_rial": 0, "discount_rial": 0})
+            import copy
+            backup = copy.deepcopy(res)
+            # اسنپ‌شات عمیق از کل رکورد — برای بازگردانی در صورت شکست واریز
+            backup["_rec_snapshot"] = {
+                "version": 2,
+                "free_credit_rial": rec.get("free_credit_rial", 0),
+                "reservations": copy.deepcopy(rec.get("reservations", [])),
+            }
+            # رزرو آزاد می‌شود (بدون برگشت به free_credit — پول از همین مسیر به کیف پول می‌رود)
+            res["status"] = "released"
+            res["released_at"] = datetime.datetime.now()
+            res["release_reason"] = "service_fail_refund"
         it["status"] = ST_APPROVED if approve else ST_REJECTED
         it["decided_at"] = time.time()
         it["decided_by"] = by
@@ -285,7 +305,11 @@ async def decide(rid: str, approve: bool, by: int = 0) -> tuple[str, dict | None
                 # واریز نشد → به حالت انتظار برمی‌گردد تا مدیر دوباره بزند
                 if backup is not None:
                     import runtime_state
-                    runtime_state.prepaid_registrations[int(it["uid"])] = backup
+                    import prepay_registration as _pr
+                    _snap = backup.pop("_rec_snapshot", None)
+                    if _snap is not None:
+                        runtime_state.prepaid_registrations[int(it["uid"])] = _snap
+                        _pr._persist()
                 it["status"] = ST_PENDING
                 it.pop("decided_at", None)
                 it.pop("decided_by", None)
