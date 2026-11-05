@@ -213,6 +213,121 @@ def _check_temp_title(request_title: str, success: bool = True) -> str:
     return f"ثبت موقت دادخواست{tail}"
 
 
+async def _fill_aasar_refered_case_no(sana_page, val: str) -> dict:
+    """⭐ عناوین اعسار — تیک سطر «شماره پرونده استنادي» + درج شماره پرونده.
+
+    ایندکس سطر «شماره پرونده استنادي» در جدول «تحقیقات و اقدامات مورد تقاضا»
+    بسته به نوع دادخواست/خواستهٔ انتخاب‌شده متفاوت است (در بعضی عناوین
+    #chk3/#ReferedCaseNo3 و در عناوین اعسار #chk4/#ReferedCaseNo4) → سطر
+    از روی *متن عنوان* «شماره پرونده استنادي» به‌صورت پویا پیدا می‌شود؛
+    سپس چک‌باکسِ همان سطر تیک می‌خورد و شماره پرونده در فیلد ReferedCaseNo
+    همان سطر (که تا قبل از تیک disabled است) با همگام‌سازی کامل AngularJS
+    درج و ماندگاری مقدارش کنترل می‌شود.
+
+    خروجی: {ok, chk_id, input_id, reason}
+      - ok=True  → تیک زده شد و مقدار در فیلد ماندگار است
+      - reason   → در صورت شکست: row_not_found / chk_not_found /
+                   chk_not_checked / no_input / value_not_kept
+    """
+    return await sana_page.evaluate(
+        """(val) => (async () => {
+            const normFa = (s) => {
+                if (!s) return '';
+                return String(s)
+                    .replace(/\\u064A/g, '\\u06CC')   // ي → ی
+                    .replace(/\\u0649/g, '\\u06CC')   // ى → ی
+                    .replace(/\\u0643/g, '\\u06A9')   // ك → ک
+                    .replace(/\\u0623/g, '\\u0627')
+                    .replace(/\\u0625/g, '\\u0627')
+                    .replace(/\\u0622/g, '\\u0627')
+                    .replace(/\\u0629/g, '\\u0647')
+                    .replace(/\\u200C/g, ' ')
+                    .replace(/\\s+/g, ' ')
+                    .trim();
+            };
+            const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+            const isVisible = (el) => !!el && el.offsetParent !== null
+                && window.getComputedStyle(el).visibility !== 'hidden';
+
+            // ۰) سطر «شماره پرونده استنادي» از روی متن label همان سطر
+            //    پیدا می‌شود (ایندکس chk/ReferedCaseNo در عناوین مختلف
+            //    فرق دارد → هیچ ایندکسی هاردکد نمی‌شود)
+            const findTargetRow = () => {
+                const chks = Array.from(document.querySelectorAll(
+                    'input[type="checkbox"][id^="chk"]'));
+                for (const c of chks) {
+                    const tr = c.closest('tr');
+                    if (!tr) continue;
+                    const hit = Array.from(tr.querySelectorAll('label')).some(
+                        (l) => normFa(l.textContent)
+                            .indexOf('شماره پرونده استنادی') !== -1);
+                    if (hit) return tr;
+                }
+                // فال‌بک: سطری که فیلد ReferedCaseNo دارد (بدون اتکا به متن)
+                const inputs = Array.from(document.querySelectorAll(
+                    'input[id^="ReferedCaseNo"]'));
+                const vis = inputs.find(isVisible) || inputs[0];
+                if (vis && vis.closest('tr')) return vis.closest('tr');
+                return null;
+            };
+
+            let row = findTargetRow();
+            if (!row) return {ok: false, reason: 'row_not_found'};
+
+            // ۱) تیک چک‌باکس سطر «شماره پرونده استنادي» (فعال‌شدن فیلد)
+            let chk = row.querySelector('input[type="checkbox"][id^="chk"]');
+            if (!chk) return {ok: false, reason: 'chk_not_found'};
+            if (!chk.checked && !chk.disabled) {
+                chk.click();
+                await sleep(700);                 // انتظار برای digest انگولار
+                row = findTargetRow() || row;     // سطر ممکن است دوباره رندر شود
+                chk = row.querySelector(
+                    'input[type="checkbox"][id^="chk"]') || chk;
+            }
+            if (!chk.checked) {
+                return {ok: false, reason: 'chk_not_checked', chk_id: chk.id};
+            }
+
+            // ۲) فیلد شماره پروندهٔ همان سطر (#ReferedCaseNo{N})
+            let inp = null;
+            for (let t = 0; t < 10 && !inp; t++) {
+                row = findTargetRow() || row;
+                inp = row.querySelector('input[id^="ReferedCaseNo"]');
+                if (!inp) await sleep(400);
+            }
+            if (!inp) return {ok: false, reason: 'no_input', chk_id: chk.id};
+
+            // ۳) فیلد تا قبل از تیک disabled است (ng-disabled) — انتظار
+            //    برای فعال‌شدن و در بدترین حالت حذف دستی صفت
+            for (let t = 0; t < 6 && inp.disabled; t++) {
+                await sleep(400);
+                row = findTargetRow() || row;
+                inp = row.querySelector('input[id^="ReferedCaseNo"]') || inp;
+            }
+            if (inp.disabled) inp.removeAttribute('disabled');
+            inp.removeAttribute('ng-disabled');
+
+            // ۴) درج مقدار با همگام‌سازی کامل AngularJS
+            inp.focus();
+            inp.value = val;
+            inp.dispatchEvent(new Event('input', {bubbles: true}));
+            inp.dispatchEvent(new Event('change', {bubbles: true}));
+            try {
+                if (typeof angular !== 'undefined') {
+                    const ctrl = angular.element(inp).controller('ngModel');
+                    if (ctrl) { ctrl.$setViewValue(val); ctrl.$render(); }
+                    const scope = angular.element(inp).scope();
+                    if (scope) scope.$apply();
+                }
+            } catch (e) {}
+            inp.dispatchEvent(new Event('blur', {bubbles: true}));
+            const kept = String(inp.value || '').trim() === String(val);
+            return {ok: kept, chk_id: chk.id, input_id: inp.id,
+                    reason: kept ? '' : 'value_not_kept'};
+        })()""",
+        val)
+
+
 async def _notify_check_partial_failure(bot: Bot, user_id: int, bill_no: str,
                                         request_title: str, issues: list) -> None:
     """⭐ دور ۳ (دستور کارفرما): وقتی ثبت دادخواست به باگ می‌خورد و «هزینه»
@@ -265,18 +380,22 @@ async def process_check_task(data: dict, bot: Bot):
     court_type = (data.get("check_court_type") or "").strip()
     is_aasar_title = request_title in CHECK_AASAR_TITLES
     # ⭐ اعسار از هزینه دادرسی — فیلدهای الزامی (اصلاحیهٔ کارفرما):
-    #   شماره پرونده ۱۶/۱۸ رقمی → مرحلهٔ «دلايل» (#chk3 + #ReferedCaseNo3)
+    #   شماره پرونده ۱۶/۱۸ رقمی → مرحلهٔ «دلايل» (تیک سطر «شماره پرونده
+    #   استنادي» + درج در فیلد ReferedCaseNo همان سطر — ایندکس سطر متغیر
+    #   است و از روی متن عنوان پیدا می‌شود)
     #   شماره ابلاغیه → بعد از انتخاب خواسته (#txtOtherData...)
     is_aasar_hazineh = (request_title == "اعسار از پرداخت هزینه دادرسی")
     aasar_case_no = (data.get("check_aasar_case_no") or "").strip()
     aasar_notice_no = (data.get("check_aasar_notice_no") or "").strip()
     # ⭐ اعسار از پرداخت مهریه / اعسار از محکوم به (دستور کارفرما):
-    #   شماره پرونده → دلايل (#chk3 + #ReferedCaseNo3)
+    #   شماره پرونده → دلايل (تیک سطر «شماره پرونده استنادي» + درج در
+    #   فیلد ReferedCaseNo همان سطر — ایندکس سطر متغیر است)
     #   شماره دادنامه بدوی → بعد از انتخاب خواسته (#txtOtherData...)
     is_aasar_mahrieh_mahkum = request_title in (
         "اعسار از پرداخت مهریه", "اعسار از پرداخت محکوم به")
     aasar_dadnameh_no = (data.get("check_aasar_dadnameh_no") or "").strip()
-    # عناوینی که شماره پرونده‌شان در دلايل (chk3 + ReferedCaseNo3) درج می‌شود
+    # عناوینی که شماره پرونده‌شان در دلايل (سطر «شماره پرونده استنادي»
+    # — پیدا شده به‌صورت پویا از روی متن عنوان) درج می‌شود
     is_aasar_refered_case = is_aasar_hazineh or is_aasar_mahrieh_mahkum
     # مقداری که پس از انتخاب خواسته در فیلد otherData درج می‌شود
     # (اعسار از هزینه دادرسی → شماره ابلاغیه | مهریه/محکوم به → شماره دادنامه بدوی)
@@ -954,10 +1073,11 @@ async def process_check_task(data: dict, bot: Bot):
 
             # ── ۱۰. مرحله «دلايل» ────────────────────────────────────────
             # ⭐ عناوین اعسار (هزینه دادرسی / مهریه / محکوم به — دستور
-            # کارفرما): ورود به «دلايل» الزامی است — تیک #chk3 زده و شماره
-            # پروندهٔ ۱۶/۱۸ رقمی کاربر در #ReferedCaseNo3 درج می‌شود (فیلد
-            # پس از تیک فعال می‌شود). برای این عناوین حتی بدون extra_text هم
-            # وارد این مرحله می‌شویم.
+            # کارفرما): ورود به «دلايل» الزامی است — سطر «شماره پرونده
+            # استنادي» از روی متن عنوان پیدا و تیک می‌خورد و شماره پروندهٔ
+            # ۱۶/۱۸ رقمی کاربر در فیلد ReferedCaseNo همان سطر درج می‌شود
+            # (فیلد پس از تیک فعال می‌شود). برای این عناوین حتی بدون
+            # extra_text هم وارد این مرحله می‌شویم.
             need_dalael = bool(extra_text) or (is_aasar_refered_case and aasar_case_no)
             if need_dalael:
                 clicked = await sana_page.evaluate('''() => {
@@ -971,91 +1091,43 @@ async def process_check_task(data: dict, bot: Bot):
                 await resilient_sleep(sana_page, 4, bot, user_id)
 
                 # ════════════════════════════════════════════════════════
-                # ⭐ عناوین اعسار (هزینه دادرسی / مهریه / محکوم به) — تیک
-                # #chk3 + شماره پرونده در #ReferedCaseNo3 (با همگام‌سازی کامل
+                # ⭐ عناوین اعسار (هزینه دادرسی / مهریه / محکوم به) — سطر
+                # «شماره پرونده استنادي» از روی متن عنوان به‌صورت پویا پیدا
+                # می‌شود (ایندکس سطر بسته به نوع دادخواست فرق می‌کند:
+                # chk3/chk4/...) → تیک چک‌باکس همان سطر + درج شماره پرونده
+                # در فیلد ReferedCaseNo همان سطر (با همگام‌سازی کامل
                 # AngularJS؛ فیلد تا قبل از تیک disabled است).
                 # ════════════════════════════════════════════════════════
                 if is_aasar_refered_case and aasar_case_no:
-                    case_no_ok = await sana_page.evaluate('''(val) => {
-                        const all = Array.from(
-                            document.querySelectorAll('input#ReferedCaseNo3'));
-                        const inp = all.find(el => el.offsetParent !== null
-                            && window.getComputedStyle(el).visibility !== 'hidden') || all[0];
-                        if (!inp) return {chk: false, reason: 'no_input'};
-                        // تیک چک‌باکس #chk3 (فعال‌سازی فیلد شماره پروندهٔ مرجوع)
-                        const chks = Array.from(
-                            document.querySelectorAll('input#chk3[type="checkbox"]'));
-                        const chk = chks.find(el => el.offsetParent !== null
-                            && window.getComputedStyle(el).visibility !== 'hidden') || chks[0];
-                        if (chk && !chk.checked && !chk.disabled) chk.click();
-                        if (chk && !chk.checked) return {chk: false, reason: 'chk_not_checked'};
-                        // فیلد ممکن است هنوز disabled باشد — یک فرصت کوتاه
-                        inp.removeAttribute('disabled');
-                        inp.removeAttribute('ng-disabled');
-                        inp.focus();
-                        inp.value = val;
-                        inp.dispatchEvent(new Event("input", { bubbles: true }));
-                        inp.dispatchEvent(new Event("change", { bubbles: true }));
-                        try {
-                            if (typeof angular !== 'undefined') {
-                                const ctrl = angular.element(inp).controller('ngModel');
-                                if (ctrl) { ctrl.$setViewValue(val); ctrl.$render(); }
-                                const scope = angular.element(inp).scope();
-                                if (scope) scope.$apply();
-                            }
-                        } catch (e) {}
-                        inp.dispatchEvent(new Event("blur", { bubbles: true }));
-                        return {chk: true, kept: String(inp.value || '').trim() === String(val)};
-                    }''', aasar_case_no)
-                    if case_no_ok and case_no_ok.get("chk") and case_no_ok.get("kept", True):
-                        logging.info(
-                            f"[CHECK] تیک #chk3 زده شد و شماره پرونده «{aasar_case_no}» در "
-                            f"#ReferedCaseNo3 درج شد (user={user_id})")
-                    else:
-                        # فیلد ممکن است با تاخیر انگولار فعال شود — یک تلاش مجدد
+                    case_no_res = await _fill_aasar_refered_case_no(
+                        sana_page, aasar_case_no) or {}
+                    if not case_no_res.get("ok"):
+                        # سطر/فیلد ممکن است با تاخیر انگولار رندر شود —
+                        # یک تلاش مجدد پس از ۳ ثانیه
                         await asyncio.sleep(3)
-                        case_no_ok = await sana_page.evaluate('''(val) => {
-                            const all = Array.from(
-                                document.querySelectorAll('input#ReferedCaseNo3'));
-                            const inp = all.find(el => el.offsetParent !== null
-                                && window.getComputedStyle(el).visibility !== 'hidden') || all[0];
-                            if (!inp) return false;
-                            const chks = Array.from(
-                                document.querySelectorAll('input#chk3[type="checkbox"]'));
-                            const chk = chks.find(el => el.offsetParent !== null) || chks[0];
-                            if (chk && !chk.checked && !chk.disabled) chk.click();
-                            inp.removeAttribute('disabled');
-                            inp.removeAttribute('ng-disabled');
-                            inp.focus();
-                            inp.value = val;
-                            inp.dispatchEvent(new Event("input", { bubbles: true }));
-                            inp.dispatchEvent(new Event("change", { bubbles: true }));
-                            try {
-                                if (typeof angular !== 'undefined') {
-                                    const ctrl = angular.element(inp).controller('ngModel');
-                                    if (ctrl) { ctrl.$setViewValue(val); ctrl.$render(); }
-                                    const scope = angular.element(inp).scope();
-                                    if (scope) scope.$apply();
-                                }
-                            } catch (e) {}
-                            return String(inp.value || '').trim() === String(val);
-                        }''', aasar_case_no)
-                        if case_no_ok:
-                            logging.info(
-                                f"[CHECK] (تلاش دوم) شماره پرونده «{aasar_case_no}» در "
-                                f"#ReferedCaseNo3 درج شد (user={user_id})")
-                        else:
-                            logging.warning(
-                                "[CHECK] درج شماره پرونده در #ReferedCaseNo3 (دلايل) ناموفق — "
-                                f"ادامه بدون آن (user={user_id})")
-                            try:
-                                await bot.send_message(
-                                    ADMIN_ID,
-                                    f"⚠️ [CHECK] درج «شماره پرونده {aasar_case_no}» در بخش دلايل "
-                                    f"(#ReferedCaseNo3) برای کاربر {user_id} ناموفق بود — "
-                                    "لطفاً در سامانه دستی بررسی کنید.")
-                            except Exception:
-                                pass
+                        case_no_res = await _fill_aasar_refered_case_no(
+                            sana_page, aasar_case_no) or {}
+                    if case_no_res.get("ok"):
+                        logging.info(
+                            f"[CHECK] تیک #{case_no_res.get('chk_id')} زده شد و شماره پروندهٔ "
+                            f"«{aasar_case_no}» در #{case_no_res.get('input_id')} "
+                            f"(دلايل) درج شد (user={user_id})")
+                    else:
+                        logging.warning(
+                            "[CHECK] درج شماره پرونده در سطر «شماره پرونده استنادي» "
+                            f"(دلايل) ناموفق — علت: "
+                            f"{case_no_res.get('reason') or 'نامشخص'} — "
+                            f"ادامه بدون آن (user={user_id})")
+                        try:
+                            await bot.send_message(
+                                ADMIN_ID,
+                                f"⚠️ [CHECK] درج «شماره پرونده {aasar_case_no}» در بخش دلايل "
+                                "(سطر «شماره پرونده استنادي» — علت: "
+                                f"{case_no_res.get('reason') or 'نامشخص'}) برای کاربر "
+                                f"{user_id} ناموفق بود — "
+                                "لطفاً در سامانه دستی بررسی کنید.")
+                        except Exception:
+                            pass
                     await asyncio.sleep(1)
 
                 # تیک چک‌باکس و وارد کردن متن دلایل (فقط اگر متن دلایل موجود است)
@@ -1325,7 +1397,12 @@ async def process_check_task(data: dict, bot: Bot):
 
             # استخراج هزینه‌ها — ⭐ فرمول جدید کارفرما (costSum از td والد +
             # ۴ ردیف خاص + ۵۵۰,۰۰۰ ریال + رند به بالا)
-            cost_data = await _extract_cost_data(sana_page)
+            # ⭐ اگر جدول هزینه دادرسی نمایش داده نشد (costSum=0) و/یا
+            # پاپ‌آپ «تاخیر در اجرای سرویس» صادر شد → پاپ‌آپ بسته و
+            # «محاسبه هزینه ی دادرسی و تعرفه خدمات» (#btnCalculateCash)
+            # کلیک می‌شود تا جدول نمایش داده شود (دستور کارفرما).
+            cost_data = await _extract_cost_data_with_retry(
+                sana_page, bot, user_id)
             final_total = cost_data.get("final_total", 0)
             _matched = cost_data.get("matched_rows_debug", [])
             logging.info(
@@ -4737,6 +4814,63 @@ async def _process_check_attachments(
         return "contract_fix", contract_fix_lawyer
 
     return True, {}
+
+
+async def _extract_cost_data_with_retry(sana_page, bot: Bot, user_id: int,
+                                        max_retries: int = 3) -> dict:
+    """⭐ استخراج هزینه با تضمین نمایش جدول هزینه دادرسی (دستور کارفرما).
+
+    اگر در بخش هزینه‌ها، هزینه دادرسی نمایش داده نشد (جدول نبود و
+    costSum صفر استخراج می‌شد) و/یا پاپ‌آپ «خطا: تاخیر در اجرای سرویس»
+    صادر شد → پاپ‌آپ خطا بسته و دکمهٔ «محاسبه هزینه ی دادرسی و تعرفه
+    خدمات» (#btnCalculateCash / actions.paymentCost) کلیک می‌شود تا جدول
+    هزینه دادرسی نمایش داده شود؛ سپس استخراج تکرار می‌گردد.
+
+    اگر پس از تلاش‌ها جدول نمایش داده شد → نتیجهٔ استخراج برگردانده
+    می‌شود؛ در غیر این صورت آخرین نتیجه (با costSum احتمالاً صفر) عودت
+    داده می‌شود تا هشدارِ «ثبت ناقص» قبلی فعال شود.
+    """
+    cost_data = await _extract_cost_data(sana_page)
+    for attempt in range(max_retries):
+        cost_sum = int(cost_data.get("costSum") or 0)
+        if cost_sum > 0:
+            return cost_data
+        logging.warning(
+            f"[CHECK] جدول هزینه دادرسی نمایش داده نشد (costSum={cost_sum} — "
+            f"تلاش {attempt + 1}/{max_retries}) — بستن پاپ‌آپ خطا و کلیک "
+            "#btnCalculateCash")
+        # پاپ‌آپ خطا (از جمله «تاخیر در اجرای سرویس») بسته می‌شود
+        await dismiss_sana_error_popup(sana_page)
+        await asyncio.sleep(2)
+        # کلیک «محاسبه هزینه ی دادرسی و تعرفه خدمات» (#btnCalculateCash)
+        clicked = await sana_page.evaluate('''() => {
+            const btn = document.querySelector('#btnCalculateCash') ||
+                        document.querySelector('button[ng-click*="paymentCost"]');
+            if (!btn || btn.disabled) return false;
+            try {
+                if (typeof angular !== 'undefined') {
+                    const scope = angular.element(btn).scope();
+                    if (scope && scope.actions &&
+                        typeof scope.actions.paymentCost === 'function') {
+                        scope.$apply(() => { scope.actions.paymentCost(); });
+                        return true;
+                    }
+                }
+            } catch (e) {}
+            btn.click();
+            return true;
+        }''')
+        if clicked:
+            try:
+                await wait_for_horizontal_loading_bar(
+                    sana_page, bot, user_id, timeout=60)
+            except Exception:
+                pass
+            await asyncio.sleep(3)
+        else:
+            await asyncio.sleep(5)
+        cost_data = await _extract_cost_data(sana_page)
+    return cost_data
 
 
 async def _extract_cost_data(page) -> dict:

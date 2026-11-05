@@ -3189,6 +3189,12 @@ async def _calculate_cost_with_retry(page, bot: Bot, user_id: int, max_retries: 
     """
     ورود به مرحله «محاسبه و دريافت هزينه» و استخراج مبلغ نمایش‌داده‌شده.
     مبلغ خام (ریال) برمی‌گرداند — تبدیل/رند/فرمول در calculate_lavayeh_fee (config.py) انجام می‌شود.
+
+    ⭐ دستور کارفرما: اگر هزینه دادرسی در جدول نمایش داده نشد (مبلغ صفر
+    ریال محاسبه می‌شد) و/یا پاپ‌آپ «خطا: تاخیر در اجرای سرویس» صادر شد →
+    پاپ‌آپ خطا بسته و دکمهٔ «محاسبه هزینه ی دادرسی و تعرفه خدمات»
+    (#btnCalculateCash) کلیک می‌شود تا جدول هزینه دادرسی نمایش داده شود؛
+    سپس استخراج مبلغ تکرار می‌گردد.
     """
     service_delays = 0
     for attempt in range(max_retries + SANA_SERVICE_DELAY_MAX_RETRIES):
@@ -3259,8 +3265,31 @@ async def _calculate_cost_with_retry(page, bot: Bot, user_id: int, max_retries: 
             except Exception as e:
                 logging.warning(f"[LAVAYEH] خطا در تبدیل مبلغ '{raw}': {e}")
 
-        logging.warning(f"[LAVAYEH] مبلغی در جدول پیدا نشد (تلاش {attempt+1}/{max_retries})")
-        await asyncio.sleep(5)
+        logging.warning(
+            f"[LAVAYEH] مبلغی در جدول پیدا نشد (تلاش {attempt+1}/{max_retries}) — "
+            "کلیک #btnCalculateCash برای نمایش جدول هزینه دادرسی")
+        # ⭐ دستور کارفرما: اگر هزینه دادرسی در جدول نمایش داده نشد (مبلغ
+        # صفر ریال محاسبه می‌شد) و/یا پاپ‌آپ «خطا: تاخیر در اجرای سرویس»
+        # صادر شد → پاپ‌آپ خطا بسته و دکمهٔ «محاسبه هزینه ی دادرسی و تعرفه
+        # خدمات» (#btnCalculateCash) کلیک می‌شود تا جدول هزینه دادرسی
+        # نمایش داده شود؛ سپس استخراج مبلغ تکرار می‌گردد (به‌جای رد شدن
+        # با مبلغ صفر).
+        await _close_error_popup(page)
+        if await detect_sana_service_delay_popup(page):
+            service_delays += 1
+            logging.warning(
+                f"[LAVAYEH] پاپ‌آپ «تاخیر در اجرای سرویس» پس از جدول‌نشدن هزینه — "
+                f"بسته شد و #btnCalculateCash مجدداً کلیک می‌شود "
+                f"({service_delays}/{SANA_SERVICE_DELAY_MAX_RETRIES})")
+            await dismiss_sana_error_popup(page)
+            await asyncio.sleep(2)
+        calc_clicked = await _click_calculate_cash(page)
+        if calc_clicked:
+            await wait_for_horizontal_loading_bar(page, bot, user_id, timeout=60)
+            await asyncio.sleep(3)
+        else:
+            # دکمه پیدا/فعال نبود — صبر و تلاش مجدد استخراج در دور بعد
+            await asyncio.sleep(4)
 
     logging.error(f"[LAVAYEH] استخراج مبلغ پس از {max_retries} تلاش ناموفق (user={user_id})")
     return 0

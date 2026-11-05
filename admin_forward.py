@@ -206,7 +206,8 @@ async def send_check_submission_to_admin(bot: Bot, admin_id: int, user_id: int, 
                 notice_count += len(group.get("images", []))
         aasar_hazineh_lines += f"📷 تصویر ابلاغیه: {notice_count} تصویر\n"
     # ⭐ اعسار از پرداخت مهریه / اعسار از محکوم به (دستور کارفرما) —
-    #   شماره پرونده (دلايل → chk3 + ReferedCaseNo3) + شماره دادنامه بدوی
+    #   شماره پرونده (دلايل → تیک سطر «شماره پرونده استنادي» + درج در فیلد
+    #   ReferedCaseNo همان سطر — ایندکس متغیر) + شماره دادنامه بدوی
     #   (بعد از خواسته → txtOtherData...)
     elif data.get("check_request_title") in ("اعسار از پرداخت مهریه",
                                              "اعسار از پرداخت محکوم به"):
