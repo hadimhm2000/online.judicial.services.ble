@@ -35,6 +35,19 @@ mark_signed(...) (از on_*_sign_submit_success پس از امضای آخرین 
 final_print=True در صف می‌رود؛ کلید (کاربر، کد) در بخش on_demand فایل ذخیره
 می‌شود تا mark_sent / report_failure مورد صف چاپ نهایی روز بعد را دست نزنند و
 در خطا به خود کاربر پیام برود (نه «فردا دوباره تلاش می‌شود» به مدیر).
+
+⭐ ۱۴۰۵/۰۸ — گیت وضعیت چاپ نهایی روزانه (دستور کارفرما): در اجرای روزانهٔ
+۱۷:۰۰ قبل از ارسال به کاربر، جدول «خلاصهٔ» پرونده در صفحهٔ نتیجهٔ استعلام چک
+می‌شود (status_gate):
+  • لایحه: فقط اگر ردیف «ارسال شده به» موجود و پر باشد تایید است و ارسال
+    می‌شود (مثل «دادگاههای تجدیدنظر استان تهران»)؛ وگرنه (مثل «احراز هویت
+    شده» بدون ردیف ارسال) برای کاربر ارسال نمی‌شود.
+  • اظهارنامه/دادخواست (و سایر فرم‌های دادخواستی): فقط اگر «آخرین وضعیت»
+    «ارسال شده به مرجع قضایی» باشد تایید است؛ وگرنه ارسال نمی‌شود.
+در صورت عدم تایید: PDF ساخته‌شده در held_final_prints نگه داشته می‌شود، به
+مدیر اطلاع داده می‌شود که ارسال نشد و دکمهٔ «📤 ارسال به کاربر» می‌گیرد —
+هر زمان که مدیر بزند همان پرونده برای کاربر ارسال می‌شود (موارد held دیگر
+در اجرای روزانه تلاش نمی‌شوند). چاپ درخواستی کاربر از این گیت مستثنی است.
 """
 
 import asyncio
@@ -42,12 +55,15 @@ import datetime
 import json
 import logging
 import os
+import shutil
 import threading
 
-from aiogram import Bot
+from aiogram import Bot, F, Router
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 import runtime_state
 from config import ADMIN_ID
+from bale_file_sender import send_document_direct
 
 FINAL_PRINT_NOTICE = "📬 چاپ نهایی نیز در روز آینده برای شما ارسال می‌گردد."
 
@@ -62,8 +78,13 @@ MAX_ATTEMPTS = 3
 KEEP_SENT_DAYS = 7
 # موارد بدون امضا پس از این تعداد روز (بدون تکمیل امضا) از فایل پاک می‌شوند
 KEEP_UNSIGNED_DAYS = 30
+# ⭐ موارد نگه‌داشته‌شده برای مدیر (held) پس از این تعداد روز از فایل و دیسک پاک می‌شوند
+KEEP_HELD_DAYS = 30
 
 STORE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "final_print_queue.json")
+# ⭐ ۱۴۰۵/۰۸ — PDF چاپ نهاییِ تاییدنشده اینجا نگه داشته می‌شود تا مدیر با دکمهٔ
+# «📤 ارسال به کاربر» هر زمان خواست آن را برای کاربر بفرستد
+HELD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "held_final_prints")
 _lock = threading.Lock()
 
 # دسته‌بندی‌های منوی استعلام (عیناً کلیدهای nav در بخش «کد رهگیری» scenarios)
@@ -300,6 +321,226 @@ async def report_failure(bot: Bot, user_id: int, tracking_code: str,
             pass
 
 
+# ─────────────── گیت وضعیت چاپ نهایی روزانه (۱۴۰۵/۰۸ — دستور کارفرما) ───────────────
+
+BILL_CATEGORY = "لایحه"
+# شکل نرمال‌شدهٔ «ارسال شده به مرجع قضايي» (سامانه ی عربی می‌گذارد؛ _norm_fa یکسان می‌کند)
+SENT_TO_JUDICIAL_STATUS = "ارسال شده به مرجع قضایی"
+
+
+def _norm_fa(s) -> str:
+    """نرمال‌سازی متن فارسی سامانه: حذف فاصله‌های صفر-عرض/جهت‌دار، یک‌کردن
+    فاصله‌ها و یکسان‌سازی ي/ی و ك/ک (سامانهٔ قضایی حروف عربی به‌کار می‌برد)."""
+    if s is None:
+        return ""
+    s = str(s)
+    for ch in ("\u200c", "\u200f", "\u200e", "\u00a0"):
+        s = s.replace(ch, " ")
+    s = " ".join(s.split())
+    return s.replace("ي", "ی").replace("ك", "ک").strip()
+
+
+def check_portal_status(doc_category: str | None, summary: dict | None) -> dict:
+    """قاعدهٔ تایید چاپ نهایی از روی جدول خلاصهٔ پرونده (دستور کارفرما):
+
+    • لایحه: تایید ⟺ ردیف «ارسال شده به» موجود و پر باشد (مثل نمونهٔ
+      «دادگاههاي تجدیدنظر استان تهران»)؛ اگر نبود/خالی بود (مثل «احراز هويت
+      شده») تایید نیست.
+    • اظهارنامه/دادخواست و سایر فرم‌های دادخواستی: تایید ⟺ «آخرین وضعیت»
+      «ارسال شده به مرجع قضايي» باشد.
+
+    خروجی: {"approved": bool, "reason": str, "last_status": str}
+    اگر summary خالی/None بود (جدول خلاصه خوانده نشد) → تایید؛ یعنی رفتار
+    قبلی (ارسال چاپ) حفظ می‌شود و هیچ موردی به‌خاطر خطای خواندن از دست نمی‌رود."""
+    cat = _norm_fa(doc_category or "")
+    last_status = _norm_fa((summary or {}).get("last_status") or "")
+    sent_to = _norm_fa((summary or {}).get("sent_to") or "")
+    if not last_status and not sent_to:
+        return {"approved": True, "reason": "", "last_status": last_status}
+    if cat == BILL_CATEGORY:
+        if sent_to:
+            return {"approved": True, "reason": "", "last_status": last_status}
+        return {
+            "approved": False,
+            "reason": ("پرونده هنوز به مرجع ارسال نشده است — ردیف «ارسال شده به» در "
+                       "خلاصهٔ لایحه موجود نیست یا خالی است"),
+            "last_status": last_status,
+        }
+    if not last_status:
+        return {"approved": True, "reason": "", "last_status": last_status}
+    if last_status == SENT_TO_JUDICIAL_STATUS:
+        return {"approved": True, "reason": "", "last_status": last_status}
+    return {
+        "approved": False,
+        "reason": (f"آخرین وضعیت پرونده «{last_status}» است — هنوز «ارسال شده به "
+                   f"مرجع قضایی» نیست"),
+        "last_status": last_status,
+    }
+
+
+def held_pdf_path(user_id, tracking_code) -> str:
+    """مسیر PDF نگه‌داشته‌شده برای مدیر (داخل held_final_prints)."""
+    safe_tc = "".join(ch for ch in str(tracking_code or "") if ch.isalnum()) or "unknown"
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        uid = 0
+    return os.path.join(HELD_DIR, f"{uid}_{safe_tc}.pdf")
+
+
+def mark_held(user_id: int, tracking_code: str,
+              reason: str = "", last_status: str = "") -> None:
+    """مورد «نگه‌داشته» (held) می‌شود: دیگر در اجرای روزانه تلاش نمی‌شود؛
+    فقط با دکمهٔ «📤 ارسال به کاربر» مدیر برای کاربر ارسال می‌شود.
+    هرگز خطا پرتاب نمی‌کند."""
+    try:
+        with _lock:
+            data = _load()
+            for it in data["items"]:
+                if it.get("user_id") == int(user_id) and it.get("tracking_code") == str(tracking_code):
+                    it["status"] = "held"
+                    it["held_date"] = _today()
+                    it["held_reason"] = (reason or "")[:300]
+                    it["held_last_status"] = (last_status or "")[:120]
+            _save(data)
+    except Exception as e:
+        logging.error(f"[FINAL_PRINT] خطا در mark_held {tracking_code}: {e}")
+
+
+async def hold_for_admin(bot: Bot, user_id: int, tracking_code: str, doc_name: str,
+                         reason: str, last_status: str, pdf_path: str) -> bool:
+    """چاپ نهایی تایید نشد (طبق دستور کارفرما):
+      • به کاربر هیچی ارسال نمی‌شود؛
+      • PDF ساخته‌شده نگه داشته می‌شود؛
+      • به مدیر اطلاع داده می‌شود که ارسال نشد + دکمهٔ «📤 ارسال به کاربر» —
+        هر زمان که مدیر بزند همان پرونده برای کاربر ارسال می‌شود.
+    اگر خودِ نگه‌داشتن PDF ناموفق بود، همان رفتار ناموفق معمول (گزارش به مدیر
+    و تلاش فردا ساعت ۱۷:۰۰) اعمال می‌شود."""
+    dest = ""
+    try:
+        os.makedirs(HELD_DIR, exist_ok=True)
+        dest = held_pdf_path(user_id, tracking_code)
+        shutil.move(pdf_path, dest)
+    except Exception as e:
+        logging.error(f"[FINAL_PRINT] نگه‌داشتن PDF کد {tracking_code} ناموفق: {e}")
+        await report_failure(bot, user_id, tracking_code, doc_name,
+                             f"وضعیت پرونده تایید نبود و فایل چاپ هم نگه‌داشته نشد — علت: {reason}")
+        return False
+    mark_held(user_id, tracking_code, reason, last_status)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📤 ارسال به کاربر",
+                              callback_data=f"fpsend:{int(user_id)}:{tracking_code}")],
+    ])
+    status_line = f"📋 آخرین وضعیت سامانه: {(last_status or '').strip()}\n" if (last_status or "").strip() else ""
+    text = (
+        "⛔️ *چاپ نهایی برای کاربر ارسال نشد*\n\n"
+        f"👤 کاربر: `{user_id}`\n"
+        f"🔢 کد رهگیری: `{tracking_code}`\n"
+        f"📂 نوع: {doc_name}\n"
+        f"{status_line}"
+        f"❌ علت عدم ارسال: {(reason or 'نامشخص')[:250]}\n\n"
+        "این پرونده برای کاربر ارسال نشد. هر زمان که بخواهید با دکمهٔ زیر "
+        "همان پرونده برای کاربر ارسال می‌شود."
+    )
+    try:
+        await bot.send_message(ADMIN_ID, text, parse_mode="Markdown", reply_markup=kb)
+    except Exception:
+        # اگر Markdown متن را نپذیرفت، بدون قالب و با همان دکمه ارسال شود
+        try:
+            await bot.send_message(ADMIN_ID, text.replace("*", ""), reply_markup=kb)
+        except Exception:
+            pass
+    logging.info(
+        f"[FINAL_PRINT] کد {tracking_code} کاربر {user_id} ({doc_name}) تایید نشد — "
+        "PDF نگه داشته شد و به مدیر اطلاع داده شد")
+    return True
+
+
+# ── دکمهٔ مدیر: ارسال پروندهٔ نگه‌داشته‌شده به کاربر ─────────────────────
+
+final_print_router = Router()
+
+
+async def _edit_admin_text(callback: CallbackQuery, text: str, kb=None) -> None:
+    try:
+        if callback.message and (callback.message.photo or callback.message.document):
+            await callback.message.edit_caption(caption=text, reply_markup=kb)
+        else:
+            await callback.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        pass
+
+
+@final_print_router.callback_query(F.data.startswith("fpsend:"))
+async def cb_send_held_final_print(callback: CallbackQuery, bot: Bot):
+    """دکمهٔ «📤 ارسال به کاربر» مدیر — ارسال پروندهٔ نگه‌داشته‌شده به کاربر."""
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("⛔ فقط مدیر", show_alert=True)
+        return
+    try:
+        _, uid_raw, tc = callback.data.split(":", 2)
+        uid, tc = int(uid_raw), str(tc).strip()
+    except Exception:
+        await callback.answer("دادهٔ دکمه نامعتبر است.", show_alert=True)
+        return
+
+    item = None
+    try:
+        with _lock:
+            for it in _load()["items"]:
+                if it.get("user_id") == uid and it.get("tracking_code") == tc:
+                    item = dict(it)
+                    break
+    except Exception:
+        item = None
+    if not item or item.get("status") != "held":
+        await callback.answer("این مورد یافت نشد یا قبلاً ارسال شده است.", show_alert=True)
+        await _edit_admin_text(callback, "✅ این مورد قبلاً ارسال شده یا از صف خارج است.")
+        return
+
+    pdf = held_pdf_path(uid, tc)
+    if not os.path.exists(pdf):
+        # فایل چاپ دیگر موجود نیست → مورد برای اجرای روزانهٔ فردا برگردد
+        try:
+            with _lock:
+                data = _load()
+                for it in data["items"]:
+                    if it.get("user_id") == uid and it.get("tracking_code") == tc:
+                        it["status"] = "pending"
+                        it.pop("held_reason", None)
+                        it.pop("held_last_status", None)
+                _save(data)
+        except Exception as e:
+            logging.error(f"[FINAL_PRINT] خطا در بازگرداندن مورد {tc} به صف: {e}")
+        await callback.answer(
+            "فایل چاپ موجود نیست — فردا ساعت ۱۷:۰۰ دوباره بررسی می‌شود.", show_alert=True)
+        await _edit_admin_text(
+            callback,
+            "⚠️ فایل چاپ این مورد دیگر موجود نیست؛ فردا ساعت ۱۷:۰۰ به‌صورت خودکار "
+            "دوباره استعلام و بررسی می‌شود.")
+        return
+
+    doc_name = (f"{item.get('doc_category')} - {item.get('doc_subcategory')}"
+                if item.get("doc_subcategory") else (item.get("doc_category") or "پرونده"))
+    caption = f"📄 *چاپ نهایی* — کد رهگیری: `{tc}`\n{doc_name}"
+    sent = await send_document_direct(uid, pdf, filename=f"چاپ نهایی {tc}.pdf", caption=caption)
+    if sent:
+        mark_sent(uid, tc)
+        try:
+            os.remove(pdf)
+        except Exception:
+            pass
+        await callback.answer("✅ برای کاربر ارسال شد")
+        await _edit_admin_text(
+            callback, f"✅ ارسال شد — این پرونده ({tc}) برای کاربر {uid} فرستاده شد.")
+        logging.info(f"[FINAL_PRINT] پروندهٔ نگه‌داشتهٔ کد {tc} کاربر {uid} به دستور مدیر ارسال شد")
+    else:
+        await callback.answer("ارسال ناموفق بود — لطفاً کمی بعد دوباره بزنید.", show_alert=True)
+        await _edit_admin_text(
+            callback,
+            "⚠️ ارسال برای کاربر ناموفق بود — لطفاً کمی بعد دوباره دکمه را بزنید.")
+
+
 # ───────────────────────── چاپ درخواستی کاربر ─────────────────────────
 
 ON_DEMAND_FAILED_TEXT = (
@@ -461,14 +702,27 @@ async def run_daily_batch(bot: Bot) -> int:
             it["last_attempt_date"] = today
             it["status"] = "queued"
             queued.append(dict(it))
-        # پاکسازی موارد ارسال‌شده/ناموفقِ قدیمی
+        # پاکسازی موارد ارسال‌شده/ناموفق/نگه‌داشته‌شدهٔ قدیمی
         cutoff = (now_tehran().date() - datetime.timedelta(days=KEEP_SENT_DAYS)).isoformat()
         unsigned_cutoff = (now_tehran().date() - datetime.timedelta(days=KEEP_UNSIGNED_DAYS)).isoformat()
+        held_cutoff = (now_tehran().date() - datetime.timedelta(days=KEEP_HELD_DAYS)).isoformat()
+        # PDF موارد نگه‌داشته‌شدهٔ منقضی هم از دیسک پاک شود
+        for it in data["items"]:
+            if (it.get("status") == "held"
+                    and (it.get("held_date") or it.get("registered_date", "")) < held_cutoff):
+                try:
+                    p = held_pdf_path(it.get("user_id"), it.get("tracking_code"))
+                    if os.path.exists(p):
+                        os.remove(p)
+                except Exception:
+                    pass
         data["items"] = [
             it for it in data["items"]
             if not (it.get("status") in ("sent", "failed")
                     and (it.get("sent_date") or it.get("last_attempt_date") or it.get("registered_date", "")) < cutoff)
             and not (not _is_signed(it) and it.get("registered_date", "") < unsigned_cutoff)
+            and not (it.get("status") == "held"
+                    and (it.get("held_date") or it.get("registered_date", "")) < held_cutoff)
         ]
         data["last_run_date"] = today
         _save(data)
@@ -487,6 +741,9 @@ async def run_daily_batch(bot: Bot) -> int:
             "full_name": "",
             "payment_fee": 0,
             "final_print": True,   # ⭐ فقط چاپ؛ بدون پیام‌ها/ثبت‌های مخصوص استعلام پولی
+            # ⭐ گیت وضعیت (۱۴۰۵/۰۸): قبل از ارسال به کاربر، وضعیت پرونده در
+            # جدول خلاصهٔ سامانه چک شود. چاپ درخواستی کاربر این فلگ را ندارد.
+            "status_gate": True,
         })
 
     try:

@@ -14,7 +14,12 @@ import pending_jobs
 from browser_helpers import SANA_SERVICE_DELAY_MAX_RETRIES
 import error_catalog
 from sign_tab import SIGN_TASK_TYPES, run_sign_task
-from final_print import mark_sent as _fp_mark_sent, report_failure as _fp_report_failure
+from final_print import (
+    mark_sent as _fp_mark_sent,
+    report_failure as _fp_report_failure,
+    check_portal_status as _fp_check_portal_status,
+    hold_for_admin as _fp_hold_for_admin,
+)
 from bale_file_sender import send_document_direct
 from config import ADMIN_ID, DEBUG_LOG_REQUESTS, FEES, get_fee, temp_path
 from sheets import log_event
@@ -1434,6 +1439,53 @@ def _paid_attachment_pages(data: dict):
     return (fee - base) // ATTACHMENT_PAGE_FEE
 
 
+# ⭐ ۱۴۰۵/۰۸ (دستور کارفرما) — گیت وضعیت چاپ نهایی روزانهٔ ۱۷:۰۰:
+# خواندن «آخرین وضعیت» و «ارسال شده به» از جدول خلاصهٔ پرونده (لایحه/اظهارنامه/
+# دادخواست) در صفحهٔ نتیجهٔ استعلام. ي/ی و ك/ک سامانه یکسان می‌شوند و فاصله‌ها
+# نرمال می‌شوند تا مقایسهٔ «ارسال شده به مرجع قضايي» درست کار کند.
+_FINAL_SUMMARY_JS = r'''() => {
+    const norm = (s) => (s || '')
+        .replace(/[\u200c\u200f\u200e\u00a0]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .replace(/ي/g, 'ی').replace(/ك/g, 'ک')
+        .trim();
+    const out = {last_status: null, sent_to: null};
+    for (const tr of document.querySelectorAll('table tbody tr')) {
+        const tds = tr.querySelectorAll(':scope > td');
+        if (tds.length < 2) continue;
+        const label = norm(tds[0].innerText);
+        if (!label) continue;
+        if (label === 'آخرین وضعیت' && out.last_status === null) {
+            out.last_status = norm(tds[1].innerText);
+        } else if (label === 'ارسال شده به' && out.sent_to === null) {
+            out.sent_to = norm(tds[1].innerText);
+        }
+    }
+    return out;
+}'''
+
+
+async def _extract_portal_summary_status(sana_page) -> dict | None:
+    """خواندن «آخرین وضعیت» و «ارسال شده به» از جدول خلاصهٔ پرونده در
+    صفحهٔ نتیجهٔ استعلام — ورودی گیت وضعیت چاپ نهایی روزانه.
+
+    خروجی: {"last_status": str|None, "sent_to": str|None}؛ یا None اگر
+    جدول خلاصه پیدا نشد (در این صورت چاپ مثل قبل ارسال می‌شود — یعنی
+    خطای خواندن هیچ موردی را از دست نمی‌دهد)."""
+    for attempt in (1, 2):
+        try:
+            got = await sana_page.evaluate(_FINAL_SUMMARY_JS)
+        except Exception as e:
+            logging.warning(f"[FINAL_PRINT] خواندن وضعیت خلاصهٔ پرونده ناموفق: {e}")
+            return None
+        if got and (got.get("last_status") is not None or got.get("sent_to") is not None):
+            return got
+        if attempt == 1:
+            # یک فرصت دیگر برای رندر کامل جدول Angular
+            await asyncio.sleep(3)
+    return None
+
+
 async def process_task(data, bot: Bot):
     sana_page = runtime_state.sana_page
     browser_context = runtime_state.browser_context
@@ -2375,6 +2427,17 @@ async def process_task(data, bot: Bot):
                 # ── PRINT ─────────────────────────────────────────────────
                 else:
                     saved_attachments = []
+                    # ⭐ گیت وضعیت چاپ نهایی روزانهٔ ۱۷:۰۰ (دستور کارفرما — ۱۴۰۵/۰۸):
+                    # قبل از کلیک چاپ، «آخرین وضعیت»/«ارسال شده به» از جدول خلاصهٔ
+                    # نتیجه خوانده می‌شود (چاپ درخواستی کاربر این فلگ را ندارد).
+                    fp_verdict = None
+                    if is_final_print and data.get("status_gate"):
+                        fp_summary = await _extract_portal_summary_status(sana_page)
+                        fp_verdict = _fp_check_portal_status(category, fp_summary)
+                        if not fp_verdict.get("approved"):
+                            logging.info(
+                                f"[FINAL_PRINT] کد {tracking_code} کاربر {user_id} ({doc_name}) "
+                                f"وضعیت تایید ندارد: {fp_verdict.get('reason')}")
                     try:
                         async def click_print_box():
                             await sana_page.evaluate('''() => {
@@ -2421,6 +2484,17 @@ async def process_task(data, bot: Bot):
                             break
 
                         if is_final_print:
+                            # ⭐ گیت وضعیت (۱۴۰۵/۰۸): لایحه باید «ارسال شده به» پر
+                            # داشته باشد و اظهارنامه/دادخواست باید «آخرین وضعیت»شان
+                            # «ارسال شده به مرجع قضایی» باشد؛ وگرنه برای کاربر ارسال
+                            # نمی‌شود، PDF نگه داشته می‌شود و مدیر دکمهٔ ارسال می‌گیرد.
+                            if fp_verdict is not None and not fp_verdict.get("approved"):
+                                await _fp_hold_for_admin(
+                                    bot, user_id, tracking_code, doc_name,
+                                    fp_verdict.get("reason", ""),
+                                    fp_verdict.get("last_status", ""),
+                                    pdf_path)
+                                return
                             # ⭐ چاپ نهایی روز بعد — فقط ارسال چاپ؛ بدون ثبت استعلام در پنل
                             # ⭐ چاپ درخواستی کاربر (final_print.request_print) کپشن خودش را دارد
                             await send_document_direct(

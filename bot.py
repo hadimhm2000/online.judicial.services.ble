@@ -98,6 +98,10 @@ dp.include_router(sana_gate.gate_router)
 # ⭐ انتخاب «واحد زیر مجموعه شخص حقوقی» (دکمه‌های شیشه‌ای orgu:) — همهٔ بخش‌ها
 from org_unit_picker import org_unit_router
 dp.include_router(org_unit_router)
+# ⭐ ۱۴۰۵/۰۸ — دکمهٔ «📤 ارسال به کاربر» مدیر برای چاپ نهاییِ تاییدنشده
+# (گیت وضعیت چاپ نهایی روزانهٔ ۱۷:۰۰ — final_print.py)
+from final_print import final_print_router
+dp.include_router(final_print_router)
 dp.include_router(router)
 dp.include_router(admin_relay_router)
 # ⭐ اصلاحیه: fallback_router باید همیشه *آخرین* روتر ثبت‌شده باشد تا فقط

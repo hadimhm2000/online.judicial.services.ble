@@ -56,9 +56,11 @@ from contract_fix_handlers import contract_fix_router, try_handle_stateless_cont
 
 logger = logging.getLogger(__name__)
 
-# بازه‌ی سال‌های معتبر برای ۷ رقم ابتدایی کد رهگیری (۱۳۹۴ تا ۱۴۰۶)
-TRACKING_CODE_PREFIX_MIN = 1394220
-TRACKING_CODE_PREFIX_MAX = 1406220
+# بازه‌ی سال‌های معتبر برای ۷ رقم ابتدایی کد رهگیری (۱۳۹۵ تا ۱۴۰۵)
+# ⭐ ۱۴۰۵/۰۸ (دستور کارفرما): کدرهگیری فقط از ۱۳۹۵۲۲۰ و ۱۳۹۶۲۲۰ و ... تا ۱۴۰۵۲۲۰
+# شروع شود و ۱۶ رقمی باشد؛ ۱۳۹۴ و قبل از آن و ۱۴۰۶ و بعد از آن نامعتبر است.
+TRACKING_CODE_PREFIX_MIN = 1395220
+TRACKING_CODE_PREFIX_MAX = 1405220
 TRACKING_CODE_LENGTH = 16
 
 # ───────────────────────────────────────────────────────────────
@@ -1631,8 +1633,9 @@ async def process_tracking_code(message: types.Message, state: FSMContext):
         return
     if not _is_valid_tracking_code(clean_code):
         await message.answer(
-            "⚠️ کد رهگیری نامعتبر است.\n"
-            "کد رهگیری باید ۱۶ رقم باشد و با یکی از سال‌های ۱۳۹۴ تا ۱۴۰۶ (یعنی اعداد ۱۳۹۴۲۲۰ الی ۱۴۰۶۲۲۰) شروع شود.\n"
+            "⚠️ کد رهگیری اشتباه است.\n"
+            "کد رهگیری باید ۱۶ رقم باشد و با یکی از اعداد ۱۳۹۵۲۲۰ تا ۱۴۰۵۲۲۰ شروع شود "
+            "(مثلاً کدی که با 1405220 یا 1404220 یا 1399220 و ... شروع می‌شود).\n"
             "لطفاً کد را دوباره بررسی و ارسال فرمایید:"
         )
         return
@@ -1697,8 +1700,9 @@ async def process_corrected_tracking_code(message: types.Message, state: FSMCont
         return
     if not _is_valid_tracking_code(clean_code):
         await message.answer(
-            "⚠️ کد رهگیری نامعتبر است.\n"
-            "کد رهگیری باید ۱۶ رقم باشد و با یکی از سال‌های ۱۳۹۴ تا ۱۴۰۶ (یعنی اعداد ۱۳۹۴۲۲۰ الی ۱۴۰۶۲۲۰) شروع شود.\n"
+            "⚠️ کد رهگیری اشتباه است.\n"
+            "کد رهگیری باید ۱۶ رقم باشد و با یکی از اعداد ۱۳۹۵۲۲۰ تا ۱۴۰۵۲۲۰ شروع شود "
+            "(مثلاً کدی که با 1405220 یا 1404220 یا 1399220 و ... شروع می‌شود).\n"
             "لطفاً کد را دوباره بررسی و ارسال فرمایید:"
         )
         return
@@ -2279,7 +2283,10 @@ async def test_mode_receive_tracking_code(message: types.Message, state: FSMCont
     clean_code = message.text.translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')).replace(" ", "").strip()
 
     if not re.match(r'^[0-9]+$', clean_code) or not _is_valid_tracking_code(clean_code):
-        await message.answer("⚠️ کدرهگیری نامعتبر است. لطفاً یک کدرهگیری ۱۶ رقمی معتبر ارسال فرمایید:")
+        await message.answer(
+            "⚠️ کدرهگیری اشتباه است. لطفاً یک کدرهگیری ۱۶ رقمی ارسال کنید که با یکی از "
+            "اعداد ۱۳۹۵۲۲۰ تا ۱۴۰۵۲۲۰ (مثلاً 1405220 یا 1404220 و ...) شروع شود:"
+        )
         return
 
     await state.update_data(

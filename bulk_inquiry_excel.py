@@ -32,8 +32,10 @@ from config import FEES, get_fee
 
 logger = logging.getLogger(__name__)
 
-TRACKING_CODE_PREFIX_MIN = 1394220
-TRACKING_CODE_PREFIX_MAX = 1406220
+# ⭐ ۱۴۰۵/۰۸ (دستور کارفرما): کدرهگیری فقط از ۱۳۹۵۲۲۰ و ... تا ۱۴۰۵۲۲۰ شروع شود
+# و ۱۶ رقمی باشد — هم‌راستا با handlers.py
+TRACKING_CODE_PREFIX_MIN = 1395220
+TRACKING_CODE_PREFIX_MAX = 1405220
 TRACKING_CODE_LENGTH = 16
 ATTACHMENT_PAGE_RATE = 5000  # تومان به ازای هر برگ پیوست — هم‌راستا با handlers.py
 
@@ -209,8 +211,9 @@ def build_bulk_inquiry_items(filepath: str):
             elif not _is_valid_tracking_code(tracking_code):
                 invalid_cells.append({
                     "row_index": row_idx, "field": "کدرهگیری",
-                    "error": f"کدرهگیری «{tracking_code}» نامعتبر است "
-                             f"(باید دقیقاً {TRACKING_CODE_LENGTH} رقم و در بازه‌ی مجاز باشد)",
+                    "error": f"کدرهگیری «{tracking_code}» اشتباه است "
+                             f"(باید دقیقاً ۱۶ رقم باشد و با یکی از اعداد ۱۳۹۵۲۲۰ تا ۱۴۰۵۲۲۰ — "
+                             f"مثلاً 1405220 یا 1404220 و ... — شروع شود)",
                 })
             else:
                 need_att_raw = (row.get("need_attachments_raw") or "").strip()
