@@ -28,6 +28,20 @@ CLEARANCE_MENU_TEXT = "📜 گواهی عدم سوءپیشینه"
 LEGAL_MENU_TEXT = "⚖️ محاسبه دیه و ارث"
 # ⭐ محاسبه تمبر بر اساس حق‌الوکاله (۱۴۰۵/۰۷) — بخش محاسبه تمبر و اعلام وکالت
 STAMP_BY_LAWYER_FEE_TEXT = "3️⃣ محاسبه تمبر بر اساس حق‌الوکاله"
+# ⭐ اتوماسیون ویژه خدمات حقوقی (ربات دوم — ریپوی Legal-Automation) — legal_automation_handlers.py
+# فعلاً فقط برای مدیر؛ با LEGAL_BETA_IDS (آیدی‌ها با ویرگول) بعداً بدون تغییر کد برای دیگران باز می‌شود.
+LEGAL_AUTOMATION_TEXT = "⚖️ اتوماسیون ویژه خدمات حقوقی"
+
+
+def legal_automation_allowed(user_id) -> bool:
+    import os
+    if user_id is None:
+        return False
+    if user_id == ADMIN_ID:
+        return True
+    extra = {p.strip() for p in (os.environ.get("LEGAL_BETA_IDS") or "").split(",") if p.strip()}
+    return str(user_id) in extra
+
 STAMP_BY_LAWYER_FEE_EALAM_TEXT = "4️⃣ محاسبه تمبر بر اساس حق‌الوکاله"
 
 
@@ -60,6 +74,9 @@ def get_flow_type_kb(user_id: int) -> ReplyKeyboardMarkup:
     ]
     if _is_admin:
         rows.append([KeyboardButton(text="🧪 تست")])
+    # ⭐ ردیف اول، تمام‌عرض — فقط برای مدیر (و فهرست LEGAL_BETA_IDS)
+    if legal_automation_allowed(user_id):
+        rows.insert(0, [KeyboardButton(text=LEGAL_AUTOMATION_TEXT)])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 

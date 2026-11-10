@@ -77,6 +77,9 @@ dp.include_router(clearance_router)
 # ⭐ پرونده‌های در انتظار امضا و پرداخت (۱۴۰۵/۰۷) — دکمهٔ منو + پرداخت با payload pending_case
 from pending_cases_handlers import pending_router
 dp.include_router(pending_router)
+# ⭐ دکمهٔ «اتوماسیون ویژه خدمات حقوقی» (فقط مدیر) — لینک امضاشده به ربات دوم
+from legal_automation_handlers import legal_automation_router
+dp.include_router(legal_automation_router)
 from history_handlers import history_router
 dp.include_router(history_router)
 import wallet
