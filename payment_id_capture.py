@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-استخراج «شناسه پرداخت» از بخش هزینه سامانه قضایی + ثبت در گوگل‌شیت + ارسال فقط به مدیر.
+استخراج «شناسه پرداخت» از بخش هزینه سامانه قضایی + ارسال فقط به مدیر.
 
 طبق درخواست کارفرما:
   - در کلیه بخش‌های ربات «به جز استعلام»، وقتی ربات وارد قسمت هزینه شد
@@ -38,8 +38,6 @@ import datetime
 import logging
 
 import aiohttp
-import gspread
-from google.oauth2.service_account import Credentials
 
 from config import ADMIN_ID, ADMIN_API_BASE, PANEL_AUTH_HEADERS
 
@@ -194,86 +192,6 @@ def _schedule_panel_sync(
 _BACKGROUND_TASKS = set()
 
 
-# ────────────────────────── تنظیمات گوگل‌شیت ──────────────────────────
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
-SPREADSHEET_NAME = "BotData"
-WORKSHEET_NAME = "شناسه پرداخت"
-HEADER_ROW = [
-    "تاریخ و ساعت",
-    "بخش ربات",
-    "آیدی کاربر",
-    "کد رهگیری / پرونده",
-    "شناسه پرداخت",
-    "مبلغ هزینه (ریال)",
-]
-
-_gc = None
-_gc_tried = False
-
-
-def _get_client():
-    """اتصال تنبل به گوگل‌شیت (همان google-credentials.json که sheets.py استفاده می‌کند).
-    در صورت شکست، در تلاش بعدی دوباره تلاش می‌کند (خطای موقت شبکه)."""
-    global _gc, _gc_tried
-    if _gc:
-        return _gc
-    _gc_tried = True
-    try:
-        creds = Credentials.from_service_account_file(
-            "google-credentials.json", scopes=SCOPES)
-        _gc = gspread.authorize(creds)
-        logging.info("✅ [PAY-ID] Google Sheets connected (payment_id_capture)")
-    except Exception as e:
-        logging.warning(f"⚠️ [PAY-ID] اتصال گوگل‌شیت ناموفق بود: {e}")
-        _gc = None
-    return _gc
-
-
-def _get_or_create_worksheet(gc):
-    """ورک‌شیت «شناسه پرداخت» را در اسپردشیت BotData برمی‌گرداند؛ اگر نبود با هدر می‌سازد."""
-    sh = gc.open(SPREADSHEET_NAME)
-    try:
-        ws = sh.worksheet(WORKSHEET_NAME)
-    except Exception:
-        ws = sh.add_worksheet(title=WORKSHEET_NAME, rows=500, cols=len(HEADER_ROW))
-        ws.append_row(HEADER_ROW, value_input_option="RAW")
-        logging.info(f"✅ [PAY-ID] ورک‌شیت «{WORKSHEET_NAME}» ساخته شد")
-    return ws
-
-
-async def save_payment_id_to_sheet(
-    service_name: str,
-    user_id,
-    tracking_code: str,
-    payment_id: str,
-    amount) -> bool:
-    """ثبت یک ردیف شناسه پرداخت در گوگل‌شیت. True یعنی موفق."""
-    def _append():
-        gc = _get_client()
-        if not gc:
-            return False
-        ws = _get_or_create_worksheet(gc)
-        row = [
-            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            service_name,
-            str(user_id),
-            str(tracking_code or ""),
-            str(payment_id),  # RAW — دقیقاً به‌صورت متن ذخیره می‌شود
-            str(amount if amount is not None else ""),
-        ]
-        ws.append_row(row, value_input_option="RAW")
-        return True
-
-    try:
-        return await asyncio.to_thread(_append)
-    except Exception as e:
-        logging.error(f"❌ [PAY-ID] خطا در ثبت شناسه پرداخت در گوگل‌شیت: {e}")
-        return False
-
-
 # ────────────────────────── استخراج از صفحه ──────────────────────────
 # جاوااسکریپت استخراج شناسه پرداخت از صفحه بخش هزینه سامانه.
 # دو روش:
@@ -391,7 +309,7 @@ async def capture_and_report_payment_ids(
     """
     تابع اصلی برای صدا زدن از سناریوها:
       ۱. شناسه پرداخت را از صفحه بخش هزینه استخراج می‌کند.
-      ۲. هر شناسه را در گوگل‌شیت (ورک‌شیت «شناسه پرداخت») ذخیره می‌کند.
+      ۲. شناسه روی پروندهٔ پنل ادمین ثبت می‌شود.
       ۳. یک پیام خلاصه «فقط» برای مدیر (ADMIN_ID) می‌فرستد.
       ۴. اگر شناسه‌ای پیدا نشد، فقط به مدیر هشدار می‌دهد (کاربر چیزی نمی‌بیند).
     هیچ‌وقت exception نمی‌دهد تا فلوی اصلی ربات مختل نشود.
@@ -419,19 +337,6 @@ async def capture_and_report_payment_ids(
                 logging.error(f"[{log_prefix}] خطا در ارسال هشدار به مدیر: {send_err}")
             return []
 
-        # ── ثبت در گوگل‌شیت ──
-        saved = 0
-        for pid in payment_ids:
-            ok = await save_payment_id_to_sheet(
-                service_name=service_name,
-                user_id=user_id,
-                tracking_code=tracking_code,
-                payment_id=pid,
-                amount=amount,
-            )
-            if ok:
-                saved += 1
-
         # ── ⭐ v1.3: سینک به پنل ادمین (paymentId + systemCost روی پرونده) ──
         # غیرمسدودکننده؛ در پس‌زمینه با چند تلاشِ تاخیری انجام می‌شود.
         # ⭐ systemCost هم مثل fee به «تومان» ثبت می‌شود (amount ریال است)
@@ -446,7 +351,6 @@ async def capture_and_report_payment_ids(
             )
 
         amount_txt = f"{amount:,} ریال" if isinstance(amount, (int, float)) and amount else "—"
-        sheet_txt = "✅ در گوگل‌شیت ذخیره شد" if saved == len(payment_ids) else f"⚠️ {saved}/{len(payment_ids)} ردیف ذخیره شد"
 
         # ── پیام فقط برای مدیر ──
         try:
@@ -459,7 +363,6 @@ async def capture_and_report_payment_ids(
                 f"💰 هزینه سامانه: {amount_txt}\n\n"
                 f"🔖 شناسه پرداخت: {payment_ids[0]}"
                 + (f"\n🔖 شناسه‌های دیگر: {', '.join(payment_ids[1:])}" if len(payment_ids) > 1 else "")
-                + f"\n\n🗂 {sheet_txt}"
             )
         except Exception as send_err:
             logging.error(f"[{log_prefix}] خطا در ارسال پیام به مدیر: {send_err}")

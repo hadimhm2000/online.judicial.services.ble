@@ -1,6 +1,5 @@
 import { db } from '@/lib/db';
 import { NextRequest, NextResponse } from 'next/server';
-import { appendNewCase } from '@/lib/google-sheets';
 import {
   CASE_STATUSES, FEE_STATUSES, statusChangeData, effectiveStatus, statusLabel, feeStatusLabel,
 } from '@/lib/admin-case-update';
@@ -148,7 +147,6 @@ export async function PUT(
       });
     }
 
-    appendNewCase(id).catch(() => {});
 
     return NextResponse.json(updated);
   } catch (error) {

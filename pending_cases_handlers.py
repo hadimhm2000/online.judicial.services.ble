@@ -140,7 +140,7 @@ async def pending_sign_locked(callback: CallbackQuery):
 
 # ───────────────────────── پرداخت ─────────────────────────
 
-def _invoice_payload(user_id: int, it: dict) -> str:
+def _invoice_payload(user_id: int, it: dict) -> str:  # فقط برای سازگاری با فاکتورهای قدیمی
     """payload فاکتور پرونده — شامل نوع سرویس (st) برای ثبت درست در پنل/شیت
     (اصلاحیه ۱۴۰۵/۰۸: قبلاً بدون st، پرداخت کارتیِ این فاکتورها در پنل با
     UNKNOWN/DIRECT ثبت می‌شد و کل مبلغ سود حساب می‌شد)."""
@@ -153,12 +153,18 @@ async def _send_invoice(bot: Bot, it: dict) -> str:
     user_id = it["user_id"]
     amount = int(it.get("final_fee") or 0)
     label = _label(it)
+    # ⭐ فاکتور یکتا با انقضای ۲۴ ساعته؛ فاکتورهای باز قبلی همین پرونده جایگزین می‌شوند
+    import invoice_registry
+    issued = invoice_registry.issue(user_id, it["tracking_code"], it.get("service_type") or "", amount)
+    if issued is None:
+        return ""
+    _inv, _payload = issued
     invoice_data = {
         "chat_id": user_id,
         "title": f"فاکتور {label}",
         "description": (f"هزینه خدمات {label} — کد رهگیری {it['tracking_code']}\n"
                         f"مبلغ: {amount // 10:,} تومان ({amount:,} ریال)"),
-        "payload": _invoice_payload(user_id, it),
+        "payload": _payload,
         "provider_token": BALE_WALLET_TOKEN,
         "currency": "IRR",
         "prices": [{"label": label, "amount": amount}],
@@ -202,6 +208,10 @@ async def pending_pay(callback: CallbackQuery, state: FSMContext, bot: Bot):
         return
     if int(it.get("final_fee") or 0) <= 0:
         await callback.answer("مبلغ این پرونده نامشخص است؛ لطفاً با پشتیبانی تماس بگیرید.", show_alert=True)
+        return
+    import invoice_registry
+    if invoice_registry.active_claim(callback.from_user.id, tc):
+        await callback.answer(invoice_registry.MESSAGES["busy"], show_alert=True)
         return
     await callback.answer()
     sent = await _send_invoice(bot, it)
@@ -307,7 +317,12 @@ async def pending_case_successful_payment(message: Message, state: FSMContext, b
     prev = store.get(user_id)
     store[user_id] = pending_cases.payment_context(it)
     try:
-        await _handler(message, state, bot)
+        # کاربر وسط امضای پروندهٔ دیگری است → فقط پرداخت ثبت شود، امضا شروع نشود
+        try:
+            _busy = await _busy_with_sign(state)
+        except Exception:
+            _busy = False
+        await _handler(message, state, bot, start_sign=not _busy)
     except Exception as e:
         # ⭐ پرونده «پرداخت‌شده» علامت خورده است؛ استثنا نباید به بازپخش کیف
         # پول/کارت‌به‌کارت برسد — وگرنه مبلغ خودکار به کیف پول برمی‌گشت در حالی

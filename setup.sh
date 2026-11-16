@@ -85,16 +85,6 @@ else
     echo "ℹ️  فایل .env از قبل وجود دارد"
 fi
 
-# بررسی فایل google-credentials.json
-echo ""
-if [ ! -f "google-credentials.json" ]; then
-    echo "⚠️  فایل google-credentials.json یافت نشد"
-    echo "   اگر می‌خواهید از Google Sheets استفاده کنید، این فایل را از"
-    echo "   Google Cloud Console دانلود کرده و در پوشه پروژه قرار دهید."
-else
-    echo "✅ فایل google-credentials.json موجود است"
-fi
-
 # تمام!
 echo ""
 echo "╔═══════════════════════════════════════════════════════════╗"

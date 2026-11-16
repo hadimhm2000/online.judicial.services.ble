@@ -22,7 +22,7 @@ from final_print import (
 )
 from bale_file_sender import send_document_direct
 from config import ADMIN_ID, DEBUG_LOG_REQUESTS, FEES, get_fee, temp_path
-from sheets import log_event
+from event_log import log_event
 from panel_sync import register_case_to_panel as _register_case_to_panel_sync
 from panel_sync import register_failed_inquiry_to_panel
 

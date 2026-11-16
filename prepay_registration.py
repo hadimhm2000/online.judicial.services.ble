@@ -836,7 +836,7 @@ async def cover_prepay_from_credit(bot, user_id: int, service_key: str,
     except Exception:
         pass
     try:
-        from sheets import log_event
+        from event_log import log_event
         await log_event(
             "پرداخت", service_label, str(user_id), user_id,
             doc_name=f"پیش‌پرداخت {service_label}",

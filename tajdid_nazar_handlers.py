@@ -51,7 +51,7 @@ from prepay_registration import (
     build_prepay_fee_text,
 )
 from panel_sync import upsert_case_to_panel, mark_case_ready_to_send_by_tracking, mark_case_signed_by_tracking
-from sheets import log_event
+from event_log import log_event
 from keyboards import (
     back_only_kb, restart_kb, get_main_menu_kb,
     representative_type_kb,
@@ -3751,7 +3751,8 @@ async def send_tajdid_nazar_result(
 
 
 @tajdid_nazar_router.message(Form.waiting_for_tn_payment_receipt, F.successful_payment)
-async def tn_successful_payment(message: Message, state: FSMContext, bot: Bot):
+async def tn_successful_payment(message: Message, state: FSMContext, bot: Bot,
+                                start_sign: bool = True):
     """پرداخت موفق دعوی اعتراضی از طریق فاکتور بله — بدون نیاز به فیش"""
     user_id = message.from_user.id
     pending = runtime_state.pending_tn_payments.get(user_id)
@@ -3810,6 +3811,14 @@ async def tn_successful_payment(message: Message, state: FSMContext, bot: Bot):
     tracking_code = pending.get("tracking_code", "")
     tn_persons = pending.get("tn_persons", [])
     runtime_state.pending_tn_payments.pop(user_id, None)
+
+    if not start_sign:
+        await bot.send_message(
+            user_id,
+            f"✅ هزینهٔ پروندهٔ {tracking_code} پرداخت شد.\n\nچون هم‌اکنون در حال امضای پروندهٔ دیگری "
+            "هستید، ابتدا آن را تکمیل کنید؛ سپس از منوی «پرونده‌های در انتظار امضا و پرداخت» "
+            "«🖊 درج امضا» را بزنید.")
+        return
 
     await _tn_start_sign_flow(bot, user_id, tracking_code, case_type, tn_persons)
 

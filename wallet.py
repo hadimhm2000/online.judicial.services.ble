@@ -255,6 +255,17 @@ def _note_card_deduction(uid: int, ptype: str, total_rial: int, used_rial: int):
         pass
 
 
+def release_hold(uid, payload: str) -> bool:
+    """رزرو کیف پولِ یک فاکتور (جایگزین‌شده/منقضی) آزاد شود تا از فاکتور جدید کسر شود."""
+    try:
+        if _store.setdefault("holds", {}).pop(_key(uid, payload), None) is not None:
+            _save()
+            return True
+    except Exception as e:
+        logger.error(f"[WALLET] آزادسازی رزرو ناموفق: {e}")
+    return False
+
+
 def prepare_invoice(invoice_data: dict) -> dict:
     """⭐ پیش از هر sendInvoice صدا زده می‌شود و invoice_data (احتمالاً کاهش‌یافته) را برمی‌گرداند.
 

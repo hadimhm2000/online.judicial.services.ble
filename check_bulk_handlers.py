@@ -476,7 +476,7 @@ async def check_bulk_prepay_successful_payment(message: Message, state: FSMConte
         parse_mode="Markdown")
 
     try:
-        from sheets import log_event
+        from event_log import log_event
         await log_event(
             "پرداخت", "پیش‌پرداخت دسته‌جمعی چک", message.from_user.full_name, user_id,
             doc_name=f"پیش‌پرداخت دسته‌جمعی {total} ردیف چک", payment_status="پرداخت شده",

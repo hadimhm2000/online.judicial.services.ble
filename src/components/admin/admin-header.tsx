@@ -20,7 +20,6 @@ export interface AdminHeaderProps {
   activityCount: number;
   onOpenActivity: () => void;
   onOpenBotSender: () => void;
-  onOpenSheetsPanel: () => void;
   onOpenWorkingHours: () => void;
   onOpenExemptUsers: () => void;
   /** ⭐ v1.7 — دفتر مبالغ قابل بازگشت/کسر */
@@ -69,7 +68,7 @@ function PersianClock() {
 export default function AdminHeader({
   refreshing, onRefresh, autoRefresh, onToggleAutoRefresh,
   isMuted, onToggleMuted, activityCount, onOpenActivity,
-  onOpenBotSender, onOpenSheetsPanel, onOpenWorkingHours, onOpenExemptUsers, onOpenCredits, openCreditCount = 0, onOpenCardPayments, pendingCardPaymentCount = 0, onOpenBotSettings, onOpenInsights, onOpenResetData,
+  onOpenBotSender, onOpenWorkingHours, onOpenExemptUsers, onOpenCredits, openCreditCount = 0, onOpenCardPayments, pendingCardPaymentCount = 0, onOpenBotSettings, onOpenInsights, onOpenResetData,
   isOnline, isFullscreen, onToggleFullscreen, onPrint,
   showShortcuts, onSetShowShortcuts, theme, onToggleTheme,
 }: AdminHeaderProps) {
@@ -156,15 +155,6 @@ export default function AdminHeader({
                 <MessageSquare className="h-4 w-4" />
               </Button>
 
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-9 w-9 p-0 relative text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-900/20"
-                onClick={onOpenSheetsPanel}
-                title="همگام‌سازی گوگل شیت"
-              >
-                <FileSpreadsheet className="h-4 w-4" />
-              </Button>
 
               <Button
                 variant="ghost"

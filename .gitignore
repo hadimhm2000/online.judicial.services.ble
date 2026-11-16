@@ -145,3 +145,5 @@ tsconfig.tsbuildinfo
 refund_approvals.json
 refund_approvals.json.tmp
 refund_approvals.json.bak
+data/invoice_registry.json
+data/invoice_registry.json.tmp

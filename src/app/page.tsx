@@ -33,7 +33,6 @@ const BatchActionsDialog = React.lazy(() => import('@/components/admin/batch-act
 const ActivityPanel = React.lazy(() => import('@/components/admin/activity-panel').then(m => ({ default: m.default })));
 const UserHistoryDialog = React.lazy(() => import('@/components/admin/user-history-dialog').then(m => ({ default: m.default })));
 const BotMessageSender = React.lazy(() => import('@/components/admin/bot-message-sender').then(m => ({ default: m.default })));
-const GoogleSheetsPanel = React.lazy(() => import('@/components/admin/google-sheets-panel').then(m => ({ default: m.default })));
 // ⭐ v1.7 — دفتر مبالغ قابل بازگشت/کسر
 const CreditsDialog = React.lazy(() => import('@/components/admin/credits-dialog').then(m => ({ default: m.default })));
 // ⭐ v1.8 — پرداخت‌های کارت‌به‌کارت + ریست داده‌ها
@@ -241,7 +240,6 @@ export default function AdminPanel() {
   const [showConfetti, setShowConfetti] = useState(false);
   const [isMuted, setMuted] = useNotificationMuted();
   const [botSenderOpen, setBotSenderOpen] = useState(false);
-  const [sheetsPanelOpen, setSheetsPanelOpen] = useState(false);
   const [creditsOpen, setCreditsOpen] = useState(false);
   const [creditsPrefill, setCreditsPrefill] = useState<{ baleUserId?: string; fullName?: string; caseId?: string; trackingCode?: string | null } | null>(null);
   const [cardPaymentsOpen, setCardPaymentsOpen] = useState(false);
@@ -788,15 +786,6 @@ export default function AdminPanel() {
                 <MessageSquare className="h-4 w-4" />
               </Button>
 
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-9 w-9 p-0 relative text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-900/20"
-                onClick={() => setSheetsPanelOpen(true)}
-                title="همگام‌سازی گوگل شیت"
-              >
-                <FileSpreadsheet className="h-4 w-4" />
-              </Button>
 
               <Button
                 variant="ghost"
@@ -1630,13 +1619,6 @@ export default function AdminPanel() {
       </Suspense>
 
       <Suspense fallback={<div className="animate-pulse h-8 w-48 rounded-lg bg-muted" />}>
-      <GoogleSheetsPanel
-        open={sheetsPanelOpen}
-        onClose={() => setSheetsPanelOpen(false)}
-      />
-      </Suspense>
-
-      <Suspense fallback={<div className="animate-pulse h-8 w-48 rounded-lg bg-muted" />}>
       <CreditsDialog
         open={creditsOpen}
         onOpenChange={(o) => { setCreditsOpen(o); if (!o) setCreditsPrefill(null); }}
@@ -1812,7 +1794,6 @@ export default function AdminPanel() {
         { id: 'activity', label: 'تاریخچه فعالیت‌ها', icon: Activity, group: 'تنظیمات', onSelect: () => setActivityOpen(true) },
         { id: 'shortcuts', label: 'میانبر کلیدی', icon: Keyboard, group: 'تنظیمات', onSelect: () => setShowShortcuts(true) },
         { id: 'bot-sender', label: 'ارسال پیام به کاربر', icon: MessageSquare, group: 'تنظیمات', onSelect: () => setBotSenderOpen(true) },
-        { id: 'google-sheets', label: 'همگام‌سازی گوگل شیت', icon: FileSpreadsheet, group: 'تنظیمات', onSelect: () => setSheetsPanelOpen(true) },
         { id: 'credits', label: 'مبالغ قابل بازگشت / کسر', icon: Wallet, group: 'تنظیمات', onSelect: () => { setCreditsPrefill(null); setCreditsOpen(true); } },
         { id: 'card-payments', label: 'پرداخت‌های کارت به کارت', icon: CreditCard, group: 'تنظیمات', onSelect: () => setCardPaymentsOpen(true) },
         { id: 'pending-signatures', label: 'پرونده‌های در انتظار امضا و پرداخت', icon: PenLine, group: 'تنظیمات', onSelect: () => setPendingSignaturesOpen(true) },

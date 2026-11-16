@@ -26,7 +26,7 @@ from exempt_users import is_exempt_user
 from working_hours import is_within_working_hours
 import sana_gate
 from states import Form
-from sheets import append_to_sheet, log_event
+from event_log import log_event
 from api_direct import (
     fast_pre_check, FastCheckError, SessionExpiredError as FastSessionExpiredError,
     SessionNotReadyError as FastSessionNotReadyError,

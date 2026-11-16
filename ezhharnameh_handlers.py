@@ -30,7 +30,7 @@ from aiogram.types import Message, ReplyKeyboardRemove, CallbackQuery, InlineKey
 import runtime_state
 from config import ADMIN_ID, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, EZHHARNAMEH_SERVICE_FEE
 from exempt_users import is_exempt_user
-from sheets import log_event
+from event_log import log_event
 from states import Form
 from keyboards import (
     main_menu_kb, restart_kb, back_only_kb, text_input_method_kb,

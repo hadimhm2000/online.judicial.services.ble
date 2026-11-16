@@ -10,7 +10,6 @@ const BatchActionsDialog = React.lazy(() => import('@/components/admin/batch-act
 const ActivityPanel = React.lazy(() => import('@/components/admin/activity-panel'));
 const UserHistoryDialog = React.lazy(() => import('@/components/admin/user-history-dialog'));
 const BotMessageSender = React.lazy(() => import('@/components/admin/bot-message-sender'));
-const GoogleSheetsPanel = React.lazy(() => import('@/components/admin/google-sheets-panel'));
 const WorkingHoursDialog = React.lazy(() => import('@/components/admin/working-hours-dialog'));
 const ExemptUsersDialog = React.lazy(() => import('@/components/admin/exempt-users-dialog'));
 const ResetDataDialog = React.lazy(() => import('@/components/admin/reset-data-dialog'));
@@ -61,9 +60,6 @@ interface LazyPanelsProps {
   botSenderOpen: boolean;
   onBotSenderClose: () => void;
   onBotSenderRefresh: () => void;
-  // Google Sheets
-  sheetsPanelOpen: boolean;
-  onSheetsPanelClose: () => void;
   // Working hours
   workingHoursOpen: boolean;
   onWorkingHoursClose: () => void;
@@ -96,7 +92,6 @@ export default function LazyPanels({
   activityOpen, onActivityClose,
   historyOpen, onHistoryClose, historyUser,
   botSenderOpen, onBotSenderClose, onBotSenderRefresh,
-  sheetsPanelOpen, onSheetsPanelClose,
   workingHoursOpen, onWorkingHoursClose,
   exemptUsersOpen, onExemptUsersClose,
   creditsOpen = false, onCreditsClose, creditsPrefill, onCreditsChanged,
@@ -159,13 +154,6 @@ export default function LazyPanels({
           open={botSenderOpen}
           onClose={onBotSenderClose}
           onRefresh={onBotSenderRefresh}
-        />
-      </Suspense>
-
-      <Suspense fallback={<LoadingFallback />}>
-        <GoogleSheetsPanel
-          open={sheetsPanelOpen}
-          onClose={onSheetsPanelClose}
         />
       </Suspense>
 

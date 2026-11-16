@@ -53,6 +53,11 @@ dp.update.outer_middleware(update_pipeline.SlowUpdateLogMiddleware())
 # ⭐ رد پرداخت فاکتور قدیمی/نامربوط — باید پیش از ناظر کارت‌به‌کارت و کیف پول ثبت شود
 import invoice_guard
 dp.message.outer_middleware(invoice_guard.InvoiceGuardMiddleware())
+# ⭐ دفتر فاکتورهای پرونده‌محور: انقضای ۲۴ ساعته، قفل پرداخت هم‌زمان، فاکتور یک‌بارمصرف.
+# باید پیش از میان‌افزارهای کارت‌به‌کارت و کیف پول ثبت شود (رد پرداخت قبل از کسر کیف پول).
+import invoice_registry
+dp.pre_checkout_query.outer_middleware(invoice_registry.RegistryPreCheckoutMiddleware())
+dp.message.outer_middleware(invoice_registry.RegistryPaymentMiddleware())
 # ⭐ پرداخت کارت‌به‌کارت — روتر رسید/تایید مدیر باید *قبل از* روتر اصلی ثبت شود
 # (فقط عکس‌هایی را می‌گیرد که رسید یک فاکتور کارت‌به‌کارت فعال باشند).
 import card_payment

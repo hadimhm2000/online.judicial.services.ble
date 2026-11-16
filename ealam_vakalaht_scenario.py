@@ -45,7 +45,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 import runtime_state
 from browser_helpers import SANA_SERVICE_DELAY_MAX_RETRIES
 from config import ADMIN_ID, temp_path
-from sheets import log_event
+from event_log import log_event
 try:
     from admin_db import register_case
 except ImportError:
