@@ -101,10 +101,6 @@ export async function POST(
       });
     }
 
-    // Auto-sync to Google Sheets
-    if (newStatus) {
-      import('@/lib/google-sheets').then(m => m.appendNewCase(id)).catch(() => {});
-    }
 
     // Create activity log
     await db.activityLog.create({

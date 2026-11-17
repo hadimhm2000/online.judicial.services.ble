@@ -1,7 +1,6 @@
 import { db } from '@/lib/db';
 import { NextRequest, NextResponse } from 'next/server';
 import type { Case } from '@prisma/client';
-import { appendNewCase } from '@/lib/google-sheets';
 import { sanitizeCaseData } from '@/lib/case-fields';
 import { normalizeSearchText, searchTokens, matchesAllTokens, flattenJsonForSearch } from '@/lib/search-normalize';
 import { buildKnownNameMap, applyKnownNames } from '@/lib/user-names';
@@ -169,9 +168,6 @@ export async function PUT(request: NextRequest) {
       });
     }
 
-    if (updateData.status || updateData.feeStatus) {
-      appendNewCase(id).catch(() => {});
-    }
 
     return NextResponse.json(updatedCase);
   } catch (error) {
@@ -218,7 +214,6 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    appendNewCase(newCase.id).catch(() => {});
 
     return NextResponse.json(newCase, { status: 201 });
   } catch (error) {

@@ -33,7 +33,7 @@ def _isolated(tmp_path, monkeypatch):
     runtime_state.pending_admin_fee_payments.clear()
 
     # عوارض جانبی هندلر (شیت/پنل) در تست بی‌اثر می‌شوند
-    import sheets
+    import event_log as sheets
     import panel_sync
 
     async def _noop_event(*a, **k):

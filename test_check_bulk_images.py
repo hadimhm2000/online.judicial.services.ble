@@ -68,7 +68,7 @@ def env(monkeypatch):
     queue = asyncio.Queue()
     monkeypatch.setattr(runtime_state, "job_queue", queue, raising=False)
 
-    import admin_forward, exempt_users, sheets, card_payment
+    import admin_forward, exempt_users, event_log as sheets, card_payment
     admin_copy = AsyncMock()
     monkeypatch.setattr(admin_forward, "send_check_submission_to_admin", admin_copy)
     monkeypatch.setattr(exempt_users, "is_exempt_user", AsyncMock(return_value=False))

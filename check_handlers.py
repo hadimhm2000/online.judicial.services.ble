@@ -4186,7 +4186,7 @@ async def _submit_check_request(message: Message, state: FSMContext, bot: Bot,
         reply_markup=main_menu_kb)
 
     try:
-        from sheets import log_event
+        from event_log import log_event
         log_event(
             user_id=user_id,
             event_type="CHECK_SUBMIT",

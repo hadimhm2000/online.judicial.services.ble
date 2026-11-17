@@ -109,7 +109,7 @@ def test_payment_restores_invoice_and_keeps_other_open_invoice(monkeypatch):
     runtime_state.pending_lavayeh_payments[7] = other
     seen = {}
 
-    async def fake_pay(message, state, bot):
+    async def fake_pay(message, state, bot, **kw):
         seen.update(runtime_state.pending_lavayeh_payments.pop(7))
 
     monkeypatch.setattr(lavayeh_handlers, "lavayeh_successful_payment", fake_pay)
@@ -149,7 +149,7 @@ def test_duplicate_payment_of_paid_case_refunds_and_skips_processing(monkeypatch
     pending_cases.mark_paid(7, "111")            # پرداخت اول انجام شده
     calls = []
 
-    async def fake_pay(message, state, bot):
+    async def fake_pay(message, state, bot, **kw):
         calls.append(1)
 
     monkeypatch.setattr(lavayeh_handlers, "lavayeh_successful_payment", fake_pay)
@@ -178,7 +178,7 @@ def test_handler_failure_still_marks_case_paid(monkeypatch):
 
     pending_cases.record_unpaid(7, pending_cases.KIND_LAVAYEH, _lavayeh_ctx("222"))
 
-    async def boom(message, state, bot):
+    async def boom(message, state, bot, **kw):
         raise RuntimeError("شکست هندلر پرداخت")
 
     monkeypatch.setattr(lavayeh_handlers, "lavayeh_successful_payment", boom)
@@ -275,3 +275,24 @@ def test_history_print_category():
     assert history_handlers.print_category(7, {"serviceType": "CHECK", "trackingCode": "1"}) is None
     final_print.record_registration(7, "1", service_type="CHECK", sign_menu_path=["دادخواست بدوی"])
     assert history_handlers.print_category(7, {"serviceType": "CHECK", "trackingCode": "1"}) == ("دادخواست بدوی", None)
+
+
+def test_payment_while_signing_another_case_does_not_start_sign(monkeypatch):
+    """کاربر وسط امضای پروندهٔ دیگر است و فاکتور این پرونده را می‌پردازد:
+    پرداخت ثبت می‌شود ولی امضای این پرونده شروع نمی‌شود (روند جاری خراب نشود)."""
+    import lavayeh_handlers
+    import pending_cases_handlers
+
+    pending_cases.record_unpaid(7, pending_cases.KIND_LAVAYEH, _lavayeh_ctx("333"))
+    seen = {}
+
+    async def fake_pay(message, state, bot, start_sign=True):
+        seen["start_sign"] = start_sign
+
+    monkeypatch.setattr(lavayeh_handlers, "lavayeh_successful_payment", fake_pay)
+    state = MagicMock()
+    state.get_state = AsyncMock(return_value="Form:lavayeh_sign_ready")
+    asyncio.run(pending_cases_handlers.pending_case_successful_payment(
+        _pay_msg(7, "333"), state, MagicMock()))
+    assert seen["start_sign"] is False
+    assert pending_cases.get(7, "333")["paid"] is True

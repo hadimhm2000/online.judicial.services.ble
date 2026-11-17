@@ -972,7 +972,7 @@ async def admin_fee_successful_payment(message: Message, state: FSMContext, bot:
     """
     import runtime_state
     from states import Form
-    from sheets import log_event
+    from event_log import log_event
 
     user_id = message.from_user.id
     payment = message.successful_payment
@@ -1239,7 +1239,7 @@ async def panel_message_successful_payment(message: Message, state: FSMContext, 
     import asyncio
     import runtime_state
     from states import Form
-    from sheets import log_event
+    from event_log import log_event
 
     user_id = message.from_user.id
     payment = message.successful_payment

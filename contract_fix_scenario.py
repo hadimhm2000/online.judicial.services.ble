@@ -35,7 +35,7 @@ from aiogram import Bot
 
 import runtime_state
 from config import ADMIN_ID
-from sheets import log_event
+from event_log import log_event
 from browser_helpers import (
     resilient_sleep, check_and_handle_expiry, goto_url_with_retry,
     human_delay, safe_click_by_text, wait_for_horizontal_loading_bar,

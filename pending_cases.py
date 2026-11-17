@@ -184,7 +184,14 @@ def _set(user_id: int, tracking_codes, **fields) -> bool:
 
 
 def mark_paid(user_id: int, tracking_code: str) -> bool:
-    return _set(user_id, [tracking_code], paid=True, paid_at=_now().isoformat(timespec="seconds"))
+    ok = _set(user_id, [tracking_code], paid=True, paid_at=_now().isoformat(timespec="seconds"))
+    # ⭐ پرونده پرداخت شد → فاکتورهای باز دیگرِ همین پرونده دیگر قابل پرداخت نیستند
+    try:
+        import invoice_registry
+        invoice_registry.close_case(user_id, tracking_code)
+    except Exception as e:
+        logger.warning(f"[PENDING_CASES] بستن فاکتورهای باز پرونده ناموفق: {e}")
+    return ok
 
 
 def mark_signed(user_id: int, *tracking_codes: str) -> bool:

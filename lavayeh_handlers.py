@@ -21,7 +21,7 @@ import runtime_state
 from bale_file_sender import send_document_direct
 from config import ADMIN_ID, CARD_NUMBER, ACCOUNT_NAME, BALE_WALLET_TOKEN, BOT_TOKEN, BALE_API_BASE, BALE_SSL_CONTEXT, calculate_lavayeh_fee, format_lavayeh_fee_explanation, LAVAYEH_SERVICE_FEE, EZHHARNAMEH_SERVICE_FEE, BULK_PREPAY_PER_ROW_TOMAN, temp_path
 from exempt_users import is_exempt_user
-from sheets import log_event
+from event_log import log_event
 
 from states import Form
 from keyboards import (
@@ -4767,7 +4767,15 @@ async def send_lavayeh_result(
     final_fee_toman = final_fee // 10
 
     try:
+        # ⭐ فاکتور پرونده‌محور: payload شامل کد رهگیری پرونده و شناسهٔ یکتای فاکتور است؛
+        # پرداخت مستقل از state کاربر به همین پرونده می‌رسد، ۲۴ ساعت اعتبار دارد و
+        # فقط یک‌بار قابل پرداخت است (invoice_registry). بدون کد رهگیری → payload قدیمی.
         invoice_payload = _json.dumps({"type": "lavayeh", "uid": user_id})
+        if tracking_code:
+            import invoice_registry
+            _issued = invoice_registry.issue(user_id, str(tracking_code), service_type or "", final_fee)
+            if _issued:
+                invoice_payload = _issued[1]
         # استفاده از API مستقیم بله (sendInvoice) — طبق مستندات بله
         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT), timeout=aiohttp.ClientTimeout(total=40)) as session:
             invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
@@ -4896,7 +4904,8 @@ async def send_lavayeh_result(
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def _send_lavayeh_invoice(bot: Bot, user_id: int, amount: int, service_label: str,
-                                service_type: str | None = None) -> bool:
+                                service_type: str | None = None,
+                                tracking_code: str = "") -> bool:
     """
     ارسال فاکتور پرداخت بله (sendInvoice) برای مبلغ مشخص.
     خروجی True یعنی فاکتور با موفقیت ارسال شد و درگاه پرداخت متصل است؛
@@ -4905,6 +4914,14 @@ async def _send_lavayeh_invoice(bot: Bot, user_id: int, amount: int, service_lab
     amount_toman = amount // 10
     try:
         invoice_payload = _json.dumps({"type": "lavayeh", "uid": user_id})
+        if tracking_code:
+            # ارسال مجدد فاکتور اصلی پرونده (پاسخ «خیر» به یادآور ۲۴ ساعته): فاکتور جدید
+            # با ۲۴ ساعت اعتبار؛ فاکتور قبلیِ منقضی‌شده جایگزین می‌شود.
+            import invoice_registry
+            _issued = invoice_registry.issue(user_id, str(tracking_code), service_type or "", amount)
+            if _issued is None:
+                return False
+            invoice_payload = _issued[1]
         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=BALE_SSL_CONTEXT), timeout=aiohttp.ClientTimeout(total=40)) as session:
             invoice_url = f"{BALE_API_BASE}/bot{BOT_TOKEN}/sendInvoice"
             invoice_data = {
@@ -4952,7 +4969,8 @@ async def lavayeh_pre_checkout_query(pre_checkout_query: PreCheckoutQuery, bot: 
 # هندلر successful_payment لایحه/اظهارنامه — پرداخت خودکار پس از فاکتور بله
 # ══════════════════════════════════════════════════════════════════════════════
 @lavayeh_router.message(Form.waiting_for_lavayeh_payment_receipt, F.successful_payment)
-async def lavayeh_successful_payment(message: Message, state: FSMContext, bot: Bot):
+async def lavayeh_successful_payment(message: Message, state: FSMContext, bot: Bot,
+                                     start_sign: bool = True):
     """پرداخت موفق لایحه/اظهارنامه از طریق فاکتور بله — بدون نیاز به فیش"""
     user_id = message.from_user.id
     pending = runtime_state.pending_lavayeh_payments.get(user_id)
@@ -5031,6 +5049,18 @@ async def lavayeh_successful_payment(message: Message, state: FSMContext, bot: B
         pending_cases.mark_paid(user_id, pending.get("tracking_code", ""))
     except Exception as _pc_err:
         logging.warning(f"[PENDING_CASES] به‌روزرسانی پرداخت ناموفق: {_pc_err}")
+
+    # ⭐ کاربر همین حالا وسط امضای پروندهٔ دیگری است: امضای این پرونده شروع نمی‌شود
+    # (روند جاری خراب نشود)؛ پرداخت ثبت شده و «درج امضا» از منوی پرونده‌ها فعال است.
+    if not start_sign:
+        runtime_state.pending_lavayeh_payments.pop(user_id, None)
+        tc_txt = pending.get("tracking_code", "")
+        await bot.send_message(
+            user_id,
+            f"✅ هزینهٔ {doc_type} با کد رهگیری {tc_txt} پرداخت شد.\n\n"
+            "چون هم‌اکنون در حال امضای پروندهٔ دیگری هستید، ابتدا آن را تکمیل کنید؛ سپس از منوی "
+            "«پرونده‌های در انتظار امضا و پرداخت» همین پرونده را باز کرده و «🖊 درج امضا» را بزنید.")
+        return
 
     # ── انتقال به مرحله امضای الکترونیک ──
     if is_ezhhar:
@@ -5309,7 +5339,8 @@ async def lavayeh_reminder_no(message: Message, state: FSMContext, bot: Bot):
 
     service_label = "اظهارنامه" if pending.get("is_ezhharnameh") else "لایحه"
     invoice_sent = await _send_lavayeh_invoice(bot, user_id, pending["final_fee"], service_label,
-                                               service_type=pending.get("service_type"))
+                                               service_type=pending.get("service_type"),
+                                               tracking_code=pending.get("tracking_code", ""))
 
     if invoice_sent:
         await message.answer(

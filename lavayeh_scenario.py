@@ -17,7 +17,7 @@ import runtime_state
 from nid_fix_window import nid_fix_deadline_text as _nid_fix_deadline_text
 from browser_helpers import SANA_SERVICE_DELAY_MAX_RETRIES
 from config import ADMIN_ID, temp_path
-from sheets import log_event
+from event_log import log_event
 from panel_sync import upsert_case_to_panel
 
 # نگاشت event_type های این فایل به status های پنل ادمین
