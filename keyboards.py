@@ -29,8 +29,15 @@ LEGAL_MENU_TEXT = "⚖️ محاسبه دیه و ارث"
 # ⭐ محاسبه تمبر بر اساس حق‌الوکاله (۱۴۰۵/۰۷) — بخش محاسبه تمبر و اعلام وکالت
 STAMP_BY_LAWYER_FEE_TEXT = "3️⃣ محاسبه تمبر بر اساس حق‌الوکاله"
 # ⭐ اتوماسیون ویژه خدمات حقوقی (ربات دوم — ریپوی Legal-Automation) — legal_automation_handlers.py
-# فعلاً فقط برای مدیر؛ با LEGAL_BETA_IDS (آیدی‌ها با ویرگول) بعداً بدون تغییر کد برای دیگران باز می‌شود.
+# ⭐ از ۱۴۰۵/۰۸ برای همهٔ کاربران فعال است. کلید برگشت به حالت بتا (فقط مدیر + LEGAL_BETA_IDS):
+#    LEGAL_AUTOMATION_PUBLIC=0 در .env و ری‌استارت ربات.
 LEGAL_AUTOMATION_TEXT = "⚖️ اتوماسیون ویژه خدمات حقوقی"
+
+
+def legal_automation_public() -> bool:
+    """True = دکمهٔ اتوماسیون برای همهٔ کاربران باز است (پیش‌فرض). فقط مقدار «0» آن را می‌بندد."""
+    import os
+    return (os.environ.get("LEGAL_AUTOMATION_PUBLIC") or "1").strip() != "0"
 
 
 def legal_automation_allowed(user_id) -> bool:
@@ -38,6 +45,8 @@ def legal_automation_allowed(user_id) -> bool:
     if user_id is None:
         return False
     if user_id == ADMIN_ID:
+        return True
+    if legal_automation_public():
         return True
     extra = {p.strip() for p in (os.environ.get("LEGAL_BETA_IDS") or "").split(",") if p.strip()}
     return str(user_id) in extra
@@ -74,7 +83,7 @@ def get_flow_type_kb(user_id: int) -> ReplyKeyboardMarkup:
     ]
     if _is_admin:
         rows.append([KeyboardButton(text="🧪 تست")])
-    # ⭐ ردیف اول، تمام‌عرض — فقط برای مدیر (و فهرست LEGAL_BETA_IDS)
+    # ⭐ ردیف اول، تمام‌عرض — برای همهٔ کاربران (در حالت LEGAL_AUTOMATION_PUBLIC=0 فقط مدیر و LEGAL_BETA_IDS)
     if legal_automation_allowed(user_id):
         rows.insert(0, [KeyboardButton(text=LEGAL_AUTOMATION_TEXT)])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
@@ -96,8 +105,9 @@ def get_main_menu_kb(user_id: int = None) -> ReplyKeyboardMarkup:
     return main_menu_kb
 
 # کیبورد بدون تست و بدون user_id (fallback)
-flow_type_kb = ReplyKeyboardMarkup(
-    keyboard=[
+# ⭐ این کیبورد در مسیرهای لغو/بازگشت (لوایح، اظهارنامه، استعلام گروهی و ...) نشان داده می‌شود؛
+#    در حالت عمومی، دکمهٔ اتوماسیون هم در ردیف اول آن هست تا کاربر بعد از این مسیرها دکمه را گم نکند.
+_static_flow_rows = [
         [KeyboardButton(text="🔍 استعلام"), KeyboardButton(text="📦 استعلام (چند مورد همزمان)")],
         [KeyboardButton(text="✍️ ثبت لایحه"), KeyboardButton(text="📄 ثبت اظهارنامه")],
         [KeyboardButton(text="⚖️ دعاوی اعتراضی"), KeyboardButton(text="🏦 ثبت دادخواست")],
@@ -109,7 +119,10 @@ flow_type_kb = ReplyKeyboardMarkup(
         [KeyboardButton(text=HISTORY_MENU_TEXT), KeyboardButton(text=WALLET_MENU_TEXT)],
         # ⭐ گزینهٔ «شروع مجدد» — بازگشت صرف به منوی اصلی (۱۴۰۵/۰۶)
         [KeyboardButton(text="🔄 شروع مجدد")],
-    ], resize_keyboard=True)
+    ]
+if legal_automation_public():
+    _static_flow_rows.insert(0, [KeyboardButton(text=LEGAL_AUTOMATION_TEXT)])
+flow_type_kb = ReplyKeyboardMarkup(keyboard=_static_flow_rows, resize_keyboard=True)
 
 # =========================================================
 # کیبوردهای بخش ابزار فایل
