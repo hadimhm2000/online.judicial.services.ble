@@ -36,10 +36,61 @@ class CpiFetchError(Exception):
 # ── پارس PDF ─────────────────────────────────────────────────────────────
 
 _NUM_RE = re.compile(r"^-?\d+/\d+$")       # اعداد PDF بانک مرکزی: «83/3» = 83.3
+# نویسه‌های نامرئی جهت‌دهی/قالب (RLE/LRE/PDF/RLM/LRM/ZWNJ/BOM…) که بسته به موتور استخراج داخل متن می‌آیند
+_INVISIBLE = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u200e\u200f\u202a\u202b\u202c\u202d\u202e"
+                               "\u2066\u2067\u2068\u2069\ufeff\u00ad"), None)
+_SEP_FIX = {ord("٫"): "/", ord("."): "/", ord(","): "/", ord("⁄"): "/", ord("∕"): "/", ord("−"): "-", ord("–"): "-"}
+
+
+def _clean(token: str) -> str:
+    """ارقام فارسی/عربی را لاتین و نویسه‌های نامرئی را حذف می‌کند؛ جداکنندهٔ اعشار را به «/» می‌برد."""
+    t = token.translate(_FA_DIGITS).translate(_INVISIBLE).strip()
+    return t.translate(_SEP_FIX)
 
 
 def _num(token: str) -> float:
-    return float(token.translate(_FA_DIGITS).replace("/", "."))
+    return float(_clean(token).replace("/", "."))
+
+
+def _flip(token: str) -> str:
+    """«3/83» → «83/3» (برخی موتورها اجزای یک عدد را به ترتیب بصری معکوس می‌دهند)."""
+    a, _, b = token.partition("/")
+    return f"{b}/{a}"
+
+
+def _rows_from_page(words, flip: bool) -> list:
+    cells_y = []
+    for x0, y0, x1, y1, text, *_ in words:
+        t = _clean(text)
+        if flip and _NUM_RE.match(t):
+            t = _flip(t)
+        if _NUM_RE.match(t) or t in ("*", "❊", "٭"):
+            cells_y.append(((y0 + y1) / 2, x0, t))
+    lines: list[list] = []                       # خانه‌هایی که مرکز عمودی‌شان نزدیک است = یک ردیف
+    for yc, x0, t in sorted(cells_y):
+        if lines and yc - lines[-1][0][0] <= 5:
+            lines[-1].append((yc, x0, t))
+        else:
+            lines.append([(yc, x0, t)])
+    rows = []
+    for line in lines:
+        cells = [(x0, t) for _, x0, t in sorted(line, key=lambda c: -c[1])]   # راست به چپ
+        if len(cells) < 5 or not _NUM_RE.match(cells[0][1]):
+            continue
+        change = _num(cells[1][1]) if _NUM_RE.match(cells[1][1]) else None
+        rows.append((_num(cells[0][1]), change))
+    return rows
+
+
+def _order_score(rows) -> tuple[int, int]:
+    checked = ok = 0
+    for (prev, _), (cur, change) in zip(rows, rows[1:]):
+        if change is None or prev == 0:
+            continue
+        checked += 1
+        if abs((cur / prev - 1) * 100 - change) <= 0.35:
+            ok += 1
+    return ok, checked
 
 
 def parse_cpi_pdf(pdf_bytes: bytes) -> dict[str, float]:
@@ -50,43 +101,46 @@ def parse_cpi_pdf(pdf_bytes: bytes) -> dict[str, float]:
     فونت عناوین فارسی PDF قابل استخراج نیست، پس ردیف‌ها به ترتیب از بالا به
     پایین خوانده و از فروردین ۱۴۰۰ شماره‌گذاری می‌شوند. صحت ترتیب با ستون
     «درصد تغییر نسبت به ماه قبل» کنترل می‌شود؛ اگر نخواند، خطا می‌دهد.
+
+    مقاوم در برابر تفاوت موتورهای استخراج: نویسه‌های نامرئی جهت‌دهی، ارقام عربی/فارسی،
+    جداکنندهٔ اعشار «٫»، و ترتیب معکوس اجزای عدد. تشخیص صفحهٔ جدول با سرعنوان «1400=100»
+    (یا «100=1400») است و اگر هیچ صفحه‌ای سرعنوان نداشت، همهٔ صفحه‌ها بررسی می‌شوند.
     """
     import fitz  # PyMuPDF
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    rows: list[tuple[float, float | None]] = []      # (شاخص، درصد تغییر ماهانه)
+    pages_words, header_pages, n_words, sample = [], [], 0, []
     try:
-        for page in doc:
-            if "1400=100" not in page.get_text().translate(_FA_DIGITS).replace(" ", ""):
-                continue
-            cells_y = []
-            for x0, y0, x1, y1, text, *_ in page.get_text("words"):
-                t = text.translate(_FA_DIGITS)
-                if _NUM_RE.match(t) or t in ("*", "❊", "٭"):
-                    cells_y.append(((y0 + y1) / 2, x0, t))
-            lines: list[list] = []                   # خانه‌هایی که مرکز عمودی‌شان نزدیک است = یک ردیف
-            for yc, x0, t in sorted(cells_y):
-                if lines and yc - lines[-1][0][0] <= 5:
-                    lines[-1].append((yc, x0, t))
-                else:
-                    lines.append([(yc, x0, t)])
-            for line in lines:
-                cells = [(x0, t) for _, x0, t in sorted(line, key=lambda c: -c[1])]   # راست به چپ
-                if len(cells) < 5 or not _NUM_RE.match(cells[0][1]):
-                    continue
-                change = _num(cells[1][1]) if _NUM_RE.match(cells[1][1]) else None
-                rows.append((_num(cells[0][1]), change))
+        for i, page in enumerate(doc):
+            words = page.get_text("words")
+            plain = _clean(page.get_text()).replace(" ", "").replace("\n", "")
+            has_hdr = "1400=100" in plain or "100=1400" in plain or "1400=١٠٠" in plain
+            if has_hdr:
+                header_pages.append(i)
+            pages_words.append(words)
+            n_words += len(words)
+            if len(sample) < 8:
+                sample += [_clean(w[4]) for w in words if re.search(r"\d", _clean(w[4]))][:8 - len(sample)]
     finally:
         doc.close()
 
+    scan = header_pages or list(range(len(pages_words)))
+    best_rows, best_ok, best_checked = [], 0, 0
+    for flip in (False, True):
+        rows = []
+        for i in scan:
+            rows.extend(_rows_from_page(pages_words[i], flip))
+        ok, checked = _order_score(rows)
+        if ok > best_ok or (not best_rows and rows):
+            best_rows, best_ok, best_checked = rows, ok, checked
+        if checked >= 12 and ok >= checked * 0.9:
+            break
+    rows, ok, checked = best_rows, best_ok, best_checked
+
     if len(rows) < 13:
-        raise CpiFetchError(f"جدول شاخص (1400=100) در PDF پیدا نشد ({len(rows)} ردیف).")
-    checked = ok = 0
-    for (prev, _), (cur, change) in zip(rows, rows[1:]):
-        if change is None:
-            continue
-        checked += 1
-        if abs((cur / prev - 1) * 100 - change) <= 0.35:
-            ok += 1
+        raise CpiFetchError(
+            f"جدول شاخص (1400=100) در PDF پیدا نشد ({len(rows)} ردیف). تشخیص: {len(pages_words)} صفحه، "
+            f"{n_words} واژه، صفحه‌های دارای سرعنوان: {[i + 1 for i in header_pages]}، "
+            f"نمونه ارقام: {sample}")
     if checked < 12 or ok < checked * 0.9:
         raise CpiFetchError(f"ترتیب ردیف‌های جدول PDF قابل تأیید نیست ({ok}/{checked}).")
 
@@ -100,6 +154,9 @@ def parse_cpi_pdf(pdf_bytes: bytes) -> dict[str, float]:
 # ── پیمایش سایت ──────────────────────────────────────────────────────────
 
 class _LinkParser(HTMLParser):
+    """لینک‌های <a> (با متن) و همچنین src/data عناصر iframe/embed/object را جمع می‌کند
+    (گاهی PDF داخل صفحهٔ گزارش جاسازی شده است، نه لینک مستقیم)."""
+
     def __init__(self):
         super().__init__()
         self.links: list[tuple[str, str]] = []
@@ -107,9 +164,14 @@ class _LinkParser(HTMLParser):
         self._text = []
 
     def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
         if tag == "a":
-            self._href = dict(attrs).get("href")
+            self._href = a.get("href")
             self._text = []
+        elif tag in ("iframe", "embed", "object", "source"):
+            src = a.get("src") or a.get("data")
+            if src:
+                self.links.append((src, ""))
 
     def handle_data(self, data):
         if self._href is not None:
@@ -124,7 +186,13 @@ class _LinkParser(HTMLParser):
 def _links(html: str, base_url: str) -> list[tuple[str, str]]:
     p = _LinkParser()
     p.feed(html)
-    return [(urljoin(base_url, h.strip()), t.translate(_FA_DIGITS)) for h, t in p.links if h]
+    out = []
+    for h, t in p.links:
+        h = (h or "").strip()
+        if not h or h.startswith(("#", "javascript:", "mailto:", "tel:")):
+            continue
+        out.append((urljoin(base_url, h), t.translate(_FA_DIGITS)))
+    return out
 
 
 def _year_of(text: str) -> int | None:
@@ -133,11 +201,24 @@ def _year_of(text: str) -> int | None:
     return max(years) if years else None
 
 
+_FA_LETTER = "؀-ۿﭐ-﷿ﹰ-﻿"
+
+
+def _month_name_of(text: str) -> int:
+    """شمارهٔ ماه از نام ماه در متن؛ فقط وقتی نام به‌صورت کلمهٔ مستقل بیاید
+    (تا «دی» داخل «جدید» یا «تیر» داخل کلمه‌های دیگر ماه حساب نشود). «مهرماه» هم می‌پذیرد."""
+    text = (text or "").replace("ي", "ی").replace("ك", "ک")
+    for i, name in enumerate(_MONTHS, 1):
+        if re.search(rf"(?<![{_FA_LETTER}]){name}(?:\s?ماه)?(?![{_FA_LETTER}])", text):
+            return i
+    return 0
+
+
 def _month_of(url: str, text: str, year: int) -> int:
     """ماهِ یک لینک PDF از متن لینک (نام ماه) یا نام فایل (مثل CPI_140506)."""
-    for i, name in enumerate(_MONTHS, 1):
-        if name in text:
-            return i
+    i = _month_name_of(text)
+    if i:
+        return i
     m = re.search(rf"{year}[-_ ]?(0[1-9]|1[0-2])(?!\d)", url.translate(_FA_DIGITS))
     if m:
         return int(m.group(1))
@@ -155,37 +236,120 @@ def _is_pdf(url: str) -> bool:
     return ".pdf" in url.lower().split("?")[0]
 
 
-def fetch_latest() -> tuple[dict[str, float], str]:
-    """
-    جدیدترین PDF ماهانه را از سایت بانک مرکزی پیدا و پارس می‌کند.
-    خروجی: (شاخص‌های ماهانه با پایهٔ ۱۴۰۰، آدرس PDF)
-    از هر سال حداکثر ۴ PDF (جدیدترها) بررسی و کامل‌ترین جدول برگردانده می‌شود.
-    """
-    import requests
-    s = requests.Session()
+# نشانه‌هایی که لینکِ بدون پسوند .pdf را هم «احتمالاً فایل» می‌کند (مثل Media/GetFile.ashx?id=…)
+_FILE_HINTS = ("/media/", "download", "getfile", "getdoc", "/file", "attachment", "/upload", "/content/", ".ashx")
+_REPORT_WORDS = ("CPI", "cpi", "شاخص", "تورم", "بهای کالا", "بهاي کالا")
+
+
+def _host(url: str) -> str:
+    from urllib.parse import urlparse
+    h = urlparse(url).netloc.split(":")[0].lower()
+    return h[4:] if h.startswith("www.") else h
+
+
+_ASSET_EXT = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".css", ".js", ".woff", ".woff2", ".ttf",
+              ".xls", ".xlsx", ".doc", ".docx", ".zip", ".rar", ".mp4", ".mp3")
+
+
+def _maybe_file(url: str, text: str) -> bool:
+    """لینکی که ممکن است فایل PDF باشد، هرچند آدرسش .pdf ندارد (صحتش بعد از دانلود با %PDF سنجیده می‌شود)."""
+    u = url.lower().split("#")[0]
+    if _is_pdf(u):
+        return True
+    if u.split("?")[0].endswith(_ASSET_EXT):
+        return False
+    return any(h in u for h in _FILE_HINTS)
+
+
+def _maybe_item_page(base: str, url: str, text: str) -> bool:
+    """صفحهٔ هر گزارش (که PDF داخل آن است): هم‌میزبان، غیر فایل، و متن/آدرس شبیه گزارش."""
+    if _host(url) != _host(base):
+        return False
+    if _maybe_file(url, text):
+        return False
+    u = url.lower()
+    if "simplelist" in u or "/about" in u or "/contact" in u:
+        # فهرست‌های دیگر (نه خود گزارش)؛ فقط اگر متنش گزارش باشد
+        return bool(_month_name_of(text)) or any(w in text for w in _REPORT_WORDS)
+    return "showitem" in u or bool(_month_name_of(text)) or any(w in text for w in _REPORT_WORDS)
+
+
+def _download_pdf(session, url: str) -> bytes:
+    """فایل را می‌گیرد و مطمئن می‌شود واقعاً PDF است (نه صفحهٔ HTML خطا/لاگین/ضدربات)."""
+    r = _get(session, url)
+    body = r.content
+    if b"%PDF" not in body[:1024]:
+        ctype = (getattr(r, "headers", {}) or {}).get("Content-Type", "?")
+        raise CpiFetchError(f"پاسخ PDF نیست (Content-Type={ctype}، {len(body)} بایت)")
+    return body
+
+
+def _pdf_candidates(session, page_url: str, year: int, diag: list, max_item_pages: int = 6):
+    """PDFهای یک صفحهٔ سال. اگر در همان صفحه لینک PDF نبود، صفحه‌های گزارش‌ها را هم یک سطح می‌گردد."""
+    html = _get(session, page_url).text
+    links = _links(html, page_url)
+    strict = [(u, _month_of(u, t, year)) for u, t in links if _is_pdf(u)]
+    hinted = [(u, _month_of(u, t, year)) for u, t in links if _maybe_file(u, t) and not _is_pdf(u)]
+    items = [(u, _month_of(u, t, year)) for u, t in links if _maybe_item_page(page_url, u, t)]
+    diag.append(f"صفحهٔ {year}: {len(links)} لینک، {len(strict)} PDF، {len(hinted)} فایل‌مانند، "
+                f"{len(items)} صفحهٔ گزارش‌مانند")
+    cands = list(dict.fromkeys(strict))
+    if not cands:
+        # PDF مستقیم نیست ← صفحهٔ گزارش‌ها را یک سطح می‌گردیم؛ فایل‌مانندهای همین صفحه آخر می‌آیند
+        items = list(dict.fromkeys(items))
+        items.sort(key=lambda p: -p[1])
+        for iu, im in items[:max_item_pages]:
+            try:
+                ihtml = _get(session, iu).text
+            except Exception as e:
+                diag.append(f"صفحهٔ گزارش {iu}: {type(e).__name__}")
+                continue
+            found = [(u, im or _month_of(u, t, year)) for u, t in _links(ihtml, iu) if _maybe_file(u, t)]
+            diag.append(f"صفحهٔ گزارش {iu}: {len(found)} فایل‌مانند")
+            found.sort(key=lambda p: not _is_pdf(p[0]))
+            cands.extend(found)
+        cands.extend(hinted)
+        cands = list(dict.fromkeys(cands))
+    if not cands:
+        sample = [u for u, _ in links[:4]]
+        diag.append("نمونه لینک‌ها: " + " ; ".join(sample))
+    return cands
+
+
+def _fetch_latest(s) -> tuple[dict[str, float], str]:
+    diag: list[str] = []
     list_html = _get(s, CBI_LIST_URL).text
-    year_links = {}
+    year_links: dict[int, list[str]] = {}
     for url, text in _links(list_html, CBI_LIST_URL):
         y = _year_of(text)
         if y and y >= TABLE_BASE_YEAR:
-            year_links.setdefault(y, url)
+            year_links.setdefault(y, [])
+            if url not in year_links[y]:
+                year_links[y].append(url)
     if not year_links:
         raise CpiFetchError("لینک سال‌ها در صفحهٔ بانک مرکزی پیدا نشد.")
+    diag.append("سال‌ها: " + "، ".join(str(y) for y in sorted(year_links, reverse=True)))
 
     errors = []
     best: tuple[dict, str] | None = None
     for year in sorted(year_links, reverse=True)[:2]:     # سال جدید ممکن است هنوز PDF نداشته باشد
-        url = year_links[year]
-        if _is_pdf(url):
-            pdfs = [(url, 12)]
-        else:
-            page_html = _get(s, url).text
-            pdfs = [(u, _month_of(u, t, year)) for u, t in _links(page_html, url) if _is_pdf(u)]
-            pdfs = list(dict.fromkeys(pdfs))
-        pdfs.sort(key=lambda p: -p[1])
-        for pdf_url, _month in pdfs[:4]:
+        pdfs: list[tuple[str, int]] = []
+        for url in year_links[year][:3]:
+            if _is_pdf(url):
+                pdfs.append((url, 12))
+                continue
             try:
-                data = parse_cpi_pdf(_get(s, pdf_url).content)
+                pdfs.extend(_pdf_candidates(s, url, year, diag))
+            except Exception as e:
+                diag.append(f"صفحهٔ {year} ({url}): {type(e).__name__}: {e}")
+                logger.warning(f"[CPI] صفحهٔ سال {year} خوانده نشد: {url} — {e}")
+        pdfs = list(dict.fromkeys(pdfs))
+        pdfs.sort(key=lambda p: -p[1])
+        # ماه ناشناخته (۰) ← ترتیب صفحه نامعلوم است؛ تعداد بیشتری امتحان می‌شود
+        limit = 4 if (pdfs and pdfs[0][1]) else 8
+        for pdf_url, _month in pdfs[:limit]:
+            try:
+                data = parse_cpi_pdf(_download_pdf(s, pdf_url))
             except Exception as e:
                 errors.append(f"{pdf_url}: {e}")
                 logger.warning(f"[CPI] PDF قابل استفاده نبود: {pdf_url} — {e}")
@@ -194,4 +358,19 @@ def fetch_latest() -> tuple[dict[str, float], str]:
                 best = (data, pdf_url)
         if best:
             return best
-    raise CpiFetchError("هیچ PDF قابل‌استفاده‌ای پیدا نشد. " + " | ".join(errors[-3:]))
+    logger.error("[CPI] تشخیص: " + " | ".join(diag))
+    raise CpiFetchError("هیچ PDF قابل‌استفاده‌ای پیدا نشد. "
+                        + " | ".join(errors[-3:]) + ("" if errors else " [" + " | ".join(diag)[:400] + "]"))
+
+
+def fetch_latest() -> tuple[dict[str, float], str]:
+    """
+    جدیدترین PDF ماهانه را از سایت بانک مرکزی پیدا و پارس می‌کند.
+    خروجی: (شاخص‌های ماهانه با پایهٔ ۱۴۰۰، آدرس PDF)
+    از هر سال حداکثر ۴ PDF (جدیدترها) بررسی و کامل‌ترین جدول برگردانده می‌شود.
+    لینک PDF می‌تواند مستقیم در صفحهٔ سال یا (یک سطح پایین‌تر) در صفحهٔ هر گزارش باشد و لزومی ندارد
+    پسوند .pdf داشته باشد؛ هر فایل دانلودشده باید با %PDF شروع شود. اگر چیزی پیدا نشد، پیام خطا
+    خلاصهٔ تشخیص (تعداد لینک‌ها و نمونه آدرس‌ها) را هم می‌دهد.
+    """
+    import requests
+    return _fetch_latest(requests.Session())
