@@ -180,7 +180,20 @@ def test_parse_ignores_other_tables_on_page(monkeypatch):
     assert len(out) == 60 and out["1400/01"] == 83.3 and out["1404/12"] == values[-1]
 
 
-def test_flip_keeps_minus_sign_and_never_crashes():
-    assert c._flip("-0/5") == "-5/0" and c._flip("3/83") == "83/3"
-    assert c._cell(["-0/5", "x"], 0, True) == -5.0
-    assert c._cell(["abc"], 0, True) is None
+def test_value_modes_and_signs():
+    assert c._value("83/3", 0) == 83.3
+    assert c._value("3/38", 1) == 83.3                 # حرف‌به‌حرف برعکس (خروجی PyMuPDF روی PDF بانک مرکزی)
+    assert c._value("00/001", 1) == 100.0
+    assert c._value("3/83", 2) == 83.3                 # جابه‌جایی دو بخش
+    assert c._value("-0/5", 0) == -0.5 and c._value("5/0-", 1) == -0.5
+    assert c._cell(["abc"], 0, 1) is None
+
+
+def test_parse_char_reversed_numbers_like_real_server(monkeypatch):
+    def rev(t):                                        # «83/3» → «3/38»؛ منفی آخر عدد می‌آید
+        neg = t.startswith("-")
+        r = t.lstrip("-")[::-1]
+        return r + "-" if neg else r
+    values = _fake_fitz(monkeypatch, wrap=rev, junk=True)
+    out = _REAL_PARSE(b"x")
+    assert len(out) == 60 and out["1400/01"] == 83.3 and out["1404/12"] == values[-1]
