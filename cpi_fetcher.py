@@ -53,17 +53,17 @@ def _num(token: str) -> float:
 
 
 def _flip(token: str) -> str:
-    """«3/83» → «83/3» (برخی موتورها اجزای یک عدد را به ترتیب بصری معکوس می‌دهند)."""
-    a, _, b = token.partition("/")
-    return f"{b}/{a}"
+    """«3/83» → «83/3» (برخی موتورها اجزای یک عدد را به ترتیب بصری معکوس می‌دهند)؛ علامت منفی سر جای خود می‌ماند."""
+    neg = token.startswith("-")
+    a, _, b = token.lstrip("-").partition("/")
+    return f"{'-' if neg else ''}{b}/{a}"
 
 
-def _rows_from_page(words, flip: bool) -> list:
+def _lines_from_words(words) -> list:
+    """واژه‌های یک صفحه → ردیف‌های جدول: هر ردیف فهرست خانه‌های عددی (متن پاک‌شده) از راست به چپ."""
     cells_y = []
     for x0, y0, x1, y1, text, *_ in words:
         t = _clean(text)
-        if flip and _NUM_RE.match(t):
-            t = _flip(t)
         if _NUM_RE.match(t) or t in ("*", "❊", "٭"):
             cells_y.append(((y0 + y1) / 2, x0, t))
     lines: list[list] = []                       # خانه‌هایی که مرکز عمودی‌شان نزدیک است = یک ردیف
@@ -72,25 +72,67 @@ def _rows_from_page(words, flip: bool) -> list:
             lines[-1].append((yc, x0, t))
         else:
             lines.append([(yc, x0, t)])
-    rows = []
+    out = []
     for line in lines:
-        cells = [(x0, t) for _, x0, t in sorted(line, key=lambda c: -c[1])]   # راست به چپ
-        if len(cells) < 5 or not _NUM_RE.match(cells[0][1]):
-            continue
-        change = _num(cells[1][1]) if _NUM_RE.match(cells[1][1]) else None
-        rows.append((_num(cells[0][1]), change))
-    return rows
+        cells = [t for _, x0, t in sorted(line, key=lambda c: -c[1])]
+        if len(cells) >= 5:
+            out.append(cells)
+    return out
 
 
-def _order_score(rows) -> tuple[int, int]:
-    checked = ok = 0
-    for (prev, _), (cur, change) in zip(rows, rows[1:]):
-        if change is None or prev == 0:
+def _cell(cells, idx, flip):
+    try:
+        t = cells[idx]
+    except IndexError:
+        return None
+    if not _NUM_RE.match(t):
+        return None
+    try:
+        return _num(_flip(t) if flip else t)
+    except ValueError:                 # عدد نامعتبر نباید کل پارس را بشکند
+        return None
+
+
+def _longest_run(lines, k, j, flip):
+    """بلندترین دنبالهٔ ردیف‌های پشت‌سرهم که ستون k (شاخص) با ستون j (درصد تغییر ماهانه) سازگارند.
+    خروجی: (ردیف‌ها، میانگین خطا) — خطا برای تفکیک ترکیب‌های هم‌طول به کار می‌رود."""
+    rows = [(_cell(c, k, flip), _cell(c, j, flip)) for c in lines]
+    best, best_err, cur, cur_err = [], 0.0, [], 0.0
+    for r in rows:
+        if r[0] is None:
+            cur, cur_err = [], 0.0
             continue
-        checked += 1
-        if abs((cur / prev - 1) * 100 - change) <= 0.35:
-            ok += 1
-    return ok, checked
+        err = None
+        if cur and r[1] is not None and cur[-1][0]:
+            e = abs((r[0] / cur[-1][0] - 1) * 100 - r[1])
+            if e <= 0.35:
+                err = e
+        if err is not None:
+            cur, cur_err = cur + [r], cur_err + err
+        else:
+            cur, cur_err = [r], 0.0
+        if len(cur) > len(best):
+            best, best_err = cur, cur_err
+    if best and len({v for v, _ in best}) < 3:          # ستون ثابت = شاخص نیست
+        return [], 0.0
+    return best, (best_err / max(len(best) - 1, 1))
+
+
+_COLS = [0, 1, 2, 3, 4, 5, -1, -2, -3, -4, -5, -6]     # شمارهٔ ستون از راست (۰..) یا از چپ (منفی)
+
+
+def _find_table(lines) -> tuple[list, str]:
+    """جای ستون «شاخص» و «درصد تغییر» را از روی خود داده پیدا می‌کند (به ترتیب ستون‌ها وابسته نیست)."""
+    best, best_err, how = [], 0.0, ""
+    for flip in (False, True):
+        for k in _COLS:
+            for j in _COLS:
+                if k == j:
+                    continue
+                run, err = _longest_run(lines, k, j, flip)
+                if len(run) > len(best) or (run and len(run) == len(best) and err < best_err - 1e-9):
+                    best, best_err, how = run, err, f"ستون {k}/{j}{' معکوس' if flip else ''}"
+    return best, how
 
 
 def parse_cpi_pdf(pdf_bytes: bytes) -> dict[str, float]:
@@ -103,49 +145,43 @@ def parse_cpi_pdf(pdf_bytes: bytes) -> dict[str, float]:
     «درصد تغییر نسبت به ماه قبل» کنترل می‌شود؛ اگر نخواند، خطا می‌دهد.
 
     مقاوم در برابر تفاوت موتورهای استخراج: نویسه‌های نامرئی جهت‌دهی، ارقام عربی/فارسی،
-    جداکنندهٔ اعشار «٫»، و ترتیب معکوس اجزای عدد. تشخیص صفحهٔ جدول با سرعنوان «1400=100»
-    (یا «100=1400») است و اگر هیچ صفحه‌ای سرعنوان نداشت، همهٔ صفحه‌ها بررسی می‌شوند.
+    جداکنندهٔ اعشار «٫»، ترتیب معکوس اجزای عدد، و جای ستون‌ها (شاخص و درصد تغییر از روی خود
+    داده پیدا می‌شوند). ردیف‌های جدول‌های دیگرِ PDF با «بلندترین دنبالهٔ سازگار» کنار گذاشته می‌شوند.
     """
     import fitz  # PyMuPDF
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    pages_words, header_pages, n_words, sample = [], [], 0, []
+    page_lines, header_pages, n_words, sample = [], [], 0, []
     try:
         for i, page in enumerate(doc):
             words = page.get_text("words")
             plain = _clean(page.get_text()).replace(" ", "").replace("\n", "")
-            has_hdr = "1400=100" in plain or "100=1400" in plain or "1400=١٠٠" in plain
-            if has_hdr:
+            if "1400=100" in plain or "100=1400" in plain:
                 header_pages.append(i)
-            pages_words.append(words)
+            page_lines.append(_lines_from_words(words))
             n_words += len(words)
-            if len(sample) < 8:
-                sample += [_clean(w[4]) for w in words if re.search(r"\d", _clean(w[4]))][:8 - len(sample)]
+            if len(sample) < 3 and page_lines[-1]:
+                sample.append(page_lines[-1][0])
     finally:
         doc.close()
 
-    scan = header_pages or list(range(len(pages_words)))
-    best_rows, best_ok, best_checked = [], 0, 0
-    for flip in (False, True):
-        rows = []
-        for i in scan:
-            rows.extend(_rows_from_page(pages_words[i], flip))
-        ok, checked = _order_score(rows)
-        if ok > best_ok or (not best_rows and rows):
-            best_rows, best_ok, best_checked = rows, ok, checked
-        if checked >= 12 and ok >= checked * 0.9:
+    table, how = [], ""
+    for pages in (header_pages, list(range(len(page_lines)))):    # اول صفحه‌های دارای سرعنوان، بعد همه
+        lines = [c for i in pages for c in page_lines[i]]
+        table, how = _find_table(lines)
+        if len(table) >= 13:
             break
-    rows, ok, checked = best_rows, best_ok, best_checked
 
-    if len(rows) < 13:
+    if len(table) < 13:
         raise CpiFetchError(
-            f"جدول شاخص (1400=100) در PDF پیدا نشد ({len(rows)} ردیف). تشخیص: {len(pages_words)} صفحه، "
-            f"{n_words} واژه، صفحه‌های دارای سرعنوان: {[i + 1 for i in header_pages]}، "
-            f"نمونه ارقام: {sample}")
-    if checked < 12 or ok < checked * 0.9:
-        raise CpiFetchError(f"ترتیب ردیف‌های جدول PDF قابل تأیید نیست ({ok}/{checked}).")
+            f"جدول شاخص (1400=100) در PDF پیدا نشد ({len(table)} ردیف سازگار). تشخیص: {len(page_lines)} صفحه، "
+            f"{n_words} واژه، ردیف‌های عددی هر صفحه: {[len(l) for l in page_lines]}، "
+            f"صفحه‌های دارای سرعنوان: {[i + 1 for i in header_pages]}، نمونه ردیف‌ها: {sample}")
+    if table[0][0] >= 100:
+        raise CpiFetchError(f"ردیف اول جدول فروردین ۱۴۰۰ نیست (مقدار {table[0][0]} — {how}).")
 
+    logger.info(f"[CPI] جدول PDF خوانده شد: {len(table)} ماه ({how})")
     out = {}
-    for i, (value, _) in enumerate(rows):
+    for i, (value, _) in enumerate(table):
         y, m = TABLE_BASE_YEAR + i // 12, i % 12 + 1
         out[f"{y:04d}/{m:02d}"] = value
     return out
