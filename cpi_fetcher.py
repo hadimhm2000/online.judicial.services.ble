@@ -35,7 +35,7 @@ class CpiFetchError(Exception):
 
 # ── پارس PDF ─────────────────────────────────────────────────────────────
 
-_NUM_RE = re.compile(r"^-?\d+/\d+$")       # اعداد PDF بانک مرکزی: «83/3» = 83.3
+_NUM_RE = re.compile(r"^-?\d+/\d+-?$")      # اعداد PDF بانک مرکزی: «83/3» = 83.3 (علامت منفی ممکن است آخر بیاید)
 # نویسه‌های نامرئی جهت‌دهی/قالب (RLE/LRE/PDF/RLM/LRM/ZWNJ/BOM…) که بسته به موتور استخراج داخل متن می‌آیند
 _INVISIBLE = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u200e\u200f\u202a\u202b\u202c\u202d\u202e"
                                "\u2066\u2067\u2068\u2069\ufeff\u00ad"), None)
@@ -48,15 +48,25 @@ def _clean(token: str) -> str:
     return t.translate(_SEP_FIX)
 
 
-def _num(token: str) -> float:
-    return float(_clean(token).replace("/", "."))
+# حالت‌های خواندن عدد (بسته به موتور استخراج):
+#   0 = همان‌طور که هست («83/3»)
+#   1 = ارقام کل عدد حرف‌به‌حرف برعکس («3/38» → 83.3)   ← خروجی PyMuPDF روی PDF بانک مرکزی
+#   2 = فقط دو بخش قبل و بعد از «/» جابه‌جا («3/83» → 83.3)
+_MODES = (0, 1, 2)
 
 
-def _flip(token: str) -> str:
-    """«3/83» → «83/3» (برخی موتورها اجزای یک عدد را به ترتیب بصری معکوس می‌دهند)؛ علامت منفی سر جای خود می‌ماند."""
-    neg = token.startswith("-")
-    a, _, b = token.lstrip("-").partition("/")
-    return f"{'-' if neg else ''}{b}/{a}"
+def _value(token: str, mode: int) -> float:
+    """مقدار عددی یک خانه؛ علامت منفی چه اول چه آخر عدد بیاید پذیرفته می‌شود."""
+    t = _clean(token)
+    neg = t.startswith("-") or t.endswith("-")
+    core = t.strip("-")
+    if mode == 1:
+        core = core[::-1]
+    elif mode == 2:
+        a, _, b = core.partition("/")
+        core = f"{b}/{a}"
+    v = float(core.replace("/", "."))
+    return -v if neg else v
 
 
 def _lines_from_words(words) -> list:
@@ -80,7 +90,7 @@ def _lines_from_words(words) -> list:
     return out
 
 
-def _cell(cells, idx, flip):
+def _cell(cells, idx, mode):
     try:
         t = cells[idx]
     except IndexError:
@@ -88,15 +98,15 @@ def _cell(cells, idx, flip):
     if not _NUM_RE.match(t):
         return None
     try:
-        return _num(_flip(t) if flip else t)
+        return _value(t, mode)
     except ValueError:                 # عدد نامعتبر نباید کل پارس را بشکند
         return None
 
 
-def _longest_run(lines, k, j, flip):
+def _longest_run(lines, k, j, mode):
     """بلندترین دنبالهٔ ردیف‌های پشت‌سرهم که ستون k (شاخص) با ستون j (درصد تغییر ماهانه) سازگارند.
     خروجی: (ردیف‌ها، میانگین خطا) — خطا برای تفکیک ترکیب‌های هم‌طول به کار می‌رود."""
-    rows = [(_cell(c, k, flip), _cell(c, j, flip)) for c in lines]
+    rows = [(_cell(c, k, mode), _cell(c, j, mode)) for c in lines]
     best, best_err, cur, cur_err = [], 0.0, [], 0.0
     for r in rows:
         if r[0] is None:
@@ -124,14 +134,14 @@ _COLS = [0, 1, 2, 3, 4, 5, -1, -2, -3, -4, -5, -6]     # شمارهٔ ستون �
 def _find_table(lines) -> tuple[list, str]:
     """جای ستون «شاخص» و «درصد تغییر» را از روی خود داده پیدا می‌کند (به ترتیب ستون‌ها وابسته نیست)."""
     best, best_err, how = [], 0.0, ""
-    for flip in (False, True):
+    for mode in _MODES:
         for k in _COLS:
             for j in _COLS:
                 if k == j:
                     continue
-                run, err = _longest_run(lines, k, j, flip)
+                run, err = _longest_run(lines, k, j, mode)
                 if len(run) > len(best) or (run and len(run) == len(best) and err < best_err - 1e-9):
-                    best, best_err, how = run, err, f"ستون {k}/{j}{' معکوس' if flip else ''}"
+                    best, best_err, how = run, err, f"ستون {k}/{j} حالت {mode}"
     return best, how
 
 
@@ -155,7 +165,7 @@ def parse_cpi_pdf(pdf_bytes: bytes) -> dict[str, float]:
         for i, page in enumerate(doc):
             words = page.get_text("words")
             plain = _clean(page.get_text()).replace(" ", "").replace("\n", "")
-            if "1400=100" in plain or "100=1400" in plain:
+            if any(h in plain for h in ("1400=100", "100=1400", "001=0041", "0041=001")):
                 header_pages.append(i)
             page_lines.append(_lines_from_words(words))
             n_words += len(words)
